@@ -14,6 +14,7 @@ final class LoginViewModel: ObservableObject {
 
     @Published private(set) var state: State = .idle
     private var authCode: String = ""
+    private var lastQRUrl: String?
     private var pollTask: Task<Void, Never>?
     private weak var session: AppSession?
 
@@ -26,6 +27,7 @@ final class LoginViewModel: ObservableObject {
             do {
                 let s = try await Task.detached { try CoreClient.shared.tvQrStart() }.value
                 self.authCode = s.authCode
+                self.lastQRUrl = s.url
                 self.state = .waiting(qrUrl: s.url)
                 self.beginPolling()
             } catch {
@@ -57,7 +59,11 @@ final class LoginViewModel: ObservableObject {
                 case .success(let poll):
                     switch poll {
                     case .pending:
-                        if case .scanned = self.state {} // hold scanned label
+                        // Treat any non-confirmed, non-scanned state as waiting; never
+                        // regress to a "scanned" label without an explicit signal.
+                        if case .scanned = self.state {
+                            self.state = .waiting(qrUrl: self.lastQRUrl ?? "")
+                        }
                     case .scanned:
                         if case .waiting(let u) = self.state { self.state = .scanned(qrUrl: u) }
                     case .expired:

@@ -4,6 +4,8 @@ use crate::error::{CoreError, CoreResult};
 use serde::Deserialize;
 
 const URL_FEED_INDEX: &str = "https://app.bilibili.com/x/v2/feed/index";
+/// `Constants.statistics` from upstream PiliPlus.
+const STATISTICS: &str = r#"{"appId":5,"platform":3,"version":"2.0.1","abtest":""}"#;
 
 #[derive(Deserialize)]
 struct FeedRoot {
@@ -13,25 +15,19 @@ struct FeedRoot {
 
 #[derive(Deserialize)]
 struct FeedRawItem {
-    #[serde(default)] card_type: String,
     #[serde(default)] card_goto: String,
     #[serde(default)] goto: String,
-    #[serde(default)] param: String,
     #[serde(default)] bvid: String,
     #[serde(default)] title: String,
     #[serde(default)] cover: String,
-    #[serde(default)] cover_left_text_1: String,
-    #[serde(default)] desc_button: Option<serde_json::Value>,
     #[serde(default)] args: FeedArgs,
-    #[serde(default)] talk_back: String,
     #[serde(default)] mask: Option<MaskWrap>,
     #[serde(default)] player_args: Option<PlayerArgs>,
+    #[serde(default)] ad_info: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Default)]
 struct FeedArgs {
-    #[serde(default)] aid: i64,
-    #[serde(default)] up_id: i64,
     #[serde(default)] up_name: String,
 }
 
@@ -50,24 +46,47 @@ struct PlayerArgs {
 }
 
 impl Core {
-    pub fn feed_home(&self, idx: i64, ps: i64) -> CoreResult<FeedPage> {
+    /// Mirrors `VideoHttp.rcmdVideoListApp` from upstream PiliPlus
+    /// (`lib/http/video.dart`).
+    pub fn feed_home(&self, fresh_idx: i64, _ps: i64) -> CoreResult<FeedPage> {
         let access_key = self.session.read().access_key()
             .ok_or(CoreError::AuthRequired)?;
+        let pull = if fresh_idx == 0 { "true" } else { "false" };
         let params = vec![
             ("access_key".into(), access_key),
             ("build".into(), "2001100".into()),
             ("c_locale".into(), "zh_CN".into()),
             ("channel".into(), "master".into()),
-            ("device".into(), "phone".into()),
-            ("idx".into(), idx.to_string()),
-            ("mobi_app".into(), "android".into()),
+            ("column".into(), "4".into()),
+            ("device".into(), "pad".into()),
+            ("device_name".into(), "android".into()),
+            ("device_type".into(), "0".into()),
+            ("disable_rcmd".into(), "0".into()),
+            ("flush".into(), "5".into()),
+            ("fnval".into(), "976".into()),
+            ("fnver".into(), "0".into()),
+            ("force_host".into(), "2".into()),
+            ("fourk".into(), "1".into()),
+            ("guidance".into(), "0".into()),
+            ("https_url_req".into(), "0".into()),
+            ("idx".into(), fresh_idx.to_string()),
+            ("mobi_app".into(), "android_hd".into()),
+            ("network".into(), "wifi".into()),
             ("platform".into(), "android".into()),
-            ("ps".into(), ps.to_string()),
+            ("player_net".into(), "1".into()),
+            ("pull".into(), pull.into()),
+            ("qn".into(), "32".into()),
+            ("recsys_mode".into(), "0".into()),
             ("s_locale".into(), "zh_CN".into()),
-            ("statistics".into(), r#"{"appId":1,"platform":3,"version":"7.39.0","abtest":""}"#.into()),
+            ("splash_id".into(), "".into()),
+            ("statistics".into(), STATISTICS.into()),
+            ("voice_balance".into(), "0".into()),
         ];
         let raw: FeedRoot = self.http.get_signed_app(URL_FEED_INDEX, params)?;
         let items = raw.items.into_iter()
+            // Match PiliPlus filtering: drop ads + non-video cards.
+            .filter(|i| i.ad_info.is_none())
+            .filter(|i| !matches!(i.card_goto.as_str(), "ad_av" | "ad_web_s" | "ad" | "banner"))
             .filter(|i| matches!(i.goto.as_str(), "av" | "bangumi") || i.card_goto == "av")
             .filter_map(|i| {
                 let pa = i.player_args.as_ref()?;

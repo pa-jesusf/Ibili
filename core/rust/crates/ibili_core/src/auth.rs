@@ -20,8 +20,11 @@ struct PollData {
 
 impl Core {
     pub fn auth_tv_qr_start(&self) -> CoreResult<TvQrStart> {
+        // PiliPlus LoginHttp.getHDcode params (lib/http/login.dart).
         let params = vec![
             ("local_id".into(), "0".into()),
+            ("platform".into(), "android".into()),
+            ("mobi_app".into(), "android_hd".into()),
         ];
         let d: AuthCodeData = self.http.post_signed_app(URL_AUTH_CODE, params)?;
         Ok(TvQrStart { auth_code: d.auth_code, url: d.url })
@@ -45,12 +48,16 @@ impl Core {
                 *self.session.write() = crate::session::Session::from_persisted(session.clone());
                 Ok(TvQrPoll::Confirmed { session })
             }
-            Err(CoreError::Api { code, .. }) => match code {
+            // Bilibili TV poll: 0=ok, 86038=expired, 86039=pending (not scanned),
+            // 86090=scanned awaiting confirm. Treat anything that isn't an explicit
+            // scanned/expired signal as pending so we don't show false "scanned".
+            Err(CoreError::Api { code, msg }) => match code {
                 86038 => Ok(TvQrPoll::Expired),
-                86039 => Ok(TvQrPoll::Scanned),    // scanned, awaiting confirm
                 86090 => Ok(TvQrPoll::Scanned),
-                86101 => Ok(TvQrPoll::Pending),    // not scanned
-                _ => Err(CoreError::Api { code, msg: format!("poll code {code}") }),
+                86039 => Ok(TvQrPoll::Pending),
+                _ if msg.contains("未扫描") || msg.contains("unscanned") => Ok(TvQrPoll::Pending),
+                _ if msg.contains("未确认") || msg.contains("unconfirmed") => Ok(TvQrPoll::Scanned),
+                _ => Err(CoreError::Api { code, msg }),
             },
             Err(e) => Err(e),
         }

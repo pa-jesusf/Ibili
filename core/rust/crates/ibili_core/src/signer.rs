@@ -5,9 +5,10 @@
 
 use md5::{Digest, Md5};
 
-/// AppSign credentials (TV app variant — works for our anonymous + access_key flows).
-pub const APPKEY: &str = "4409e2ce8ffd12b8";
-pub const APPSEC: &str = "59b43e04ad6965f34319062b478f83dd";
+/// AppSign credentials matching upstream PiliPlus (TV-class pair).
+/// Verified at upstream-piliplus/lib/common/constants.dart.
+pub const APPKEY: &str = "dfca71928277209b";
+pub const APPSEC: &str = "b5475a8825547a4fc26c7d518eaaa02e";
 
 pub struct AppSigner;
 
