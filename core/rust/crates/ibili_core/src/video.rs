@@ -11,13 +11,21 @@ struct PlayUrlRoot {
     #[serde(default)] quality: i64,
     #[serde(default)] format: String,
     #[serde(default)] timelength: i64,
-    #[serde(default)] durl: Vec<Durl>,
+    #[serde(default, deserialize_with = "null_as_default")] durl: Vec<Durl>,
 }
 
 #[derive(Deserialize)]
 struct Durl {
     #[serde(default)] url: String,
-    #[serde(default)] backup_url: Vec<String>,
+    #[serde(default, deserialize_with = "null_as_default")] backup_url: Vec<String>,
+}
+
+fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
 impl Core {
