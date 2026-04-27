@@ -1,0 +1,60 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Rust
+core/rust/target/
+**/target/
+**/*.rs.bk
+Cargo.lock.user
+
+# Xcode / Swift
+ios-app/Ibili.xcodeproj/
+ios-app/Ibili.xcworkspace/
+ios-app/**/xcuserdata/
+ios-app/**/*.xcuserstate
+ios-app/**/DerivedData/
+ios-app/build/
+ios-app/.build/
+ios-app/Packages/**/.build/
+ios-app/**/Package.resolved
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# Generated artifacts
+build/
+dist/
+artifacts/
+*.xcframework/
+ios-app/Frameworks/IbiliCore.xcframework/
+
+# IPA / archives
+*.ipa
+*.xcarchive
+Payload/
+
+# Logs / temp
+*.log
+tmp/
+.cache/
+
+# Upstream reference (do not track its build outputs if any)
+upstream-piliplus/build/
+upstream-piliplus/.dart_tool/
+upstream-piliplus/.flutter-plugins
+upstream-piliplus/.flutter-plugins-dependencies
+upstream-piliplus/ios/Pods/
+upstream-piliplus/ios/.symlinks/
+
+# Memory / session scratch
+.memory-cache/
