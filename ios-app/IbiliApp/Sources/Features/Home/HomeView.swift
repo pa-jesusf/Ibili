@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HomeView: View {
     @StateObject private var vm = HomeViewModel()
+    @StateObject private var prefetch = FeedPrefetchCoordinator()
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.horizontalSizeClass) private var hSizeClass
 
@@ -38,7 +39,7 @@ struct HomeView: View {
 
             ScrollView {
                 LazyVGrid(columns: gridItems, spacing: 16) {
-                    ForEach(vm.items) { item in
+                    ForEach(Array(vm.items.enumerated()), id: \.element.aid) { idx, item in
                         NavigationLink(value: item) {
                             VideoCardView(
                                 item: item,
@@ -46,12 +47,16 @@ struct HomeView: View {
                                 imageQuality: settings.resolvedImageQuality()
                             )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TouchDownReportingButtonStyle {
+                            prefetch.touchDown(item)
+                        })
                         .onAppear {
+                            prefetch.cardAppeared(item, indexInFeed: idx, allItems: vm.items)
                             if item.aid == vm.items.last?.aid {
                                 Task { await vm.loadMore() }
                             }
                         }
+                        .onDisappear { prefetch.cardDisappeared(item) }
                     }
                 }
                 .padding(.horizontal, hPad)
@@ -63,6 +68,14 @@ struct HomeView: View {
             }
             .navigationDestination(for: FeedItemDTO.self) { item in
                 PlayerView(item: item)
+            }
+            .onAppear {
+                prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                                playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
+            }
+            .onChange(of: settings.forceTVPlayurl) { _ in
+                prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                                playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
             }
         }
     }

@@ -5,7 +5,7 @@ import UIKit
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
-    enum PlayurlMode: String {
+    enum PlayurlMode: String, Hashable {
         case autoWeb = "auto_web"
         case forceTV = "force_tv"
     }
@@ -13,6 +13,12 @@ final class PlayerViewModel: ObservableObject {
     @Published var isLoading = true
     @Published var errorText: String?
     @Published private(set) var player: AVPlayer?
+    /// `true` once the active `AVPlayerItem` has reached `.readyToPlay`.
+    /// The view shows a loading spinner until this flips, so users never
+    /// see AVKit's empty native chrome with a phantom pause icon while
+    /// the master playlist + init segment are still loading from the
+    /// local proxy.
+    @Published private(set) var isVideoReady = false
     @Published private(set) var availableQualities: [(qn: Int64, label: String)] = []
     @Published var currentQn: Int64 = 0
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
@@ -23,6 +29,7 @@ final class PlayerViewModel: ObservableObject {
     private let discoveryQn: Int64 = 120
     private var engine: PlaybackEngine = HLSProxyEngine.shared
     private var engineKind: PlayerEngineKind = .hlsProxy
+    private var itemStatusObservation: NSKeyValueObservation?
 
     /// Set the active engine before calling `load`. Idempotent.
     func setEngine(_ kind: PlayerEngineKind) {
@@ -44,7 +51,8 @@ final class PlayerViewModel: ObservableObject {
         loadGeneration &+= 1
         let generation = loadGeneration
         aid = item.aid; cid = item.cid
-        isLoading = true; errorText = nil
+        isLoading = true; errorText = nil; isVideoReady = false
+        itemStatusObservation = nil
         AppLog.info("player", "开始加载播放器", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
@@ -53,17 +61,36 @@ final class PlayerViewModel: ObservableObject {
             "engine": engineKind.rawValue,
         ])
         do {
-            let initial = try await fetchStartupPlayUrl(aid: item.aid,
+            let discoveryQnTarget = max(preferredQn, discoveryQn)
+            let initial: PlayUrlDTO
+            if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
+                                                       cid: item.cid,
+                                                       qn: discoveryQnTarget,
+                                                       playurlMode: playurlMode) {
+                initial = warm
+            } else {
+                initial = try await fetchStartupPlayUrl(aid: item.aid,
                                                         cid: item.cid,
-                                                        qn: max(preferredQn, discoveryQn),
+                                                        qn: discoveryQnTarget,
                                                         playurlMode: playurlMode)
+            }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let qualities = normalizedQualities(from: initial)
             let targetQn = resolveTargetQn(preferredQn: preferredQn, qualities: qualities, fallback: initial.quality)
-            let info = targetQn == initial.quality ? initial : try await fetchStartupPlayUrl(aid: item.aid,
-                                                                                              cid: item.cid,
-                                                                                              qn: targetQn,
-                                                                                              playurlMode: playurlMode)
+            let info: PlayUrlDTO
+            if targetQn == initial.quality {
+                info = initial
+            } else if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
+                                                                cid: item.cid,
+                                                                qn: targetQn,
+                                                                playurlMode: playurlMode) {
+                info = warm
+            } else {
+                info = try await fetchStartupPlayUrl(aid: item.aid,
+                                                     cid: item.cid,
+                                                     qn: targetQn,
+                                                     playurlMode: playurlMode)
+            }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: item.aid, cid: item.cid, qn: targetQn)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
@@ -84,6 +111,7 @@ final class PlayerViewModel: ObservableObject {
             // before there is anything to render and the playback gets
             // stuck at rate=1 with no frames (the user has to tap once to
             // unstick it).
+            observeItemStatus(prep.item, generation: generation)
             self.player = player
             self.player?.play()
             applyRate()
@@ -147,6 +175,8 @@ final class PlayerViewModel: ObservableObject {
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: aid, cid: cid, qn: qn)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            isVideoReady = false
+            observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             if wasPlaying { player.play() }
@@ -195,8 +225,34 @@ final class PlayerViewModel: ObservableObject {
         ])
         player?.pause()
         player = nil
+        itemStatusObservation = nil
+        isVideoReady = false
         engine.tearDown()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
+    /// Wire a KVO observation that flips `isVideoReady` once the player
+    /// item has buffered enough to render its first frame. The earlier
+    /// generation guard ensures stale loads (rapid quality switches /
+    /// dismissals) cannot resurrect a closed player.
+    private func observeItemStatus(_ item: AVPlayerItem, generation: UInt64) {
+        itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            Task { @MainActor in
+                guard let self, self.loadGeneration == generation else { return }
+                switch item.status {
+                case .readyToPlay:
+                    self.isVideoReady = true
+                case .failed:
+                    let detail = item.error?.localizedDescription ?? "unknown"
+                    self.errorText = detail
+                    AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
+                        "detail": detail,
+                    ])
+                default:
+                    break
+                }
+            }
+        }
     }
 
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64) async throws -> PlayUrlDTO {
@@ -451,6 +507,13 @@ struct PlayerView: View {
                         onCreated: { vc in playerVCRef.vc = vc },
                         onFullscreenChange: { fs in isFullscreen = fs }
                     )
+                    // Cover the native chrome until the first frame is
+                    // ready, otherwise users see a misleading pause icon
+                    // hovering over a black surface during buffering.
+                    if !vm.isVideoReady {
+                        Color.black.opacity(0.85)
+                        ProgressView().tint(.white)
+                    }
                 } else if vm.isLoading {
                     ProgressView().tint(.white)
                 } else if let err = vm.errorText {
@@ -486,10 +549,13 @@ struct PlayerView: View {
             configureAudioSession()
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             vm.setEngine(settings.playerEngine)
-            await vm.load(item: item,
-                          preferredQn: Int64(settings.resolvedPreferredVideoQn()),
-                          playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
-            await loadDanmaku()
+            // Run the video preparation and the danmaku fetch concurrently
+            // so a slow danmaku endpoint can never hold up first frame.
+            async let video: Void = vm.load(item: item,
+                                            preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                                            playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
+            async let danmaku: Void = loadDanmaku()
+            _ = await (video, danmaku)
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer { danmaku.attach(p) }
