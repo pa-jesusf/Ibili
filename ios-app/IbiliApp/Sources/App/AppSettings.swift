@@ -25,6 +25,12 @@ final class AppSettings: ObservableObject {
     /// rotating back to portrait exits fullscreen. Tap of the fullscreen
     /// button always rotates regardless of this setting.
     @AppStorage("ibili.player.autoRotateFullscreen") var autoRotateFullscreen: Bool = true
+    /// Race the lowest available quality against the user's preferred
+    /// quality on player startup. Whichever AVPlayerItem reaches
+    /// `.readyToPlay` first is shown immediately; if the lowest variant
+    /// won, the player seamlessly upgrades to the preferred quality
+    /// once it finishes preparing.
+    @AppStorage("ibili.player.fastLoad") var fastLoad: Bool = false
 
     /// Resolves the effective column count given the current layout context.
     /// Phones default to 2; iPads scale with width up to 4.

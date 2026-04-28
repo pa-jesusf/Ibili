@@ -2,6 +2,7 @@ import SwiftUI
 import AVKit
 import AVFoundation
 import UIKit
+import os
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
@@ -29,13 +30,25 @@ final class PlayerViewModel: ObservableObject {
     /// iOS in the background.
     private var lastLoadedItem: FeedItemDTO?
     private var lastPreferredQn: Int64 = 0
+    private var lastFastLoad: Bool = false
     /// Number of automatic recovery attempts the view-model has issued
     /// for the current `(aid, cid)`. Reset to zero in `load(...)`.
     /// Cap of 1 keeps us from looping when the upstream playurl itself
     /// is genuinely broken.
     private var autoReloadAttempts: Int = 0
+    /// Preparation backing the currently visible player. Stored so a
+    /// later low->high upgrade can release the old proxy token without
+    /// tearing down the newly-promoted stream.
+    private var activePreparation: EnginePreparation?
+    /// Pending fast-load warm-player task for the higher quality.
+    /// Cancelled on teardown / manual quality switch / next load so a
+    /// stale upgrade cannot resurrect a closed player.
+    private var pendingReadyTask: Task<WarmPlayer, Error>?
+    /// Coordination task that awaits `pendingReadyTask` and promotes it
+    /// once the high-quality player is actually playing.
+    private var pendingUpgradeTask: Task<Void, Never>?
 
-    func load(item: FeedItemDTO, preferredQn: Int64) async {
+    func load(item: FeedItemDTO, preferredQn: Int64, fastLoad: Bool) async {
         if player != nil, aid == item.aid, cid == item.cid {
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
                 "aid": String(item.aid),
@@ -49,13 +62,16 @@ final class PlayerViewModel: ObservableObject {
         aid = item.aid; cid = item.cid
         lastLoadedItem = item
         lastPreferredQn = preferredQn
+        lastFastLoad = fastLoad
         autoReloadAttempts = 0
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
+        cancelPendingUpgrade()
         AppLog.info("player", "开始加载播放器", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
             "preferredQn": String(preferredQn),
+            "fastLoad": String(fastLoad),
         ])
         do {
             let discoveryQnTarget = max(preferredQn, discoveryQn)
@@ -85,42 +101,152 @@ final class PlayerViewModel: ObservableObject {
                                               qn: targetQn)
             }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
-            let prep = try await engine.makeItem(for: info)
-            guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
-                AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
-                    "aid": String(item.aid),
-                    "cid": String(item.cid),
-                ])
-                return
-            }
             let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
             self.availableQualities = finalQualities
-            self.currentQn = info.quality
-            let player = AVPlayer(playerItem: prep.item)
-            // Leave `automaticallyWaitsToMinimizeStalling` at its default
-            // (`true`). With our HLS proxy AVPlayer needs to fetch the
-            // master + media playlists and the init segment before it can
-            // emit frames; forcing the flag off makes it call `play()`
-            // before there is anything to render and the playback gets
-            // stuck at rate=1 with no frames (the user has to tap once to
-            // unstick it).
-            observeItemStatus(prep.item, generation: generation)
-            self.player = player
-            self.player?.play()
-            applyRate()
-            let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-            var meta = prep.logSummary
-            meta["aid"] = String(item.aid)
-            meta["cid"] = String(item.cid)
-            meta["quality"] = String(info.quality)
-            meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
-            meta["streamType"] = info.streamType
-            meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
-            meta["prepMs"] = String(prep.totalElapsedMs)
-            meta["startupMs"] = String(startupMs)
-            AppLog.info("player", "播放器已就绪", metadata: meta)
-            if let msg = info.debugMessage {
-                AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
+
+            // Decide whether to race the lowest variant against the
+            // preferred one. We only do it when the user opted in AND
+            // there's actually something cheaper to race — picking the
+            // lowest qn that is strictly less than the preferred one.
+            let lowestQn = finalQualities.map(\.qn).min() ?? info.quality
+            let runFastLoad = fastLoad && lowestQn < info.quality
+            if runFastLoad {
+                let loInfo: PlayUrlDTO
+                if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
+                                                            cid: item.cid,
+                                                            qn: lowestQn) {
+                    loInfo = warm
+                } else {
+                    loInfo = try await fetchPlayUrl(aid: item.aid,
+                                                    cid: item.cid,
+                                                    qn: lowestQn)
+                }
+                guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
+                // Race on hidden players reaching actual playback, not
+                // on `makeItem` completion. That keeps the feature true
+                // to its purpose: first picture wins, not first asset
+                // construction.
+                let hiTask = Task { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await self.makeWarmPlayer(for: info)
+                }
+                let loTask = Task { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await self.makeWarmPlayer(for: loInfo)
+                }
+                let winner = try await Self.raceFirstWarmPlayer(hi: hiTask, lo: loTask)
+                guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
+                    discardWarmPlayerTask(hiTask)
+                    discardWarmPlayerTask(loTask)
+                    AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
+                        "aid": String(item.aid),
+                        "cid": String(item.cid),
+                    ])
+                    return
+                }
+                let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
+                switch winner {
+                case .hi(let hiWarm):
+                    discardWarmPlayerTask(loTask)
+                    await showWarmPlayer(hiWarm,
+                                         qn: info.quality,
+                                         generation: generation)
+                    var meta = hiWarm.preparation.logSummary
+                    meta["aid"] = String(item.aid)
+                    meta["cid"] = String(item.cid)
+                    meta["quality"] = String(info.quality)
+                    meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
+                    meta["streamType"] = info.streamType
+                    meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
+                    meta["prepMs"] = String(hiWarm.preparation.totalElapsedMs)
+                    meta["startupMs"] = String(startupMs)
+                    meta["fastLoad"] = "true"
+                    meta["raceWinner"] = "hi"
+                    meta["winnerBasis"] = "timeControlStatus.playing"
+                    AppLog.info("player", "快速加载已就绪(高画质先达到可播)", metadata: meta)
+                case .lo(let loWarm):
+                    await showWarmPlayer(loWarm,
+                                         qn: loInfo.quality,
+                                         generation: generation)
+                    var meta = loWarm.preparation.logSummary
+                    meta["aid"] = String(item.aid)
+                    meta["cid"] = String(item.cid)
+                    meta["quality"] = String(loInfo.quality)
+                    meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
+                    meta["streamType"] = loInfo.streamType
+                    meta["separateAudio"] = loInfo.audioUrl == nil ? "false" : "true"
+                    meta["prepMs"] = String(loWarm.preparation.totalElapsedMs)
+                    meta["startupMs"] = String(startupMs)
+                    meta["targetQn"] = String(info.quality)
+                    meta["fastLoad"] = "true"
+                    meta["raceWinner"] = "lo"
+                    meta["winnerBasis"] = "timeControlStatus.playing"
+                    AppLog.info("player", "快速加载已就绪(低画质先达到可播)", metadata: meta)
+                    self.pendingReadyTask = hiTask
+                    self.pendingUpgradeTask = Task { @MainActor [weak self] in
+                        do {
+                            let hiWarm = try await hiTask.value
+                            guard let self else {
+                                hiWarm.stop()
+                                return
+                            }
+                            guard !Task.isCancelled,
+                                  self.loadGeneration == generation else {
+                                hiWarm.stop()
+                                return
+                            }
+                            await self.applyFastLoadUpgrade(hiWarm: hiWarm,
+                                                            hiInfo: info,
+                                                            generation: generation)
+                        } catch {
+                            if !(error is CancellationError) {
+                                AppLog.warning("player", "高画质预加载失败，保留低画质", metadata: [
+                                    "detail": error.localizedDescription,
+                                ])
+                            }
+                        }
+                    }
+                }
+                if let msg = info.debugMessage {
+                    AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
+                }
+            } else {
+                let prep = try await engine.makeItem(for: info)
+                guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
+                    AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
+                        "aid": String(item.aid),
+                        "cid": String(item.cid),
+                    ])
+                    return
+                }
+                self.currentQn = info.quality
+                let player = AVPlayer(playerItem: prep.item)
+                // Leave `automaticallyWaitsToMinimizeStalling` at its
+                // default (`true`). With our HLS proxy AVPlayer needs to
+                // fetch the master + media playlists and the init
+                // segment before it can emit frames; forcing the flag
+                // off makes it call `play()` before there is anything
+                // to render and the playback gets stuck at rate=1 with
+                // no frames (the user has to tap once to unstick it).
+                self.activePreparation = prep
+                observeItemStatus(prep.item, generation: generation)
+                self.player = player
+                self.player?.play()
+                applyRate()
+                let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
+                var meta = prep.logSummary
+                meta["aid"] = String(item.aid)
+                meta["cid"] = String(item.cid)
+                meta["quality"] = String(info.quality)
+                meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
+                meta["streamType"] = info.streamType
+                meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
+                meta["prepMs"] = String(prep.totalElapsedMs)
+                meta["startupMs"] = String(startupMs)
+                AppLog.info("player", "播放器已就绪", metadata: meta)
+                if let msg = info.debugMessage {
+                    AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
+                }
             }
         } catch {
             errorText = error.localizedDescription
@@ -150,9 +276,12 @@ final class PlayerViewModel: ObservableObject {
         player?.pause()
         player = nil
         itemStatusObservation = nil
+        activePreparation?.release()
+        activePreparation = nil
+        cancelPendingUpgrade()
         engine.tearDown()
         aid = 0; cid = 0
-        await load(item: item, preferredQn: lastPreferredQn)
+        await load(item: item, preferredQn: lastPreferredQn, fastLoad: lastFastLoad)
         // `load(...)` zeroes the counter; preserve our caller's tally
         // so a chain of failed reloads cannot loop indefinitely.
         autoReloadAttempts = max(autoReloadAttempts, priorAttempts)
@@ -167,6 +296,9 @@ final class PlayerViewModel: ObservableObject {
         let generation = loadGeneration
         let resumeAt = player.currentTime()
         let wasPlaying = player.timeControlStatus == .playing
+        // A pending fast-load upgrade is now obsolete — user is
+        // explicitly choosing a different quality.
+        cancelPendingUpgrade()
         AppLog.info("player", "开始切换清晰度", metadata: [
             "aid": String(aid),
             "cid": String(cid),
@@ -174,14 +306,27 @@ final class PlayerViewModel: ObservableObject {
             "toQn": String(qn),
         ])
         do {
-            // Releasing the previous source before allocating the new one
-            // keeps the proxy token table from growing across switches.
+            // Detach the active item and its KVO BEFORE tearing the
+            // proxy down. Otherwise the old item's resource loader
+            // starts getting 404s the instant the token is gone, the
+            // item flips to `.failed`, and our `observeItemStatus`
+            // auto-reload kicks in mid-switch and races the new
+            // `makeItem` we are about to await.
+            isVideoReady = false
+            itemStatusObservation = nil
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            activePreparation?.release()
+            activePreparation = nil
+            // Releasing the previous source before allocating the new
+            // one keeps the proxy token table from growing across
+            // switches.
             engine.tearDown()
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
-            isVideoReady = false
+            activePreparation = prep
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -220,12 +365,224 @@ final class PlayerViewModel: ObservableObject {
         player?.pause()
         player = nil
         itemStatusObservation = nil
+        activePreparation?.release()
+        activePreparation = nil
+        cancelPendingUpgrade()
         isVideoReady = false
         engine.tearDown()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
-    /// Wire a KVO observation that flips `isVideoReady` once the player
+    /// Cancel any in-flight fast-load upgrade. Safe to call when no
+    /// upgrade is pending.
+    private func cancelPendingUpgrade() {
+        pendingUpgradeTask?.cancel()
+        pendingUpgradeTask = nil
+        let readyTask = pendingReadyTask
+        pendingReadyTask = nil
+        discardWarmPlayerTask(readyTask)
+    }
+
+    /// Cancel and reap a hidden warm-player task. If the task already
+    /// completed we synchronously stop its muted player and release its
+    /// proxy token.
+    private func discardWarmPlayerTask(_ task: Task<WarmPlayer, Error>?) {
+        guard let task else { return }
+        task.cancel()
+        Task { @MainActor in
+            guard let warm = try? await task.value else { return }
+            warm.stop()
+        }
+    }
+
+    /// Build a muted hidden player and wait until it is actually
+    /// playing. This gives the fast-load race a meaningful winner:
+    /// whichever stream is first to render progress, not whichever
+    /// finished `makeItem` first.
+    private func makeWarmPlayer(for source: PlayUrlDTO) async throws -> WarmPlayer {
+        var preparation: EnginePreparation?
+        var hiddenPlayer: AVPlayer?
+        do {
+            let prep = try await engine.makeItem(for: source)
+            preparation = prep
+            try Task.checkCancellation()
+
+            let player = AVPlayer(playerItem: prep.item)
+            hiddenPlayer = player
+            player.isMuted = true
+            applyRate(to: player)
+            player.play()
+
+            try await Self.waitUntilActuallyPlaying(player: player, item: prep.item)
+            try Task.checkCancellation()
+            return WarmPlayer(player: player, preparation: prep)
+        } catch {
+            hiddenPlayer?.pause()
+            hiddenPlayer?.replaceCurrentItem(with: nil)
+            preparation?.release()
+            throw error
+        }
+    }
+
+    /// Race two hidden players and return whichever reaches actual
+    /// playback first.
+    private static func raceFirstWarmPlayer(
+        hi: Task<WarmPlayer, Error>,
+        lo: Task<WarmPlayer, Error>
+    ) async throws -> FastLoadWinner {
+        try await withCheckedThrowingContinuation { continuation in
+            let state = OSAllocatedUnfairLock<RaceState>(initialState: .pending(hiError: nil, loError: nil))
+            Task {
+                do {
+                    let warm = try await hi.value
+                    state.withLock { current in
+                        if case .resolved = current { return }
+                        current = .resolved
+                        continuation.resume(returning: .hi(warm))
+                    }
+                } catch {
+                    state.withLock { current in
+                        guard case .pending(_, let loErr) = current else { return }
+                        if let loErr {
+                            current = .resolved
+                            continuation.resume(throwing: loErr)
+                        } else {
+                            current = .pending(hiError: error, loError: nil)
+                        }
+                    }
+                }
+            }
+            Task {
+                do {
+                    let warm = try await lo.value
+                    state.withLock { current in
+                        if case .resolved = current { return }
+                        current = .resolved
+                        continuation.resume(returning: .lo(warm))
+                    }
+                } catch {
+                    state.withLock { current in
+                        guard case .pending(let hiErr, _) = current else { return }
+                        if let hiErr {
+                            current = .resolved
+                            continuation.resume(throwing: hiErr)
+                        } else {
+                            current = .pending(hiError: nil, loError: error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Wait until a hidden player has genuinely started playback.
+    private static func waitUntilActuallyPlaying(player: AVPlayer,
+                                                 item: AVPlayerItem) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            let state = OSAllocatedUnfairLock<ObservationState>(initialState: .pending)
+            var itemObservation: NSKeyValueObservation?
+            var playerObservation: NSKeyValueObservation?
+
+            let finish: (Result<Void, Error>) -> Void = { result in
+                let shouldResume = state.withLock { current -> Bool in
+                    guard case .pending = current else { return false }
+                    current = .resolved
+                    return true
+                }
+                guard shouldResume else { return }
+                itemObservation?.invalidate()
+                playerObservation?.invalidate()
+                switch result {
+                case .success:
+                    continuation.resume()
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            itemObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
+                switch item.status {
+                case .failed:
+                    finish(.failure(item.error ?? WarmPlayerError.unexpectedFailure))
+                case .readyToPlay:
+                    if player.timeControlStatus == .playing {
+                        finish(.success(()))
+                    }
+                default:
+                    break
+                }
+            }
+            playerObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { player, _ in
+                if player.timeControlStatus == .playing {
+                    finish(.success(()))
+                }
+            }
+        }
+    }
+
+    /// Make a warmed hidden player visible as the initial winner.
+    private func showWarmPlayer(_ warm: WarmPlayer,
+                                qn: Int64,
+                                generation: UInt64) async {
+        warm.player.pause()
+        await warm.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+        guard loadGeneration == generation else {
+            warm.stop()
+            return
+        }
+        warm.player.isMuted = false
+        itemStatusObservation = nil
+        observeItemStatus(warm.preparation.item, generation: generation)
+        activePreparation = warm.preparation
+        player = warm.player
+        currentQn = qn
+        isVideoReady = true
+        warm.player.play()
+        applyRate(to: warm.player)
+    }
+
+    /// Hot-swap the visible player to the warmed high-quality player.
+    /// Each `AVPlayerItem` stays with its original `AVPlayer`, so we
+    /// avoid AVFoundation's one-item-per-player assertion entirely.
+    private func applyFastLoadUpgrade(hiWarm: WarmPlayer,
+                                      hiInfo: PlayUrlDTO,
+                                      generation: UInt64) async {
+        guard let activePlayer = self.player else {
+            hiWarm.stop()
+            return
+        }
+        let resumeAt = activePlayer.currentTime()
+        let wasPlaying = activePlayer.timeControlStatus == .playing
+        let previousPreparation = activePreparation
+        AppLog.info("player", "快速加载无缝升级", metadata: [
+            "fromQn": String(self.currentQn),
+            "toQn": String(hiInfo.quality),
+            "resumeSec": String(format: "%.3f", resumeAt.seconds),
+            "prepMs": String(hiWarm.preparation.totalElapsedMs),
+        ])
+        hiWarm.player.pause()
+        await hiWarm.player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+        guard loadGeneration == generation else {
+            hiWarm.stop()
+            return
+        }
+        itemStatusObservation = nil
+        hiWarm.player.isMuted = false
+        observeItemStatus(hiWarm.preparation.item, generation: generation)
+        activePreparation = hiWarm.preparation
+        player = hiWarm.player
+        self.currentQn = hiInfo.quality
+        isVideoReady = true
+        if wasPlaying { hiWarm.player.play() }
+        applyRate(to: hiWarm.player)
+        activePlayer.pause()
+        activePlayer.replaceCurrentItem(with: nil)
+        previousPreparation?.release()
+        pendingReadyTask = nil
+        pendingUpgradeTask = nil
+    }
+
+
     /// item has buffered enough to render its first frame. The earlier
     /// generation guard ensures stale loads (rapid quality switches /
     /// dismissals) cannot resurrect a closed player.
@@ -303,11 +660,50 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    private func applyRate() {
-        guard let player else { return }
+    private func applyRate(to targetPlayer: AVPlayer? = nil) {
+        guard let player = targetPlayer ?? player else { return }
         player.rate = rate
         if rate != 0 { player.defaultRate = rate }
     }
+}
+
+/// Hidden muted player used by fast-load while racing or preparing a
+/// later low->high upgrade.
+fileprivate struct WarmPlayer {
+    let player: AVPlayer
+    let preparation: EnginePreparation
+
+    @MainActor
+    func stop() {
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        preparation.release()
+    }
+}
+
+/// Result of racing the high-quality and low-quality warm-player tasks
+/// during fast-load.
+fileprivate enum FastLoadWinner {
+    case hi(WarmPlayer)
+    case lo(WarmPlayer)
+}
+
+/// Internal state for the race continuation. Tracks per-side errors so
+/// we only resume the continuation as a throw once both sides have
+/// failed.
+fileprivate enum RaceState {
+    case pending(hiError: Error?, loError: Error?)
+    case resolved
+}
+
+/// Shared one-shot state for KVO-based readiness waits.
+fileprivate enum ObservationState {
+    case pending
+    case resolved
+}
+
+fileprivate enum WarmPlayerError: Error {
+    case unexpectedFailure
 }
 
 // MARK: - Orientation helpers
@@ -361,6 +757,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         let vc = AVPlayerViewController()
         vc.loadViewIfNeeded()
         vc.player = player
+        context.coordinator.assignedPlayerID = ObjectIdentifier(player)
         vc.delegate = context.coordinator
         DispatchQueue.main.async { onCreated(vc) }
         vc.allowsPictureInPicturePlayback = true
@@ -392,10 +789,17 @@ struct PlayerContainer: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
-        // Only attach the player on initial creation. iOS may briefly nil out
-        // `vc.player` during fullscreen transitions; reassigning here would
-        // cause playback to restart from zero. AVKit will re-attach itself.
-        if vc.player == nil { vc.player = player }
+        let incomingPlayerID = ObjectIdentifier(player)
+        // Reassign only when SwiftUI handed us a genuinely different
+        // AVPlayer instance. During fullscreen transitions AVKit may
+        // transiently nil out `vc.player`; we deliberately ignore that
+        // path so the controller can restore its own player without us
+        // restarting playback from zero. Fast-load promotion, however,
+        // does intentionally swap to a new player identity.
+        if context.coordinator.assignedPlayerID != incomingPlayerID {
+            vc.player = player
+            context.coordinator.assignedPlayerID = incomingPlayerID
+        }
         // Push opacity changes through to the hosting controller.
         context.coordinator.host?.rootView = DanmakuOverlay(
             controller: danmaku,
@@ -406,6 +810,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
         var parent: PlayerContainer
         var host: UIHostingController<DanmakuOverlay>?
+        var assignedPlayerID: ObjectIdentifier?
         private var rateBeforeTransition: Float = 1.0
         private var wasPlayingBeforeTransition = false
         init(parent: PlayerContainer) { self.parent = parent }
@@ -520,7 +925,8 @@ struct PlayerView: View {
             // Run the video preparation and the danmaku fetch concurrently
             // so a slow danmaku endpoint can never hold up first frame.
             async let video: Void = vm.load(item: item,
-                                            preferredQn: Int64(settings.resolvedPreferredVideoQn()))
+                                            preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                                            fastLoad: settings.fastLoad)
             async let danmaku: Void = loadDanmaku()
             _ = await (video, danmaku)
         }

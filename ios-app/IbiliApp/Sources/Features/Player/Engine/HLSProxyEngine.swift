@@ -88,7 +88,15 @@ final class HLSProxyEngine: PlaybackEngine {
             summary["audioOpenMs"] = "-"
             summary["audioAttempts"] = "-"
         }
-        return EnginePreparation(item: item, logSummary: summary, totalElapsedMs: totalMs)
+        return EnginePreparation(
+            item: item,
+            logSummary: summary,
+            totalElapsedMs: totalMs,
+            release: { [weak self] in
+                self?.liveTokens.remove(token)
+                LocalHLSProxy.shared.unregister(token: token)
+            }
+        )
     }
 
     func tearDown() {

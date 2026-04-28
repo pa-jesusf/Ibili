@@ -67,10 +67,11 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("自动旋转进入/退出全屏", isOn: $settings.autoRotateFullscreen)
+                Toggle("快速加载", isOn: $settings.fastLoad)
             } header: {
                 Text("播放")
             } footer: {
-                Text("使用本地 HLS 代理把 DASH 实时重包成 HLS 喂给原生 AVPlayer，可以同时获得秒开 + 系统画中画 + AirPlay。")
+                Text("快速加载开启后会同时加载最低画质与首选画质，加快视频内容显示速度，首选画质加载好后无缝升级。")
             }
         }
         .navigationTitle("显示设置")
