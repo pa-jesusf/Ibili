@@ -18,6 +18,10 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var availableQualities: [(qn: Int64, label: String)] = []
     @Published var currentQn: Int64 = 0
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
+    /// Lightweight handle the SwiftUI player container hands us so we
+    /// can drive a snapshot crossfade across an AVPlayer identity swap
+    /// without forcing the view-model to know about UIKit views.
+    weak var playerSwapOverlay: PlayerSwapOverlay?
 
     private var aid: Int64 = 0
     private var cid: Int64 = 0
@@ -560,12 +564,24 @@ final class PlayerViewModel: ObservableObject {
             "resumeSec": String(format: "%.3f", resumeAt.seconds),
             "prepMs": String(hiWarm.preparation.totalElapsedMs),
         ])
+        // Pause the warm player but use a default-tolerance seek so
+        // AVPlayer can resume from the closest sync sample. A
+        // zero-tolerance exact seek would force a re-buffer at the
+        // hand-off point and turn the swap into a noticeable stall.
         hiWarm.player.pause()
-        await hiWarm.player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+        await hiWarm.player.seek(to: resumeAt)
         guard loadGeneration == generation else {
             hiWarm.stop()
             return
         }
+        // Pre-fade audio: muting the outgoing player just before AVKit
+        // tears its AVPlayerLayer down hides the click that otherwise
+        // happens at the swap moment.
+        activePlayer.isMuted = true
+        // Snapshot the current AVPlayerLayer contents and crossfade
+        // over the swap so users don't see AVKit's brief black frame
+        // while it rebuilds the layer for the new AVPlayer instance.
+        playerSwapOverlay?.beginCrossfade()
         itemStatusObservation = nil
         hiWarm.player.isMuted = false
         observeItemStatus(hiWarm.preparation.item, generation: generation)
@@ -706,6 +722,18 @@ fileprivate enum WarmPlayerError: Error {
     case unexpectedFailure
 }
 
+/// Drives the brief snapshot crossfade we run when the visible AVPlayer
+/// instance is swapped (fast-load upgrade). Declared as a protocol so
+/// the view-model can call into UIKit code without importing it as a
+/// concrete type.
+@MainActor
+protocol PlayerSwapOverlay: AnyObject {
+    /// Snapshot the current AVPlayerLayer contents, overlay them on the
+    /// AVPlayerViewController, and schedule a fade-out. Idempotent: if
+    /// a previous overlay is still fading we replace it.
+    func beginCrossfade()
+}
+
 // MARK: - Orientation helpers
 
 enum Orientation {
@@ -748,6 +776,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let onCreated: (AVPlayerViewController) -> Void
     /// Called when the user taps AVKit's native fullscreen button (or our own).
     let onFullscreenChange: (Bool) -> Void
+    /// Called once, after the AVPlayerViewController exists, with a
+    /// handle the view-model uses to drive the swap crossfade.
+    let onSwapOverlayReady: (PlayerSwapOverlay) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -759,7 +790,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.player = player
         context.coordinator.assignedPlayerID = ObjectIdentifier(player)
         vc.delegate = context.coordinator
-        DispatchQueue.main.async { onCreated(vc) }
+        DispatchQueue.main.async {
+            onCreated(vc)
+            onSwapOverlayReady(context.coordinator)
+        }
         vc.allowsPictureInPicturePlayback = true
         vc.canStartPictureInPictureAutomaticallyFromInline = true
         vc.entersFullScreenWhenPlaybackBegins = false
@@ -807,13 +841,51 @@ struct PlayerContainer: UIViewControllerRepresentable {
         )
     }
 
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
+    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay {
         var parent: PlayerContainer
         var host: UIHostingController<DanmakuOverlay>?
         var assignedPlayerID: ObjectIdentifier?
+        /// Most recent in-flight crossfade overlay. Held weakly so we
+        /// don't extend its life past `removeFromSuperview`.
+        weak var activeCrossfade: UIView?
         private var rateBeforeTransition: Float = 1.0
         private var wasPlayingBeforeTransition = false
         init(parent: PlayerContainer) { self.parent = parent }
+
+        // MARK: PlayerSwapOverlay
+
+        func beginCrossfade() {
+            // The AVPlayerViewController itself isn't reachable from
+            // here, but its `contentOverlayView` lives on the
+            // hosting controller's superview chain. We snapshot via
+            // `view.snapshotView(afterScreenUpdates:)` which captures
+            // AVPlayerLayer contents on iOS 16+.
+            guard let host,
+                  let containerView = host.view.superview?.superview ?? host.view.superview
+            else { return }
+            // Drop any stale crossfade still on screen.
+            activeCrossfade?.removeFromSuperview()
+            guard let snapshot = containerView.snapshotView(afterScreenUpdates: false) else {
+                return
+            }
+            snapshot.frame = containerView.bounds
+            snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            snapshot.isUserInteractionEnabled = false
+            containerView.addSubview(snapshot)
+            activeCrossfade = snapshot
+            // Hold the snapshot opaque for one runloop tick so AVKit's
+            // black-frame transition is fully covered, then fade.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak snapshot] in
+                guard let snapshot, snapshot.superview != nil else { return }
+                UIView.animate(withDuration: 0.22,
+                               delay: 0,
+                               options: [.curveEaseOut, .allowUserInteraction],
+                               animations: { snapshot.alpha = 0 },
+                               completion: { _ in snapshot.removeFromSuperview() })
+            }
+        }
+
+        // MARK: AVPlayerViewControllerDelegate
 
         func playerViewController(_ vc: AVPlayerViewController,
                                   willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
@@ -879,7 +951,8 @@ struct PlayerView: View {
                         danmakuEnabled: settings.danmakuEnabled,
                         danmakuOpacity: settings.danmakuOpacity,
                         onCreated: { vc in playerVCRef.vc = vc },
-                        onFullscreenChange: { fs in isFullscreen = fs }
+                        onFullscreenChange: { fs in isFullscreen = fs },
+                        onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
                     )
                     // Cover the native chrome until the first frame is
                     // ready, otherwise users see a misleading pause icon
