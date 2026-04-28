@@ -5,6 +5,11 @@ import UIKit
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
+    enum PlayurlMode: String {
+        case autoWeb = "auto_web"
+        case forceTV = "force_tv"
+    }
+
     @Published var isLoading = true
     @Published var errorText: String?
     @Published private(set) var player: AVPlayer?
@@ -16,8 +21,18 @@ final class PlayerViewModel: ObservableObject {
     private var cid: Int64 = 0
     private var loadGeneration: UInt64 = 0
     private let discoveryQn: Int64 = 120
+    private var engine: PlaybackEngine = HLSProxyEngine.shared
+    private var engineKind: PlayerEngineKind = .hlsProxy
 
-    func load(item: FeedItemDTO, preferredQn: Int64) async {
+    /// Set the active engine before calling `load`. Idempotent.
+    func setEngine(_ kind: PlayerEngineKind) {
+        guard kind != engineKind else { return }
+        engine.tearDown()
+        engineKind = kind
+        engine = PlaybackEngineFactory.make(kind: kind)
+    }
+
+    func load(item: FeedItemDTO, preferredQn: Int64, playurlMode: PlayurlMode) async {
         if player != nil, aid == item.aid, cid == item.cid {
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
                 "aid": String(item.aid),
@@ -25,6 +40,7 @@ final class PlayerViewModel: ObservableObject {
             ])
             return
         }
+        let startedAt = CFAbsoluteTimeGetCurrent()
         loadGeneration &+= 1
         let generation = loadGeneration
         aid = item.aid; cid = item.cid
@@ -33,13 +49,21 @@ final class PlayerViewModel: ObservableObject {
             "aid": String(item.aid),
             "cid": String(item.cid),
             "preferredQn": String(preferredQn),
+            "playurlMode": playurlMode.rawValue,
+            "engine": engineKind.rawValue,
         ])
         do {
-            let initial = try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: max(preferredQn, discoveryQn))
+            let initial = try await fetchStartupPlayUrl(aid: item.aid,
+                                                        cid: item.cid,
+                                                        qn: max(preferredQn, discoveryQn),
+                                                        playurlMode: playurlMode)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let qualities = normalizedQualities(from: initial)
             let targetQn = resolveTargetQn(preferredQn: preferredQn, qualities: qualities, fallback: initial.quality)
-            let info = targetQn == initial.quality ? initial : try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: targetQn)
+            let info = targetQn == initial.quality ? initial : try await fetchStartupPlayUrl(aid: item.aid,
+                                                                                              cid: item.cid,
+                                                                                              qn: targetQn,
+                                                                                              playurlMode: playurlMode)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: item.aid, cid: item.cid, qn: targetQn)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
@@ -53,25 +77,40 @@ final class PlayerViewModel: ObservableObject {
             self.availableQualities = finalQualities
             self.currentQn = resolvedInfo.quality
             let player = AVPlayer(playerItem: prep.item)
-            player.automaticallyWaitsToMinimizeStalling = false
+            // Leave `automaticallyWaitsToMinimizeStalling` at its default
+            // (`true`). With our HLS proxy AVPlayer needs to fetch the
+            // master + media playlists and the init segment before it can
+            // emit frames; forcing the flag off makes it call `play()`
+            // before there is anything to render and the playback gets
+            // stuck at rate=1 with no frames (the user has to tap once to
+            // unstick it).
             self.player = player
-            applyRate()
             self.player?.play()
-            AppLog.info("player", "播放器已就绪", metadata: [
-                "aid": String(item.aid),
-                "cid": String(item.cid),
-                "quality": String(resolvedInfo.quality),
-                "available": finalQualities.map { String($0.qn) }.joined(separator: ","),
-                "streamType": resolvedInfo.streamType,
-                "separateAudio": resolvedInfo.audioUrl == nil ? "false" : "true",
-                "videoCdn": prep.video.winnerHost,
-                "videoOpenMs": String(prep.video.winnerElapsedMs),
-                "audioCdn": prep.audio?.winnerHost ?? "-",
-                "audioOpenMs": prep.audio.map { String($0.winnerElapsedMs) } ?? "-",
-                "prepMs": String(prep.totalElapsedMs),
-                "videoAttempts": prep.video.attempts.joined(separator: " | "),
-                "audioAttempts": prep.audio?.attempts.joined(separator: " | ") ?? "-",
-            ])
+            applyRate()
+            let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
+            var meta = prep.logSummary
+            meta["aid"] = String(item.aid)
+            meta["cid"] = String(item.cid)
+            meta["quality"] = String(resolvedInfo.quality)
+            meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
+            meta["streamType"] = resolvedInfo.streamType
+            meta["playurlMode"] = playurlMode.rawValue
+            meta["separateAudio"] = resolvedInfo.audioUrl == nil ? "false" : "true"
+            meta["prepMs"] = String(prep.totalElapsedMs)
+            meta["startupMs"] = String(startupMs)
+            AppLog.info("player", "播放器已就绪", metadata: meta)
+            if playurlMode == .forceTV {
+                AppLog.info("player", "tv_durl 探针", metadata: [
+                    "aid": String(item.aid),
+                    "cid": String(item.cid),
+                    "requestedQn": String(targetQn),
+                    "resolvedQn": String(resolvedInfo.quality),
+                    "acceptQuality": resolvedInfo.acceptQuality.map(String.init).joined(separator: ","),
+                    "acceptDescription": resolvedInfo.acceptDescription.joined(separator: ","),
+                    "startupMs": String(startupMs),
+                    "prepMs": String(prep.totalElapsedMs),
+                ])
+            }
             if let msg = resolvedInfo.debugMessage {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
@@ -87,7 +126,7 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func switchQuality(to qn: Int64) async {
+    func switchQuality(to qn: Int64, playurlMode: PlayurlMode) async {
         guard let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
@@ -97,32 +136,44 @@ final class PlayerViewModel: ObservableObject {
             "cid": String(cid),
             "fromQn": String(currentQn),
             "toQn": String(qn),
+            "playurlMode": playurlMode.rawValue,
+            "engine": engineKind.rawValue,
         ])
         do {
-            let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
+            // Releasing the previous source before allocating the new one
+            // keeps the proxy token table from growing across switches.
+            engine.tearDown()
+            let info = try await fetchStartupPlayUrl(aid: aid, cid: cid, qn: qn, playurlMode: playurlMode)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: aid, cid: cid, qn: qn)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             player.replaceCurrentItem(with: prep.item)
-            player.automaticallyWaitsToMinimizeStalling = false
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
-            applyRate()
             if wasPlaying { player.play() }
+            applyRate()
             self.availableQualities = normalizedQualities(from: resolvedInfo)
             self.currentQn = resolvedInfo.quality
-            AppLog.info("player", "清晰度切换成功", metadata: [
-                "aid": String(aid),
-                "cid": String(cid),
-                "quality": String(resolvedInfo.quality),
-                "resumeSec": String(format: "%.3f", resumeAt.seconds),
-                "streamType": resolvedInfo.streamType,
-                "separateAudio": resolvedInfo.audioUrl == nil ? "false" : "true",
-                "videoCdn": prep.video.winnerHost,
-                "videoOpenMs": String(prep.video.winnerElapsedMs),
-                "audioCdn": prep.audio?.winnerHost ?? "-",
-                "audioOpenMs": prep.audio.map { String($0.winnerElapsedMs) } ?? "-",
-                "prepMs": String(prep.totalElapsedMs),
-            ])
+            var meta = prep.logSummary
+            meta["aid"] = String(aid)
+            meta["cid"] = String(cid)
+            meta["quality"] = String(resolvedInfo.quality)
+            meta["resumeSec"] = String(format: "%.3f", resumeAt.seconds)
+            meta["streamType"] = resolvedInfo.streamType
+            meta["playurlMode"] = playurlMode.rawValue
+            meta["separateAudio"] = resolvedInfo.audioUrl == nil ? "false" : "true"
+            meta["prepMs"] = String(prep.totalElapsedMs)
+            AppLog.info("player", "清晰度切换成功", metadata: meta)
+            if playurlMode == .forceTV {
+                AppLog.info("player", "tv_durl 切换探针", metadata: [
+                    "aid": String(aid),
+                    "cid": String(cid),
+                    "requestedQn": String(qn),
+                    "resolvedQn": String(resolvedInfo.quality),
+                    "acceptQuality": resolvedInfo.acceptQuality.map(String.init).joined(separator: ","),
+                    "acceptDescription": resolvedInfo.acceptDescription.joined(separator: ","),
+                    "prepMs": String(prep.totalElapsedMs),
+                ])
+            }
             if let msg = resolvedInfo.debugMessage {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
@@ -144,6 +195,7 @@ final class PlayerViewModel: ObservableObject {
         ])
         player?.pause()
         player = nil
+        engine.tearDown()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
@@ -159,26 +211,42 @@ final class PlayerViewModel: ObservableObject {
         }.value
     }
 
+    private func fetchStartupPlayUrl(aid: Int64,
+                                     cid: Int64,
+                                     qn: Int64,
+                                     playurlMode: PlayurlMode) async throws -> PlayUrlDTO {
+        switch playurlMode {
+        case .autoWeb:
+            return try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
+        case .forceTV:
+            return try await fetchTVPlayUrl(aid: aid, cid: cid, qn: qn)
+        }
+    }
+
     private func isCurrentLoad(_ generation: UInt64, aid: Int64, cid: Int64) -> Bool {
         generation == loadGeneration && self.aid == aid && self.cid == cid
     }
 
+    /// Build a player item from `info` using the active engine. If a
+    /// `web_dash` source fails to prep on iOS, fall back to `tv_durl` —
+    /// this is rare with the HLS proxy but kept as a safety net.
     private func makePlayableItem(from info: PlayUrlDTO,
                                   aid: Int64,
                                   cid: Int64,
-                                  qn: Int64) async throws -> (PlayUrlDTO, PlayerItemPreparation) {
+                                  qn: Int64) async throws -> (PlayUrlDTO, EnginePreparation) {
         do {
-            return (info, try await PlayerItemFactory.makeItem(from: info))
+            return (info, try await engine.makeItem(for: info))
         } catch {
-            guard info.audioUrl != nil, info.streamType == "web_dash" else { throw error }
+            guard info.streamType == "web_dash" else { throw error }
             AppLog.warning("player", "web DASH 资产加载失败，回退 tv_durl", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
                 "qn": String(qn),
+                "engine": engineKind.rawValue,
                 "error": error.localizedDescription,
             ])
             let compat = try await fetchTVPlayUrl(aid: aid, cid: cid, qn: qn)
-            return (compat, try await PlayerItemFactory.makeItem(from: compat))
+            return (compat, try await engine.makeItem(for: compat))
         }
     }
 
@@ -417,7 +485,10 @@ struct PlayerView: View {
             didBootstrap = true
             configureAudioSession()
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-            await vm.load(item: item, preferredQn: Int64(settings.resolvedPreferredVideoQn()))
+            vm.setEngine(settings.playerEngine)
+            await vm.load(item: item,
+                          preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                          playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
             await loadDanmaku()
         }
         .onChange(of: vm.player) { newPlayer in
@@ -444,7 +515,10 @@ struct PlayerView: View {
                 Menu {
                     ForEach(vm.availableQualities, id: \.qn) { q in
                         Button {
-                            Task { await vm.switchQuality(to: q.qn) }
+                            Task {
+                                await vm.switchQuality(to: q.qn,
+                                                       playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
+                            }
                         } label: {
                             if q.qn == vm.currentQn {
                                 Label(q.label, systemImage: "checkmark")
@@ -504,9 +578,24 @@ struct PlayerView: View {
         }
     }
 
+    /// Configure the shared audio session for video playback.
+    ///
+    /// `.playback` + `.moviePlayback` keeps audio playing when the screen
+    /// locks (combined with the `audio` `UIBackgroundModes` entry in
+    /// Info.plist), and `setActive(true)` is required so AVPlayer keeps
+    /// pulling bytes from the local HLS proxy after the app goes to
+    /// background — without it the in-process URLSession is throttled and
+    /// playback stalls on the lock screen.
     private func configureAudioSession() {
         let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .moviePlayback)
+        do {
+            try s.setCategory(.playback, mode: .moviePlayback, options: [])
+            try s.setActive(true, options: [])
+        } catch {
+            AppLog.warning("player", "音频会话配置失败", metadata: [
+                "error": error.localizedDescription,
+            ])
+        }
     }
 
     // MARK: - Fullscreen / orientation

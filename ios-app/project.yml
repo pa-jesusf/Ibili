@@ -21,7 +21,6 @@ settings:
     CODE_SIGNING_ALLOWED: "NO"
     CODE_SIGN_IDENTITY: ""
     CODE_SIGNING_REQUIRED: "NO"
-    EXCLUDED_ARCHS[sdk=iphonesimulator*]: "arm64"
     DEVELOPMENT_LANGUAGE: "zh-Hans"
 
 targets:
@@ -77,3 +76,16 @@ targets:
         embed: false
       - sdk: Security.framework
       - sdk: CoreFoundation.framework
+
+  IbiliTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: IbiliApp/Tests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ibili.client.tests
+        SWIFT_VERSION: "5.9"
+    dependencies:
+      - target: Ibili

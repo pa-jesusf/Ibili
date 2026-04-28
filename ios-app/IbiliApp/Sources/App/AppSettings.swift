@@ -25,6 +25,19 @@ final class AppSettings: ObservableObject {
     /// rotating back to portrait exits fullscreen. Tap of the fullscreen
     /// button always rotates regardless of this setting.
     @AppStorage("ibili.player.autoRotateFullscreen") var autoRotateFullscreen: Bool = true
+    /// Experimental A/B toggle: bypass `web_dash` and force `/x/tv/playurl`
+    /// so we can compare startup latency and available qualities.
+    @AppStorage("ibili.player.forceTVPlayurl") var forceTVPlayurl: Bool = false
+    /// Which playback engine `PlayerView` should use.
+    /// `hls_proxy` is the default — runs an in-process HLS proxy that
+    /// re-packages DASH as HLS so AVPlayer treats it natively.
+    /// `direct` keeps the legacy `AVMutableComposition` path as a fallback.
+    @AppStorage("ibili.player.engine") var playerEngineRaw: String = PlayerEngineKind.hlsProxy.rawValue
+
+    var playerEngine: PlayerEngineKind {
+        get { PlayerEngineKind(rawValue: playerEngineRaw) ?? .hlsProxy }
+        set { playerEngineRaw = newValue.rawValue }
+    }
 
     /// Resolves the effective column count given the current layout context.
     /// Phones default to 2; iPads scale with width up to 4.

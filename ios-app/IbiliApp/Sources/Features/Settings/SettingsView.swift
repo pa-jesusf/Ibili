@@ -45,7 +45,7 @@ struct SettingsView: View {
                 Text("自动模式按列数与屏幕像素密度选择最优分辨率，仅下载所需像素，节省流量。")
             }
 
-            Section("播放") {
+            Section {
                 Picker("默认清晰度", selection: Binding(
                     get: { settings.resolvedPreferredVideoQn() },
                     set: { settings.preferredQn = $0 }
@@ -67,6 +67,15 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("自动旋转进入/退出全屏", isOn: $settings.autoRotateFullscreen)
+                Picker("播放器引擎", selection: $settings.playerEngineRaw) {
+                    Text(PlayerEngineKind.hlsProxy.displayName).tag(PlayerEngineKind.hlsProxy.rawValue)
+                    Text(PlayerEngineKind.direct.displayName).tag(PlayerEngineKind.direct.rawValue)
+                }
+                Toggle("实验：强制使用 tv_durl", isOn: $settings.forceTVPlayurl)
+            } header: {
+                Text("播放")
+            } footer: {
+                Text("HLS 代理在本地架一个 HTTP 服务，把 DASH 实时重包成 HLS 喂给原生 AVPlayer，可以同时获得秒开 + 系统画中画 + AirPlay。回退到 AVPlayer 直拼仅在新引擎出问题时使用。tv_durl 为单流兜底，画质可能受限。")
             }
         }
         .navigationTitle("显示设置")

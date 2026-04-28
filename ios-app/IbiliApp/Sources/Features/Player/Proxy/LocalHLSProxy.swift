@@ -1,0 +1,342 @@
+import Foundation
+import Network
+import os
+
+/// In-process HTTP server bound to `127.0.0.1` that serves a tiny HLS view
+/// of B 站 DASH streams. Sized to one app instance — there is exactly one
+/// proxy and any number of registered playback tokens.
+///
+/// Routes (`<token>` is registered via `register(...)`):
+/// * `GET /play/<token>/master.m3u8`  → master playlist
+/// * `GET /play/<token>/video.m3u8`   → video media playlist
+/// * `GET /play/<token>/audio.m3u8`   → audio media playlist (when present)
+/// * `GET /play/<token>/v.seg`        → byte-range pass-through to video CDN
+/// * `GET /play/<token>/a.seg`        → byte-range pass-through to audio CDN
+///
+/// All upstream requests carry the right UA + Referer; failed segment
+/// requests automatically retry the next CDN candidate, so playback
+/// self-heals across host outages mid-stream.
+final class LocalHLSProxy: @unchecked Sendable {
+    static let shared = LocalHLSProxy()
+
+    struct Source {
+        let videoCandidates: [URL]
+        let audioCandidates: [URL]                 // empty when single-stream
+        let videoProbe: ISOBMFF.Probe
+        let audioProbe: ISOBMFF.Probe?
+        let videoBandwidthHint: Int?
+    }
+
+    private let queue = DispatchQueue(label: "ibili.hls.proxy", qos: .userInitiated)
+    private var listener: NWListener?
+    /// All mutable state lives behind this lock. `OSAllocatedUnfairLock` is
+    /// async-safe (unlike `NSLock`), which matters because the connection
+    /// dispatcher is `async`.
+    private let state = OSAllocatedUnfairLock<State>(initialState: State())
+
+    private struct State {
+        var port: UInt16 = 0
+        var sources: [String: Source] = [:]
+    }
+
+    private init() {}
+
+    // MARK: - Public API
+
+    /// Register a source and receive the `master.m3u8` URL on `127.0.0.1`.
+    /// Idempotent: re-registering the same `token` overwrites the prior entry.
+    func register(token: String, source: Source) throws -> URL {
+        try ensureRunning()
+        let port = state.withLock { s -> UInt16 in s.sources[token] = source; return s.port }
+        guard let url = URL(string: "http://127.0.0.1:\(port)/play/\(token)/master.m3u8") else {
+            throw ProxyServerError.invalidServerURL
+        }
+        return url
+    }
+
+    /// Drop a token. Callers should call this when they're done with a
+    /// particular stream (player teardown, quality switch).
+    func unregister(token: String) {
+        state.withLock { _ = $0.sources.removeValue(forKey: token) }
+    }
+
+    /// Drop everything. Used by the engine on full teardown.
+    func unregisterAll() {
+        state.withLock { $0.sources.removeAll() }
+    }
+
+    private func lookupSource(token: String) -> Source? {
+        state.withLock { $0.sources[token] }
+    }
+
+    // MARK: - Lifecycle
+
+    private func ensureRunning() throws {
+        if listener != nil { return }
+        let listener = try NWListener(using: .tcp, on: .any)
+        listener.stateUpdateHandler = { [weak self] netState in
+            switch netState {
+            case .ready:
+                if let port = listener.port {
+                    self?.state.withLock { $0.port = port.rawValue }
+                    AppLog.info("player", "HLS 代理已启动", metadata: ["port": String(port.rawValue)])
+                }
+            case .failed(let err):
+                AppLog.error("player", "HLS 代理监听失败", error: err)
+            default:
+                break
+            }
+        }
+        listener.newConnectionHandler = { [weak self] conn in
+            self?.handleConnection(conn)
+        }
+        listener.start(queue: queue)
+        // Wait briefly for `ready` so the caller gets a real port back.
+        let deadline = Date().addingTimeInterval(2)
+        var resolvedPort: UInt16 = 0
+        while Date() < deadline {
+            resolvedPort = state.withLock { $0.port }
+            if resolvedPort != 0 { break }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        guard resolvedPort != 0 else {
+            listener.cancel()
+            throw ProxyServerError.startupTimedOut
+        }
+        self.listener = listener
+    }
+
+    // MARK: - Connection handling
+
+    private func handleConnection(_ conn: NWConnection) {
+        conn.start(queue: queue)
+        receiveRequest(conn: conn, accumulated: Data())
+    }
+
+    private func receiveRequest(conn: NWConnection, accumulated: Data) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let error {
+                AppLog.warning("player", "HLS 代理收报错误", metadata: ["error": error.debugDescription])
+                conn.cancel(); return
+            }
+            var buf = accumulated
+            if let data { buf.append(data) }
+            if let headerEnd = buf.range(of: Data("\r\n\r\n".utf8)) {
+                let head = buf.subdata(in: 0..<headerEnd.lowerBound)
+                guard let request = HTTPRequestHead.parse(head) else {
+                    self.respondError(conn: conn, status: 400, body: "Bad Request")
+                    return
+                }
+                Task { [weak self] in
+                    await self?.dispatch(request: request, conn: conn)
+                }
+            } else if isComplete {
+                conn.cancel()
+            } else {
+                self.receiveRequest(conn: conn, accumulated: buf)
+            }
+        }
+    }
+
+    private func dispatch(request: HTTPRequestHead, conn: NWConnection) async {
+        let path = request.path
+        let parts = path.split(separator: "/").map(String.init)
+        // Expected: ["play", "<token>", "<resource>"]
+        guard parts.count == 3, parts[0] == "play" else {
+            respondError(conn: conn, status: 404, body: "Not Found")
+            return
+        }
+        let token = parts[1]
+        let resource = parts[2]
+        let source = lookupSource(token: token)
+        guard let source else {
+            respondError(conn: conn, status: 410, body: "Token expired")
+            return
+        }
+        switch resource {
+        case "master.m3u8":
+            serveMasterPlaylist(source: source, conn: conn)
+        case "video.m3u8":
+            serveMediaPlaylist(probe: source.videoProbe, segmentPath: "v.seg", conn: conn)
+        case "audio.m3u8":
+            if let probe = source.audioProbe {
+                serveMediaPlaylist(probe: probe, segmentPath: "a.seg", conn: conn)
+            } else {
+                respondError(conn: conn, status: 404, body: "No audio track")
+            }
+        case "v.seg":
+            await serveSegment(candidates: source.videoCandidates,
+                               request: request,
+                               conn: conn,
+                               label: "video")
+        case "a.seg":
+            if !source.audioCandidates.isEmpty {
+                await serveSegment(candidates: source.audioCandidates,
+                                   request: request,
+                                   conn: conn,
+                                   label: "audio")
+            } else {
+                respondError(conn: conn, status: 404, body: "No audio track")
+            }
+        default:
+            respondError(conn: conn, status: 404, body: "Not Found")
+        }
+    }
+
+    // MARK: - Playlist routes
+
+    private func serveMasterPlaylist(source: Source, conn: NWConnection) {
+        let body = HLSPlaylistBuilder.makeMaster(
+            videoBandwidthHint: source.videoBandwidthHint,
+            hasSeparateAudio: source.audioProbe != nil,
+            videoMediaPath: "video.m3u8",
+            audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8"
+        )
+        respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
+    }
+
+    private func serveMediaPlaylist(probe: ISOBMFF.Probe, segmentPath: String, conn: NWConnection) {
+        let body = HLSPlaylistBuilder.makeMedia(probe: probe, segmentPath: segmentPath)
+        respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
+    }
+
+    // MARK: - Segment route (with CDN failover)
+
+    private func serveSegment(candidates: [URL],
+                              request: HTTPRequestHead,
+                              conn: NWConnection,
+                              label: String) async {
+        guard let range = request.range else {
+            respondError(conn: conn, status: 416, body: "Range required")
+            return
+        }
+        var lastError: Error?
+        for url in candidates {
+            do {
+                let resp = try await ProxyURLLoader.shared.fetch(url: url, range: range)
+                respondBinary(conn: conn,
+                              status: 206,
+                              body: resp.data,
+                              contentType: "video/mp4",
+                              extraHeaders: [
+                                "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound)/\(resp.totalBytes.map(String.init) ?? "*")",
+                                "Accept-Ranges": "bytes",
+                              ])
+                return
+            } catch {
+                lastError = error
+                AppLog.warning("player", "HLS 代理 segment 失败重试", metadata: [
+                    "label": label,
+                    "host": url.host ?? "?",
+                    "range": "\(range.lowerBound)-\(range.upperBound)",
+                    "error": ProxyURLLoader.debugSummary(of: error),
+                ])
+            }
+        }
+        let detail = lastError.map { ProxyURLLoader.debugSummary(of: $0) } ?? "no candidates"
+        respondError(conn: conn, status: 502, body: "Upstream failed: \(detail)")
+    }
+
+    // MARK: - Response writers
+
+    private func respondText(conn: NWConnection, body: String, contentType: String) {
+        respondBinary(conn: conn,
+                      status: 200,
+                      body: Data(body.utf8),
+                      contentType: contentType,
+                      extraHeaders: [:])
+    }
+
+    private func respondBinary(conn: NWConnection,
+                               status: Int,
+                               body: Data,
+                               contentType: String,
+                               extraHeaders: [String: String]) {
+        var head = "HTTP/1.1 \(status) \(httpReason(status))\r\n"
+        head += "Content-Type: \(contentType)\r\n"
+        head += "Content-Length: \(body.count)\r\n"
+        head += "Connection: close\r\n"
+        for (k, v) in extraHeaders { head += "\(k): \(v)\r\n" }
+        head += "\r\n"
+        var packet = Data(head.utf8)
+        packet.append(body)
+        conn.send(content: packet, completion: .contentProcessed { _ in
+            conn.cancel()
+        })
+    }
+
+    private func respondError(conn: NWConnection, status: Int, body: String) {
+        respondBinary(conn: conn,
+                      status: status,
+                      body: Data(body.utf8),
+                      contentType: "text/plain; charset=utf-8",
+                      extraHeaders: [:])
+    }
+
+    private func httpReason(_ status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 206: return "Partial Content"
+        case 400: return "Bad Request"
+        case 404: return "Not Found"
+        case 410: return "Gone"
+        case 416: return "Range Not Satisfiable"
+        case 502: return "Bad Gateway"
+        default:  return "OK"
+        }
+    }
+}
+
+// MARK: - HTTP request parsing
+
+private struct HTTPRequestHead {
+    let method: String
+    let path: String
+    let range: ClosedRange<UInt64>?
+
+    static func parse(_ data: Data) -> HTTPRequestHead? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\r\n", omittingEmptySubsequences: false).map(String.init)
+        guard let firstLine = lines.first else { return nil }
+        let parts = firstLine.split(separator: " ").map(String.init)
+        guard parts.count >= 3 else { return nil }
+        let method = parts[0]
+        let path = parts[1]
+        var rangeHeader: String?
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if key.caseInsensitiveCompare("Range") == .orderedSame {
+                rangeHeader = value
+            }
+        }
+        return HTTPRequestHead(method: method,
+                               path: path,
+                               range: parseRange(rangeHeader))
+    }
+
+    private static func parseRange(_ header: String?) -> ClosedRange<UInt64>? {
+        guard let header, header.hasPrefix("bytes=") else { return nil }
+        let body = header.dropFirst("bytes=".count)
+        let parts = body.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2,
+              let lower = UInt64(parts[0]),
+              let upper = UInt64(parts[1]),
+              upper >= lower else { return nil }
+        return lower...upper
+    }
+}
+
+enum ProxyServerError: Error, LocalizedError {
+    case startupTimedOut
+    case invalidServerURL
+
+    var errorDescription: String? {
+        switch self {
+        case .startupTimedOut:  return "本地 HLS 代理启动超时"
+        case .invalidServerURL: return "本地 HLS 代理 URL 构造失败"
+        }
+    }
+}

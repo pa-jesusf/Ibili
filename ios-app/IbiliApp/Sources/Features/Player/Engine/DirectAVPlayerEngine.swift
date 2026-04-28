@@ -2,6 +2,47 @@
 import CoreGraphics
 import Foundation
 
+/// Legacy engine: builds an AVPlayerItem with an `AVMutableComposition`
+/// stitching separate video + audio DASH tracks. Kept behind a setting as
+/// a fallback while the HLS proxy engine is being battle-tested.
+///
+/// This is a thin re-packaging of the previous `PlayerItemFactory` —
+/// behaviour-preserving, so any A/B regression points cleanly back at the
+/// new HLS path.
+@MainActor
+final class DirectAVPlayerEngine: PlaybackEngine {
+    static let shared = DirectAVPlayerEngine()
+    private init() {}
+
+    func makeItem(for source: PlayUrlDTO) async throws -> EnginePreparation {
+        let prep = try await DirectPlayerItemBuilder.makeItem(from: source)
+        var summary: [String: String] = [
+            "engine": "direct",
+            "videoCdn": prep.video.winnerHost,
+            "videoOpenMs": String(prep.video.winnerElapsedMs),
+            "videoAttempts": prep.video.attempts.joined(separator: " | "),
+        ]
+        if let audio = prep.audio {
+            summary["audioCdn"] = audio.winnerHost
+            summary["audioOpenMs"] = String(audio.winnerElapsedMs)
+            summary["audioAttempts"] = audio.attempts.joined(separator: " | ")
+        } else {
+            summary["audioCdn"] = "-"
+            summary["audioOpenMs"] = "-"
+            summary["audioAttempts"] = "-"
+        }
+        return EnginePreparation(
+            item: prep.item,
+            logSummary: summary,
+            totalElapsedMs: prep.totalElapsedMs
+        )
+    }
+
+    func tearDown() { /* nothing to release */ }
+}
+
+// MARK: - Internal builder (former PlayerItemFactory)
+
 /// Lightweight summary of how a single AVURLAsset open performed. Surfaced
 /// so the player layer can log "which CDN won and how long it took",
 /// mirroring upstream PiliPlus's media_kit timing diagnostics.
@@ -15,7 +56,7 @@ struct AssetOpenTelemetry: Sendable {
 }
 
 /// Collected telemetry for a fully prepared player item.
-struct PlayerItemPreparation: Sendable {
+struct DirectPlayerItemPreparation: Sendable {
     let item: AVPlayerItem
     let video: AssetOpenTelemetry
     let audio: AssetOpenTelemetry?
@@ -23,7 +64,7 @@ struct PlayerItemPreparation: Sendable {
 }
 
 @MainActor
-enum PlayerItemFactory {
+enum DirectPlayerItemBuilder {
     private struct LoadedAsset {
         let asset: AVURLAsset
         let track: AVAssetTrack
@@ -33,13 +74,15 @@ enum PlayerItemFactory {
         let attempts: [String]
     }
 
-    private static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
+    static let userAgent = BiliHTTP.userAgent
+    static let referer = BiliHTTP.referer
+
     private static let headerFields: [String: String] = [
         "User-Agent": userAgent,
-        "Referer": "https://www.bilibili.com/",
+        "Referer": referer,
     ]
 
-    static func makeItem(from playInfo: PlayUrlDTO) async throws -> PlayerItemPreparation {
+    static func makeItem(from playInfo: PlayUrlDTO) async throws -> DirectPlayerItemPreparation {
         let videoURLs = validURLs(primary: playInfo.url, backups: playInfo.backupUrls)
         guard !videoURLs.isEmpty else {
             throw PlayerMediaSourceError.invalidURL(playInfo.url)
@@ -54,13 +97,13 @@ enum PlayerItemFactory {
         return try await makeSingleItem(urls: videoURLs, totalStart: totalStart)
     }
 
-    private static func makeSingleItem(urls: [URL], totalStart: CFAbsoluteTime) async throws -> PlayerItemPreparation {
+    private static func makeSingleItem(urls: [URL], totalStart: CFAbsoluteTime) async throws -> DirectPlayerItemPreparation {
         let loaded = try await firstPlayableAsset(from: urls, mediaType: .video)
         let item = AVPlayerItem(asset: loaded.asset)
         item.audioTimePitchAlgorithm = .spectral
         item.preferredForwardBufferDuration = 1
         let totalMs = Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000)
-        return PlayerItemPreparation(
+        return DirectPlayerItemPreparation(
             item: item,
             video: telemetry(from: loaded, mediaType: "video"),
             audio: nil,
@@ -70,7 +113,7 @@ enum PlayerItemFactory {
 
     private static func makeComposedItem(videoURLs: [URL],
                                          audioURLs: [URL],
-                                         totalStart: CFAbsoluteTime) async throws -> PlayerItemPreparation {
+                                         totalStart: CFAbsoluteTime) async throws -> DirectPlayerItemPreparation {
         async let videoLoaded = firstPlayableAsset(from: videoURLs, mediaType: .video)
         async let audioLoaded = firstPlayableAsset(from: audioURLs, mediaType: .audio)
         let (videoAsset, audioAsset) = try await (videoLoaded, audioLoaded)
@@ -96,7 +139,7 @@ enum PlayerItemFactory {
         item.audioTimePitchAlgorithm = .spectral
         item.preferredForwardBufferDuration = 1
         let totalMs = Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000)
-        return PlayerItemPreparation(
+        return DirectPlayerItemPreparation(
             item: item,
             video: telemetry(from: videoAsset, mediaType: "video"),
             audio: telemetry(from: audioAsset, mediaType: "audio"),
@@ -144,7 +187,7 @@ enum PlayerItemFactory {
             for url in urls {
                 group.addTask { @Sendable in
                     let start = CFAbsoluteTimeGetCurrent()
-                    let asset = await PlayerItemFactory.makeAsset(url: url)
+                    let asset = await DirectPlayerItemBuilder.makeAsset(url: url)
                     do {
                         async let tracks = asset.loadTracks(withMediaType: mediaType)
                         async let duration = asset.load(.duration)
