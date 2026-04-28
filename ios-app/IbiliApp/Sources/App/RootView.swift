@@ -46,14 +46,14 @@ struct ProfileView: View {
                 NavigationLink {
                     SettingsView()
                 } label: {
-                    Label("显示设置", systemImage: "rectangle.grid.2x2")
+                    profileRowLabel("显示设置", systemImage: "rectangle.grid.2x2")
                 }
             }
             Section("诊断") {
                 NavigationLink {
                     LogsView()
                 } label: {
-                    Label("应用日志", systemImage: "doc.text.magnifyingglass")
+                    profileRowLabel("应用日志", systemImage: "doc.text.magnifyingglass")
                 }
             }
             Section {
@@ -71,5 +71,16 @@ struct ProfileView: View {
         // would otherwise let the system's default blue tint bleed
         // through into Label icons.
         .tint(IbiliTheme.accent)
+    }
+
+    private func profileRowLabel(_ title: String, systemImage: String) -> some View {
+        Label {
+            Text(title)
+                .foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: systemImage)
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(IbiliTheme.accent)
+        }
     }
 }

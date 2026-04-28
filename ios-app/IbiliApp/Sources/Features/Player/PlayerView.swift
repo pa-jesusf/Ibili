@@ -1150,6 +1150,7 @@ struct PlayerView: View {
         }
         .navigationTitle("播放")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .task {
             guard !didBootstrap else { return }
             didBootstrap = true
