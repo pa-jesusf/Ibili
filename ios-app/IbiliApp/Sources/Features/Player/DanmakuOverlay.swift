@@ -12,12 +12,17 @@ import Combine
 /// updates scoped to the leaf overlay view via Combine fixes all of that.
 @MainActor
 final class DanmakuController {
+    struct Snapshot {
+        let playbackTime: Double
+        let active: [Active]
+    }
+
     /// All comments, sorted by `timeSec`.
     private var all: [DanmakuItemDTO] = []
     /// Active comments currently animating on screen.
     private var active: [Active] = []
     /// Updates emitted at every player time-observer tick.
-    let publisher = CurrentValueSubject<[Active], Never>([])
+    let publisher = CurrentValueSubject<Snapshot, Never>(Snapshot(playbackTime: 0, active: []))
 
     private weak var player: AVPlayer?
     private var observer: Any?
@@ -33,7 +38,7 @@ final class DanmakuController {
         let id = UUID()
         let item: DanmakuItemDTO
         let lane: Int
-        let bornAt: Double
+        let startTime: Double
         let duration: Double
         let mode: Mode
         enum Mode { case scroll, top, bottom }
@@ -45,7 +50,7 @@ final class DanmakuController {
         self.cursor = 0
         self.active.removeAll()
         self.laneFreeAt = Array(repeating: 0, count: laneCount)
-        publisher.send([])
+        publisher.send(Snapshot(playbackTime: 0, active: []))
     }
 
     func attach(_ player: AVPlayer) {
@@ -65,7 +70,13 @@ final class DanmakuController {
         observer = nil
         player = nil
         active.removeAll()
-        publisher.send([])
+        publisher.send(Snapshot(playbackTime: lastTime, active: []))
+    }
+
+    deinit {
+        if let observer, let player {
+            player.removeTimeObserver(observer)
+        }
     }
 
     private func tick(_ now: Double) {
@@ -77,11 +88,8 @@ final class DanmakuController {
         }
         lastTime = now
 
-        var changed = false
         // Drop expired.
-        let before = active.count
-        active.removeAll { now > $0.bornAt + $0.duration }
-        if active.count != before { changed = true }
+        active.removeAll { now > $0.startTime + $0.duration }
 
         // Schedule new ones up to `now + 0.05` lookahead.
         var added = 0
@@ -91,23 +99,20 @@ final class DanmakuController {
             added += 1
             if added > 8 { break } // per-tick cap
         }
-        if added > 0 { changed = true }
 
-        if changed {
-            publisher.send(active)
-        }
+        publisher.send(Snapshot(playbackTime: now, active: active))
     }
 
     private func schedule(_ item: DanmakuItemDTO, at now: Double) {
         switch item.mode {
         case 4:
-            active.append(Active(item: item, lane: 0, bornAt: now, duration: staticDuration, mode: .bottom))
+            active.append(Active(item: item, lane: 0, startTime: now, duration: staticDuration, mode: .bottom))
         case 5:
-            active.append(Active(item: item, lane: 0, bornAt: now, duration: staticDuration, mode: .top))
+            active.append(Active(item: item, lane: 0, startTime: now, duration: staticDuration, mode: .top))
         default:
             let lane = pickLane(at: now)
             laneFreeAt[lane] = now + scrollDuration * 0.55
-            active.append(Active(item: item, lane: lane, bornAt: now, duration: scrollDuration, mode: .scroll))
+            active.append(Active(item: item, lane: lane, startTime: now, duration: scrollDuration, mode: .scroll))
         }
     }
 
@@ -131,15 +136,20 @@ final class DanmakuController {
 struct DanmakuOverlay: View {
     let controller: DanmakuController
     let opacity: Double
-    @State private var displayed: [DanmakuController.Active] = []
+    @State private var snapshot = DanmakuController.Snapshot(playbackTime: 0, active: [])
 
     var body: some View {
         GeometryReader { geo in
             let laneHeight = max(20, geo.size.height / 14)
             ZStack(alignment: .topLeading) {
-                ForEach(displayed) { a in
+                ForEach(snapshot.active) { a in
                     DanmakuLabel(item: a.item)
-                        .modifier(DanmakuPosition(active: a, size: geo.size, laneHeight: laneHeight))
+                        .modifier(DanmakuPosition(
+                            active: a,
+                            playbackTime: snapshot.playbackTime,
+                            size: geo.size,
+                            laneHeight: laneHeight
+                        ))
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -147,7 +157,7 @@ struct DanmakuOverlay: View {
             .allowsHitTesting(false)
             .opacity(opacity)
         }
-        .onReceive(controller.publisher) { displayed = $0 }
+        .onReceive(controller.publisher) { snapshot = $0 }
     }
 }
 
@@ -167,19 +177,18 @@ private struct DanmakuLabel: View {
 
 private struct DanmakuPosition: ViewModifier {
     let active: DanmakuController.Active
+    let playbackTime: Double
     let size: CGSize
     let laneHeight: CGFloat
-    @State private var animated = false
 
     func body(content: Content) -> some View {
         switch active.mode {
         case .scroll:
+            let progress = max(0, min(1, (playbackTime - active.startTime) / active.duration))
+            let travel = size.width * 2.0
+            let x = size.width * 1.5 - travel * progress
             content
-                .position(x: animated ? -size.width * 0.5 : size.width * 1.5,
-                          y: laneHeight * (CGFloat(active.lane) + 0.5))
-                .onAppear {
-                    withAnimation(.linear(duration: active.duration)) { animated = true }
-                }
+                .position(x: x, y: laneHeight * (CGFloat(active.lane) + 0.5))
         case .top:
             content
                 .position(x: size.width / 2, y: laneHeight * 0.5)

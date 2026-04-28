@@ -23,15 +23,18 @@ final class LoginViewModel: ObservableObject {
     func start() {
         pollTask?.cancel()
         state = .loadingQR
+        AppLog.info("auth", "开始请求扫码登录二维码")
         Task {
             do {
                 let s = try await Task.detached { try CoreClient.shared.tvQrStart() }.value
                 self.authCode = s.authCode
                 self.lastQRUrl = s.url
                 self.state = .waiting(qrUrl: s.url)
+                AppLog.info("auth", "二维码获取成功，开始轮询登录状态")
                 self.beginPolling()
             } catch {
                 self.state = .failed(error.localizedDescription)
+                AppLog.error("auth", "二维码获取失败", error: error)
             }
         }
     }
@@ -39,11 +42,13 @@ final class LoginViewModel: ObservableObject {
     func cancel() {
         pollTask?.cancel()
         pollTask = nil
+        AppLog.debug("auth", "取消扫码登录轮询")
     }
 
     private func beginPolling() {
         let code = authCode
         pollTask = Task { [weak self] in
+            AppLog.debug("auth", "开始轮询扫码登录状态")
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if Task.isCancelled { return }
@@ -55,6 +60,7 @@ final class LoginViewModel: ObservableObject {
                 switch resultRes {
                 case .failure(let e):
                     self.state = .failed(e.localizedDescription)
+                    AppLog.error("auth", "扫码登录轮询失败", error: e)
                     return
                 case .success(let poll):
                     switch poll {
@@ -65,13 +71,20 @@ final class LoginViewModel: ObservableObject {
                             self.state = .waiting(qrUrl: self.lastQRUrl ?? "")
                         }
                     case .scanned:
-                        if case .waiting(let u) = self.state { self.state = .scanned(qrUrl: u) }
+                        if case .waiting(let u) = self.state {
+                            self.state = .scanned(qrUrl: u)
+                            AppLog.info("auth", "二维码已扫码，等待手机确认")
+                        }
                     case .expired:
                         self.state = .expired
+                        AppLog.warning("auth", "二维码已过期")
                         return
                     case .confirmed(let s):
                         self.session?.didLogin(s)
                         self.state = .success
+                        AppLog.info("auth", "扫码登录完成", metadata: [
+                            "mid": String(s.mid),
+                        ])
                         return
                     }
                 }

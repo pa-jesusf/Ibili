@@ -49,6 +49,13 @@ struct ProfileView: View {
                     Label("显示设置", systemImage: "rectangle.grid.2x2")
                 }
             }
+            Section("诊断") {
+                NavigationLink {
+                    LogsView()
+                } label: {
+                    Label("应用日志", systemImage: "doc.text.magnifyingglass")
+                }
+            }
             Section {
                 Button(role: .destructive) {
                     session.logout()

@@ -14,25 +14,42 @@ final class PlayerViewModel: ObservableObject {
 
     private var aid: Int64 = 0
     private var cid: Int64 = 0
+    private let discoveryQn: Int64 = 120
 
-    func load(item: FeedItemDTO, qn: Int64) async {
+    func load(item: FeedItemDTO, preferredQn: Int64) async {
         aid = item.aid; cid = item.cid
         isLoading = true; errorText = nil
+        AppLog.info("player", "开始加载播放器", metadata: [
+            "aid": String(item.aid),
+            "cid": String(item.cid),
+            "preferredQn": String(preferredQn),
+        ])
         do {
-            let info = try await Task.detached {
-                try CoreClient.shared.playUrl(aid: item.aid, cid: item.cid, qn: qn)
-            }.value
-            self.currentQn = info.quality
-            self.availableQualities = zip(info.acceptQuality, info.acceptDescription)
-                .map { (qn: $0.0, label: $0.1) }
+            let initial = try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: max(preferredQn, discoveryQn))
+            let qualities = normalizedQualities(from: initial)
+            let targetQn = resolveTargetQn(preferredQn: preferredQn, qualities: qualities, fallback: initial.quality)
+            let info = targetQn == initial.quality ? initial : try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: targetQn)
+            let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
             guard let url = URL(string: info.url) else {
                 errorText = "无效的播放地址"; isLoading = false; return
             }
+            self.availableQualities = finalQualities
+            self.currentQn = info.quality
             self.player = AVPlayer(playerItem: makePlayerItem(url: url))
             applyRate()
             self.player?.play()
+            AppLog.info("player", "播放器已就绪", metadata: [
+                "aid": String(item.aid),
+                "cid": String(item.cid),
+                "quality": String(info.quality),
+                "available": finalQualities.map { String($0.qn) }.joined(separator: ","),
+            ])
         } catch {
             errorText = error.localizedDescription
+            AppLog.error("player", "播放器加载失败", error: error, metadata: [
+                "aid": String(item.aid),
+                "cid": String(item.cid),
+            ])
         }
         isLoading = false
     }
@@ -41,26 +58,81 @@ final class PlayerViewModel: ObservableObject {
         guard let player else { return }
         let resumeAt = player.currentTime()
         let wasPlaying = player.timeControlStatus == .playing
+        AppLog.info("player", "开始切换清晰度", metadata: [
+            "aid": String(aid),
+            "cid": String(cid),
+            "fromQn": String(currentQn),
+            "toQn": String(qn),
+        ])
         do {
-            let info = try await Task.detached { [aid, cid] in
-                try CoreClient.shared.playUrl(aid: aid, cid: cid, qn: qn)
-            }.value
+            let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             guard let url = URL(string: info.url) else { return }
             let newItem = makePlayerItem(url: url)
             player.replaceCurrentItem(with: newItem)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             applyRate()
             if wasPlaying { player.play() }
+            self.availableQualities = normalizedQualities(from: info)
             self.currentQn = info.quality
+            AppLog.info("player", "清晰度切换成功", metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "quality": String(info.quality),
+                "resumeSec": String(format: "%.3f", resumeAt.seconds),
+            ])
         } catch {
             errorText = error.localizedDescription
+            AppLog.error("player", "清晰度切换失败", error: error, metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "toQn": String(qn),
+            ])
         }
     }
 
     func teardown() {
+        AppLog.debug("player", "销毁播放器", metadata: [
+            "aid": String(aid),
+            "cid": String(cid),
+        ])
         player?.pause()
         player = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
+    private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64) async throws -> PlayUrlDTO {
+        try await Task.detached {
+            try CoreClient.shared.playUrl(aid: aid, cid: cid, qn: qn)
+        }.value
+    }
+
+    private func normalizedQualities(from info: PlayUrlDTO) -> [(qn: Int64, label: String)] {
+        let pairs = zip(info.acceptQuality, info.acceptDescription)
+            .map { (qn: $0.0, label: $0.1) }
+        let merged = Dictionary(uniqueKeysWithValues: pairs.map { ($0.qn, $0.label) })
+        return merged.keys.sorted(by: >).map { ($0, merged[$0] ?? qualityLabel(for: $0)) }
+    }
+
+    private func resolveTargetQn(preferredQn: Int64,
+                                 qualities: [(qn: Int64, label: String)],
+                                 fallback: Int64) -> Int64 {
+        let codes = Set(qualities.map(\.qn)).union([fallback])
+        let sorted = codes.sorted(by: >)
+        guard let highest = sorted.first else { return fallback }
+        guard preferredQn > 0 else { return highest }
+        return sorted.first(where: { $0 <= preferredQn }) ?? highest
+    }
+
+    private func qualityLabel(for qn: Int64) -> String {
+        switch qn {
+        case 120: return "4K"
+        case 112: return "1080P+"
+        case 80: return "1080P"
+        case 64: return "720P"
+        case 32: return "480P"
+        case 16: return "360P"
+        default: return "画质 \(qn)"
+        }
     }
 
     private func applyRate() {
@@ -131,6 +203,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
+        vc.loadViewIfNeeded()
         vc.player = player
         vc.delegate = context.coordinator
         DispatchQueue.main.async { onCreated(vc) }
@@ -147,6 +220,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             opacity: danmakuEnabled ? danmakuOpacity : 0
         ))
         host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
         host.view.translatesAutoresizingMaskIntoConstraints = false
         if let overlay = vc.contentOverlayView {
             overlay.addSubview(host.view)
@@ -254,7 +328,7 @@ struct PlayerView: View {
         .task {
             configureAudioSession()
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-            await vm.load(item: item, qn: Int64(settings.preferredQn))
+            await vm.load(item: item, preferredQn: Int64(settings.resolvedPreferredVideoQn()))
             await loadDanmaku()
         }
         .onChange(of: vm.player) { newPlayer in
@@ -265,9 +339,11 @@ struct PlayerView: View {
         }
         .onDisappear {
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
-            danmaku.detach()
-            vm.teardown()
-            Orientation.request(.portrait)
+            if !isFullscreen {
+                danmaku.detach()
+                vm.teardown()
+                Orientation.request(.portrait)
+            }
         }
     }
 
@@ -278,7 +354,6 @@ struct PlayerView: View {
                 Menu {
                     ForEach(vm.availableQualities, id: \.qn) { q in
                         Button {
-                            settings.preferredQn = Int(q.qn)
                             Task { await vm.switchQuality(to: q.qn) }
                         } label: {
                             if q.qn == vm.currentQn {
@@ -343,14 +418,23 @@ struct PlayerView: View {
     }
 
     private func loadDanmaku() async {
+        AppLog.info("danmaku", "开始加载弹幕", metadata: [
+            "cid": String(item.cid),
+        ])
         do {
             let track = try await Task.detached { [cid = item.cid] in
                 try CoreClient.shared.danmakuList(cid: cid)
             }.value
             danmaku.setItems(track.items)
             if let p = vm.player { danmaku.attach(p) }
+            AppLog.info("danmaku", "弹幕加载完成", metadata: [
+                "cid": String(item.cid),
+                "count": String(track.items.count),
+            ])
         } catch {
-            print("[danmaku] failed: \(error.localizedDescription)")
+            AppLog.error("danmaku", "弹幕加载失败", error: error, metadata: [
+                "cid": String(item.cid),
+            ])
         }
     }
 
@@ -366,6 +450,11 @@ struct PlayerView: View {
     /// reliably across iOS 14–17. Since this app isn't going through App
     /// Review, that's fine.
     private func enterFullscreen() {
+        isFullscreen = true
+        AppLog.info("player", "请求进入全屏", metadata: [
+            "aid": String(item.aid),
+            "cid": String(item.cid),
+        ])
         Orientation.request(.landscape)
         guard let vc = playerVCRef.vc else { return }
         let sel = NSSelectorFromString("enterFullScreenAnimated:completion:")
@@ -375,6 +464,11 @@ struct PlayerView: View {
     }
 
     private func exitFullscreen() {
+        isFullscreen = false
+        AppLog.info("player", "请求退出全屏", metadata: [
+            "aid": String(item.aid),
+            "cid": String(item.cid),
+        ])
         guard let vc = playerVCRef.vc else { return }
         let sel = NSSelectorFromString("exitFullScreenAnimated:completion:")
         if vc.responds(to: sel) {

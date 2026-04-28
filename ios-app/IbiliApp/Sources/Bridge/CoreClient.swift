@@ -30,16 +30,72 @@ public final class CoreClient: @unchecked Sendable {
     // MARK: - Dispatch
 
     private func call<T: Decodable>(_ method: String, args: Encodable? = nil, decoding: T.Type = T.self) throws -> T {
-        let raw = try callRaw(method, args: args)
-        guard let data = raw.data(using: .utf8) else { throw CoreError(category: "decode", message: "non-utf8", code: nil) }
-        let env = try JSONDecoder().decode(Envelope<T>.self, from: data)
-        if env.ok, let d = env.data { return d }
-        throw env.error.map { CoreError(category: $0.category, message: $0.message, code: $0.code) }
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        let raw: String
+        do {
+            raw = try callRaw(method, args: args)
+        } catch {
+            AppLog.error("core", "Core 调用失败", error: error, metadata: [
+                "method": method,
+                "stage": "callRaw",
+                "ms": elapsedMilliseconds(since: startedAt),
+            ])
+            throw error
+        }
+
+        guard let data = raw.data(using: .utf8) else {
+            let error = CoreError(category: "decode", message: "non-utf8", code: nil)
+            AppLog.error("core", "Core 返回了非 UTF-8 响应", error: error, metadata: [
+                "method": method,
+                "ms": elapsedMilliseconds(since: startedAt),
+            ])
+            throw error
+        }
+
+        let env: Envelope<T>
+        do {
+            env = try JSONDecoder().decode(Envelope<T>.self, from: data)
+        } catch {
+            AppLog.error("core", "Core 响应解码失败", error: error, metadata: [
+                "method": method,
+                "stage": "decode",
+                "ms": elapsedMilliseconds(since: startedAt),
+            ])
+            throw error
+        }
+
+        if env.ok, let d = env.data {
+            AppLog.debug("core", "Core 调用成功", metadata: [
+                "method": method,
+                "ms": elapsedMilliseconds(since: startedAt),
+            ])
+            return d
+        }
+
+        let resolvedError = env.error.map { CoreError(category: $0.category, message: $0.message, code: $0.code) }
             ?? CoreError(category: "internal", message: "missing data", code: nil)
+        AppLog.error("core", "Core 返回错误", error: resolvedError, metadata: [
+            "method": method,
+            "ms": elapsedMilliseconds(since: startedAt),
+        ])
+        throw resolvedError
     }
 
     private func callVoid(_ method: String, args: Encodable? = nil) throws {
-        _ = try callRaw(method, args: args)
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        do {
+            _ = try callRaw(method, args: args)
+            AppLog.debug("core", "Core void 调用完成", metadata: [
+                "method": method,
+                "ms": elapsedMilliseconds(since: startedAt),
+            ])
+        } catch {
+            AppLog.error("core", "Core void 调用失败", error: error, metadata: [
+                "method": method,
+                "ms": elapsedMilliseconds(since: startedAt),
+            ])
+            throw error
+        }
     }
 
     private func callRaw(_ method: String, args: Encodable?) throws -> String {
@@ -102,6 +158,10 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable { let cid: Int64 }
         return try call("danmaku.list", args: A(cid: cid), decoding: DanmakuTrackDTO.self)
     }
+}
+
+private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {
+    String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - start) * 1000)
 }
 
 // MARK: - Envelope decoding

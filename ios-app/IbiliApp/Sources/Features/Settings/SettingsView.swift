@@ -13,6 +13,15 @@ struct SettingsView: View {
         ("高清 90", 90),
         ("原图 100", 100),
     ]
+    private let preferredVideoQualityOptions: [(label: String, value: Int)] = [
+        ("默认最高", 0),
+        ("360P", 16),
+        ("480P", 32),
+        ("720P", 64),
+        ("1080P", 80),
+        ("1080P+", 112),
+        ("4K", 120),
+    ]
 
     var body: some View {
         Form {
@@ -37,6 +46,14 @@ struct SettingsView: View {
             }
 
             Section("播放") {
+                Picker("默认清晰度", selection: Binding(
+                    get: { settings.resolvedPreferredVideoQn() },
+                    set: { settings.preferredQn = $0 }
+                )) {
+                    ForEach(preferredVideoQualityOptions, id: \.value) { opt in
+                        Text(opt.label).tag(opt.value)
+                    }
+                }
                 Toggle("显示弹幕", isOn: $settings.danmakuEnabled)
                 if settings.danmakuEnabled {
                     VStack(alignment: .leading) {

@@ -10,9 +10,13 @@ final class AppSettings: ObservableObject {
     /// `0` means "auto" — quality derived from cell pixel size. Otherwise a
     /// Bilibili `@<q>q.webp` quality value (e.g. 60, 75, 90, 100).
     @AppStorage("ibili.feed.imageQuality") var imageQualityRaw: Int = 0
-    /// Preferred initial video quality (Bilibili `qn` code). 0 = auto/server default.
+    /// Preferred initial video quality (Bilibili `qn` code).
+    /// `0` means "use the highest quality available for this video".
     /// Common values: 16=360P, 32=480P, 64=720P, 80=1080P, 112=1080P+, 120=4K.
-    @AppStorage("ibili.player.preferredQn") var preferredQn: Int = 64
+    @AppStorage("ibili.player.preferredQn") var preferredQn: Int = 0
+    /// One-shot migration for older builds that hard-coded `64` (720P) as the
+    /// implicit default. New default behaviour is "highest available".
+    @AppStorage("ibili.player.preferredQnMigrated") private var preferredQnMigrated: Bool = false
     /// Whether to show danmaku overlay during playback.
     @AppStorage("ibili.player.danmakuEnabled") var danmakuEnabled: Bool = true
     /// Danmaku opacity, 0.1 ... 1.0.
@@ -39,5 +43,17 @@ final class AppSettings: ObservableObject {
     /// no explicit quality" so the CDN picks based on the resize box.
     func resolvedImageQuality() -> Int? {
         imageQualityRaw <= 0 ? nil : imageQualityRaw
+    }
+
+    /// Returns the preferred startup quality after applying the one-shot
+    /// migration from the previous hard-coded 720P default.
+    func resolvedPreferredVideoQn() -> Int {
+        if !preferredQnMigrated && preferredQn == 64 {
+            preferredQn = 0
+            preferredQnMigrated = true
+        } else if !preferredQnMigrated {
+            preferredQnMigrated = true
+        }
+        return preferredQn
     }
 }
