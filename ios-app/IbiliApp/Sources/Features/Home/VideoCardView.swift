@@ -2,15 +2,25 @@ import SwiftUI
 
 struct VideoCardView: View {
     let item: FeedItemDTO
+    /// Width of the card in points. Used to size the cover image request so we
+    /// only download as many pixels as the screen will display.
+    let cardWidth: CGFloat
+    let imageQuality: Int?
+
+    private var coverHeight: CGFloat { (cardWidth * 10.0 / 16.0).rounded() }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
-                RemoteImage(url: item.cover)
-                    .aspectRatio(16.0/10.0, contentMode: .fill)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                RemoteImage(
+                    url: item.cover,
+                    contentMode: .fill,
+                    targetPointSize: CGSize(width: cardWidth, height: coverHeight),
+                    quality: imageQuality
+                )
+                .frame(width: cardWidth, height: coverHeight)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 if item.durationSec > 0 {
                     Text(formatDuration(item.durationSec))
@@ -25,9 +35,12 @@ struct VideoCardView: View {
                 Text(item.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(2)
+                    .multilineTextAlignment(.leading)
                     .foregroundStyle(IbiliTheme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Text(item.author)
                     .font(.caption)
+                    .lineLimit(1)
                     .foregroundStyle(IbiliTheme.textSecondary)
             }
             .padding(.horizontal, 4)

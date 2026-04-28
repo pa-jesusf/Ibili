@@ -12,6 +12,8 @@ struct PlayUrlRoot {
     #[serde(default)] format: String,
     #[serde(default)] timelength: i64,
     #[serde(default, deserialize_with = "null_as_default")] durl: Vec<Durl>,
+    #[serde(default, deserialize_with = "null_as_default")] accept_quality: Vec<i64>,
+    #[serde(default, deserialize_with = "null_as_default")] accept_description: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +52,8 @@ impl Core {
             ("qn".into(), qn.to_string()),
         ];
         let r: PlayUrlRoot = self.http.get_signed_app(URL_PLAYURL, params)?;
+        let accept_quality = r.accept_quality.clone();
+        let accept_description = r.accept_description.clone();
         let first = r.durl.into_iter().next()
             .ok_or_else(|| CoreError::Decode("empty durl".into()))?;
         Ok(PlayUrl {
@@ -58,6 +62,8 @@ impl Core {
             quality: r.quality,
             duration_ms: r.timelength,
             backup_urls: first.backup_url,
+            accept_quality,
+            accept_description,
         })
     }
 }

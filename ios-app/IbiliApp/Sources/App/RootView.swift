@@ -42,6 +42,13 @@ struct ProfileView: View {
             Section("账户") {
                 LabeledContent("UID", value: String(session.mid))
             }
+            Section("偏好") {
+                NavigationLink {
+                    SettingsView()
+                } label: {
+                    Label("显示设置", systemImage: "rectangle.grid.2x2")
+                }
+            }
             Section {
                 Button(role: .destructive) {
                     session.logout()

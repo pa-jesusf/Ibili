@@ -84,9 +84,32 @@ public struct PlayUrlDTO: Decodable {
     public let quality: Int64
     public let durationMs: Int64
     public let backupUrls: [String]
+    public let acceptQuality: [Int64]
+    public let acceptDescription: [String]
     enum CodingKeys: String, CodingKey {
         case url, format, quality
         case durationMs = "duration_ms"
         case backupUrls = "backup_urls"
+        case acceptQuality = "accept_quality"
+        case acceptDescription = "accept_description"
     }
+}
+
+public struct DanmakuItemDTO: Decodable {
+    public let timeSec: Float
+    public let mode: Int32
+    public let color: UInt32
+    public let fontSize: Int32
+    public let text: String
+    enum CodingKeys: String, CodingKey {
+        case timeSec = "time_sec"
+        case mode
+        case color
+        case fontSize = "font_size"
+        case text
+    }
+}
+
+public struct DanmakuTrackDTO: Decodable {
+    public let items: [DanmakuItemDTO]
 }

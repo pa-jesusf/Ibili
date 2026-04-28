@@ -86,6 +86,21 @@ impl HttpClient {
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
         unwrap_envelope(body)
     }
+
+    /// Fetch raw bytes — used for endpoints that return non-JSON payloads
+    /// (e.g. the deflated-XML danmaku list).
+    pub fn get_bytes_web(
+        &self, url: &str, params: &[(String, String)],
+    ) -> CoreResult<Vec<u8>> {
+        let resp = self.client.get(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .query(params)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let bytes = resp.bytes().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        Ok(bytes.to_vec())
+    }
 }
 
 /// Render a reqwest error including the full source chain so the iOS layer can

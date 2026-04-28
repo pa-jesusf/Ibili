@@ -1,0 +1,2 @@
+/* Bundle marker so iOS recognises zh-Hans as a supported localization. */
+"_marker" = "_marker";

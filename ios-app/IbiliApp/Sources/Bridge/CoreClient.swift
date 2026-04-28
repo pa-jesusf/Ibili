@@ -97,6 +97,11 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64 }
         return try call("video.playurl", args: A(aid: aid, cid: cid, qn: qn), decoding: PlayUrlDTO.self)
     }
+
+    public func danmakuList(cid: Int64) throws -> DanmakuTrackDTO {
+        struct A: Encodable { let cid: Int64 }
+        return try call("danmaku.list", args: A(cid: cid), decoding: DanmakuTrackDTO.self)
+    }
 }
 
 // MARK: - Envelope decoding

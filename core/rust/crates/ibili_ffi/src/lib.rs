@@ -95,6 +95,9 @@ fn default_ps() -> i64 { 20 }
 struct PlayurlArgs { aid: i64, cid: i64, #[serde(default = "default_qn")] qn: i64 }
 fn default_qn() -> i64 { 64 }
 
+#[derive(Deserialize)]
+struct DanmakuArgs { cid: i64 }
+
 fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> {
     match method {
         "session.snapshot" => to_value(c.inner.session_snapshot()),
@@ -116,6 +119,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "video.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
             to_value(c.inner.video_playurl(a.aid, a.cid, a.qn)?)
+        }
+        "danmaku.list" => {
+            let a: DanmakuArgs = serde_json::from_value(args)?;
+            to_value(c.inner.danmaku_list(a.cid)?)
         }
         _ => Err(CoreError::InvalidArgument(format!("unknown method: {method}"))),
     }

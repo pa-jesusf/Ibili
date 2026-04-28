@@ -50,4 +50,28 @@ pub struct PlayUrl {
     pub quality: i64,
     pub duration_ms: i64,
     pub backup_urls: Vec<String>,
+    /// Bilibili `accept_quality` numeric codes, in descending order
+    /// (e.g. `[112, 80, 64, 32, 16]`).
+    pub accept_quality: Vec<i64>,
+    /// Human-readable labels matching `accept_quality` 1:1
+    /// (e.g. `["高清 1080P+", "高清 1080P", ...]`).
+    pub accept_description: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct DanmakuItem {
+    /// Time in seconds when the comment should appear.
+    pub time_sec: f32,
+    /// Mode: 1/2/3 = scrolling, 4 = bottom-anchored, 5 = top-anchored.
+    pub mode: i32,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// Pixel font size as authored.
+    pub font_size: i32,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct DanmakuTrack {
+    pub items: Vec<DanmakuItem>,
 }

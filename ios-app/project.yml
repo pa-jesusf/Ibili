@@ -22,6 +22,7 @@ settings:
     CODE_SIGN_IDENTITY: ""
     CODE_SIGNING_REQUIRED: "NO"
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: "arm64"
+    DEVELOPMENT_LANGUAGE: "zh-Hans"
 
 targets:
   Ibili:
@@ -37,6 +38,10 @@ targets:
         CFBundleName: Ibili
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleLocalizations:
+          - zh-Hans
+          - en
         LSRequiresIPhoneOS: true
         UILaunchScreen:
           UIColorName: ""
@@ -51,6 +56,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        UIBackgroundModes:
+          - audio
         UIRequiredDeviceCapabilities:
           - arm64
     settings:
