@@ -41,7 +41,7 @@ final class PlayerViewModel: ObservableObject {
             let targetQn = resolveTargetQn(preferredQn: preferredQn, qualities: qualities, fallback: initial.quality)
             let info = targetQn == initial.quality ? initial : try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: targetQn)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
-            let (resolvedInfo, playerItem) = try await makePlayableItem(from: info, aid: item.aid, cid: item.cid, qn: targetQn)
+            let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: item.aid, cid: item.cid, qn: targetQn)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
                 AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
                     "aid": String(item.aid),
@@ -52,7 +52,7 @@ final class PlayerViewModel: ObservableObject {
             let finalQualities = normalizedQualities(from: resolvedInfo).isEmpty ? qualities : normalizedQualities(from: resolvedInfo)
             self.availableQualities = finalQualities
             self.currentQn = resolvedInfo.quality
-            self.player = AVPlayer(playerItem: playerItem)
+            self.player = AVPlayer(playerItem: prep.item)
             applyRate()
             self.player?.play()
             AppLog.info("player", "播放器已就绪", metadata: [
@@ -62,6 +62,13 @@ final class PlayerViewModel: ObservableObject {
                 "available": finalQualities.map { String($0.qn) }.joined(separator: ","),
                 "streamType": resolvedInfo.streamType,
                 "separateAudio": resolvedInfo.audioUrl == nil ? "false" : "true",
+                "videoCdn": prep.video.winnerHost,
+                "videoOpenMs": String(prep.video.winnerElapsedMs),
+                "audioCdn": prep.audio?.winnerHost ?? "-",
+                "audioOpenMs": prep.audio.map { String($0.winnerElapsedMs) } ?? "-",
+                "prepMs": String(prep.totalElapsedMs),
+                "videoAttempts": prep.video.attempts.joined(separator: " | "),
+                "audioAttempts": prep.audio?.attempts.joined(separator: " | ") ?? "-",
             ])
             if let msg = resolvedInfo.debugMessage {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
@@ -92,9 +99,9 @@ final class PlayerViewModel: ObservableObject {
         do {
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
-            let (resolvedInfo, newItem) = try await makePlayableItem(from: info, aid: aid, cid: cid, qn: qn)
+            let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: aid, cid: cid, qn: qn)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
-            player.replaceCurrentItem(with: newItem)
+            player.replaceCurrentItem(with: prep.item)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             applyRate()
             if wasPlaying { player.play() }
@@ -107,6 +114,11 @@ final class PlayerViewModel: ObservableObject {
                 "resumeSec": String(format: "%.3f", resumeAt.seconds),
                 "streamType": resolvedInfo.streamType,
                 "separateAudio": resolvedInfo.audioUrl == nil ? "false" : "true",
+                "videoCdn": prep.video.winnerHost,
+                "videoOpenMs": String(prep.video.winnerElapsedMs),
+                "audioCdn": prep.audio?.winnerHost ?? "-",
+                "audioOpenMs": prep.audio.map { String($0.winnerElapsedMs) } ?? "-",
+                "prepMs": String(prep.totalElapsedMs),
             ])
             if let msg = resolvedInfo.debugMessage {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
@@ -151,7 +163,7 @@ final class PlayerViewModel: ObservableObject {
     private func makePlayableItem(from info: PlayUrlDTO,
                                   aid: Int64,
                                   cid: Int64,
-                                  qn: Int64) async throws -> (PlayUrlDTO, AVPlayerItem) {
+                                  qn: Int64) async throws -> (PlayUrlDTO, PlayerItemPreparation) {
         do {
             return (info, try await PlayerItemFactory.makeItem(from: info))
         } catch {

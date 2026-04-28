@@ -13,6 +13,7 @@ pub mod auth;
 pub mod feed;
 pub mod video;
 pub mod danmaku;
+pub mod cdn;
 
 use std::sync::Arc;
 

@@ -1,4 +1,5 @@
 use crate::Core;
+use crate::cdn::{rank_urls, DEFAULT_CDN_HOST};
 use crate::dto::PlayUrl;
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
@@ -264,6 +265,7 @@ impl Dash {
 }
 
 impl DashVideo {
+    #[allow(dead_code)]
     fn play_url(&self) -> Option<String> {
         if !self.base_url.is_empty() {
             Some(self.base_url.clone())
@@ -274,6 +276,7 @@ impl DashVideo {
 }
 
 impl DashAudio {
+    #[allow(dead_code)]
     fn play_url(&self) -> Option<String> {
         if !self.base_url.is_empty() {
             Some(self.base_url.clone())
@@ -301,16 +304,29 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
         let target_qn = pick_target_quality(requested_qn, &accept_quality, &dash.video);
         if let Some(video) = pick_video_stream(&dash.video, target_qn) {
             let audio = pick_audio_stream(&dash.all_audio());
-            if let Some(video_url) = video.play_url() {
+            let video_candidates = collect_candidates(&video.base_url, &video.backup_url);
+            let video_ranked = rank_urls(&video_candidates, Some(DEFAULT_CDN_HOST), false, false);
+            if let Some(video_url) = video_ranked.first().cloned() {
+                let video_backups = video_ranked.into_iter().skip(1).collect::<Vec<_>>();
+                let (audio_url, audio_backups) = match audio {
+                    Some(a) => {
+                        let candidates = collect_candidates(&a.base_url, &a.backup_url);
+                        let ranked = rank_urls(&candidates, Some(DEFAULT_CDN_HOST), true, false);
+                        let primary = ranked.first().cloned();
+                        let backups = ranked.into_iter().skip(1).collect::<Vec<_>>();
+                        (primary, backups)
+                    }
+                    None => (None, Vec::new()),
+                };
                 return Ok(PlayUrl {
                     url: video_url,
-                    audio_url: audio.as_ref().and_then(|item| item.play_url()),
+                    audio_url,
                     format: response.format,
                     stream_type: "web_dash".into(),
                     quality: video.id,
                     duration_ms: response.timelength,
-                    backup_urls: video.backup_url.clone(),
-                    audio_backup_urls: audio.map(|item| item.backup_url).unwrap_or_default(),
+                    backup_urls: video_backups,
+                    audio_backup_urls: audio_backups,
                     accept_quality,
                     accept_description,
             debug_message: None,
@@ -334,6 +350,20 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
         accept_description,
         debug_message: None,
     })
+}
+
+fn collect_candidates(primary: &str, backups: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(backups.len() + 1);
+    if !primary.is_empty() {
+        out.push(primary.to_string());
+    }
+    for u in backups {
+        if u.is_empty() { continue; }
+        if !out.iter().any(|x| x == u) {
+            out.push(u.clone());
+        }
+    }
+    out
 }
 
 fn collect_dash_qualities(videos: &[DashVideo]) -> Vec<i64> {

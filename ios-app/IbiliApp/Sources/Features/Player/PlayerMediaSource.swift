@@ -2,12 +2,35 @@
 import CoreGraphics
 import Foundation
 
+/// Lightweight summary of how a single AVURLAsset open performed. Surfaced
+/// so the player layer can log "which CDN won and how long it took",
+/// mirroring upstream PiliPlus's media_kit timing diagnostics.
+struct AssetOpenTelemetry: Sendable {
+    let mediaType: String
+    let winnerHost: String
+    let winnerURL: URL
+    let winnerElapsedMs: Int
+    /// Per-candidate trace lines. Each entry is `host elapsedMs outcome`.
+    let attempts: [String]
+}
+
+/// Collected telemetry for a fully prepared player item.
+struct PlayerItemPreparation: Sendable {
+    let item: AVPlayerItem
+    let video: AssetOpenTelemetry
+    let audio: AssetOpenTelemetry?
+    let totalElapsedMs: Int
+}
+
 @MainActor
 enum PlayerItemFactory {
     private struct LoadedAsset {
         let asset: AVURLAsset
         let track: AVAssetTrack
         let duration: CMTime
+        let url: URL
+        let elapsedMs: Int
+        let attempts: [String]
     }
 
     private static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
@@ -16,28 +39,37 @@ enum PlayerItemFactory {
         "Referer": "https://www.bilibili.com/",
     ]
 
-    static func makeItem(from playInfo: PlayUrlDTO) async throws -> AVPlayerItem {
+    static func makeItem(from playInfo: PlayUrlDTO) async throws -> PlayerItemPreparation {
         let videoURLs = validURLs(primary: playInfo.url, backups: playInfo.backupUrls)
-        guard let videoURL = videoURLs.first else {
+        guard !videoURLs.isEmpty else {
             throw PlayerMediaSourceError.invalidURL(playInfo.url)
         }
+        let totalStart = CFAbsoluteTimeGetCurrent()
         if let audioURLString = playInfo.audioUrl,
            let audioURL = URL(string: audioURLString),
-           audioURL != videoURL {
+           audioURL != videoURLs.first {
             let audioURLs = validURLs(primary: audioURLString, backups: playInfo.audioBackupUrls)
-            return try await makeComposedItem(videoURLs: videoURLs, audioURLs: audioURLs)
+            return try await makeComposedItem(videoURLs: videoURLs, audioURLs: audioURLs, totalStart: totalStart)
         }
-        return try await makeSingleItem(urls: videoURLs)
+        return try await makeSingleItem(urls: videoURLs, totalStart: totalStart)
     }
 
-    static func makeSingleItem(urls: [URL]) async throws -> AVPlayerItem {
+    private static func makeSingleItem(urls: [URL], totalStart: CFAbsoluteTime) async throws -> PlayerItemPreparation {
         let loaded = try await firstPlayableAsset(from: urls, mediaType: .video)
         let item = AVPlayerItem(asset: loaded.asset)
         item.audioTimePitchAlgorithm = .spectral
-        return item
+        let totalMs = Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000)
+        return PlayerItemPreparation(
+            item: item,
+            video: telemetry(from: loaded, mediaType: "video"),
+            audio: nil,
+            totalElapsedMs: totalMs
+        )
     }
 
-    private static func makeComposedItem(videoURLs: [URL], audioURLs: [URL]) async throws -> AVPlayerItem {
+    private static func makeComposedItem(videoURLs: [URL],
+                                         audioURLs: [URL],
+                                         totalStart: CFAbsoluteTime) async throws -> PlayerItemPreparation {
         async let videoLoaded = firstPlayableAsset(from: videoURLs, mediaType: .video)
         async let audioLoaded = firstPlayableAsset(from: audioURLs, mediaType: .audio)
         let (videoAsset, audioAsset) = try await (videoLoaded, audioLoaded)
@@ -61,7 +93,23 @@ enum PlayerItemFactory {
 
         let item = AVPlayerItem(asset: composition)
         item.audioTimePitchAlgorithm = .spectral
-        return item
+        let totalMs = Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000)
+        return PlayerItemPreparation(
+            item: item,
+            video: telemetry(from: videoAsset, mediaType: "video"),
+            audio: telemetry(from: audioAsset, mediaType: "audio"),
+            totalElapsedMs: totalMs
+        )
+    }
+
+    private static func telemetry(from asset: LoadedAsset, mediaType: String) -> AssetOpenTelemetry {
+        AssetOpenTelemetry(
+            mediaType: mediaType,
+            winnerHost: asset.url.host ?? asset.url.absoluteString,
+            winnerURL: asset.url,
+            winnerElapsedMs: asset.elapsedMs,
+            attempts: asset.attempts
+        )
     }
 
     private static func validURLs(primary: String, backups: [String]) -> [URL] {
@@ -81,23 +129,80 @@ enum PlayerItemFactory {
         ])
     }
 
+    /// Concurrently race all candidate URLs and return the first asset to
+    /// load both its track list and duration. Mirrors upstream's behavior
+    /// of trying multiple CDN URLs in parallel rather than serially.
     private static func firstPlayableAsset(from urls: [URL], mediaType: AVMediaType) async throws -> LoadedAsset {
-        var lastError: Error?
-        for url in urls {
-            let asset = makeAsset(url: url)
-            do {
-                async let tracks = asset.loadTracks(withMediaType: mediaType)
-                async let duration = asset.load(.duration)
-                let (loadedTracks, loadedDuration) = try await (tracks, duration)
-                guard let track = loadedTracks.first else {
-                    throw PlayerMediaSourceError.missingTrack("\(mediaType.rawValue) @ \(url.host ?? url.absoluteString)")
+        struct Outcome: Sendable { let url: URL; let elapsedMs: Int; let result: Result<RaceSuccess, Error> }
+        struct RaceSuccess: Sendable { let asset: AVURLAsset; let track: AVAssetTrack; let duration: CMTime }
+
+        let raceStart = CFAbsoluteTimeGetCurrent()
+        return try await withThrowingTaskGroup(of: Outcome.self) { group in
+            for url in urls {
+                group.addTask { @Sendable in
+                    let start = CFAbsoluteTimeGetCurrent()
+                    let asset = await PlayerItemFactory.makeAsset(url: url)
+                    do {
+                        async let tracks = asset.loadTracks(withMediaType: mediaType)
+                        async let duration = asset.load(.duration)
+                        let (loadedTracks, loadedDuration) = try await (tracks, duration)
+                        let elapsed = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
+                        guard let track = loadedTracks.first else {
+                            return Outcome(url: url, elapsedMs: elapsed, result: .failure(
+                                PlayerMediaSourceError.missingTrack("\(mediaType.rawValue) @ \(url.host ?? url.absoluteString)")))
+                        }
+                        return Outcome(url: url, elapsedMs: elapsed, result: .success(
+                            RaceSuccess(asset: asset, track: track, duration: loadedDuration)))
+                    } catch {
+                        let elapsed = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
+                        return Outcome(url: url, elapsedMs: elapsed, result: .failure(
+                            PlayerMediaSourceError.assetLoadFailed(mediaType.rawValue, url: url, underlying: error)))
+                    }
                 }
-                return LoadedAsset(asset: asset, track: track, duration: loadedDuration)
-            } catch {
-                lastError = PlayerMediaSourceError.assetLoadFailed(mediaType.rawValue, url: url, underlying: error)
             }
+
+            var attempts: [String] = []
+            var errors: [Error] = []
+            while let outcome = try await group.next() {
+                switch outcome.result {
+                case .success(let success):
+                    attempts.append("\(outcome.url.host ?? "?") \(outcome.elapsedMs)ms ok")
+                    AppLog.debug("player", "CDN 候选完成", metadata: [
+                        "media": mediaType.rawValue,
+                        "host": outcome.url.host ?? outcome.url.absoluteString,
+                        "elapsedMs": String(outcome.elapsedMs),
+                        "outcome": "ok",
+                    ])
+                    group.cancelAll()
+                    let raceMs = Int((CFAbsoluteTimeGetCurrent() - raceStart) * 1000)
+                    AppLog.info("player", "CDN 选中", metadata: [
+                        "media": mediaType.rawValue,
+                        "host": outcome.url.host ?? outcome.url.absoluteString,
+                        "elapsedMs": String(outcome.elapsedMs),
+                        "raceMs": String(raceMs),
+                        "candidates": String(urls.count),
+                    ])
+                    return LoadedAsset(asset: success.asset,
+                                       track: success.track,
+                                       duration: success.duration,
+                                       url: outcome.url,
+                                       elapsedMs: outcome.elapsedMs,
+                                       attempts: attempts)
+                case .failure(let err):
+                    let nsErr = err as NSError
+                    let detail = "\(nsErr.domain)#\(nsErr.code)"
+                    attempts.append("\(outcome.url.host ?? "?") \(outcome.elapsedMs)ms \(detail)")
+                    errors.append(err)
+                    AppLog.warning("player", "CDN 候选失败", metadata: [
+                        "media": mediaType.rawValue,
+                        "host": outcome.url.host ?? outcome.url.absoluteString,
+                        "elapsedMs": String(outcome.elapsedMs),
+                        "error": detail,
+                    ])
+                }
+            }
+            throw errors.last ?? PlayerMediaSourceError.assetLoadFailed(mediaType.rawValue, url: urls.first, underlying: nil)
         }
-        throw lastError ?? PlayerMediaSourceError.assetLoadFailed(mediaType.rawValue, url: urls.first, underlying: nil)
     }
 
     private static func minimumDuration(_ lhs: CMTime, _ rhs: CMTime) -> CMTime {
