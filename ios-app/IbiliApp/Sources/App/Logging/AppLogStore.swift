@@ -46,7 +46,7 @@ final class AppLogStore: ObservableObject {
     @Published private(set) var entries: [AppLogEntry] = []
 
     private let persistence = AppLogPersistence()
-    private let maxEntries = 800
+    private let maxEntries = 1_000
 
     private init() {
         Task {
@@ -60,9 +60,7 @@ final class AppLogStore: ObservableObject {
              metadata: [String: String] = [:]) {
         let entry = AppLogEntry(level: level, category: category, message: message, metadata: metadata)
         entries.append(entry)
-        if entries.count > maxEntries {
-            entries.removeFirst(entries.count - maxEntries)
-        }
+        entries = trimToMaxEntries(entries)
         let snapshot = entries
         Task {
             await persistence.saveEntries(snapshot)
@@ -79,7 +77,15 @@ final class AppLogStore: ObservableObject {
     private func restorePersistedEntries() async {
         let persisted = await persistence.loadEntries()
         let merged = mergeEntries(persisted, with: entries)
-        self.entries = Array(merged.suffix(maxEntries))
+        let trimmed = trimToMaxEntries(merged)
+        self.entries = trimmed
+        if trimmed.count != persisted.count || trimmed != persisted {
+            await persistence.saveEntries(trimmed)
+        }
+    }
+
+    private func trimToMaxEntries(_ items: [AppLogEntry]) -> [AppLogEntry] {
+        Array(items.suffix(maxEntries))
     }
 
     private func mergeEntries(_ lhs: [AppLogEntry], with rhs: [AppLogEntry]) -> [AppLogEntry] {

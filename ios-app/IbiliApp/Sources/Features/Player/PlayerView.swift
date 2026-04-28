@@ -132,11 +132,11 @@ final class PlayerViewModel: ObservableObject {
                 // construction.
                 let hiTask = Task { [weak self] in
                     guard let self else { throw CancellationError() }
-                    return try await self.makeWarmPlayer(for: info)
+                    return try await self.makeWarmPlayer(for: info, presenting: item)
                 }
                 let loTask = Task { [weak self] in
                     guard let self else { throw CancellationError() }
-                    return try await self.makeWarmPlayer(for: loInfo)
+                    return try await self.makeWarmPlayer(for: loInfo, presenting: item)
                 }
                 let winner = try await Self.raceFirstWarmPlayer(hi: hiTask, lo: loTask)
                 guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
@@ -223,6 +223,7 @@ final class PlayerViewModel: ObservableObject {
                     ])
                     return
                 }
+                applyPresentationMetadata(to: prep.item, for: item)
                 self.currentQn = info.quality
                 let player = AVPlayer(playerItem: prep.item)
                 // Leave `automaticallyWaitsToMinimizeStalling` at its
@@ -330,6 +331,9 @@ final class PlayerViewModel: ObservableObject {
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            if let item = lastLoadedItem {
+                applyPresentationMetadata(to: prep.item, for: item)
+            }
             activePreparation = prep
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
@@ -403,13 +407,14 @@ final class PlayerViewModel: ObservableObject {
     /// playing. This gives the fast-load race a meaningful winner:
     /// whichever stream is first to render progress, not whichever
     /// finished `makeItem` first.
-    private func makeWarmPlayer(for source: PlayUrlDTO) async throws -> WarmPlayer {
+    private func makeWarmPlayer(for source: PlayUrlDTO, presenting item: FeedItemDTO) async throws -> WarmPlayer {
         var preparation: EnginePreparation?
         var hiddenPlayer: AVPlayer?
         do {
             let prep = try await engine.makeItem(for: source)
             preparation = prep
             try Task.checkCancellation()
+            applyPresentationMetadata(to: prep.item, for: item)
 
             let player = AVPlayer(playerItem: prep.item)
             hiddenPlayer = player
@@ -681,6 +686,87 @@ final class PlayerViewModel: ObservableObject {
         player.rate = rate
         if rate != 0 { player.defaultRate = rate }
     }
+
+    private func applyPresentationMetadata(to playerItem: AVPlayerItem, for item: FeedItemDTO) {
+        let title = item.title
+        let author = item.author
+        let coverURL = BiliImageURL.resized(item.cover,
+                                            pointSize: CGSize(width: 320, height: 320),
+                                            quality: 90)
+        playerItem.externalMetadata = Self.makeExternalMetadata(title: title,
+                                                                author: author,
+                                                                artworkData: nil)
+        Task { [weak playerItem, title, author, coverURL] in
+            guard let playerItem else { return }
+            guard let artworkData = await PlayerArtworkStore.shared.load(from: coverURL) else { return }
+            playerItem.externalMetadata = Self.makeExternalMetadata(title: title,
+                                                                    author: author,
+                                                                    artworkData: artworkData)
+        }
+    }
+
+    private static func makeExternalMetadata(title: String,
+                                             author: String,
+                                             artworkData: Data?) -> [AVMetadataItem] {
+        var metadata: [AVMetadataItem] = [
+            makeTextMetadata(identifier: .commonIdentifierTitle, value: title),
+        ]
+        if !author.isEmpty {
+            metadata.append(makeTextMetadata(identifier: .commonIdentifierArtist, value: author))
+        }
+        if let artworkData {
+            metadata.append(makeBinaryMetadata(identifier: .commonIdentifierArtwork,
+                                               value: artworkData as NSData,
+                                               dataType: kCMMetadataBaseDataType_PNG as String))
+        }
+        return metadata
+    }
+
+    private static func makeTextMetadata(identifier: AVMetadataIdentifier,
+                                         value: String) -> AVMetadataItem {
+        let item = AVMutableMetadataItem()
+        item.identifier = identifier
+        item.value = value as NSString
+        item.extendedLanguageTag = "und"
+        item.dataType = kCMMetadataBaseDataType_UTF8 as String
+        return item
+    }
+
+    private static func makeBinaryMetadata(identifier: AVMetadataIdentifier,
+                                           value: NSData,
+                                           dataType: String) -> AVMetadataItem {
+        let item = AVMutableMetadataItem()
+        item.identifier = identifier
+        item.value = value
+        item.dataType = dataType
+        return item
+    }
+}
+
+actor PlayerArtworkStore {
+    static let shared = PlayerArtworkStore()
+
+    private let cache = NSCache<NSURL, NSData>()
+
+    func load(from urlString: String) async -> Data? {
+        guard let url = URL(string: urlString) else { return nil }
+        if let cached = cache.object(forKey: url as NSURL) {
+            return cached as Data
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                return nil
+            }
+            guard let image = UIImage(data: data),
+                  let pngData = image.pngData() else { return nil }
+            cache.setObject(pngData as NSData, forKey: url as NSURL, cost: pngData.count)
+            return pngData
+        } catch {
+            return nil
+        }
+    }
 }
 
 /// Hidden muted player used by fast-load while racing or preparing a
@@ -810,6 +896,7 @@ enum Orientation {
 /// fullscreen — so danmaku stays visible there.
 struct PlayerContainer: UIViewControllerRepresentable {
     let player: AVPlayer
+    let title: String
     let danmaku: DanmakuController
     let danmakuEnabled: Bool
     let danmakuOpacity: Double
@@ -830,6 +917,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
         let vc = AVPlayerViewController()
         vc.loadViewIfNeeded()
         vc.player = player
+        vc.title = title
+        vc.updatesNowPlayingInfoCenter = true
         context.coordinator.assignedPlayerID = ObjectIdentifier(player)
         vc.delegate = context.coordinator
         DispatchQueue.main.async {
@@ -866,6 +955,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
         let incomingPlayerID = ObjectIdentifier(player)
+        if vc.title != title {
+            vc.title = title
+        }
         // Reassign only when SwiftUI handed us a genuinely different
         // AVPlayer instance. During fullscreen transitions AVKit may
         // transiently nil out `vc.player`; we deliberately ignore that
@@ -1014,6 +1106,7 @@ struct PlayerView: View {
                 if let p = vm.player {
                     PlayerContainer(
                         player: p,
+                        title: item.title,
                         danmaku: danmaku,
                         danmakuEnabled: settings.danmakuEnabled,
                         danmakuOpacity: settings.danmakuOpacity,

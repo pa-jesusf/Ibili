@@ -32,16 +32,22 @@ final class AppSettings: ObservableObject {
     /// once it finishes preparing.
     @AppStorage("ibili.player.fastLoad") var fastLoad: Bool = false
 
+    private let maxFeedColumns = 3
+
     /// Resolves the effective column count given the current layout context.
-    /// Phones default to 2; iPads scale with width up to 4.
+    /// iOS defaults to 2 columns on phones and opens at most 3 columns.
     func effectiveColumns(horizontal: UserInterfaceSizeClass?, width: CGFloat) -> Int {
-        if columnsRaw > 0 { return columnsRaw }
+        let clampedStoredColumns = min(max(columnsRaw, 0), maxFeedColumns)
+        if clampedStoredColumns != columnsRaw {
+            columnsRaw = clampedStoredColumns
+        }
+        if clampedStoredColumns > 0 { return clampedStoredColumns }
         // Auto: width buckets tuned for iPhone portrait/landscape and iPad split views.
         switch width {
         case ..<480:   return 2          // iPhone portrait
         case ..<700:   return 3          // iPhone landscape / small iPad split
-        case ..<1000:  return horizontal == .compact ? 3 : 4
-        default:       return 4
+        case ..<1000:  return 3
+        default:       return horizontal == .compact ? 2 : 3
         }
     }
 

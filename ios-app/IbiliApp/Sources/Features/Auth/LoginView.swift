@@ -3,7 +3,6 @@ import SwiftUI
 struct LoginView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var vm = LoginViewModel()
-    @State private var showLogs = false
 
     var body: some View {
         ZStack {
@@ -45,30 +44,11 @@ struct LoginView: View {
                 .padding(.bottom, 32)
             }
         }
-        .overlay(alignment: .topTrailing) {
-            Button {
-                showLogs = true
-            } label: {
-                Label("日志", systemImage: "doc.text.magnifyingglass")
-                    .font(.subheadline.weight(.medium))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.thinMaterial, in: Capsule())
-            }
-            .padding(.top, 10)
-            .padding(.trailing, 12)
-        }
         .onAppear {
             vm.bind(session: session)
             if case .idle = vm.state { vm.start() }
         }
         .onDisappear { vm.cancel() }
-        .sheet(isPresented: $showLogs) {
-            NavigationStack {
-                LogsView()
-            }
-            .preferredColorScheme(.dark)
-        }
     }
 
     @ViewBuilder

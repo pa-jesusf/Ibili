@@ -20,6 +20,8 @@ struct FeedRawItem {
     #[serde(default)] bvid: String,
     #[serde(default)] title: String,
     #[serde(default)] cover: String,
+    #[serde(default)] cover_left_text_1: String,
+    #[serde(default)] cover_left_text_2: String,
     #[serde(default)] args: FeedArgs,
     #[serde(default)] mask: Option<MaskWrap>,
     #[serde(default)] player_args: Option<PlayerArgs>,
@@ -43,6 +45,39 @@ struct PlayerArgs {
     #[serde(default)] aid: i64,
     #[serde(default)] cid: i64,
     #[serde(default)] duration: i64,
+}
+
+fn parse_stat_text(raw: &str) -> i64 {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        return 0;
+    }
+
+    let mut numeric = String::new();
+    let mut unit = None;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_digit() || ch == '.' {
+            numeric.push(ch);
+            continue;
+        }
+        if matches!(ch, '千' | '万' | '亿') {
+            unit = Some(ch);
+        }
+        if !numeric.is_empty() {
+            break;
+        }
+    }
+
+    let Ok(base) = numeric.parse::<f64>() else {
+        return 0;
+    };
+    let multiplier = match unit {
+        Some('千') => 1_000.0,
+        Some('万') => 10_000.0,
+        Some('亿') => 100_000_000.0,
+        _ => 1.0,
+    };
+    (base * multiplier) as i64
 }
 
 impl Core {
@@ -100,8 +135,8 @@ impl Core {
                     author: i.mask.as_ref().and_then(|m| m.avatar.as_ref()).map(|a| a.text.clone())
                         .unwrap_or_else(|| i.args.up_name.clone()),
                     duration_sec: pa.duration,
-                    play: 0,
-                    danmaku: 0,
+                    play: parse_stat_text(&i.cover_left_text_1),
+                    danmaku: parse_stat_text(&i.cover_left_text_2),
                 })
             })
             .collect();

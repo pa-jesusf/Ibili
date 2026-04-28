@@ -4,7 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
 
     private let columnOptions: [(label: String, value: Int)] = [
-        ("自动", 0), ("1 列", 1), ("2 列", 2), ("3 列", 3), ("4 列", 4), ("5 列", 5),
+        ("自动", 0), ("1 列", 1), ("2 列", 2), ("3 列", 3),
     ]
     private let qualityOptions: [(label: String, value: Int)] = [
         ("自动（按显示像素）", 0),
@@ -26,13 +26,16 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("首页列数", selection: $settings.columnsRaw) {
+                Picker("首页列数", selection: Binding(
+                    get: { min(max(settings.columnsRaw, 0), 3) },
+                    set: { settings.columnsRaw = min(max($0, 0), 3) }
+                )) {
                     ForEach(columnOptions, id: \.value) { opt in
                         Text(opt.label).tag(opt.value)
                     }
                 }
             } footer: {
-                Text("自动模式：手机 2 列，iPad 横屏可达 4 列。")
+                Text("自动模式：iPhone 竖屏 2 列，较宽布局最多 3 列。")
             }
 
             Section {

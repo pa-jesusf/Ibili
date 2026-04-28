@@ -79,9 +79,11 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
     public let cover: String
     public let author: String
     public let durationSec: Int64
+    public let play: Int64
+    public let danmaku: Int64
 
     enum CodingKeys: String, CodingKey {
-        case aid, bvid, cid, title, cover, author
+        case aid, bvid, cid, title, cover, author, play, danmaku
         case durationSec = "duration_sec"
     }
 }

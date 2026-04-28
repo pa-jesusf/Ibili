@@ -7,7 +7,7 @@ import Combine
 /// IMPORTANT: This is **not** an `ObservableObject`. The renderer subscribes to
 /// the `publisher` for active-comment updates. If we made the controller an
 /// `ObservableObject` and stored it via `@StateObject` in `PlayerView`, every
-/// 30 Hz tick would re-render the entire player view, tear down `Menu` popovers
+/// display tick would re-render the entire player view, tear down `Menu` popovers
 /// mid-tap, and fight `AVPlayerViewController`'s fullscreen transition. Keeping
 /// updates scoped to the leaf overlay view via Combine fixes all of that.
 @MainActor
@@ -32,6 +32,7 @@ final class DanmakuController {
     private let laneCount = 12
     private let scrollDuration: Double = 8
     private let staticDuration: Double = 4
+    private let seekResyncThreshold: Double = 0.5
     private var laneFreeAt: [Double] = []
 
     struct Active: Identifiable, Equatable {
@@ -56,10 +57,10 @@ final class DanmakuController {
     func attach(_ player: AVPlayer) {
         detach()
         self.player = player
-        let interval = CMTime(seconds: 1.0/30.0, preferredTimescale: 600)
+        let interval = CMTime(seconds: 1.0/60.0, preferredTimescale: 600)
         observer = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
             let secs = t.seconds.isFinite ? t.seconds : 0
-            Task { @MainActor [weak self] in self?.tick(secs) }
+            self?.tick(secs)
         }
     }
 
@@ -80,8 +81,12 @@ final class DanmakuController {
     }
 
     private func tick(_ now: Double) {
-        // Seek backwards: rewind cursor + drop active.
-        if now + 0.5 < lastTime {
+        // Any large discontinuity means the user scrubbed the playhead or
+        // AVPlayer jumped after a seek. Re-anchor the cursor to `now`
+        // instead of replaying every danmaku between `lastTime` and the
+        // new position, otherwise forward seeks dump a backlog of comments
+        // all at once.
+        if abs(now - lastTime) > seekResyncThreshold {
             active.removeAll()
             laneFreeAt = Array(repeating: 0, count: laneCount)
             cursor = lowerBound(of: Float(now))
@@ -140,7 +145,7 @@ struct DanmakuOverlay: View {
 
     var body: some View {
         GeometryReader { geo in
-            let laneHeight = max(20, geo.size.height / 14)
+            let laneHeight = max(22, geo.size.height / 13)
             ZStack(alignment: .topLeading) {
                 ForEach(snapshot.active) { a in
                     DanmakuLabel(item: a.item)
@@ -163,13 +168,34 @@ struct DanmakuOverlay: View {
 
 private struct DanmakuLabel: View {
     let item: DanmakuItemDTO
+
+    private static let outlineOffsets: [(CGFloat, CGFloat)] = [
+        (-1, -1), (0, -1), (1, -1),
+        (-1, 0),           (1, 0),
+        (-1, 1),  (0, 1),  (1, 1),
+    ]
+
+    private var fillColor: Color {
+        Color(red: Double((item.color >> 16) & 0xFF) / 255,
+              green: Double((item.color >> 8) & 0xFF) / 255,
+              blue: Double(item.color & 0xFF) / 255)
+    }
+
     var body: some View {
-        Text(item.text)
-            .font(.system(size: 18, weight: .medium))
-            .foregroundStyle(Color(red: Double((item.color >> 16) & 0xFF) / 255,
-                                   green: Double((item.color >> 8) & 0xFF) / 255,
-                                   blue: Double(item.color & 0xFF) / 255))
-            .shadow(color: .black.opacity(0.7), radius: 1, x: 1, y: 1)
+        let font = Font.system(size: 20, weight: .semibold, design: .rounded)
+        ZStack {
+            ForEach(Self.outlineOffsets.indices, id: \.self) { index in
+                let offset = Self.outlineOffsets[index]
+                Text(item.text)
+                    .font(font)
+                    .foregroundStyle(.black.opacity(0.9))
+                    .offset(x: offset.0, y: offset.1)
+            }
+            Text(item.text)
+                .font(font)
+                .foregroundStyle(fillColor)
+        }
+            .shadow(color: .black.opacity(0.22), radius: 2, x: 0, y: 1)
             .lineLimit(1)
             .fixedSize()
     }

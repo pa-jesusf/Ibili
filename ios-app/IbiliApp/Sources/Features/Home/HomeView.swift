@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct HomeView: View {
     @StateObject private var vm = HomeViewModel()
@@ -28,23 +29,26 @@ struct HomeView: View {
     private var feedGrid: some View {
         GeometryReader { geo in
             let cols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let usesTopTrailingDuration = UIDevice.current.userInterfaceIdiom == .phone && cols >= 3
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
             let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
-            let cardW = max(1, (geo.size.width - totalSpacing) / CGFloat(cols))
+            let cardW = max(1, floor((geo.size.width - totalSpacing) / CGFloat(cols)))
+            let rowSpacing: CGFloat = 14
             let gridItems = Array(
-                repeating: GridItem(.flexible(), spacing: spacing, alignment: .top),
+                repeating: GridItem(.fixed(cardW), spacing: spacing, alignment: .top),
                 count: cols
             )
 
             ScrollView {
-                LazyVGrid(columns: gridItems, spacing: 16) {
+                LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                     ForEach(Array(vm.items.enumerated()), id: \.element.aid) { idx, item in
                         NavigationLink(value: item) {
                             VideoCardView(
                                 item: item,
                                 cardWidth: cardW,
-                                imageQuality: settings.resolvedImageQuality()
+                                imageQuality: settings.resolvedImageQuality(),
+                                showsDurationAtTopTrailing: usesTopTrailingDuration
                             )
                         }
                         .buttonStyle(TouchDownReportingButtonStyle {
