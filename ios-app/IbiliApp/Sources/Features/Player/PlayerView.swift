@@ -9,6 +9,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var errorText: String?
     @Published private(set) var player: AVPlayer?
     @Published private(set) var availableQualities: [(qn: Int64, label: String)] = []
+    @Published private(set) var reportedQn: Int64 = 0
     @Published var currentQn: Int64 = 0
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
 
@@ -17,6 +18,13 @@ final class PlayerViewModel: ObservableObject {
     private let discoveryQn: Int64 = 120
 
     func load(item: FeedItemDTO, preferredQn: Int64) async {
+        if player != nil, aid == item.aid, cid == item.cid {
+            AppLog.debug("player", "跳过重复播放器加载", metadata: [
+                "aid": String(item.aid),
+                "cid": String(item.cid),
+            ])
+            return
+        }
         aid = item.aid; cid = item.cid
         isLoading = true; errorText = nil
         AppLog.info("player", "开始加载播放器", metadata: [
@@ -34,16 +42,19 @@ final class PlayerViewModel: ObservableObject {
                 errorText = "无效的播放地址"; isLoading = false; return
             }
             self.availableQualities = finalQualities
-            self.currentQn = info.quality
+            self.reportedQn = info.quality
+            self.currentQn = resolveDisplayedQn(requestedQn: targetQn, info: info)
             self.player = AVPlayer(playerItem: makePlayerItem(url: url))
             applyRate()
             self.player?.play()
             AppLog.info("player", "播放器已就绪", metadata: [
                 "aid": String(item.aid),
                 "cid": String(item.cid),
-                "quality": String(info.quality),
+                "quality": String(currentQn),
+                "reportedQn": String(info.quality),
                 "available": finalQualities.map { String($0.qn) }.joined(separator: ","),
             ])
+            logQualityMismatchIfNeeded(requestedQn: targetQn, reportedQn: info.quality)
         } catch {
             errorText = error.localizedDescription
             AppLog.error("player", "播放器加载失败", error: error, metadata: [
@@ -73,13 +84,16 @@ final class PlayerViewModel: ObservableObject {
             applyRate()
             if wasPlaying { player.play() }
             self.availableQualities = normalizedQualities(from: info)
-            self.currentQn = info.quality
+            self.reportedQn = info.quality
+            self.currentQn = resolveDisplayedQn(requestedQn: qn, info: info)
             AppLog.info("player", "清晰度切换成功", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
-                "quality": String(info.quality),
+                "quality": String(currentQn),
+                "reportedQn": String(info.quality),
                 "resumeSec": String(format: "%.3f", resumeAt.seconds),
             ])
+            logQualityMismatchIfNeeded(requestedQn: qn, reportedQn: info.quality)
         } catch {
             errorText = error.localizedDescription
             AppLog.error("player", "清晰度切换失败", error: error, metadata: [
@@ -121,6 +135,24 @@ final class PlayerViewModel: ObservableObject {
         guard let highest = sorted.first else { return fallback }
         guard preferredQn > 0 else { return highest }
         return sorted.first(where: { $0 <= preferredQn }) ?? highest
+    }
+
+    private func resolveDisplayedQn(requestedQn: Int64, info: PlayUrlDTO) -> Int64 {
+        let available = Set(info.acceptQuality).union([info.quality])
+        if requestedQn > 0, available.contains(requestedQn) {
+            return requestedQn
+        }
+        return info.quality
+    }
+
+    private func logQualityMismatchIfNeeded(requestedQn: Int64, reportedQn: Int64) {
+        guard requestedQn > 0, requestedQn != reportedQn else { return }
+        AppLog.warning("player", "后端返回的 quality 与请求不一致", metadata: [
+            "aid": String(aid),
+            "cid": String(cid),
+            "requestedQn": String(requestedQn),
+            "reportedQn": String(reportedQn),
+        ])
     }
 
     private func qualityLabel(for qn: Int64) -> String {
@@ -250,15 +282,41 @@ struct PlayerContainer: UIViewControllerRepresentable {
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
         var parent: PlayerContainer
         var host: UIHostingController<DanmakuOverlay>?
+        private var rateBeforeTransition: Float = 1.0
+        private var wasPlayingBeforeTransition = false
         init(parent: PlayerContainer) { self.parent = parent }
 
         func playerViewController(_ vc: AVPlayerViewController,
                                   willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
+            capturePlaybackState(from: vc)
             parent.onFullscreenChange(true)
+            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
+                guard let self, let vc else { return }
+                Orientation.request(.landscape)
+                self.restorePlaybackState(on: vc)
+            }
         }
         func playerViewController(_ vc: AVPlayerViewController,
                                   willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-            parent.onFullscreenChange(false)
+            capturePlaybackState(from: vc)
+            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
+                guard let self, let vc else { return }
+                self.parent.onFullscreenChange(false)
+                Orientation.request(.portrait)
+                self.restorePlaybackState(on: vc)
+            }
+        }
+
+        private func capturePlaybackState(from vc: AVPlayerViewController) {
+            wasPlayingBeforeTransition = vc.player?.timeControlStatus == .playing || (vc.player?.rate ?? 0) > 0
+            let defaultRate = vc.player?.defaultRate ?? 0
+            let activeRate = vc.player?.rate ?? 0
+            rateBeforeTransition = activeRate > 0 ? activeRate : (defaultRate > 0 ? defaultRate : 1.0)
+        }
+
+        private func restorePlaybackState(on vc: AVPlayerViewController) {
+            guard wasPlayingBeforeTransition, let player = vc.player else { return }
+            player.playImmediately(atRate: rateBeforeTransition)
         }
     }
 }
@@ -270,13 +328,13 @@ struct PlayerView: View {
     @StateObject private var vm = PlayerViewModel()
     /// Plain reference type — see `DanmakuController` notes.
     @State private var danmaku = DanmakuController()
+    @State private var didBootstrap = false
     @State private var isFullscreen = false
     @State private var lastDeviceOrientation: UIDeviceOrientation = .portrait
     /// Weak handle to the AVPlayerViewController so we can drive native FS.
     @State private var playerVCRef = PlayerVCBox()
     @EnvironmentObject private var settings: AppSettings
 
-    private let speedOptions: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     private let orientationPublisher = NotificationCenter.default
         .publisher(for: UIDevice.orientationDidChangeNotification)
 
@@ -291,10 +349,7 @@ struct PlayerView: View {
                         danmakuEnabled: settings.danmakuEnabled,
                         danmakuOpacity: settings.danmakuOpacity,
                         onCreated: { vc in playerVCRef.vc = vc },
-                        onFullscreenChange: { fs in
-                            isFullscreen = fs
-                            if !fs { Orientation.request(.portrait) }
-                        }
+                        onFullscreenChange: { fs in isFullscreen = fs }
                     )
                 } else if vm.isLoading {
                     ProgressView().tint(.white)
@@ -326,6 +381,8 @@ struct PlayerView: View {
         .navigationTitle("播放")
         .navigationBarTitleDisplayMode(.inline)
         .task {
+            guard !didBootstrap else { return }
+            didBootstrap = true
             configureAudioSession()
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             await vm.load(item: item, preferredQn: Int64(settings.resolvedPreferredVideoQn()))
@@ -340,6 +397,7 @@ struct PlayerView: View {
         .onDisappear {
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
             if !isFullscreen {
+                didBootstrap = false
                 danmaku.detach()
                 vm.teardown()
                 Orientation.request(.portrait)
@@ -366,31 +424,11 @@ struct PlayerView: View {
                 } label: { chip(icon: "slider.horizontal.3", text: currentQualityLabel) }
             }
 
-            Menu {
-                ForEach(speedOptions, id: \.self) { s in
-                    Button {
-                        vm.rate = s
-                    } label: {
-                        if abs(s - vm.rate) < 0.01 {
-                            Label(speedLabel(s), systemImage: "checkmark")
-                        } else {
-                            Text(speedLabel(s))
-                        }
-                    }
-                }
-            } label: { chip(icon: "gauge.with.dots.needle.50percent", text: speedLabel(vm.rate)) }
-
             Button {
                 settings.danmakuEnabled.toggle()
             } label: {
                 chip(icon: settings.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble",
                      text: settings.danmakuEnabled ? "弹幕" : "弹幕关")
-            }
-
-            Button {
-                enterFullscreen()
-            } label: {
-                chip(icon: "arrow.up.left.and.arrow.down.right", text: "全屏")
             }
 
             Spacer()
@@ -411,10 +449,6 @@ struct PlayerView: View {
 
     private var currentQualityLabel: String {
         vm.availableQualities.first { $0.qn == vm.currentQn }?.label ?? "清晰度"
-    }
-
-    private func speedLabel(_ s: Float) -> String {
-        s == 1.0 ? "1.0x" : String(format: "%.2gx", s)
     }
 
     private func loadDanmaku() async {
@@ -450,6 +484,7 @@ struct PlayerView: View {
     /// reliably across iOS 14–17. Since this app isn't going through App
     /// Review, that's fine.
     private func enterFullscreen() {
+        guard !isFullscreen else { return }
         isFullscreen = true
         AppLog.info("player", "请求进入全屏", metadata: [
             "aid": String(item.aid),
@@ -464,6 +499,7 @@ struct PlayerView: View {
     }
 
     private func exitFullscreen() {
+        guard isFullscreen else { return }
         isFullscreen = false
         AppLog.info("player", "请求退出全屏", metadata: [
             "aid": String(item.aid),
