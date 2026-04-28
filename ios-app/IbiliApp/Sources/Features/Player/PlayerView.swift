@@ -736,17 +736,55 @@ protocol PlayerSwapOverlay: AnyObject {
 
 // MARK: - Orientation helpers
 
+@MainActor
 enum Orientation {
+    /// App-level orientation gate for iPhone. Normal pages stay portrait;
+    /// once the native AVKit fullscreen flow starts we temporarily widen
+    /// the mask so the fullscreen controller can rotate to landscape.
+    private static var phoneSupportedMask: UIInterfaceOrientationMask = .portrait
+
+    static func supportedMask() -> UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .phone ? phoneSupportedMask : .all
+    }
+
+    /// Widen the phone orientation mask so AVKit is allowed to enter native
+    /// fullscreen in landscape, but do not actively rotate the current page.
+    /// This keeps the inline detail page upright while the fullscreen
+    /// transition is still being negotiated.
+    static func preparePhoneFullscreenLandscape() {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        phoneSupportedMask = .allButUpsideDown
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else { return }
+        scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        AppLog.debug("player", "放开手机横屏掩码，等待 AVKit 进入全屏", metadata: [
+            "mask": interfaceOrientationMaskDescription(phoneSupportedMask),
+        ])
+    }
+
     /// Request a specific interface-orientation set from the active scene.
     /// On iOS 16+ this is the public API; pre-16 falls back to the legacy
     /// `UIDevice.orientation` setter.
     static func request(_ mask: UIInterfaceOrientationMask) {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            phoneSupportedMask = mask == .portrait ? .portrait : .allButUpsideDown
+        }
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else { return }
         if #available(iOS 16, *) {
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
             scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            AppLog.debug("player", "请求界面方向更新", metadata: [
+                "requestedMask": interfaceOrientationMaskDescription(mask),
+                "effectiveMask": interfaceOrientationMaskDescription(phoneSupportedMask),
+            ])
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
+                AppLog.warning("player", "界面方向更新被系统拒绝", metadata: [
+                    "requestedMask": interfaceOrientationMaskDescription(mask),
+                    "error": error.localizedDescription,
+                ])
+            }
         } else {
             let value: UIDeviceOrientation
             switch mask {
@@ -756,6 +794,10 @@ enum Orientation {
             case .landscape:       value = .landscapeLeft
             default:               value = .portrait
             }
+            AppLog.debug("player", "使用旧版方式请求设备方向", metadata: [
+                "requestedMask": interfaceOrientationMaskDescription(mask),
+                "deviceOrientation": deviceOrientationDescription(value),
+            ])
             UIDevice.current.setValue(value.rawValue, forKey: "orientation")
         }
     }
@@ -890,16 +932,41 @@ struct PlayerContainer: UIViewControllerRepresentable {
         func playerViewController(_ vc: AVPlayerViewController,
                                   willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
             capturePlaybackState(from: vc)
+            let currentDeviceOrientation = UIDevice.current.orientation
+            AppLog.info("player", "AVKit 即将进入全屏", metadata: [
+                "deviceOrientation": deviceOrientationDescription(currentDeviceOrientation),
+                "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
+                "rate": String(rateBeforeTransition),
+                "playing": String(wasPlayingBeforeTransition),
+            ])
             parent.onFullscreenChange(true)
+            // If the device is already in landscape, AVKit is entering
+            // fullscreen because of the hardware rotation we just
+            // reacted to. Requesting another geometry update here is
+            // redundant and iOS often rejects it because the original
+            // host controller still reports portrait support during the
+            // hand-off. Keep the explicit landscape request only for
+            // cases like tapping the native fullscreen button while the
+            // device remains portrait.
+            if currentDeviceOrientation.isLandscape {
+                AppLog.debug("player", "跳过进入全屏时的横屏方向请求：设备已经处于横屏")
+            } else {
+                Orientation.request(.landscape)
+            }
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
-                Orientation.request(.landscape)
                 self.restorePlaybackState(on: vc)
             }
         }
         func playerViewController(_ vc: AVPlayerViewController,
                                   willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
             capturePlaybackState(from: vc)
+            AppLog.info("player", "AVKit 即将退出全屏", metadata: [
+                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+                "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
+                "rate": String(rateBeforeTransition),
+                "playing": String(wasPlayingBeforeTransition),
+            ])
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
                 self.parent.onFullscreenChange(false)
@@ -1127,49 +1194,170 @@ struct PlayerView: View {
     /// reliably across iOS 14–17. Since this app isn't going through App
     /// Review, that's fine.
     private func enterFullscreen() {
-        guard !isFullscreen else { return }
+        guard !isFullscreen else {
+            AppLog.debug("player", "忽略自动进全屏：已经处于全屏状态", metadata: [
+                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+            ])
+            return
+        }
+        guard let vc = playerVCRef.vc else {
+            AppLog.warning("player", "自动进全屏失败：AVPlayerViewController 引用为空", metadata: [
+                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+                "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
+            ])
+            return
+        }
+        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenEnterSelectorCandidates)
+        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenEnterSelectorCandidates) else {
+            AppLog.warning("player", "自动进全屏失败：没有可用的 fullscreen selector", metadata: [
+                "supportedSelectors": supportedSelectors,
+                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+                "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
+            ])
+            return
+        }
+        let sel = NSSelectorFromString(selectorName)
+        Orientation.preparePhoneFullscreenLandscape()
         isFullscreen = true
         AppLog.info("player", "请求进入全屏", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
+            "selector": selectorName,
+            "supportedSelectors": supportedSelectors,
+            "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+            "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
+            "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
         ])
-        Orientation.request(.landscape)
-        guard let vc = playerVCRef.vc else { return }
-        let sel = NSSelectorFromString("enterFullScreenAnimated:completion:")
-        if vc.responds(to: sel) {
-            vc.perform(sel, with: true, with: nil)
-        }
+        vc.perform(sel, with: true, with: nil)
     }
 
     private func exitFullscreen() {
-        guard isFullscreen else { return }
+        guard isFullscreen else {
+            AppLog.debug("player", "忽略自动退全屏：当前不在全屏", metadata: [
+                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+            ])
+            return
+        }
         isFullscreen = false
+        guard let vc = playerVCRef.vc else {
+            AppLog.warning("player", "自动退全屏失败：AVPlayerViewController 引用为空", metadata: [
+                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+            ])
+            return
+        }
+        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenExitSelectorCandidates)
+        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenExitSelectorCandidates) else {
+            AppLog.warning("player", "自动退全屏失败：没有可用的 fullscreen selector", metadata: [
+                "supportedSelectors": supportedSelectors,
+                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+            ])
+            return
+        }
+        let sel = NSSelectorFromString(selectorName)
         AppLog.info("player", "请求退出全屏", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
+            "selector": selectorName,
+            "supportedSelectors": supportedSelectors,
+            "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+            "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
         ])
-        guard let vc = playerVCRef.vc else { return }
-        let sel = NSSelectorFromString("exitFullScreenAnimated:completion:")
-        if vc.responds(to: sel) {
-            vc.perform(sel, with: true, with: nil)
-        }
-        Orientation.request(.portrait)
+        vc.perform(sel, with: true, with: nil)
     }
 
     private func handleDeviceOrientationChange() {
-        guard settings.autoRotateFullscreen else { return }
         let o = UIDevice.current.orientation
-        guard o != lastDeviceOrientation else { return }
+        AppLog.debug("player", "收到设备方向变化", metadata: [
+            "deviceOrientation": deviceOrientationDescription(o),
+            "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
+            "isFullscreen": String(isFullscreen),
+            "autoRotateFullscreen": String(settings.autoRotateFullscreen),
+            "idiom": UIDevice.current.userInterfaceIdiom == .phone ? "phone" : "pad",
+        ])
+        guard settings.autoRotateFullscreen else {
+            AppLog.debug("player", "忽略设备方向变化：自动全屏已关闭")
+            return
+        }
+        // iPad: skip the auto rotate-into-fullscreen behaviour. iPads
+        // are commonly used in landscape as the default reading
+        // orientation, so flipping the player into fullscreen on every
+        // rotation would be more annoying than useful. The native
+        // fullscreen button still works.
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            AppLog.debug("player", "忽略设备方向变化：当前设备不是手机")
+            return
+        }
+        guard o != lastDeviceOrientation else {
+            AppLog.debug("player", "忽略设备方向变化：与上次方向相同", metadata: [
+                "deviceOrientation": deviceOrientationDescription(o),
+            ])
+            return
+        }
         defer { lastDeviceOrientation = o }
         if o.isLandscape, !isFullscreen {
             enterFullscreen()
         } else if o == .portrait, isFullscreen {
             exitFullscreen()
+        } else {
+            AppLog.debug("player", "设备方向变化未触发全屏切换", metadata: [
+                "deviceOrientation": deviceOrientationDescription(o),
+                "isLandscape": String(o.isLandscape),
+                "isFullscreen": String(isFullscreen),
+            ])
         }
     }
 }
 
 // MARK: - PlayerVC handle
+
+fileprivate let fullscreenEnterSelectorCandidates = [
+    "enterFullScreenAnimated:completion:",
+    "enterFullScreenAnimated:completionHandler:",
+    "enterFullscreenAnimated:completion:",
+    "enterFullscreenAnimated:completionHandler:",
+]
+
+fileprivate let fullscreenExitSelectorCandidates = [
+    "exitFullScreenAnimated:completion:",
+    "exitFullScreenAnimated:completionHandler:",
+    "exitFullscreenAnimated:completion:",
+    "exitFullscreenAnimated:completionHandler:",
+]
+
+fileprivate func fullscreenSelectorSupportDescription(on vc: NSObject, selectorNames: [String]) -> String {
+    selectorNames.map { name in
+        let supported = vc.responds(to: NSSelectorFromString(name))
+        return "\(name)=\(supported ? "yes" : "no")"
+    }.joined(separator: ",")
+}
+
+fileprivate func firstSupportedFullscreenSelector(on vc: NSObject, selectorNames: [String]) -> String? {
+    selectorNames.first { vc.responds(to: NSSelectorFromString($0)) }
+}
+
+fileprivate func deviceOrientationDescription(_ orientation: UIDeviceOrientation) -> String {
+    switch orientation {
+    case .unknown: return "unknown"
+    case .portrait: return "portrait"
+    case .portraitUpsideDown: return "portraitUpsideDown"
+    case .landscapeLeft: return "landscapeLeft"
+    case .landscapeRight: return "landscapeRight"
+    case .faceUp: return "faceUp"
+    case .faceDown: return "faceDown"
+    @unknown default: return "future(\(orientation.rawValue))"
+    }
+}
+
+fileprivate func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> String {
+    if mask == .portrait { return "portrait" }
+    if mask == .landscape { return "landscape" }
+    if mask == .allButUpsideDown { return "allButUpsideDown" }
+    if mask == .all { return "all" }
+    if mask == .portraitUpsideDown { return "portraitUpsideDown" }
+    if mask == .landscapeLeft { return "landscapeLeft" }
+    if mask == .landscapeRight { return "landscapeRight" }
+    return "raw(\(mask.rawValue))"
+}
 
 final class PlayerVCBox {
     weak var vc: AVPlayerViewController?

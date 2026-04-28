@@ -64,5 +64,12 @@ struct ProfileView: View {
                 }
             }
         }
+        // Re-assert the accent tint at the List level so the row
+        // icons stay pink after pushing a detail view and popping back.
+        // SwiftUI's TabView-level `.tint` occasionally fails to
+        // propagate into NavigationStack content on push/pop, which
+        // would otherwise let the system's default blue tint bleed
+        // through into Label icons.
+        .tint(IbiliTheme.accent)
     }
 }

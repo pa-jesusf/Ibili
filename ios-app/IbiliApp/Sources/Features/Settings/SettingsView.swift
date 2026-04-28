@@ -66,7 +66,7 @@ struct SettingsView: View {
                         Slider(value: $settings.danmakuOpacity, in: 0.1...1.0)
                     }
                 }
-                Toggle("自动旋转进入/退出全屏", isOn: $settings.autoRotateFullscreen)
+                Toggle("手机横屏自动进入/退出全屏", isOn: $settings.autoRotateFullscreen)
                 Toggle("快速加载", isOn: $settings.fastLoad)
             } header: {
                 Text("播放")
