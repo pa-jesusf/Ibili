@@ -58,6 +58,7 @@ enum PlayerItemFactory {
         let loaded = try await firstPlayableAsset(from: urls, mediaType: .video)
         let item = AVPlayerItem(asset: loaded.asset)
         item.audioTimePitchAlgorithm = .spectral
+        item.preferredForwardBufferDuration = 1
         let totalMs = Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000)
         return PlayerItemPreparation(
             item: item,
@@ -93,6 +94,7 @@ enum PlayerItemFactory {
 
         let item = AVPlayerItem(asset: composition)
         item.audioTimePitchAlgorithm = .spectral
+        item.preferredForwardBufferDuration = 1
         let totalMs = Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000)
         return PlayerItemPreparation(
             item: item,
@@ -125,6 +127,7 @@ enum PlayerItemFactory {
     private static func makeAsset(url: URL) -> AVURLAsset {
         AVURLAsset(url: url, options: [
             AVURLAssetHTTPUserAgentKey as String: userAgent,
+            AVURLAssetPreferPreciseDurationAndTimingKey as String: false,
             "AVURLAssetHTTPHeaderFieldsKey": headerFields,
         ])
     }
@@ -189,8 +192,7 @@ enum PlayerItemFactory {
                                        elapsedMs: outcome.elapsedMs,
                                        attempts: attempts)
                 case .failure(let err):
-                    let nsErr = err as NSError
-                    let detail = "\(nsErr.domain)#\(nsErr.code)"
+                    let detail = failureDetail(err)
                     attempts.append("\(outcome.url.host ?? "?") \(outcome.elapsedMs)ms \(detail)")
                     errors.append(err)
                     AppLog.warning("player", "CDN 候选失败", metadata: [
@@ -210,6 +212,14 @@ enum PlayerItemFactory {
         if !rhs.isNumeric { return lhs }
         return CMTimeCompare(lhs, rhs) <= 0 ? lhs : rhs
     }
+
+    private static func failureDetail(_ error: Error) -> String {
+        if let mediaError = error as? PlayerMediaSourceError {
+            return mediaError.debugSummary
+        }
+        let nsError = error as NSError
+        return "\(nsError.domain)#\(nsError.code) \(nsError.localizedDescription)"
+    }
 }
 
 enum PlayerMediaSourceError: LocalizedError {
@@ -217,6 +227,22 @@ enum PlayerMediaSourceError: LocalizedError {
     case missingTrack(String)
     case compositionFailed(String)
     case assetLoadFailed(String, url: URL?, underlying: Error?)
+
+    var debugSummary: String {
+        switch self {
+        case .invalidURL(let value):
+            return "invalid-url \(value)"
+        case .missingTrack(let mediaType):
+            return "missing-track \(mediaType)"
+        case .compositionFailed(let mediaType):
+            return "composition-failed \(mediaType)"
+        case .assetLoadFailed(_, _, let underlying):
+            if let nsError = underlying as NSError? {
+                return "\(nsError.domain)#\(nsError.code) \(nsError.localizedDescription)"
+            }
+            return "asset-load-failed"
+        }
+    }
 
     var errorDescription: String? {
         switch self {

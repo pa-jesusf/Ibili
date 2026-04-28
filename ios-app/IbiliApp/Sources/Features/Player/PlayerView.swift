@@ -52,7 +52,9 @@ final class PlayerViewModel: ObservableObject {
             let finalQualities = normalizedQualities(from: resolvedInfo).isEmpty ? qualities : normalizedQualities(from: resolvedInfo)
             self.availableQualities = finalQualities
             self.currentQn = resolvedInfo.quality
-            self.player = AVPlayer(playerItem: prep.item)
+            let player = AVPlayer(playerItem: prep.item)
+            player.automaticallyWaitsToMinimizeStalling = false
+            self.player = player
             applyRate()
             self.player?.play()
             AppLog.info("player", "播放器已就绪", metadata: [
@@ -102,6 +104,7 @@ final class PlayerViewModel: ObservableObject {
             let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: aid, cid: cid, qn: qn)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             player.replaceCurrentItem(with: prep.item)
+            player.automaticallyWaitsToMinimizeStalling = false
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             applyRate()
             if wasPlaying { player.play() }
