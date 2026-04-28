@@ -5,11 +5,6 @@ import UIKit
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
-    enum PlayurlMode: String, Hashable {
-        case autoWeb = "auto_web"
-        case forceTV = "force_tv"
-    }
-
     @Published var isLoading = true
     @Published var errorText: String?
     @Published private(set) var player: AVPlayer?
@@ -27,19 +22,20 @@ final class PlayerViewModel: ObservableObject {
     private var cid: Int64 = 0
     private var loadGeneration: UInt64 = 0
     private let discoveryQn: Int64 = 120
-    private var engine: PlaybackEngine = HLSProxyEngine.shared
-    private var engineKind: PlayerEngineKind = .hlsProxy
+    private let engine: PlaybackEngine = HLSProxyEngine.shared
     private var itemStatusObservation: NSKeyValueObservation?
+    /// Snapshot of the most recent `load(...)` arguments, used by
+    /// `reload()` to recover after the local proxy has been killed by
+    /// iOS in the background.
+    private var lastLoadedItem: FeedItemDTO?
+    private var lastPreferredQn: Int64 = 0
+    /// Number of automatic recovery attempts the view-model has issued
+    /// for the current `(aid, cid)`. Reset to zero in `load(...)`.
+    /// Cap of 1 keeps us from looping when the upstream playurl itself
+    /// is genuinely broken.
+    private var autoReloadAttempts: Int = 0
 
-    /// Set the active engine before calling `load`. Idempotent.
-    func setEngine(_ kind: PlayerEngineKind) {
-        guard kind != engineKind else { return }
-        engine.tearDown()
-        engineKind = kind
-        engine = PlaybackEngineFactory.make(kind: kind)
-    }
-
-    func load(item: FeedItemDTO, preferredQn: Int64, playurlMode: PlayurlMode) async {
+    func load(item: FeedItemDTO, preferredQn: Int64) async {
         if player != nil, aid == item.aid, cid == item.cid {
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
                 "aid": String(item.aid),
@@ -51,28 +47,27 @@ final class PlayerViewModel: ObservableObject {
         loadGeneration &+= 1
         let generation = loadGeneration
         aid = item.aid; cid = item.cid
+        lastLoadedItem = item
+        lastPreferredQn = preferredQn
+        autoReloadAttempts = 0
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
         AppLog.info("player", "开始加载播放器", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
             "preferredQn": String(preferredQn),
-            "playurlMode": playurlMode.rawValue,
-            "engine": engineKind.rawValue,
         ])
         do {
             let discoveryQnTarget = max(preferredQn, discoveryQn)
             let initial: PlayUrlDTO
             if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                        cid: item.cid,
-                                                       qn: discoveryQnTarget,
-                                                       playurlMode: playurlMode) {
+                                                       qn: discoveryQnTarget) {
                 initial = warm
             } else {
-                initial = try await fetchStartupPlayUrl(aid: item.aid,
-                                                        cid: item.cid,
-                                                        qn: discoveryQnTarget,
-                                                        playurlMode: playurlMode)
+                initial = try await fetchPlayUrl(aid: item.aid,
+                                                 cid: item.cid,
+                                                 qn: discoveryQnTarget)
             }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let qualities = normalizedQualities(from: initial)
@@ -82,17 +77,15 @@ final class PlayerViewModel: ObservableObject {
                 info = initial
             } else if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                                 cid: item.cid,
-                                                                qn: targetQn,
-                                                                playurlMode: playurlMode) {
+                                                                qn: targetQn) {
                 info = warm
             } else {
-                info = try await fetchStartupPlayUrl(aid: item.aid,
-                                                     cid: item.cid,
-                                                     qn: targetQn,
-                                                     playurlMode: playurlMode)
+                info = try await fetchPlayUrl(aid: item.aid,
+                                              cid: item.cid,
+                                              qn: targetQn)
             }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
-            let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: item.aid, cid: item.cid, qn: targetQn)
+            let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
                 AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
                     "aid": String(item.aid),
@@ -100,9 +93,9 @@ final class PlayerViewModel: ObservableObject {
                 ])
                 return
             }
-            let finalQualities = normalizedQualities(from: resolvedInfo).isEmpty ? qualities : normalizedQualities(from: resolvedInfo)
+            let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
             self.availableQualities = finalQualities
-            self.currentQn = resolvedInfo.quality
+            self.currentQn = info.quality
             let player = AVPlayer(playerItem: prep.item)
             // Leave `automaticallyWaitsToMinimizeStalling` at its default
             // (`true`). With our HLS proxy AVPlayer needs to fetch the
@@ -119,27 +112,14 @@ final class PlayerViewModel: ObservableObject {
             var meta = prep.logSummary
             meta["aid"] = String(item.aid)
             meta["cid"] = String(item.cid)
-            meta["quality"] = String(resolvedInfo.quality)
+            meta["quality"] = String(info.quality)
             meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
-            meta["streamType"] = resolvedInfo.streamType
-            meta["playurlMode"] = playurlMode.rawValue
-            meta["separateAudio"] = resolvedInfo.audioUrl == nil ? "false" : "true"
+            meta["streamType"] = info.streamType
+            meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
             meta["prepMs"] = String(prep.totalElapsedMs)
             meta["startupMs"] = String(startupMs)
             AppLog.info("player", "播放器已就绪", metadata: meta)
-            if playurlMode == .forceTV {
-                AppLog.info("player", "tv_durl 探针", metadata: [
-                    "aid": String(item.aid),
-                    "cid": String(item.cid),
-                    "requestedQn": String(targetQn),
-                    "resolvedQn": String(resolvedInfo.quality),
-                    "acceptQuality": resolvedInfo.acceptQuality.map(String.init).joined(separator: ","),
-                    "acceptDescription": resolvedInfo.acceptDescription.joined(separator: ","),
-                    "startupMs": String(startupMs),
-                    "prepMs": String(prep.totalElapsedMs),
-                ])
-            }
-            if let msg = resolvedInfo.debugMessage {
+            if let msg = info.debugMessage {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
         } catch {
@@ -154,7 +134,35 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func switchQuality(to qn: Int64, playurlMode: PlayurlMode) async {
+    /// Re-runs `load(...)` for the most recently loaded item. Used by
+    /// scene-phase recovery when the local HLS proxy has been killed in
+    /// the background and the existing AVPlayer can no longer pull from
+    /// `127.0.0.1:<dead port>`.
+    func reload() async {
+        guard let item = lastLoadedItem else { return }
+        AppLog.info("player", "检测到本地代理失效，重新加载", metadata: [
+            "aid": String(item.aid),
+            "cid": String(item.cid),
+        ])
+        // Force `load` past its idempotency check by clearing the
+        // currently-loaded coordinates and tearing down the player.
+        let priorAttempts = autoReloadAttempts
+        player?.pause()
+        player = nil
+        itemStatusObservation = nil
+        engine.tearDown()
+        aid = 0; cid = 0
+        await load(item: item, preferredQn: lastPreferredQn)
+        // `load(...)` zeroes the counter; preserve our caller's tally
+        // so a chain of failed reloads cannot loop indefinitely.
+        autoReloadAttempts = max(autoReloadAttempts, priorAttempts)
+    }
+
+    /// Whether the engine still owns a live proxy stream. False after
+    /// iOS suspends the app long enough to kill the listener.
+    var isEngineAlive: Bool { HLSProxyEngine.shared.isAlive }
+
+    func switchQuality(to qn: Int64) async {
         guard let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
@@ -164,16 +172,14 @@ final class PlayerViewModel: ObservableObject {
             "cid": String(cid),
             "fromQn": String(currentQn),
             "toQn": String(qn),
-            "playurlMode": playurlMode.rawValue,
-            "engine": engineKind.rawValue,
         ])
         do {
             // Releasing the previous source before allocating the new one
             // keeps the proxy token table from growing across switches.
             engine.tearDown()
-            let info = try await fetchStartupPlayUrl(aid: aid, cid: cid, qn: qn, playurlMode: playurlMode)
+            let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
-            let (resolvedInfo, prep) = try await makePlayableItem(from: info, aid: aid, cid: cid, qn: qn)
+            let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             isVideoReady = false
             observeItemStatus(prep.item, generation: generation)
@@ -181,30 +187,18 @@ final class PlayerViewModel: ObservableObject {
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             if wasPlaying { player.play() }
             applyRate()
-            self.availableQualities = normalizedQualities(from: resolvedInfo)
-            self.currentQn = resolvedInfo.quality
+            self.availableQualities = normalizedQualities(from: info)
+            self.currentQn = info.quality
             var meta = prep.logSummary
             meta["aid"] = String(aid)
             meta["cid"] = String(cid)
-            meta["quality"] = String(resolvedInfo.quality)
+            meta["quality"] = String(info.quality)
             meta["resumeSec"] = String(format: "%.3f", resumeAt.seconds)
-            meta["streamType"] = resolvedInfo.streamType
-            meta["playurlMode"] = playurlMode.rawValue
-            meta["separateAudio"] = resolvedInfo.audioUrl == nil ? "false" : "true"
+            meta["streamType"] = info.streamType
+            meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
             meta["prepMs"] = String(prep.totalElapsedMs)
             AppLog.info("player", "清晰度切换成功", metadata: meta)
-            if playurlMode == .forceTV {
-                AppLog.info("player", "tv_durl 切换探针", metadata: [
-                    "aid": String(aid),
-                    "cid": String(cid),
-                    "requestedQn": String(qn),
-                    "resolvedQn": String(resolvedInfo.quality),
-                    "acceptQuality": resolvedInfo.acceptQuality.map(String.init).joined(separator: ","),
-                    "acceptDescription": resolvedInfo.acceptDescription.joined(separator: ","),
-                    "prepMs": String(prep.totalElapsedMs),
-                ])
-            }
-            if let msg = resolvedInfo.debugMessage {
+            if let msg = info.debugMessage {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
         } catch {
@@ -244,10 +238,25 @@ final class PlayerViewModel: ObservableObject {
                     self.isVideoReady = true
                 case .failed:
                     let detail = item.error?.localizedDescription ?? "unknown"
-                    self.errorText = detail
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
                         "detail": detail,
                     ])
+                    // The most common cause we see is a stale
+                    // `127.0.0.1:<port>` from before iOS killed the
+                    // local listener while the app was suspended. Take
+                    // one shot at rebuilding the player against a
+                    // freshly-bound proxy port before surfacing an
+                    // error to the user.
+                    if self.autoReloadAttempts < 1 {
+                        self.autoReloadAttempts += 1
+                        AppLog.warning("player", "尝试自动恢复播放", metadata: [
+                            "detail": detail,
+                            "attempt": String(self.autoReloadAttempts),
+                        ])
+                        Task { await self.reload() }
+                    } else {
+                        self.errorText = detail
+                    }
                 default:
                     break
                 }
@@ -261,49 +270,8 @@ final class PlayerViewModel: ObservableObject {
         }.value
     }
 
-    private func fetchTVPlayUrl(aid: Int64, cid: Int64, qn: Int64) async throws -> PlayUrlDTO {
-        try await Task.detached {
-            try CoreClient.shared.playUrlTV(aid: aid, cid: cid, qn: qn)
-        }.value
-    }
-
-    private func fetchStartupPlayUrl(aid: Int64,
-                                     cid: Int64,
-                                     qn: Int64,
-                                     playurlMode: PlayurlMode) async throws -> PlayUrlDTO {
-        switch playurlMode {
-        case .autoWeb:
-            return try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
-        case .forceTV:
-            return try await fetchTVPlayUrl(aid: aid, cid: cid, qn: qn)
-        }
-    }
-
     private func isCurrentLoad(_ generation: UInt64, aid: Int64, cid: Int64) -> Bool {
         generation == loadGeneration && self.aid == aid && self.cid == cid
-    }
-
-    /// Build a player item from `info` using the active engine. If a
-    /// `web_dash` source fails to prep on iOS, fall back to `tv_durl` —
-    /// this is rare with the HLS proxy but kept as a safety net.
-    private func makePlayableItem(from info: PlayUrlDTO,
-                                  aid: Int64,
-                                  cid: Int64,
-                                  qn: Int64) async throws -> (PlayUrlDTO, EnginePreparation) {
-        do {
-            return (info, try await engine.makeItem(for: info))
-        } catch {
-            guard info.streamType == "web_dash" else { throw error }
-            AppLog.warning("player", "web DASH 资产加载失败，回退 tv_durl", metadata: [
-                "aid": String(aid),
-                "cid": String(cid),
-                "qn": String(qn),
-                "engine": engineKind.rawValue,
-                "error": error.localizedDescription,
-            ])
-            let compat = try await fetchTVPlayUrl(aid: aid, cid: cid, qn: qn)
-            return (compat, try await engine.makeItem(for: compat))
-        }
     }
 
     private func normalizedQualities(from info: PlayUrlDTO) -> [(qn: Int64, label: String)] {
@@ -490,6 +458,7 @@ struct PlayerView: View {
     /// Weak handle to the AVPlayerViewController so we can drive native FS.
     @State private var playerVCRef = PlayerVCBox()
     @EnvironmentObject private var settings: AppSettings
+    @Environment(\.scenePhase) private var scenePhase
 
     private let orientationPublisher = NotificationCenter.default
         .publisher(for: UIDevice.orientationDidChangeNotification)
@@ -548,17 +517,26 @@ struct PlayerView: View {
             didBootstrap = true
             configureAudioSession()
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-            vm.setEngine(settings.playerEngine)
             // Run the video preparation and the danmaku fetch concurrently
             // so a slow danmaku endpoint can never hold up first frame.
             async let video: Void = vm.load(item: item,
-                                            preferredQn: Int64(settings.resolvedPreferredVideoQn()),
-                                            playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
+                                            preferredQn: Int64(settings.resolvedPreferredVideoQn()))
             async let danmaku: Void = loadDanmaku()
             _ = await (video, danmaku)
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer { danmaku.attach(p) }
+        }
+        .onChange(of: scenePhase) { phase in
+            // When the app returns to the foreground after a long lock
+            // the local proxy may have been killed by iOS (Network
+            // framework cancels listeners on suspended apps). Rebuild
+            // the AVPlayerItem against a freshly-bound port so playback
+            // does not silently fail with "could not load resource".
+            guard phase == .active, didBootstrap, vm.player != nil else { return }
+            if !vm.isEngineAlive {
+                Task { await vm.reload() }
+            }
         }
         .onReceive(orientationPublisher) { _ in
             handleDeviceOrientationChange()
@@ -582,8 +560,7 @@ struct PlayerView: View {
                     ForEach(vm.availableQualities, id: \.qn) { q in
                         Button {
                             Task {
-                                await vm.switchQuality(to: q.qn,
-                                                       playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
+                                await vm.switchQuality(to: q.qn)
                             }
                         } label: {
                             if q.qn == vm.currentQn {

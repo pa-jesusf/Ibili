@@ -96,6 +96,16 @@ final class HLSProxyEngine: PlaybackEngine {
         liveTokens.removeAll()
     }
 
+    /// `true` only while the local proxy listener is still running and
+    /// at least one playback token remains registered. Returning `false`
+    /// after the app comes back from a long background spell is the
+    /// signal `PlayerView` uses to rebuild the AVPlayerItem against a
+    /// freshly-bound port.
+    var isAlive: Bool {
+        guard !liveTokens.isEmpty else { return false }
+        return LocalHLSProxy.shared.isHealthy
+    }
+
     // MARK: - Helpers
 
     private struct ProbeOutcome {

@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 import os
 
 /// In-process HTTP server bound to `127.0.0.1` that serves a tiny HLS view
@@ -37,9 +38,51 @@ final class LocalHLSProxy: @unchecked Sendable {
     private struct State {
         var port: UInt16 = 0
         var sources: [String: Source] = [:]
+        /// `true` between the listener's `.ready` event and the next
+        /// `.failed` / `.cancelled` event. iOS will tear the listener
+        /// down once the app has been suspended in the background long
+        /// enough; we use this flag plus `port == 0` to know we have to
+        /// re-bind on the next playback request.
+        var listenerHealthy: Bool = false
     }
 
-    private init() {}
+    /// Whether the local proxy is still serving requests. The Player
+    /// view checks this when it returns to foreground so it can rebuild
+    /// the AVPlayer item against a freshly-bound port.
+    var isHealthy: Bool { state.withLock { $0.listenerHealthy && $0.port != 0 } }
+
+    private init() {
+        // iOS will close our `NWListener` socket once the app has been
+        // suspended in the background; the `.cancelled` callback often
+        // arrives only AFTER the app is foregrounded again, which means
+        // a naive health check still sees the listener as alive while
+        // 127.0.0.1:<port> is already dead. Hooking
+        // `didEnterBackgroundNotification` lets us flip the health flag
+        // synchronously the moment the user locks the screen, so the
+        // very first `register(...)` after resume rebinds a fresh port.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.invalidate(reason: "didEnterBackground")
+        }
+    }
+
+    /// Force the next `register(...)` to bind a fresh listener. Safe to
+    /// call from any thread; idempotent.
+    func invalidate(reason: String) {
+        let wasHealthy = state.withLock { state -> Bool in
+            let was = state.listenerHealthy
+            state.listenerHealthy = false
+            state.port = 0
+            return was
+        }
+        guard wasHealthy else { return }
+        AppLog.info("player", "主动封闭 HLS 代理监听", metadata: ["reason": reason])
+        listener?.cancel()
+        listener = nil
+    }
 
     // MARK: - Public API
 
@@ -72,17 +115,35 @@ final class LocalHLSProxy: @unchecked Sendable {
     // MARK: - Lifecycle
 
     private func ensureRunning() throws {
-        if listener != nil { return }
+        if let listener, state.withLock({ $0.listenerHealthy && $0.port != 0 }) {
+            _ = listener
+            return
+        }
+        // Drop any zombie listener — iOS may have cancelled it under us
+        // while the app was suspended.
+        if let stale = listener {
+            stale.cancel()
+            self.listener = nil
+        }
+        state.withLock { $0.port = 0; $0.listenerHealthy = false }
         let listener = try NWListener(using: .tcp, on: .any)
         listener.stateUpdateHandler = { [weak self] netState in
+            guard let self else { return }
             switch netState {
             case .ready:
                 if let port = listener.port {
-                    self?.state.withLock { $0.port = port.rawValue }
+                    self.state.withLock {
+                        $0.port = port.rawValue
+                        $0.listenerHealthy = true
+                    }
                     AppLog.info("player", "HLS 代理已启动", metadata: ["port": String(port.rawValue)])
                 }
             case .failed(let err):
+                self.state.withLock { $0.listenerHealthy = false; $0.port = 0 }
                 AppLog.error("player", "HLS 代理监听失败", error: err)
+            case .cancelled:
+                self.state.withLock { $0.listenerHealthy = false; $0.port = 0 }
+                AppLog.warning("player", "HLS 代理监听已取消", metadata: [:])
             default:
                 break
             }

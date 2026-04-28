@@ -24,11 +24,9 @@ final class FeedPrefetchCoordinator: ObservableObject {
     private var settleTask: Task<Void, Never>?
 
     var preferredQn: Int64 = 0
-    var playurlMode: PlayerViewModel.PlayurlMode = .autoWeb
 
-    func update(preferredQn: Int64, playurlMode: PlayerViewModel.PlayurlMode) {
+    func update(preferredQn: Int64) {
         self.preferredQn = preferredQn
-        self.playurlMode = playurlMode
     }
 
     func cardAppeared(_ item: FeedItemDTO, indexInFeed: Int, allItems: [FeedItemDTO]) {
@@ -49,8 +47,7 @@ final class FeedPrefetchCoordinator: ObservableObject {
     /// waiting for `.task` on the player screen to fire the playurl.
     func touchDown(_ item: FeedItemDTO) {
         PlayUrlPrefetcher.shared.prefetch(item: item,
-                                          qn: max(preferredQn, 120),
-                                          playurlMode: playurlMode)
+                                          qn: max(preferredQn, 120))
     }
 
     private func scheduleSettle() {
@@ -71,8 +68,7 @@ final class FeedPrefetchCoordinator: ObservableObject {
             .prefix(prefetchDepth)
         for item in top {
             PlayUrlPrefetcher.shared.prefetch(item: item,
-                                              qn: max(preferredQn, 120),
-                                              playurlMode: playurlMode)
+                                              qn: max(preferredQn, 120))
         }
         // Cancel any in-flight prefetches outside the new visible window
         // so the LRU never accumulates stale work.

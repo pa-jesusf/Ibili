@@ -25,7 +25,6 @@ final class PlayUrlPrefetcher {
     struct Cached {
         let info: PlayUrlDTO
         let qn: Int64
-        let playurlMode: PlayerViewModel.PlayurlMode
         let timestamp: Date
     }
 
@@ -33,7 +32,6 @@ final class PlayUrlPrefetcher {
         let aid: Int64
         let cid: Int64
         let qn: Int64
-        let mode: PlayerViewModel.PlayurlMode
     }
 
     private var cache: [Key: Cached] = [:]
@@ -49,11 +47,9 @@ final class PlayUrlPrefetcher {
     private init() {}
 
     /// Fire-and-forget warm-up. Safe to call repeatedly; reschedules at
-    /// most one in-flight fetch per (aid, cid, qn, mode).
-    func prefetch(item: FeedItemDTO,
-                  qn: Int64,
-                  playurlMode: PlayerViewModel.PlayurlMode) {
-        let key = Key(aid: item.aid, cid: item.cid, qn: qn, mode: playurlMode)
+    /// most one in-flight fetch per (aid, cid, qn).
+    func prefetch(item: FeedItemDTO, qn: Int64) {
+        let key = Key(aid: item.aid, cid: item.cid, qn: qn)
         if let cached = cache[key], Date().timeIntervalSince(cached.timestamp) < maxAge {
             touch(key)
             return
@@ -63,27 +59,18 @@ final class PlayUrlPrefetcher {
             "aid": String(item.aid),
             "cid": String(item.cid),
             "qn": String(qn),
-            "mode": playurlMode.rawValue,
         ])
         let started = CFAbsoluteTimeGetCurrent()
         let task = Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.inflight[key] = nil } }
             do {
                 let info: PlayUrlDTO = try await Task.detached {
-                    switch playurlMode {
-                    case .autoWeb:
-                        return try CoreClient.shared.playUrl(aid: item.aid, cid: item.cid, qn: qn)
-                    case .forceTV:
-                        return try CoreClient.shared.playUrlTV(aid: item.aid, cid: item.cid, qn: qn)
-                    }
+                    try CoreClient.shared.playUrl(aid: item.aid, cid: item.cid, qn: qn)
                 }.value
                 let elapsed = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
                 await MainActor.run {
                     guard let self else { return }
-                    let entry = Cached(info: info,
-                                       qn: qn,
-                                       playurlMode: playurlMode,
-                                       timestamp: Date())
+                    let entry = Cached(info: info, qn: qn, timestamp: Date())
                     self.cache[key] = entry
                     self.touch(key)
                     self.evictIfNeeded()
@@ -109,11 +96,8 @@ final class PlayUrlPrefetcher {
     /// Consume a previously prefetched playurl, returning it only if
     /// fresh. The entry is removed on take so a stale URL cannot be
     /// reused after a navigation cycle.
-    func take(aid: Int64,
-              cid: Int64,
-              qn: Int64,
-              playurlMode: PlayerViewModel.PlayurlMode) -> PlayUrlDTO? {
-        let key = Key(aid: aid, cid: cid, qn: qn, mode: playurlMode)
+    func take(aid: Int64, cid: Int64, qn: Int64) -> PlayUrlDTO? {
+        let key = Key(aid: aid, cid: cid, qn: qn)
         guard let cached = cache.removeValue(forKey: key) else { return nil }
         recency.removeAll { $0 == key }
         guard Date().timeIntervalSince(cached.timestamp) < maxAge else { return nil }

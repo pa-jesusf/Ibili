@@ -70,12 +70,7 @@ struct HomeView: View {
                 PlayerView(item: item)
             }
             .onAppear {
-                prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()),
-                                playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
-            }
-            .onChange(of: settings.forceTVPlayurl) { _ in
-                prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()),
-                                playurlMode: settings.forceTVPlayurl ? .forceTV : .autoWeb)
+                prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()))
             }
         }
     }
