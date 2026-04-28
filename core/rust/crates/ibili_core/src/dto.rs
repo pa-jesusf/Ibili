@@ -46,16 +46,24 @@ pub struct FeedPage {
 #[derive(Debug, Serialize, Clone)]
 pub struct PlayUrl {
     pub url: String,
+    pub audio_url: Option<String>,
     pub format: String,
+    pub stream_type: String,
     pub quality: i64,
     pub duration_ms: i64,
     pub backup_urls: Vec<String>,
+    pub audio_backup_urls: Vec<String>,
     /// Bilibili `accept_quality` numeric codes, in descending order
     /// (e.g. `[112, 80, 64, 32, 16]`).
     pub accept_quality: Vec<i64>,
     /// Human-readable labels matching `accept_quality` 1:1
     /// (e.g. `["高清 1080P+", "高清 1080P", ...]`).
     pub accept_description: Vec<String>,
+    /// Diagnostic message for non-fatal degradations (e.g. wbi/playurl
+    /// failed and we silently fell back to tv_durl). Surfaced by the iOS
+    /// layer into the in-app log viewer so the cause is visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_message: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

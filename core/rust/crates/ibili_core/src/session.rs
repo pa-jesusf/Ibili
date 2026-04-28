@@ -6,6 +6,14 @@ pub struct PersistedSession {
     pub refresh_token: String,
     pub mid: i64,
     pub expires_at_secs: i64,
+    /// Web-flavoured cookies (SESSDATA / bili_jct / DedeUserID …) returned
+    /// alongside the TV QR poll response. Required for `/x/player/wbi/playurl`,
+    /// `/x/web-interface/nav` and any other web-side endpoint to authenticate
+    /// the user — without these, B 站 caps anonymous web playurl at qn=64.
+    /// Optional in JSON for backward compatibility with sessions persisted
+    /// before this field existed.
+    #[serde(default)]
+    pub web_cookies: Vec<(String, String)>,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]

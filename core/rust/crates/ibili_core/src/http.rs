@@ -1,7 +1,10 @@
 use crate::error::{CoreError, CoreResult};
 use crate::dto::ApiEnvelope;
+use reqwest::Url;
 use reqwest::blocking::Client;
+use reqwest::cookie::{CookieStore, Jar};
 use serde::de::DeserializeOwned;
+use std::sync::Arc;
 
 /// Matches PiliPlus `Constants.userAgent` (android_hd/TV User-Agent).
 pub const UA_TV: &str = "Mozilla/5.0 BiliDroid/2.0.1 (bbcallen@gmail.com) os/android model/android_hd mobi_app/android_hd build/2001100 channel/master innerVer/2001100 osVer/15 network/2";
@@ -31,12 +34,14 @@ fn app_headers() -> reqwest::header::HeaderMap {
 
 pub struct HttpClient {
     pub client: Client,
+    pub jar: Arc<Jar>,
 }
 
 impl HttpClient {
     pub fn new() -> CoreResult<Self> {
+        let jar = Arc::new(Jar::default());
         let client = Client::builder()
-            .cookie_store(true)
+            .cookie_provider(jar.clone())
             .gzip(true)
             .timeout(std::time::Duration::from_secs(20))
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -44,7 +49,38 @@ impl HttpClient {
             .user_agent(UA_TV)
             .build()
             .map_err(|e| CoreError::Internal(net_msg(&e)))?;
-        Ok(Self { client })
+        Ok(Self { client, jar })
+    }
+
+    /// Inject web cookies (e.g. SESSDATA / bili_jct / DedeUserID) into the
+    /// shared jar so subsequent web-flavoured requests carry them.
+    /// `pairs` is `(name, value)`; cookies are scoped to `.bilibili.com`.
+    pub fn install_web_cookies(&self, pairs: &[(String, String)]) {
+        if pairs.is_empty() { return; }
+        let url: Url = "https://api.bilibili.com/".parse().expect("valid url");
+        for (name, value) in pairs {
+            let cookie = format!(
+                "{}={}; Domain=.bilibili.com; Path=/; Secure",
+                name, value
+            );
+            self.jar.add_cookie_str(&cookie, &url);
+        }
+    }
+
+    /// Read currently stored web cookies for bilibili.com. Useful at logout
+    /// (we just drop the whole HttpClient instead in practice) and for
+    /// snapshotting at login time.
+    pub fn snapshot_cookies(&self) -> Vec<(String, String)> {
+        let url: Url = "https://api.bilibili.com/".parse().expect("valid url");
+        let Some(value) = self.jar.cookies(&url) else { return Vec::new(); };
+        let raw = value.to_str().unwrap_or("").to_string();
+        raw.split(';')
+            .filter_map(|p| {
+                let p = p.trim();
+                let eq = p.find('=')?;
+                Some((p[..eq].to_string(), p[eq + 1..].to_string()))
+            })
+            .collect()
     }
 
     pub fn get_signed_app<T: DeserializeOwned>(
@@ -67,6 +103,20 @@ impl HttpClient {
         // PiliPlus posts with queryParameters (URL-encoded query, empty body).
         let resp = self.client.post(url)
             .headers(app_headers())
+            .query(&params)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
+    pub fn get_signed_web<T: DeserializeOwned>(
+        &self, url: &str, mut params: Vec<(String, String)>, key: &crate::signer::WbiKey,
+    ) -> CoreResult<T> {
+        crate::signer::WbiSigner::sign(&mut params, key);
+        let resp = self.client.get(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
             .query(&params)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;

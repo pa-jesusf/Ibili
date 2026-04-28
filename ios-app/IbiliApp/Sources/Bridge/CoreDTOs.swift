@@ -18,11 +18,19 @@ public struct PersistedSessionDTO: Codable {
     public let refreshToken: String
     public let mid: Int64
     public let expiresAtSecs: Int64
+    /// Web cookies (SESSDATA / bili_jct / DedeUserID …) returned by the TV
+    /// QR poll. Required to authenticate `/x/player/wbi/playurl` and other
+    /// web endpoints; absence caps playback at 480p (qn=64). Encoded as a
+    /// JSON array of `[name, value]` pairs to match the Rust `Vec<(String,String)>`
+    /// representation. Optional for back-compat with sessions saved before
+    /// this field existed.
+    public let webCookies: [[String]]?
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case mid
         case expiresAtSecs = "expires_at_secs"
+        case webCookies = "web_cookies"
     }
 }
 
@@ -80,18 +88,26 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
 
 public struct PlayUrlDTO: Decodable {
     public let url: String
+    public let audioUrl: String?
     public let format: String
+    public let streamType: String
     public let quality: Int64
     public let durationMs: Int64
     public let backupUrls: [String]
+    public let audioBackupUrls: [String]
     public let acceptQuality: [Int64]
     public let acceptDescription: [String]
+    public let debugMessage: String?
     enum CodingKeys: String, CodingKey {
         case url, format, quality
+        case audioUrl = "audio_url"
+        case streamType = "stream_type"
         case durationMs = "duration_ms"
         case backupUrls = "backup_urls"
+        case audioBackupUrls = "audio_backup_urls"
         case acceptQuality = "accept_quality"
         case acceptDescription = "accept_description"
+        case debugMessage = "debug_message"
     }
 }
 

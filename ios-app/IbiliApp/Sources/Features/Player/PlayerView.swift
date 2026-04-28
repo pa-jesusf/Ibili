@@ -9,12 +9,12 @@ final class PlayerViewModel: ObservableObject {
     @Published var errorText: String?
     @Published private(set) var player: AVPlayer?
     @Published private(set) var availableQualities: [(qn: Int64, label: String)] = []
-    @Published private(set) var reportedQn: Int64 = 0
     @Published var currentQn: Int64 = 0
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
 
     private var aid: Int64 = 0
     private var cid: Int64 = 0
+    private var loadGeneration: UInt64 = 0
     private let discoveryQn: Int64 = 120
 
     func load(item: FeedItemDTO, preferredQn: Int64) async {
@@ -25,6 +25,8 @@ final class PlayerViewModel: ObservableObject {
             ])
             return
         }
+        loadGeneration &+= 1
+        let generation = loadGeneration
         aid = item.aid; cid = item.cid
         isLoading = true; errorText = nil
         AppLog.info("player", "开始加载播放器", metadata: [
@@ -34,27 +36,36 @@ final class PlayerViewModel: ObservableObject {
         ])
         do {
             let initial = try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: max(preferredQn, discoveryQn))
+            guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let qualities = normalizedQualities(from: initial)
             let targetQn = resolveTargetQn(preferredQn: preferredQn, qualities: qualities, fallback: initial.quality)
             let info = targetQn == initial.quality ? initial : try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: targetQn)
-            let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
-            guard let url = URL(string: info.url) else {
-                errorText = "无效的播放地址"; isLoading = false; return
+            guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
+            let (resolvedInfo, playerItem) = try await makePlayableItem(from: info, aid: item.aid, cid: item.cid, qn: targetQn)
+            guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
+                AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
+                    "aid": String(item.aid),
+                    "cid": String(item.cid),
+                ])
+                return
             }
+            let finalQualities = normalizedQualities(from: resolvedInfo).isEmpty ? qualities : normalizedQualities(from: resolvedInfo)
             self.availableQualities = finalQualities
-            self.reportedQn = info.quality
-            self.currentQn = resolveDisplayedQn(requestedQn: targetQn, info: info)
-            self.player = AVPlayer(playerItem: makePlayerItem(url: url))
+            self.currentQn = resolvedInfo.quality
+            self.player = AVPlayer(playerItem: playerItem)
             applyRate()
             self.player?.play()
             AppLog.info("player", "播放器已就绪", metadata: [
                 "aid": String(item.aid),
                 "cid": String(item.cid),
-                "quality": String(currentQn),
-                "reportedQn": String(info.quality),
+                "quality": String(resolvedInfo.quality),
                 "available": finalQualities.map { String($0.qn) }.joined(separator: ","),
+                "streamType": resolvedInfo.streamType,
+                "separateAudio": resolvedInfo.audioUrl == nil ? "false" : "true",
             ])
-            logQualityMismatchIfNeeded(requestedQn: targetQn, reportedQn: info.quality)
+            if let msg = resolvedInfo.debugMessage {
+                AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
+            }
         } catch {
             errorText = error.localizedDescription
             AppLog.error("player", "播放器加载失败", error: error, metadata: [
@@ -62,11 +73,14 @@ final class PlayerViewModel: ObservableObject {
                 "cid": String(item.cid),
             ])
         }
-        isLoading = false
+        if isCurrentLoad(generation, aid: item.aid, cid: item.cid) {
+            isLoading = false
+        }
     }
 
     func switchQuality(to qn: Int64) async {
         guard let player else { return }
+        let generation = loadGeneration
         let resumeAt = player.currentTime()
         let wasPlaying = player.timeControlStatus == .playing
         AppLog.info("player", "开始切换清晰度", metadata: [
@@ -77,23 +91,26 @@ final class PlayerViewModel: ObservableObject {
         ])
         do {
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
-            guard let url = URL(string: info.url) else { return }
-            let newItem = makePlayerItem(url: url)
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            let (resolvedInfo, newItem) = try await makePlayableItem(from: info, aid: aid, cid: cid, qn: qn)
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             player.replaceCurrentItem(with: newItem)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             applyRate()
             if wasPlaying { player.play() }
-            self.availableQualities = normalizedQualities(from: info)
-            self.reportedQn = info.quality
-            self.currentQn = resolveDisplayedQn(requestedQn: qn, info: info)
+            self.availableQualities = normalizedQualities(from: resolvedInfo)
+            self.currentQn = resolvedInfo.quality
             AppLog.info("player", "清晰度切换成功", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
-                "quality": String(currentQn),
-                "reportedQn": String(info.quality),
+                "quality": String(resolvedInfo.quality),
                 "resumeSec": String(format: "%.3f", resumeAt.seconds),
+                "streamType": resolvedInfo.streamType,
+                "separateAudio": resolvedInfo.audioUrl == nil ? "false" : "true",
             ])
-            logQualityMismatchIfNeeded(requestedQn: qn, reportedQn: info.quality)
+            if let msg = resolvedInfo.debugMessage {
+                AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
+            }
         } catch {
             errorText = error.localizedDescription
             AppLog.error("player", "清晰度切换失败", error: error, metadata: [
@@ -105,6 +122,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func teardown() {
+        loadGeneration &+= 1
         AppLog.debug("player", "销毁播放器", metadata: [
             "aid": String(aid),
             "cid": String(cid),
@@ -118,6 +136,35 @@ final class PlayerViewModel: ObservableObject {
         try await Task.detached {
             try CoreClient.shared.playUrl(aid: aid, cid: cid, qn: qn)
         }.value
+    }
+
+    private func fetchTVPlayUrl(aid: Int64, cid: Int64, qn: Int64) async throws -> PlayUrlDTO {
+        try await Task.detached {
+            try CoreClient.shared.playUrlTV(aid: aid, cid: cid, qn: qn)
+        }.value
+    }
+
+    private func isCurrentLoad(_ generation: UInt64, aid: Int64, cid: Int64) -> Bool {
+        generation == loadGeneration && self.aid == aid && self.cid == cid
+    }
+
+    private func makePlayableItem(from info: PlayUrlDTO,
+                                  aid: Int64,
+                                  cid: Int64,
+                                  qn: Int64) async throws -> (PlayUrlDTO, AVPlayerItem) {
+        do {
+            return (info, try await PlayerItemFactory.makeItem(from: info))
+        } catch {
+            guard info.audioUrl != nil, info.streamType == "web_dash" else { throw error }
+            AppLog.warning("player", "web DASH 资产加载失败，回退 tv_durl", metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "qn": String(qn),
+                "error": error.localizedDescription,
+            ])
+            let compat = try await fetchTVPlayUrl(aid: aid, cid: cid, qn: qn)
+            return (compat, try await PlayerItemFactory.makeItem(from: compat))
+        }
     }
 
     private func normalizedQualities(from info: PlayUrlDTO) -> [(qn: Int64, label: String)] {
@@ -137,24 +184,6 @@ final class PlayerViewModel: ObservableObject {
         return sorted.first(where: { $0 <= preferredQn }) ?? highest
     }
 
-    private func resolveDisplayedQn(requestedQn: Int64, info: PlayUrlDTO) -> Int64 {
-        let available = Set(info.acceptQuality).union([info.quality])
-        if requestedQn > 0, available.contains(requestedQn) {
-            return requestedQn
-        }
-        return info.quality
-    }
-
-    private func logQualityMismatchIfNeeded(requestedQn: Int64, reportedQn: Int64) {
-        guard requestedQn > 0, requestedQn != reportedQn else { return }
-        AppLog.warning("player", "后端返回的 quality 与请求不一致", metadata: [
-            "aid": String(aid),
-            "cid": String(cid),
-            "requestedQn": String(requestedQn),
-            "reportedQn": String(reportedQn),
-        ])
-    }
-
     private func qualityLabel(for qn: Int64) -> String {
         switch qn {
         case 120: return "4K"
@@ -171,18 +200,6 @@ final class PlayerViewModel: ObservableObject {
         guard let player else { return }
         player.rate = rate
         if rate != 0 { player.defaultRate = rate }
-    }
-
-    private func makePlayerItem(url: URL) -> AVPlayerItem {
-        let asset = AVURLAsset(url: url, options: [
-            "AVURLAssetHTTPHeaderFieldsKey": [
-                "User-Agent": "Bilibili Freedoooooom/MarkII",
-                "Referer": "https://www.bilibili.com/"
-            ]
-        ])
-        let item = AVPlayerItem(asset: asset)
-        item.audioTimePitchAlgorithm = .spectral
-        return item
     }
 }
 

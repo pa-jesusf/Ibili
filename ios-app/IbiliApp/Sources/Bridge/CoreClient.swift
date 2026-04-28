@@ -149,9 +149,14 @@ public final class CoreClient: @unchecked Sendable {
         return try call("feed.home", args: A(idx: idx, ps: ps), decoding: FeedPageDTO.self)
     }
 
-    public func playUrl(aid: Int64, cid: Int64, qn: Int64 = 64) throws -> PlayUrlDTO {
+    public func playUrl(aid: Int64, cid: Int64, qn: Int64 = 0) throws -> PlayUrlDTO {
         struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64 }
         return try call("video.playurl", args: A(aid: aid, cid: cid, qn: qn), decoding: PlayUrlDTO.self)
+    }
+
+    public func playUrlTV(aid: Int64, cid: Int64, qn: Int64 = 0) throws -> PlayUrlDTO {
+        struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64 }
+        return try call("video.playurl.tv", args: A(aid: aid, cid: cid, qn: qn), decoding: PlayUrlDTO.self)
     }
 
     public func danmakuList(cid: Int64) throws -> DanmakuTrackDTO {

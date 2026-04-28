@@ -16,6 +16,24 @@ struct PollData {
     refresh_token: String,
     mid: i64,
     expires_in: i64,
+    /// TV QR poll returns web-side cookies (SESSDATA / bili_jct / DedeUserID …)
+    /// alongside the access_token. Mirrors PiliPlus
+    /// `data['cookie_info']['cookies']` consumed in
+    /// `lib/pages/login/controller.dart::setAccount`.
+    #[serde(default)]
+    cookie_info: Option<CookieInfo>,
+}
+
+#[derive(Deserialize)]
+struct CookieInfo {
+    #[serde(default)]
+    cookies: Vec<CookiePair>,
+}
+
+#[derive(Deserialize)]
+struct CookiePair {
+    name: String,
+    value: String,
 }
 
 impl Core {
@@ -39,11 +57,19 @@ impl Core {
             Ok(d) => {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+                let web_cookies: Vec<(String, String)> = d.cookie_info
+                    .map(|ci| ci.cookies.into_iter().map(|c| (c.name, c.value)).collect())
+                    .unwrap_or_default();
+                // Push cookies into the live http jar so the very next
+                // wbi/playurl call (e.g. user immediately taps a video) is
+                // authenticated, not just future restored sessions.
+                self.http.install_web_cookies(&web_cookies);
                 let session = PersistedSession {
                     access_token: d.access_token,
                     refresh_token: d.refresh_token,
                     mid: d.mid,
                     expires_at_secs: now + d.expires_in,
+                    web_cookies,
                 };
                 *self.session.write() = crate::session::Session::from_persisted(session.clone());
                 Ok(TvQrPoll::Confirmed { session })

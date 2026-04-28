@@ -116,6 +116,7 @@ fn session_round_trip() {
         refresh_token: "ref".into(),
         mid: 42,
         expires_at_secs: 1_700_000_000,
+        web_cookies: Vec::new(),
     };
     let s = Session::from_persisted(p.clone());
     assert_eq!(s.access_key().unwrap(), "tok");

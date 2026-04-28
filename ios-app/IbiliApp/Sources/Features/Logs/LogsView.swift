@@ -41,7 +41,7 @@ struct LogsView: View {
     var body: some View {
         List {
             Section {
-                Text("遇到问题后，进入这里复制日志发给我，能直接看到登录、首页、播放和底层 Core 调用的状态。")
+                Text("遇到问题后，复制并发送日志给开发者可以帮助快速定位问题。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

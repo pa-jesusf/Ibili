@@ -1,10 +1,12 @@
 use crate::Core;
 use crate::dto::PlayUrl;
 use crate::error::{CoreError, CoreResult};
-use serde::Deserialize;
+use crate::signer::WbiKey;
+use serde::{Deserialize, Deserializer};
 
-/// Mirrors `Api.tvPlayUrl = '/x/tv/playurl'` (resolved against api.bilibili.com).
-const URL_PLAYURL: &str = "https://api.bilibili.com/x/tv/playurl";
+const URL_PLAYURL_WEB: &str = "https://api.bilibili.com/x/player/wbi/playurl";
+const URL_PLAYURL_TV: &str = "https://api.bilibili.com/x/tv/playurl";
+const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 
 #[derive(Deserialize)]
 struct PlayUrlRoot {
@@ -14,12 +16,84 @@ struct PlayUrlRoot {
     #[serde(default, deserialize_with = "null_as_default")] durl: Vec<Durl>,
     #[serde(default, deserialize_with = "null_as_default")] accept_quality: Vec<i64>,
     #[serde(default, deserialize_with = "null_as_default")] accept_description: Vec<String>,
+    #[serde(default)] dash: Option<Dash>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Durl {
     #[serde(default)] url: String,
     #[serde(default, deserialize_with = "null_as_default")] backup_url: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Dash {
+    #[serde(default, deserialize_with = "null_as_default")] video: Vec<DashVideo>,
+    #[serde(default, deserialize_with = "null_as_default")] audio: Vec<DashAudio>,
+    #[serde(default)] flac: Option<FlacAudio>,
+    #[serde(default)] dolby: Option<DolbyAudio>,
+}
+
+#[derive(Default, Deserialize)]
+struct FlacAudio {
+    #[serde(default)] audio: Option<DashAudio>,
+}
+
+#[derive(Default, Deserialize)]
+struct DolbyAudio {
+    #[serde(default, deserialize_with = "null_as_default")] audio: Vec<DashAudio>,
+}
+
+#[derive(Clone)]
+struct DashVideo {
+    id: i64,
+    base_url: String,
+    backup_url: Vec<String>,
+    codecs: String,
+    bandwidth: i64,
+}
+
+#[derive(Clone)]
+struct DashAudio {
+    id: i64,
+    base_url: String,
+    backup_url: Vec<String>,
+    codecs: String,
+    bandwidth: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct DashVideoWire {
+    #[serde(default)] id: i64,
+    #[serde(default)] base_url: String,
+    #[serde(default, rename = "baseUrl")] base_url_camel: String,
+    #[serde(default, deserialize_with = "null_as_default")] backup_url: Vec<String>,
+    #[serde(default, rename = "backupUrl", deserialize_with = "null_as_default")] backup_url_camel: Vec<String>,
+    #[serde(default)] codecs: String,
+    #[serde(default)] bandwidth: i64,
+    #[serde(default, rename = "bandWidth")] bandwidth_camel: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct DashAudioWire {
+    #[serde(default)] id: i64,
+    #[serde(default)] base_url: String,
+    #[serde(default, rename = "baseUrl")] base_url_camel: String,
+    #[serde(default, deserialize_with = "null_as_default")] backup_url: Vec<String>,
+    #[serde(default, rename = "backupUrl", deserialize_with = "null_as_default")] backup_url_camel: Vec<String>,
+    #[serde(default)] codecs: String,
+    #[serde(default)] bandwidth: i64,
+    #[serde(default, rename = "bandWidth")] bandwidth_camel: i64,
+}
+
+#[derive(Deserialize)]
+struct NavData {
+    wbi_img: NavWbiImage,
+}
+
+#[derive(Deserialize)]
+struct NavWbiImage {
+    img_url: String,
+    sub_url: String,
 }
 
 fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
@@ -30,12 +104,110 @@ where
     Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
+fn prefer_non_empty(primary: String, secondary: String) -> String {
+    if !primary.is_empty() { primary } else { secondary }
+}
+
+fn prefer_non_empty_vec<T>(primary: Vec<T>, secondary: Vec<T>) -> Vec<T> {
+    if !primary.is_empty() { primary } else { secondary }
+}
+
+fn prefer_non_zero(primary: i64, secondary: i64) -> i64 {
+    if primary != 0 { primary } else { secondary }
+}
+
+impl From<DashVideoWire> for DashVideo {
+    fn from(wire: DashVideoWire) -> Self {
+        Self {
+            id: wire.id,
+            base_url: prefer_non_empty(wire.base_url, wire.base_url_camel),
+            backup_url: prefer_non_empty_vec(wire.backup_url, wire.backup_url_camel),
+            codecs: wire.codecs,
+            bandwidth: prefer_non_zero(wire.bandwidth, wire.bandwidth_camel),
+        }
+    }
+}
+
+impl From<DashAudioWire> for DashAudio {
+    fn from(wire: DashAudioWire) -> Self {
+        Self {
+            id: wire.id,
+            base_url: prefer_non_empty(wire.base_url, wire.base_url_camel),
+            backup_url: prefer_non_empty_vec(wire.backup_url, wire.backup_url_camel),
+            codecs: wire.codecs,
+            bandwidth: prefer_non_zero(wire.bandwidth, wire.bandwidth_camel),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DashVideo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        DashVideoWire::deserialize(deserializer).map(Into::into)
+    }
+}
+
+impl<'de> Deserialize<'de> for DashAudio {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        DashAudioWire::deserialize(deserializer).map(Into::into)
+    }
+}
+
 impl Core {
-    /// Mirrors `VideoHttp.tvPlayUrl` from upstream PiliPlus.
     pub fn video_playurl(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
+        match self.video_playurl_web(aid, cid, qn) {
+            Ok(play) => Ok(play),
+            Err(web_err) => {
+                let web_msg = format!("wbi/playurl failed → fell back to tv_durl: {web_err}");
+                eprintln!("[ibili_core] {web_msg}");
+                match self.video_playurl_tv(aid, cid, qn) {
+                    Ok(mut play) => {
+                        // Embed the web-path failure into the response so
+                        // iOS log viewer can show the real cause without
+                        // requiring an Xcode console attachment.
+                        play.debug_message = Some(web_msg);
+                        Ok(play)
+                    }
+                    Err(tv_err) => Err(CoreError::Internal(format!(
+                        "web playurl failed: {web_err}; tv playurl failed: {tv_err}"
+                    ))),
+                }
+            }
+        }
+    }
+
+    pub fn video_playurl_tv_compat(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
+        self.video_playurl_tv(aid, cid, qn)
+    }
+
+    fn video_playurl_web(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
+        let qn = if qn <= 0 { 80 } else { qn };
+        let wbi_key = self.fetch_wbi_key()?;
+        let params = vec![
+            ("avid".into(), aid.to_string()),
+            ("cid".into(), cid.to_string()),
+            ("qn".into(), qn.to_string()),
+            ("fnval".into(), "4048".into()),
+            ("fourk".into(), "1".into()),
+            ("fnver".into(), "0".into()),
+            ("voice_balance".into(), "1".into()),
+            ("gaia_source".into(), "pre-load".into()),
+            ("isGaiaAvoided".into(), "true".into()),
+            ("web_location".into(), "1315873".into()),
+        ];
+        let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
+        build_playurl_from_web_response(response, qn)
+    }
+
+    /// Mirrors `VideoHttp.tvPlayUrl` from upstream PiliPlus.
+    fn video_playurl_tv(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
         let access_key = self.session.read().access_key()
             .ok_or(CoreError::AuthRequired)?;
-        // PiliPlus default qn is 80; we accept caller override.
         let qn = if qn <= 0 { 80 } else { qn };
         let params = vec![
             ("access_key".into(), access_key.clone()),
@@ -51,19 +223,222 @@ impl Core {
             ("protocol".into(), "0".into()),
             ("qn".into(), qn.to_string()),
         ];
-        let r: PlayUrlRoot = self.http.get_signed_app(URL_PLAYURL, params)?;
+        let r: PlayUrlRoot = self.http.get_signed_app(URL_PLAYURL_TV, params)?;
         let accept_quality = r.accept_quality.clone();
         let accept_description = r.accept_description.clone();
         let first = r.durl.into_iter().next()
             .ok_or_else(|| CoreError::Decode("empty durl".into()))?;
         Ok(PlayUrl {
             url: first.url,
+            audio_url: None,
             format: r.format,
+            stream_type: "tv_durl".into(),
             quality: r.quality,
             duration_ms: r.timelength,
             backup_urls: first.backup_url,
+            audio_backup_urls: Vec::new(),
             accept_quality,
             accept_description,
+            debug_message: None,
         })
+    }
+
+    fn fetch_wbi_key(&self) -> CoreResult<WbiKey> {
+        let nav: NavData = self.http.get_web(URL_NAV, &[])?;
+        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+    }
+}
+
+impl Dash {
+    fn all_audio(self) -> Vec<DashAudio> {
+        let mut audio = Vec::new();
+        if let Some(flac) = self.flac.and_then(|item| item.audio) {
+            audio.push(flac);
+        }
+        if let Some(dolby) = self.dolby {
+            audio.extend(dolby.audio);
+        }
+        audio.extend(self.audio);
+        audio
+    }
+}
+
+impl DashVideo {
+    fn play_url(&self) -> Option<String> {
+        if !self.base_url.is_empty() {
+            Some(self.base_url.clone())
+        } else {
+            self.backup_url.first().cloned()
+        }
+    }
+}
+
+impl DashAudio {
+    fn play_url(&self) -> Option<String> {
+        if !self.base_url.is_empty() {
+            Some(self.base_url.clone())
+        } else {
+            self.backup_url.first().cloned()
+        }
+    }
+}
+
+fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> CoreResult<PlayUrl> {
+    let accept_quality = if response.accept_quality.is_empty() {
+        response.dash.as_ref()
+            .map(|dash| collect_dash_qualities(&dash.video))
+            .unwrap_or_default()
+    } else {
+        response.accept_quality.clone()
+    };
+    let accept_description = if response.accept_description.is_empty() {
+        accept_quality.iter().map(|qn| quality_label(*qn)).collect()
+    } else {
+        response.accept_description.clone()
+    };
+
+    if let Some(dash) = response.dash {
+        let target_qn = pick_target_quality(requested_qn, &accept_quality, &dash.video);
+        if let Some(video) = pick_video_stream(&dash.video, target_qn) {
+            let audio = pick_audio_stream(&dash.all_audio());
+            if let Some(video_url) = video.play_url() {
+                return Ok(PlayUrl {
+                    url: video_url,
+                    audio_url: audio.as_ref().and_then(|item| item.play_url()),
+                    format: response.format,
+                    stream_type: "web_dash".into(),
+                    quality: video.id,
+                    duration_ms: response.timelength,
+                    backup_urls: video.backup_url.clone(),
+                    audio_backup_urls: audio.map(|item| item.backup_url).unwrap_or_default(),
+                    accept_quality,
+                    accept_description,
+            debug_message: None,
+                });
+            }
+        }
+    }
+
+    let first = response.durl.into_iter().next()
+        .ok_or_else(|| CoreError::Decode("missing playable stream".into()))?;
+    Ok(PlayUrl {
+        url: first.url,
+        audio_url: None,
+        format: response.format,
+        stream_type: "web_durl".into(),
+        quality: response.quality,
+        duration_ms: response.timelength,
+        backup_urls: first.backup_url,
+        audio_backup_urls: Vec::new(),
+        accept_quality,
+        accept_description,
+        debug_message: None,
+    })
+}
+
+fn collect_dash_qualities(videos: &[DashVideo]) -> Vec<i64> {
+    let mut items = videos.iter().map(|item| item.id).collect::<Vec<_>>();
+    items.sort_unstable_by(|a, b| b.cmp(a));
+    items.dedup();
+    items
+}
+
+fn pick_target_quality(requested_qn: i64, accept_quality: &[i64], videos: &[DashVideo]) -> i64 {
+    let mut candidates = if accept_quality.is_empty() {
+        collect_dash_qualities(videos)
+    } else {
+        accept_quality.to_vec()
+    };
+    candidates.sort_unstable_by(|a, b| b.cmp(a));
+    candidates.dedup();
+    let highest = candidates.first().copied()
+        .or_else(|| videos.iter().map(|item| item.id).max())
+        .unwrap_or(64);
+    if requested_qn <= 0 {
+        return highest;
+    }
+    candidates.into_iter().find(|item| *item <= requested_qn).unwrap_or(highest)
+}
+
+fn pick_video_stream(videos: &[DashVideo], target_qn: i64) -> Option<DashVideo> {
+    let resolved_qn = videos.iter()
+        .map(|item| item.id)
+        .filter(|item| *item <= target_qn)
+        .max()
+        .or_else(|| videos.iter().map(|item| item.id).max())?;
+    videos.iter()
+        .filter(|item| item.id == resolved_qn)
+        .max_by_key(|item| (video_codec_score(&item.codecs), item.bandwidth))
+        .cloned()
+}
+
+fn pick_audio_stream(audio: &[DashAudio]) -> Option<DashAudio> {
+    audio.iter()
+        .max_by_key(|item| (audio_codec_score(&item.codecs), item.bandwidth, item.id))
+        .cloned()
+}
+
+fn video_codec_score(codecs: &str) -> i32 {
+    if codecs.starts_with("avc1") { 300 }
+    else if codecs.starts_with("hev1") || codecs.starts_with("hvc1") { 200 }
+    else { 100 }
+}
+
+fn audio_codec_score(codecs: &str) -> i32 {
+    if codecs.starts_with("mp4a") { 200 }
+    else if codecs.starts_with("ec-3") || codecs.starts_with("ac-3") { 100 }
+    else { 0 }
+}
+
+fn quality_label(qn: i64) -> String {
+    match qn {
+        120 => "4K".into(),
+        112 => "1080P+".into(),
+        80 => "1080P".into(),
+        74 => "720P60".into(),
+        64 => "720P".into(),
+        32 => "480P".into(),
+        16 => "360P".into(),
+        _ => format!("画质 {qn}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DashAudio, DashVideo};
+
+    #[test]
+    fn dash_video_accepts_snake_and_camel_fields_together() {
+        let video: DashVideo = serde_json::from_str(r#"{
+            "id": 112,
+            "baseUrl": "https://example.com/camel.mp4",
+            "base_url": "https://example.com/snake.mp4",
+            "backupUrl": ["https://example.com/camel-backup.mp4"],
+            "backup_url": ["https://example.com/snake-backup.mp4"],
+            "codecs": "avc1.640032",
+            "bandWidth": 1000,
+            "bandwidth": 2000
+        }"#).expect("dash video should deserialize");
+
+        assert_eq!(video.id, 112);
+        assert_eq!(video.base_url, "https://example.com/snake.mp4");
+        assert_eq!(video.backup_url, vec!["https://example.com/snake-backup.mp4"]);
+        assert_eq!(video.bandwidth, 2000);
+    }
+
+    #[test]
+    fn dash_audio_accepts_camel_only_fields() {
+        let audio: DashAudio = serde_json::from_str(r#"{
+            "id": 30280,
+            "baseUrl": "https://example.com/audio.m4s",
+            "backupUrl": ["https://example.com/audio-backup.m4s"],
+            "codecs": "mp4a.40.2",
+            "bandWidth": 192000
+        }"#).expect("dash audio should deserialize");
+
+        assert_eq!(audio.id, 30280);
+        assert_eq!(audio.base_url, "https://example.com/audio.m4s");
+        assert_eq!(audio.backup_url, vec!["https://example.com/audio-backup.m4s"]);
+        assert_eq!(audio.bandwidth, 192000);
     }
 }
