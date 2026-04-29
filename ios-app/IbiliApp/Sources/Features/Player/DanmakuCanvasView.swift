@@ -69,6 +69,7 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Text cache
 
     private var textCache = NSCache<NSString, CachedText>()
+    private var specialTextCache = NSCache<NSString, CachedSpecialText>()
 
     private final class CachedText {
         let line: CTLine
@@ -82,6 +83,18 @@ final class DanmakuCanvasView: UIView {
         }
     }
 
+    private final class CachedSpecialText {
+        let image: UIImage
+        let size: CGSize
+        let drawOffset: CGPoint
+
+        init(image: UIImage, size: CGSize, drawOffset: CGPoint) {
+            self.image = image
+            self.size = size
+            self.drawOffset = drawOffset
+        }
+    }
+
     private struct LiveDanmaku {
         let item: DanmakuItemDTO
         let displayText: String
@@ -92,6 +105,7 @@ final class DanmakuCanvasView: UIView {
         let textKey: NSString
         let specialDescriptor: SpecialDanmakuDescriptor?
         var cachedText: CachedText?
+        var cachedSpecialText: CachedSpecialText?
     }
 
     private enum DanmakuMode { case scroll, top, bottom, special }
@@ -117,6 +131,7 @@ final class DanmakuCanvasView: UIView {
         rebuildLanes()
 
         textCache.countLimit = 512
+        specialTextCache.countLimit = 128
     }
 
     private func rebuildLanes() {
@@ -138,6 +153,7 @@ final class DanmakuCanvasView: UIView {
         active.removeAll()
         rebuildLanes()
         textCache.removeAllObjects()
+        specialTextCache.removeAllObjects()
         needsRedraw = true
     }
 
@@ -249,6 +265,7 @@ final class DanmakuCanvasView: UIView {
         let mode: DanmakuMode
         let displayText: String
         let specialDescriptor: SpecialDanmakuDescriptor?
+        let key: NSString
         var lane: Int
 
         switch item.mode {
@@ -256,37 +273,53 @@ final class DanmakuCanvasView: UIView {
             mode = .bottom
             displayText = item.text
             specialDescriptor = nil
+            key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
             lane = pickStaticLane(from: &bottomLaneNextFree, at: now)
         case 5:
             mode = .top
             displayText = item.text
             specialDescriptor = nil
+            key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
             lane = pickStaticLane(from: &topLaneNextFree, at: now)
         case 7:
             guard let parsed = SpecialDanmakuDescriptor.parse(rawText: item.text) else { return }
             mode = .special
             displayText = parsed.text
             specialDescriptor = parsed
+            key = "\(item.text)_\(item.color)_\(item.fontSize)" as NSString
             lane = 0
         default:
             mode = .scroll
             displayText = item.text
             specialDescriptor = nil
+            key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
             lane = pickScrollLane(at: now)
             scrollLaneFreeAt[lane] = now + scrollDuration * 0.45
         }
 
         let duration = specialDescriptor?.displayDuration
             ?? (mode == .scroll ? scrollDuration : staticDuration)
-        let key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
         var dm = LiveDanmaku(item: item, displayText: displayText, lane: lane, startTime: now,
                              duration: duration, mode: mode, textKey: key,
                              specialDescriptor: specialDescriptor)
-        dm.cachedText = textCache.object(forKey: key)
-        if dm.cachedText == nil {
-            let ct = makeText(displayText: displayText, item: item)
-            textCache.setObject(ct, forKey: key)
-            dm.cachedText = ct
+        if let specialDescriptor {
+            dm.cachedSpecialText = specialTextCache.object(forKey: key)
+            if dm.cachedSpecialText == nil {
+                let cached = makeSpecialText(
+                    displayText: displayText,
+                    item: item,
+                    descriptor: specialDescriptor
+                )
+                specialTextCache.setObject(cached, forKey: key)
+                dm.cachedSpecialText = cached
+            }
+        } else {
+            dm.cachedText = textCache.object(forKey: key)
+            if dm.cachedText == nil {
+                let cached = makeText(displayText: displayText, item: item)
+                textCache.setObject(cached, forKey: key)
+                dm.cachedText = cached
+            }
         }
         active.append(dm)
     }
@@ -318,17 +351,29 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Text rendering
 
     private let baseFontSize: CGFloat = 18
+    private let maxSpecialRasterSize: CGFloat = 4096
 
-    private func makeText(displayText: String, item: DanmakuItemDTO) -> CachedText {
-        let fontSize = baseFontSize * (item.fontSize > 0 ? CGFloat(item.fontSize) / 25.0 : 1.0)
+    private func resolvedFontSize(for item: DanmakuItemDTO) -> CGFloat {
+        baseFontSize * (item.fontSize > 0 ? CGFloat(item.fontSize) / 25.0 : 1.0)
+    }
+
+    private func resolvedFont(for item: DanmakuItemDTO) -> UIFont {
+        let fontSize = resolvedFontSize(for: item)
         let baseFont = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
-        let font = baseFont.fontDescriptor.withDesign(.rounded)
+        return baseFont.fontDescriptor.withDesign(.rounded)
             .map { UIFont(descriptor: $0, size: fontSize) } ?? baseFont
+    }
 
+    private func resolvedTextColor(for item: DanmakuItemDTO) -> UIColor {
         let r = CGFloat((item.color >> 16) & 0xFF) / 255
         let g = CGFloat((item.color >> 8) & 0xFF) / 255
         let b = CGFloat(item.color & 0xFF) / 255
-        let fillColor = UIColor(red: r, green: g, blue: b, alpha: 1.0)
+        return UIColor(red: r, green: g, blue: b, alpha: 1.0)
+    }
+
+    private func makeText(displayText: String, item: DanmakuItemDTO) -> CachedText {
+        let font = resolvedFont(for: item)
+        let fillColor = resolvedTextColor(for: item)
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
@@ -349,6 +394,78 @@ final class DanmakuCanvasView: UIView {
         )
     }
 
+    private func makeSpecialText(
+        displayText: String,
+        item: DanmakuItemDTO,
+        descriptor: SpecialDanmakuDescriptor
+    ) -> CachedSpecialText {
+        let font = resolvedFont(for: item)
+        let fillColor = resolvedTextColor(for: item)
+        let padding: CGFloat = descriptor.hasStroke ? max(2, ceil(font.pointSize * 0.05)) : 1
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .left
+        paragraphStyle.lineBreakMode = .byClipping
+
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: fillColor,
+            .paragraphStyle: paragraphStyle,
+        ]
+
+        if descriptor.hasStroke {
+            let shadow = NSShadow()
+            shadow.shadowColor = UIColor.black.withAlphaComponent(0.85)
+            shadow.shadowBlurRadius = padding
+            shadow.shadowOffset = .zero
+            attributes[.shadow] = shadow
+        }
+
+        let attributed = NSAttributedString(string: displayText, attributes: attributes)
+        let measured = attributed.boundingRect(
+            with: CGSize(width: maxSpecialRasterSize, height: maxSpecialRasterSize),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+        let textSize = CGSize(
+            width: max(1, min(maxSpecialRasterSize, ceil(measured.width))),
+            height: max(1, min(maxSpecialRasterSize, ceil(measured.height)))
+        )
+        let textRect = CGRect(origin: .zero, size: textSize)
+        let transformedBounds = descriptor.transform.isIdentity
+            ? textRect
+            : textRect.applying(descriptor.transform)
+        let rasterBounds = transformedBounds.insetBy(dx: -padding, dy: -padding).integral
+        let rasterSize = CGSize(
+            width: max(1, ceil(rasterBounds.width)),
+            height: max(1, ceil(rasterBounds.height))
+        )
+
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = UIScreen.main.scale
+
+        let renderer = UIGraphicsImageRenderer(size: rasterSize, format: format)
+        let image = renderer.image { context in
+            let cgContext = context.cgContext
+            cgContext.translateBy(x: -rasterBounds.minX, y: -rasterBounds.minY)
+            if !descriptor.transform.isIdentity {
+                cgContext.concatenate(descriptor.transform)
+            }
+            attributed.draw(
+                with: textRect,
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+        }
+
+        return CachedSpecialText(
+            image: image,
+            size: rasterSize,
+            drawOffset: rasterBounds.origin
+        )
+    }
+
     // MARK: - Draw
 
     override func draw(_ rect: CGRect) {
@@ -362,54 +479,83 @@ final class DanmakuCanvasView: UIView {
         ctx.setShouldAntialias(true)
         ctx.setAllowsFontSmoothing(true)
         ctx.setShouldSmoothFonts(true)
+        ctx.interpolationQuality = .high
 
         for dm in active {
-            guard let ct = dm.cachedText else { continue }
-
-            let x: CGFloat
-            let y: CGFloat
-            let alpha: CGFloat
-
             switch dm.mode {
             case .scroll:
+                guard let ct = dm.cachedText else { continue }
                 let progress = CGFloat(max(0, min(1, (now - dm.startTime) / dm.duration)))
                 let travel = size.width + ct.size.width
-                x = size.width - travel * progress
-                y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
-                alpha = 1.0
+                let x = size.width - travel * progress
+                let y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
+                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, in: ctx, viewport: size)
 
             case .top:
-                x = (size.width - ct.size.width) / 2
-                y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
-                alpha = 1.0
+                guard let ct = dm.cachedText else { continue }
+                let x = (size.width - ct.size.width) / 2
+                let y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
+                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, in: ctx, viewport: size)
 
             case .bottom:
-                x = (size.width - ct.size.width) / 2
-                y = size.height - scrollLaneH * (CGFloat(dm.lane) + 1.5)
-
-                alpha = 1.0
+                guard let ct = dm.cachedText else { continue }
+                let x = (size.width - ct.size.width) / 2
+                let y = size.height - scrollLaneH * (CGFloat(dm.lane) + 1.5)
+                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, in: ctx, viewport: size)
 
             case .special:
-                guard let special = dm.specialDescriptor else { continue }
+                guard let special = dm.specialDescriptor,
+                      let cached = dm.cachedSpecialText else { continue }
                 let elapsed = max(0, now - dm.startTime)
                 let point = special.position(at: elapsed, in: size)
-                x = point.x
-                y = point.y
-                alpha = special.alpha(at: elapsed)
+                let origin = CGPoint(
+                    x: point.x + cached.drawOffset.x,
+                    y: point.y + cached.drawOffset.y
+                )
+                drawSpecialText(cached, at: origin, alpha: special.alpha(at: elapsed), in: ctx, viewport: size)
             }
-
-            guard alpha > 0.01 else { continue }
-            guard x + ct.size.width > 0, x < size.width,
-                  y + ct.size.height > 0, y < size.height else { continue }
-
-            ctx.saveGState()
-            ctx.setAlpha(alpha)
-            ctx.textMatrix = .identity
-            ctx.translateBy(x: x + ct.drawInset, y: y + ct.size.height - ct.drawInset)
-            ctx.scaleBy(x: 1, y: -1)
-            CTLineDraw(ct.line, ctx)
-            ctx.restoreGState()
         }
+    }
+
+    private func drawNormalText(
+        _ cached: CachedText,
+        at origin: CGPoint,
+        alpha: CGFloat,
+        in context: CGContext,
+        viewport: CGSize
+    ) {
+        guard alpha > 0.01 else { return }
+        guard origin.x + cached.size.width > 0,
+              origin.x < viewport.width,
+              origin.y + cached.size.height > 0,
+              origin.y < viewport.height else { return }
+
+        context.saveGState()
+        context.setAlpha(alpha)
+        context.textMatrix = .identity
+        context.translateBy(
+            x: origin.x + cached.drawInset,
+            y: origin.y + cached.size.height - cached.drawInset
+        )
+        context.scaleBy(x: 1, y: -1)
+        CTLineDraw(cached.line, context)
+        context.restoreGState()
+    }
+
+    private func drawSpecialText(
+        _ cached: CachedSpecialText,
+        at origin: CGPoint,
+        alpha: CGFloat,
+        in _: CGContext,
+        viewport: CGSize
+    ) {
+        guard alpha > 0.01 else { return }
+        guard origin.x + cached.size.width > 0,
+              origin.x < viewport.width,
+              origin.y + cached.size.height > 0,
+              origin.y < viewport.height else { return }
+
+        cached.image.draw(in: CGRect(origin: origin, size: cached.size), blendMode: .normal, alpha: alpha)
     }
 
     // MARK: - Lifecycle
