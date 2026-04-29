@@ -28,6 +28,9 @@ final class PlayerViewModel: ObservableObject {
     private var loadGeneration: UInt64 = 0
     private let discoveryQn: Int64 = 120
     private let engine: PlaybackEngine = HLSProxyEngine.shared
+    private var sourceByQn: [Int64: PlayUrlDTO] = [:]
+    private var remuxFallbackAttemptedQns: Set<Int64> = []
+    private var isUsingRemuxFallback = false
     private var itemStatusObservation: NSKeyValueObservation?
     /// Snapshot of the most recent `load(...)` arguments, used by
     /// `reload()` to recover after the local proxy has been killed by
@@ -106,7 +109,12 @@ final class PlayerViewModel: ObservableObject {
         lastPreferredQn = preferredQn
         lastFastLoad = fastLoad
         autoReloadAttempts = 0
-        if !isSameVideo { blockedQns.removeAll() }
+        if !isSameVideo {
+            blockedQns.removeAll()
+            remuxFallbackAttemptedQns.removeAll()
+            sourceByQn.removeAll()
+        }
+        isUsingRemuxFallback = false
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
         cancelPendingUpgrade()
@@ -146,6 +154,7 @@ final class PlayerViewModel: ObservableObject {
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
             self.availableQualities = finalQualities
+            self.sourceByQn[info.quality] = info
 
             // Decide whether to race the lowest variant against the
             // preferred one. We only do it when the user opted in AND
@@ -165,6 +174,7 @@ final class PlayerViewModel: ObservableObject {
                                                     qn: lowestQn)
                 }
                 guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
+                self.sourceByQn[loInfo.quality] = loInfo
                 // Race on hidden players reaching actual playback, not
                 // on `makeItem` completion. That keeps the feature true
                 // to its purpose: first picture wins, not first asset
@@ -330,6 +340,8 @@ final class PlayerViewModel: ObservableObject {
         activePreparation = nil
         cancelPendingUpgrade()
         engine.tearDown()
+        RemuxMP4Engine.shared.tearDown()
+        isUsingRemuxFallback = false
         aid = 0; cid = 0
         await load(item: item, preferredQn: lastPreferredQn, fastLoad: lastFastLoad)
         // `load(...)` zeroes the counter; preserve our caller's tally
@@ -372,7 +384,10 @@ final class PlayerViewModel: ObservableObject {
             // one keeps the proxy token table from growing across
             // switches.
             engine.tearDown()
+            RemuxMP4Engine.shared.tearDown()
+            isUsingRemuxFallback = false
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
+            self.sourceByQn[info.quality] = info
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
@@ -424,7 +439,9 @@ final class PlayerViewModel: ObservableObject {
         activePreparation = nil
         cancelPendingUpgrade()
         isVideoReady = false
+        isUsingRemuxFallback = false
         engine.tearDown()
+        RemuxMP4Engine.shared.tearDown()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
@@ -669,18 +686,23 @@ final class PlayerViewModel: ObservableObject {
                         "detail": detail,
                     ])
                     await self.exportActiveDiagnostics(reason: "AVPlayerItem failed: \(detail)", generation: generation)
-                    // Two distinct recovery paths:
-                    //   * Stale local proxy (iOS killed our listener
-                    //     while suspended) — retry once with the same
-                    //     qn against a freshly-bound proxy.
-                    //   * The asset/qn itself is unplayable (typically
-                    //     HDR/DV variants the device claims to support
-                    //     but actually rejects with CoreMedia -12927).
-                    //     Mark the qn as blocked and reload at the
-                    //     next-highest available qn instead of looping.
+                    // Recovery order:
+                    //   * CoreMedia -12927 usually means AVPlayer rejected
+                    //     this fMP4/HLS packaging. Try one remux fallback
+                    //     for the same qn before sacrificing quality.
+                    //   * If remux is unavailable or also fails, block the
+                    //     qn and reload at the next playable quality.
+                    //   * For non-codec/proxy failures, keep the existing
+                    //     one-shot proxy reload behavior.
                     let failingQn = self.currentQn
+                    if self.shouldTryRemuxFallback(for: item, qn: failingQn),
+                       let source = self.sourceByQn[failingQn] {
+                        self.remuxFallbackAttemptedQns.insert(failingQn)
+                        Task { await self.fallbackToRemux(source: source, generation: generation, detail: detail) }
+                        return
+                    }
                     let alreadyBlocked = failingQn > 0 && self.blockedQns.contains(failingQn)
-                    if failingQn > 0, !alreadyBlocked {
+                    if failingQn > 0, !alreadyBlocked, !self.isUsingRemuxFallback {
                         self.blockedQns.insert(failingQn)
                         AppLog.warning("player", "尝试自动恢复播放(降档)", metadata: [
                             "detail": detail,
@@ -701,6 +723,94 @@ final class PlayerViewModel: ObservableObject {
                     break
                 }
             }
+        }
+    }
+
+    private func shouldTryRemuxFallback(for item: AVPlayerItem, qn: Int64) -> Bool {
+        guard qn > 0, !isUsingRemuxFallback, !remuxFallbackAttemptedQns.contains(qn) else { return false }
+        guard FFmpegRemuxer.shared.isAvailable else { return false }
+        guard sourceByQn[qn] != nil else { return false }
+        return Self.containsCoreMedia12927(item.error) || Self.errorLogMentions12927(item.errorLog())
+    }
+
+    private func fallbackToRemux(source: PlayUrlDTO, generation: UInt64, detail: String) async {
+        guard loadGeneration == generation else { return }
+        let resumeAt = player?.currentTime() ?? .zero
+        AppLog.warning("player", "尝试 FFmpeg remux fallback", metadata: [
+            "detail": detail,
+            "qn": String(source.quality),
+            "resumeSec": String(format: "%.3f", resumeAt.seconds),
+        ])
+        isLoading = true
+        isVideoReady = false
+        itemStatusObservation = nil
+        cancelPendingUpgrade()
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        activePreparation?.release()
+        activePreparation = nil
+        engine.tearDown()
+        RemuxMP4Engine.shared.tearDown()
+
+        do {
+            let prep = try await RemuxMP4Engine.shared.makeItem(for: source)
+            guard loadGeneration == generation else {
+                prep.release()
+                return
+            }
+            if let item = lastLoadedItem {
+                applyPresentationMetadata(to: prep.item, for: item)
+            }
+            let remuxPlayer = AVPlayer(playerItem: prep.item)
+            activePreparation = prep
+            isUsingRemuxFallback = true
+            currentQn = source.quality
+            observeItemStatus(prep.item, generation: generation)
+            player = remuxPlayer
+            if resumeAt.isValid && resumeAt.seconds.isFinite && resumeAt.seconds > 0 {
+                await remuxPlayer.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            remuxPlayer.play()
+            applyRate(to: remuxPlayer)
+            isLoading = false
+            var meta = prep.logSummary
+            meta["quality"] = String(source.quality)
+            meta["resumeSec"] = String(format: "%.3f", resumeAt.seconds)
+            AppLog.info("player", "FFmpeg remux fallback 已启动", metadata: meta)
+        } catch {
+            guard loadGeneration == generation else { return }
+            isUsingRemuxFallback = false
+            AppLog.error("player", "FFmpeg remux fallback 失败", error: error, metadata: [
+                "qn": String(source.quality),
+            ])
+            if source.quality > 0 {
+                blockedQns.insert(source.quality)
+                await reload()
+            } else {
+                isLoading = false
+                errorText = error.localizedDescription
+            }
+        }
+    }
+
+    private static func containsCoreMedia12927(_ error: Error?) -> Bool {
+        guard let error else { return false }
+        let ns = error as NSError
+        if ns.domain == "CoreMediaErrorDomain", ns.code == -12927 { return true }
+        if ns.localizedDescription.contains("-12927") { return true }
+        for value in ns.userInfo.values {
+            if let nested = value as? Error, containsCoreMedia12927(nested) { return true }
+            if String(describing: value).contains("-12927") { return true }
+        }
+        return false
+    }
+
+    private static func errorLogMentions12927(_ log: AVPlayerItemErrorLog?) -> Bool {
+        guard let log else { return false }
+        return log.events.contains { event in
+            event.errorStatusCode == -12927
+                || event.errorComment?.contains("-12927") == true
+                || event.errorDomain == "CoreMediaErrorDomain"
         }
     }
 
