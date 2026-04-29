@@ -3,16 +3,16 @@ import SwiftUI
 
 /// Drives the Search screen state machine: holds the current query,
 /// tracks which `SearchResultType` tab is active, owns the paginated
-/// list of video results, and exposes simple `submit / loadMore /
-/// reset` entry points.
+/// list of video results, and exposes simple page navigation entry
+/// points.
 ///
 /// Implementation notes:
 /// * Only `.video` results are fetched; other tabs flip the UI state
 ///   but produce zero results since the upstream endpoints aren't
 ///   wired yet.
-/// * Pagination is forward-only. Calling `submit` always restarts
-///   from `page = 1`; tapping "加载更多" / scrolling to the bottom
-///   triggers `loadMore`.
+/// * Pagination is explicit. Calling `submit` always restarts from
+///   `page = 1`; users move with previous/next controls instead of
+///   scroll-triggered infinite loading.
 @MainActor
 final class SearchViewModel: ObservableObject {
     @Published var query: String = ""
@@ -57,7 +57,7 @@ final class SearchViewModel: ObservableObject {
         totalResults = 0
         hasMore = true
         errorText = nil
-        Task { await fetchNextPage() }
+        Task { await fetchPage(1) }
     }
 
     /// Fill the search box with the given query and immediately fire a
@@ -70,12 +70,19 @@ final class SearchViewModel: ObservableObject {
         submit()
     }
 
-    /// Page in the next batch when the result grid is scrolled to its
-    /// bottom. Safe to call repeatedly; no-ops while already loading
-    /// or when there's nothing more to fetch.
-    func loadMore() {
+    func loadNextPage() {
         guard hasMore, !isLoading else { return }
-        Task { await fetchNextPage() }
+        Task { await fetchPage(page + 1) }
+    }
+
+    func loadPreviousPage() {
+        guard page > 1, !isLoading else { return }
+        Task { await fetchPage(page - 1) }
+    }
+
+    func loadPage(_ targetPage: Int64) {
+        guard targetPage >= 1, targetPage != page, !isLoading else { return }
+        Task { await fetchPage(targetPage) }
     }
 
     /// Clear results and return to the landing state. Used when the
@@ -93,7 +100,7 @@ final class SearchViewModel: ObservableObject {
 
     // MARK: - Private
 
-    private func fetchNextPage() async {
+    private func fetchPage(_ targetPage: Int64) async {
         // Only video search is implemented for now. Other tabs simply
         // surface an empty state with no error.
         guard selectedType == .video else {
@@ -105,7 +112,6 @@ final class SearchViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let nextPage = page + 1
         let order = order == .totalrank ? nil : order.rawValue
         let durationParam = durationFilter == .any ? nil : durationFilter.rawValue
         let tids = selectedCategory?.tids
@@ -115,7 +121,7 @@ final class SearchViewModel: ObservableObject {
             let page = try await Task.detached(priority: .userInitiated) { [client] in
                 try client.searchVideo(
                     keyword: queryCopy,
-                    page: nextPage,
+                    page: targetPage,
                     order: order,
                     duration: durationParam,
                     tids: tids
@@ -123,10 +129,10 @@ final class SearchViewModel: ObservableObject {
             }.value
             // Guard against late callbacks for a stale query.
             guard queryCopy == self.query else { return }
-            self.page = nextPage
-            self.results.append(contentsOf: page.items)
+            self.page = targetPage
+            self.results = page.items
             self.totalResults = page.numResults
-            self.hasMore = nextPage < page.numPages && !page.items.isEmpty
+            self.hasMore = targetPage < page.numPages && !page.items.isEmpty
         } catch {
             errorText = (error as NSError).localizedDescription
             hasMore = false

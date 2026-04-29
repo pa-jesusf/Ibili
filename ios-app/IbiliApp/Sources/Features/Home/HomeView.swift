@@ -56,6 +56,7 @@ struct HomeView: View {
                         })
                         .onAppear {
                             prefetch.cardAppeared(item, indexInFeed: idx, allItems: vm.items)
+                            prefetchCovers(after: idx, cardWidth: cardW)
                             if item.aid == vm.items.last?.aid {
                                 Task { await vm.loadMore() }
                             }
@@ -77,5 +78,17 @@ struct HomeView: View {
                 prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()))
             }
         }
+    }
+
+    private func prefetchCovers(after index: Int, cardWidth: CGFloat) {
+        let lookahead = 18
+        let start = min(index + 1, vm.items.count)
+        let end = min(start + lookahead, vm.items.count)
+        guard start < end else { return }
+        let covers = vm.items[start..<end].map(\.cover)
+        let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
+        CoverImagePrefetcher.shared.prefetch(covers,
+                                             targetPointSize: size,
+                                             quality: settings.resolvedImageQuality())
     }
 }

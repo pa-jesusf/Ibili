@@ -124,6 +124,34 @@ impl HttpClient {
         unwrap_envelope(body)
     }
 
+    pub fn get_signed_web_with_headers<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        mut params: Vec<(String, String)>,
+        key: &crate::signer::WbiKey,
+        extra_headers: &[(&str, String)],
+    ) -> CoreResult<T> {
+        use reqwest::header::{HeaderName, HeaderValue};
+        crate::signer::WbiSigner::sign(&mut params, key);
+        let mut req = self.client.get(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .query(&params);
+        for (name, value) in extra_headers {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                req = req.header(name, value);
+            }
+        }
+        let resp = req
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
     pub fn get_web<T: DeserializeOwned>(
         &self, url: &str, params: &[(String, String)],
     ) -> CoreResult<T> {

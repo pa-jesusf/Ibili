@@ -10,6 +10,7 @@ struct SearchLandingView: View {
     /// Hook injected by `SearchView` so taps on a chip can dismiss
     /// the system search field while submitting.
     var onSubmit: (String, SearchCategory?) -> Void
+    @State private var isClearHistoryConfirmationPresented = false
 
     var body: some View {
         ScrollView {
@@ -32,7 +33,7 @@ struct SearchLandingView: View {
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 12) {
             IbiliSectionHeader(title: "搜索历史", systemImage: "clock") {
-                Button("清空") { history.clear() }
+                Button("清空") { isClearHistoryConfirmationPresented = true }
                     .font(.subheadline)
                     .foregroundStyle(IbiliTheme.accent)
             }
@@ -53,6 +54,10 @@ struct SearchLandingView: View {
                     }
                 }
             }
+        }
+        .alert("清空搜索历史？", isPresented: $isClearHistoryConfirmationPresented) {
+            Button("清空", role: .destructive) { history.clear() }
+            Button("取消", role: .cancel) {}
         }
     }
 

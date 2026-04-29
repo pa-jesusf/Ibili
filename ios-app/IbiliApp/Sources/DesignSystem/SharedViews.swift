@@ -3,7 +3,7 @@ import UIKit
 
 /// Process-wide image cache. Sized to keep ~150 covers in memory at typical
 /// resolutions; UIKit will evict on memory pressure automatically.
-private final class ImageCache {
+final class ImageCache {
     static let shared = ImageCache()
     let cache: NSCache<NSURL, UIImage> = {
         let c = NSCache<NSURL, UIImage>()
@@ -11,6 +11,42 @@ private final class ImageCache {
         c.totalCostLimit = 64 * 1024 * 1024 // 64 MB
         return c
     }()
+}
+
+/// Shared cover prefetcher for feed-like grids. It warms the same
+/// `ImageCache` used by `RemoteImage`, so prefetched covers are reused
+/// by cells instead of being downloaded twice.
+@MainActor
+final class CoverImagePrefetcher {
+    static let shared = CoverImagePrefetcher()
+
+    private let maxConcurrent = 6
+    private var tasks: [URL: Task<Void, Never>] = [:]
+
+    func prefetch(_ urlStrings: [String], targetPointSize: CGSize, quality: Int?) {
+        let urls = urlStrings.compactMap { raw -> URL? in
+            let resolved = BiliImageURL.resized(raw, pointSize: targetPointSize, quality: quality)
+            return URL(string: resolved)
+        }
+        for url in urls where tasks[url] == nil && ImageCache.shared.cache.object(forKey: url as NSURL) == nil {
+            if tasks.count >= maxConcurrent, let first = tasks.keys.first {
+                tasks[first]?.cancel()
+                tasks[first] = nil
+            }
+            tasks[url] = Task { [url] in
+                defer { Task { @MainActor in self.tasks[url] = nil } }
+                do {
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    if Task.isCancelled { return }
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return }
+                    guard let img = UIImage(data: data) else { return }
+                    ImageCache.shared.cache.setObject(img, forKey: url as NSURL, cost: data.count)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
 }
 
 /// Loads + caches a single image. Survives view-cell recycling because the

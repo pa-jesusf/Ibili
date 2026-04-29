@@ -10,6 +10,16 @@ final class AppSession: ObservableObject {
     let core = CoreClient.shared
 
     init() {
+        NotificationCenter.default.addObserver(
+            forName: .coreLoginExpired,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                self?.handleLoginExpired(method: note.userInfo?["method"] as? String)
+            }
+        }
+
         // Restore persisted session into Rust core, if any.
         if let restored = SessionStore.load() {
             core.restoreSession(restored)
@@ -43,6 +53,17 @@ final class AppSession: ObservableObject {
     func logout() {
         AppLog.info("session", "执行退出登录", metadata: [
             "mid": String(mid),
+        ])
+        core.logout()
+        SessionStore.clear()
+        refresh()
+    }
+
+    private func handleLoginExpired(method: String?) {
+        guard isLoggedIn else { return }
+        AppLog.warning("session", "检测到登录过期，清理本地登录态", metadata: [
+            "mid": String(mid),
+            "method": method ?? "-",
         ])
         core.logout()
         SessionStore.clear()

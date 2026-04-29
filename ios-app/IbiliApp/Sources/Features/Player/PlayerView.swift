@@ -61,6 +61,17 @@ final class PlayerViewModel: ObservableObject {
     /// once the high-quality player is actually playing.
     private var pendingUpgradeTask: Task<Void, Never>?
 
+    deinit {
+        MainActor.assumeIsolated {
+            player?.pause()
+            itemStatusObservation = nil
+            activePreparation?.release()
+            activePreparation = nil
+            pendingUpgradeTask?.cancel()
+            pendingReadyTask?.cancel()
+        }
+    }
+
     func load(item: FeedItemDTO, preferredQn: Int64, fastLoad: Bool) async {
         // Some entry points (notably the search results grid) hand us
         // a `FeedItemDTO` with `cid == 0` because the upstream
@@ -339,8 +350,6 @@ final class PlayerViewModel: ObservableObject {
         activePreparation?.release()
         activePreparation = nil
         cancelPendingUpgrade()
-        engine.tearDown()
-        RemuxMP4Engine.shared.tearDown()
         isUsingRemuxFallback = false
         aid = 0; cid = 0
         await load(item: item, preferredQn: lastPreferredQn, fastLoad: lastFastLoad)
@@ -352,6 +361,16 @@ final class PlayerViewModel: ObservableObject {
     /// Whether the engine still owns a live proxy stream. False after
     /// iOS suspends the app long enough to kill the listener.
     var isEngineAlive: Bool { HLSProxyEngine.shared.isAlive }
+
+    func activatePlayback() {
+        PlayerPlaybackCoordinator.shared.activate(self)
+        player?.play()
+        applyRate()
+    }
+
+    func pauseForDeactivation() {
+        player?.pause()
+    }
 
     func switchQuality(to qn: Int64) async {
         guard let player else { return }
@@ -382,9 +401,7 @@ final class PlayerViewModel: ObservableObject {
             activePreparation = nil
             // Releasing the previous source before allocating the new
             // one keeps the proxy token table from growing across
-            // switches.
-            engine.tearDown()
-            RemuxMP4Engine.shared.tearDown()
+            // switches without tearing down other tab's retained players.
             isUsingRemuxFallback = false
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             self.sourceByQn[info.quality] = info
@@ -427,6 +444,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func teardown() {
+        PlayerPlaybackCoordinator.shared.unregister(self)
         loadGeneration &+= 1
         AppLog.debug("player", "销毁播放器", metadata: [
             "aid": String(aid),
@@ -440,9 +458,6 @@ final class PlayerViewModel: ObservableObject {
         cancelPendingUpgrade()
         isVideoReady = false
         isUsingRemuxFallback = false
-        engine.tearDown()
-        RemuxMP4Engine.shared.tearDown()
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
     /// Cancel any in-flight fast-load upgrade. Safe to call when no
@@ -758,8 +773,6 @@ final class PlayerViewModel: ObservableObject {
         player?.replaceCurrentItem(with: nil)
         activePreparation?.release()
         activePreparation = nil
-        engine.tearDown()
-        RemuxMP4Engine.shared.tearDown()
 
         do {
             let prep = try await RemuxMP4Engine.shared.makeItem(for: source)
@@ -972,6 +985,26 @@ final class PlayerViewModel: ObservableObject {
         item.value = value
         item.dataType = dataType
         return item
+    }
+}
+
+@MainActor
+private final class PlayerPlaybackCoordinator {
+    static let shared = PlayerPlaybackCoordinator()
+
+    private weak var active: PlayerViewModel?
+
+    func activate(_ viewModel: PlayerViewModel) {
+        if active !== viewModel {
+            active?.pauseForDeactivation()
+            active = viewModel
+        }
+    }
+
+    func unregister(_ viewModel: PlayerViewModel) {
+        if active === viewModel {
+            active = nil
+        }
     }
 }
 
@@ -1382,7 +1415,6 @@ struct PlayerView: View {
         }
         .navigationTitle("播放")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
         .task {
             guard !didBootstrap else { return }
             didBootstrap = true
@@ -1395,9 +1427,13 @@ struct PlayerView: View {
                                             fastLoad: settings.fastLoad)
             async let danmaku: Void = loadDanmaku()
             _ = await (video, danmaku)
+            vm.activatePlayback()
         }
         .onChange(of: vm.player) { newPlayer in
-            if let p = newPlayer { danmaku.attach(p) }
+            if let p = newPlayer {
+                danmaku.attach(p)
+                vm.activatePlayback()
+            }
         }
         .onChange(of: scenePhase) { phase in
             // When the app returns to the foreground after a long lock
@@ -1413,12 +1449,17 @@ struct PlayerView: View {
         .onReceive(orientationPublisher) { _ in
             handleDeviceOrientationChange()
         }
+        .onAppear {
+            if didBootstrap {
+                UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+                vm.activatePlayback()
+                if let p = vm.player { danmaku.attach(p) }
+            }
+        }
         .onDisappear {
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
+            vm.pauseForDeactivation()
             if !isFullscreen {
-                didBootstrap = false
-                danmaku.detach()
-                vm.teardown()
                 Orientation.request(.portrait)
             }
         }

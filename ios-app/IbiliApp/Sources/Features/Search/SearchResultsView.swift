@@ -9,6 +9,9 @@ struct SearchResultsView: View {
     @ObservedObject var vm: SearchViewModel
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @State private var pageInputText: String = ""
+    @State private var isPageInputPresented: Bool = false
+    @State private var scrollID: UUID = UUID()
 
     var body: some View {
         Group {
@@ -42,43 +45,145 @@ struct SearchResultsView: View {
                 count: cols
             )
 
-            ScrollView {
-                if vm.totalResults > 0 {
-                    HStack {
-                        Text("约 \(BiliFormat.compactCount(vm.totalResults)) 个结果")
-                            .font(.footnote)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, hPad)
-                    .padding(.top, 4)
-                }
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    Color.clear.frame(height: 0).id("searchResultsTop")
 
-                LazyVGrid(columns: gridItems, spacing: rowSpacing) {
-                    ForEach(vm.results) { item in
-                        NavigationLink(value: feedItem(from: item)) {
-                            SearchResultCardView(
-                                item: item,
-                                cardWidth: cardW,
-                                imageQuality: settings.resolvedImageQuality()
-                            )
+                    if vm.totalResults > 0 {
+                        HStack {
+                            Text("约 \(BiliFormat.compactCount(vm.totalResults)) 个结果")
+                                .font(.footnote)
+                                .foregroundStyle(IbiliTheme.textSecondary)
+                            Spacer()
                         }
-                        .buttonStyle(.plain)
-                        .onAppear {
-                            if item.id == vm.results.last?.id {
-                                vm.loadMore()
+                        .padding(.horizontal, hPad)
+                        .padding(.top, 4)
+                    }
+
+                    LazyVGrid(columns: gridItems, spacing: rowSpacing) {
+                        ForEach(Array(vm.results.enumerated()), id: \.element.id) { idx, item in
+                            NavigationLink(value: feedItem(from: item)) {
+                                SearchResultCardView(
+                                    item: item,
+                                    cardWidth: cardW,
+                                    imageQuality: settings.resolvedImageQuality()
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .onAppear {
+                                prefetchCovers(after: idx, cardWidth: cardW)
                             }
                         }
                     }
-                }
-                .padding(.horizontal, hPad)
-                .padding(.vertical, 8)
+                    .padding(.horizontal, hPad)
+                    .padding(.vertical, 8)
 
-                if vm.isLoading && !vm.results.isEmpty {
-                    ProgressView().padding()
+                    searchPaginationBar
+                        .padding(.horizontal, hPad)
+                        .padding(.bottom, 8)
+
+                    if vm.hasMore && !vm.isLoading {
+                        pullNextPageFooter
+                            .padding(.bottom, 20)
+                    }
+                }
+                .onChange(of: scrollID) { _ in
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        scrollProxy.scrollTo("searchResultsTop", anchor: .top)
+                    }
                 }
             }
         }
+        .alert("跳转到页码", isPresented: $isPageInputPresented) {
+            TextField("页码", text: $pageInputText)
+                .keyboardType(.numberPad)
+            Button("跳转") {
+                if let target = Int64(pageInputText), target >= 1 {
+                    vm.loadPage(target)
+                    scrollID = UUID()
+                }
+            }
+            Button("取消", role: .cancel) {}
+        }
+    }
+
+    private var pullNextPageFooter: some View {
+        Button {
+            vm.loadNextPage()
+            scrollID = UUID()
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle")
+                    .font(.title2)
+                Text("继续下拉加载下一页")
+                    .font(.caption)
+            }
+            .foregroundStyle(IbiliTheme.textSecondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var searchPaginationBar: some View {
+        if vm.isLoading && !vm.results.isEmpty {
+            ProgressView().padding(.vertical, 16)
+        } else {
+            HStack(spacing: 12) {
+                Button {
+                    vm.loadPreviousPage()
+                    scrollID = UUID()
+                } label: {
+                    Label("上一页", systemImage: "chevron.left")
+                }
+                .disabled(vm.page <= 1)
+
+                Spacer(minLength: 8)
+
+                Button {
+                    pageInputText = String(max(vm.page, 1))
+                    isPageInputPresented = true
+                } label: {
+                    VStack(spacing: 2) {
+                        Text("第 \(max(vm.page, 1)) 页")
+                            .font(.subheadline.weight(.semibold))
+                        if vm.totalResults > 0 {
+                            Text("约 \(BiliFormat.compactCount(vm.totalResults)) 个结果")
+                                .font(.caption)
+                                .foregroundStyle(IbiliTheme.textSecondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 8)
+
+                Button {
+                    vm.loadNextPage()
+                    scrollID = UUID()
+                } label: {
+                    Label("下一页", systemImage: "chevron.right")
+                        .labelStyle(.titleAndIcon)
+                }
+                .disabled(!vm.hasMore)
+            }
+            .buttonStyle(.bordered)
+            .tint(IbiliTheme.accent)
+            .padding(.top, 8)
+        }
+    }
+
+    private func prefetchCovers(after index: Int, cardWidth: CGFloat) {
+        let lookahead = 18
+        let start = min(index + 1, vm.results.count)
+        let end = min(start + lookahead, vm.results.count)
+        guard start < end else { return }
+        let covers = vm.results[start..<end].map(\.cover)
+        let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
+        CoverImagePrefetcher.shared.prefetch(covers,
+                                             targetPointSize: size,
+                                             quality: settings.resolvedImageQuality())
     }
 
     private func emptyState(

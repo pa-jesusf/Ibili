@@ -6,7 +6,7 @@
 
 use crate::Core;
 use crate::dto::{SearchVideoItem, SearchVideoPage};
-use crate::error::CoreResult;
+use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
 use serde::Deserialize;
 
@@ -26,12 +26,16 @@ struct NavWbiImage {
 
 #[derive(Deserialize, Default)]
 struct SearchTypeRoot {
-    #[serde(default)]
+    #[serde(default, alias = "numResults")]
     num_results: i64,
-    #[serde(default)]
+    #[serde(default, alias = "numPages")]
     num_pages: i64,
     #[serde(default)]
+    pages: i64,
+    #[serde(default)]
     result: Option<Vec<SearchTypeItem>>,
+    #[serde(default)]
+    v_voucher: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -86,9 +90,24 @@ impl Core {
         if let Some(t) = tids {
             params.push(("tids".into(), t.to_string()));
         }
+        let keyword_encoded = keyword.replace(' ', "%20");
         let raw: SearchTypeRoot = self
             .http
-            .get_signed_web(URL_SEARCH_TYPE, params, &key)?;
+            .get_signed_web_with_headers(
+                URL_SEARCH_TYPE,
+                params,
+                &key,
+                &[
+                    ("Origin", "https://search.bilibili.com".to_string()),
+                    ("Referer", format!(
+                        "https://search.bilibili.com/video?keyword={}",
+                        keyword_encoded
+                    )),
+                ],
+            )?;
+        if raw.v_voucher.is_some() {
+            return Err(CoreError::Api { code: -352, msg: "触发搜索风控，请稍后再试".into() });
+        }
         let items = raw
             .result
             .unwrap_or_default()
@@ -107,10 +126,11 @@ impl Core {
                 pubdate: if r.pubdate > 0 { r.pubdate } else { r.senddate },
             })
             .collect();
+        let num_pages = if raw.num_pages > 0 { raw.num_pages } else { raw.pages };
         Ok(SearchVideoPage {
             items,
             num_results: raw.num_results,
-            num_pages: raw.num_pages,
+            num_pages,
         })
     }
 

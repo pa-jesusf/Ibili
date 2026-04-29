@@ -9,6 +9,7 @@ struct SearchView: View {
     @StateObject private var vm = SearchViewModel()
     @StateObject private var history = SearchHistoryStore()
     @State private var isFiltersSheetPresented: Bool = false
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -27,6 +28,7 @@ struct SearchView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "搜索视频、UP主、番剧"
         )
+        .focused($isSearchFocused)
         .onSubmit(of: .search) {
             history.push(vm.query)
             vm.submit()
@@ -44,8 +46,7 @@ struct SearchView: View {
         // stale matches that no longer correspond to what's in the
         // search field.
         if vm.hasSubmittedQuery,
-           !vm.submittedQuery.isEmpty,
-           vm.query == vm.submittedQuery {
+           !vm.submittedQuery.isEmpty {
             VStack(spacing: 0) {
                 SearchTypeBar(vm: vm)
                 Divider().opacity(0.4)
@@ -53,6 +54,7 @@ struct SearchView: View {
             }
         } else {
             SearchLandingView(vm: vm, history: history) { query, category in
+                isSearchFocused = false
                 vm.selectedCategory = category
                 vm.query = query
                 history.push(query)
@@ -64,15 +66,24 @@ struct SearchView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if vm.hasSubmittedQuery,
-           !vm.submittedQuery.isEmpty,
-           vm.query == vm.submittedQuery {
+           !vm.submittedQuery.isEmpty {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    isFiltersSheetPresented = true
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
+                HStack(spacing: 12) {
+                    Button {
+                        isFiltersSheetPresented = true
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                    .foregroundStyle(IbiliTheme.accent)
+
+                    Button {
+                        vm.reset()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                    }
+                    .foregroundStyle(IbiliTheme.textSecondary)
                 }
-                .foregroundStyle(IbiliTheme.accent)
             }
         }
     }

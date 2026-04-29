@@ -7,6 +7,14 @@ public struct CoreError: Error, LocalizedError {
     public let message: String
     public let code: Int64?
     public var errorDescription: String? { "[\(category)] \(message)" }
+
+    public var isLoginExpired: Bool {
+        code == -101 || category == "login_expired" || category == "auth_required"
+    }
+}
+
+extension Notification.Name {
+    static let coreLoginExpired = Notification.Name("IbiliCoreLoginExpired")
 }
 
 /// Thin Swift wrapper around the C ABI. Single shared instance.
@@ -78,6 +86,11 @@ public final class CoreClient: @unchecked Sendable {
             "method": method,
             "ms": elapsedMilliseconds(since: startedAt),
         ])
+        if resolvedError.isLoginExpired {
+            NotificationCenter.default.post(name: .coreLoginExpired,
+                                            object: nil,
+                                            userInfo: ["method": method])
+        }
         throw resolvedError
     }
 
