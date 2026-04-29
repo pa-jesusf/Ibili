@@ -1230,7 +1230,6 @@ enum Orientation {
                 "requestedMask": interfaceOrientationMaskDescription(mask),
                 "deviceOrientation": deviceOrientationDescription(value),
             ])
-            ])
             UIDevice.current.setValue(value.rawValue, forKey: "orientation")
         }
     }
