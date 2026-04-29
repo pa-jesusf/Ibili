@@ -1249,6 +1249,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let danmaku: DanmakuController
     let danmakuEnabled: Bool
     let danmakuOpacity: Double
+    let danmakuBlockLevel: Int
     let danmakuFrameRate: Int
     /// Called once, with the just-created AVPlayerViewController. Lets the
     /// SwiftUI parent drive native fullscreen entry/exit.
@@ -1286,6 +1287,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         // SwiftUI re-render overhead and fixes the width-shrink bug
         // after fullscreen→portrait transitions.
         let canvas = danmaku.prepareCanvas()
+        canvas.blockLevel = danmakuBlockLevel
         canvas.preferredFrameRate = danmakuFrameRate
         if let overlay = vc.contentOverlayView {
             canvas.translatesAutoresizingMaskIntoConstraints = false
@@ -1317,6 +1319,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             vc.player = player
             context.coordinator.assignedPlayerID = incomingPlayerID
         }
+        context.coordinator.danmakuCanvas?.blockLevel = danmakuBlockLevel
         context.coordinator.danmakuCanvas?.preferredFrameRate = danmakuFrameRate
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
     }
@@ -1471,6 +1474,7 @@ struct PlayerView: View {
                         danmaku: danmaku,
                         danmakuEnabled: settings.danmakuEnabled,
                         danmakuOpacity: settings.danmakuOpacity,
+                        danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
                         danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
                         onCreated: { vc in playerVCRef.vc = vc },
                         onFullscreenChange: { fs in isFullscreen = fs },
@@ -1639,8 +1643,8 @@ struct PlayerView: View {
             AppLog.info("danmaku", "开始加载弹幕", metadata: [
                 "cid": String(resolvedItem.cid),
             ])
-            let track = try await Task.detached { [cid = resolvedItem.cid] in
-                try CoreClient.shared.danmakuList(cid: cid)
+            let track = try await Task.detached { [cid = resolvedItem.cid, durationSec = resolvedItem.durationSec] in
+                try CoreClient.shared.danmakuList(cid: cid, durationSec: durationSec)
             }.value
             danmaku.setItems(track.items)
             if let p = vm.player { danmaku.attach(p) }

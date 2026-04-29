@@ -25,6 +25,15 @@ final class DanmakuCanvasView: UIView {
     var laneCount: Int = 14 { didSet { rebuildLanes() } }
     var scrollDuration: Double = 8.0
     var staticDuration: Double = 4.0
+    var blockLevel: Int {
+        get { storedBlockLevel }
+        set {
+            let clamped = min(max(newValue, 0), 11)
+            guard storedBlockLevel != clamped else { return }
+            storedBlockLevel = clamped
+            rebuildTrack()
+        }
+    }
     var preferredFrameRate: Int {
         get { storedFrameRate }
         set {
@@ -39,6 +48,7 @@ final class DanmakuCanvasView: UIView {
 
     // MARK: - State
 
+    private var sourceItems: [DanmakuItemDTO] = []
     private var all: [DanmakuItemDTO] = []
     private var active: [LiveDanmaku] = []
     private var cursor: Int = 0
@@ -51,6 +61,7 @@ final class DanmakuCanvasView: UIView {
     private weak var player: AVPlayer?
     private var timeObserver: Any?
     private var displayLink: CADisplayLink?
+    private var storedBlockLevel: Int = 0
     private var storedFrameRate: Int = 60
     private var currentPlaybackTime: Double = 0
     private var needsRedraw = false
@@ -73,15 +84,17 @@ final class DanmakuCanvasView: UIView {
 
     private struct LiveDanmaku {
         let item: DanmakuItemDTO
+        let displayText: String
         let lane: Int
         let startTime: Double
         let duration: Double
         let mode: DanmakuMode
         let textKey: NSString
+        let specialDescriptor: SpecialDanmakuDescriptor?
         var cachedText: CachedText?
     }
 
-    private enum DanmakuMode { case scroll, top, bottom }
+    private enum DanmakuMode { case scroll, top, bottom, special }
 
     // MARK: - Init
 
@@ -115,17 +128,27 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Public API
 
     func setItems(_ items: [DanmakuItemDTO]) {
-        // Upstream handles mode 7 with a dedicated special-danmaku parser.
-        // Our current canvas only supports plain scroll/top/bottom text, so
-        // dropping advanced JSON danmaku here avoids rendering raw payloads.
-        all = items
-            .filter { $0.mode != 7 }
-            .sorted { $0.timeSec < $1.timeSec }
+        sourceItems = items.sorted { $0.timeSec < $1.timeSec }
+        rebuildTrack()
+    }
+
+    private func rebuildTrack() {
+        all = sourceItems.filter(shouldInclude)
         cursor = 0
         active.removeAll()
         rebuildLanes()
         textCache.removeAllObjects()
         needsRedraw = true
+    }
+
+    private func shouldInclude(_ item: DanmakuItemDTO) -> Bool {
+        if item.hasWeight, !item.isSelf, item.weight < Int32(storedBlockLevel) {
+            return false
+        }
+        if item.mode == 7 {
+            return SpecialDanmakuDescriptor.parse(rawText: item.text) != nil
+        }
+        return true
     }
 
     func attach(_ player: AVPlayer) {
@@ -224,28 +247,44 @@ final class DanmakuCanvasView: UIView {
 
     private func schedule(_ item: DanmakuItemDTO, at now: Double) {
         let mode: DanmakuMode
+        let displayText: String
+        let specialDescriptor: SpecialDanmakuDescriptor?
         var lane: Int
 
         switch item.mode {
         case 4:
             mode = .bottom
+            displayText = item.text
+            specialDescriptor = nil
             lane = pickStaticLane(from: &bottomLaneNextFree, at: now)
         case 5:
             mode = .top
+            displayText = item.text
+            specialDescriptor = nil
             lane = pickStaticLane(from: &topLaneNextFree, at: now)
+        case 7:
+            guard let parsed = SpecialDanmakuDescriptor.parse(rawText: item.text) else { return }
+            mode = .special
+            displayText = parsed.text
+            specialDescriptor = parsed
+            lane = 0
         default:
             mode = .scroll
+            displayText = item.text
+            specialDescriptor = nil
             lane = pickScrollLane(at: now)
             scrollLaneFreeAt[lane] = now + scrollDuration * 0.45
         }
 
-        let duration = mode == .scroll ? scrollDuration : staticDuration
-        let key = "\(item.text)_\(item.color)_\(item.fontSize)" as NSString
-        var dm = LiveDanmaku(item: item, lane: lane, startTime: now,
-                             duration: duration, mode: mode, textKey: key)
+        let duration = specialDescriptor?.displayDuration
+            ?? (mode == .scroll ? scrollDuration : staticDuration)
+        let key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
+        var dm = LiveDanmaku(item: item, displayText: displayText, lane: lane, startTime: now,
+                             duration: duration, mode: mode, textKey: key,
+                             specialDescriptor: specialDescriptor)
         dm.cachedText = textCache.object(forKey: key)
         if dm.cachedText == nil {
-            let ct = makeText(item)
+            let ct = makeText(displayText: displayText, item: item)
             textCache.setObject(ct, forKey: key)
             dm.cachedText = ct
         }
@@ -280,7 +319,7 @@ final class DanmakuCanvasView: UIView {
 
     private let baseFontSize: CGFloat = 18
 
-    private func makeText(_ item: DanmakuItemDTO) -> CachedText {
+    private func makeText(displayText: String, item: DanmakuItemDTO) -> CachedText {
         let fontSize = baseFontSize * (item.fontSize > 0 ? CGFloat(item.fontSize) / 25.0 : 1.0)
         let baseFont = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
         let font = baseFont.fontDescriptor.withDesign(.rounded)
@@ -295,7 +334,7 @@ final class DanmakuCanvasView: UIView {
             .font: font,
             .foregroundColor: fillColor,
         ]
-        let str = NSAttributedString(string: item.text, attributes: attrs)
+        let str = NSAttributedString(string: displayText, attributes: attrs)
         let line = CTLineCreateWithAttributedString(str)
         let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
         let drawInset: CGFloat = 2
@@ -329,6 +368,7 @@ final class DanmakuCanvasView: UIView {
 
             let x: CGFloat
             let y: CGFloat
+            let alpha: CGFloat
 
             switch dm.mode {
             case .scroll:
@@ -336,19 +376,34 @@ final class DanmakuCanvasView: UIView {
                 let travel = size.width + ct.size.width
                 x = size.width - travel * progress
                 y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
+                alpha = 1.0
 
             case .top:
                 x = (size.width - ct.size.width) / 2
                 y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
+                alpha = 1.0
 
             case .bottom:
                 x = (size.width - ct.size.width) / 2
                 y = size.height - scrollLaneH * (CGFloat(dm.lane) + 1.5)
+
+                alpha = 1.0
+
+            case .special:
+                guard let special = dm.specialDescriptor else { continue }
+                let elapsed = max(0, now - dm.startTime)
+                let point = special.position(at: elapsed, in: size)
+                x = point.x
+                y = point.y
+                alpha = special.alpha(at: elapsed)
             }
 
-            guard x + ct.size.width > 0, x < size.width else { continue }
+            guard alpha > 0.01 else { continue }
+            guard x + ct.size.width > 0, x < size.width,
+                  y + ct.size.height > 0, y < size.height else { continue }
 
             ctx.saveGState()
+            ctx.setAlpha(alpha)
             ctx.textMatrix = .identity
             ctx.translateBy(x: x + ct.drawInset, y: y + ct.size.height - ct.drawInset)
             ctx.scaleBy(x: 1, y: -1)

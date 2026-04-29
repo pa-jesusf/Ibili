@@ -160,12 +160,42 @@ public struct DanmakuItemDTO: Decodable {
     public let color: UInt32
     public let fontSize: Int32
     public let text: String
+    public let weight: Int32
+    public let hasWeight: Bool
+    public let midHash: String
+    public let likeCount: Int64
+    public let colorful: Int32
+    public let count: Int32
+    public let isSelf: Bool
     enum CodingKeys: String, CodingKey {
         case timeSec = "time_sec"
         case mode
         case color
         case fontSize = "font_size"
         case text
+        case weight
+        case hasWeight = "has_weight"
+        case midHash = "mid_hash"
+        case likeCount = "like_count"
+        case colorful
+        case count
+        case isSelf = "is_self"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        timeSec = try c.decode(Float.self, forKey: .timeSec)
+        mode = try c.decode(Int32.self, forKey: .mode)
+        color = try c.decode(UInt32.self, forKey: .color)
+        fontSize = try c.decode(Int32.self, forKey: .fontSize)
+        text = try c.decode(String.self, forKey: .text)
+        weight = try c.decodeIfPresent(Int32.self, forKey: .weight) ?? 0
+        hasWeight = try c.decodeIfPresent(Bool.self, forKey: .hasWeight) ?? false
+        midHash = try c.decodeIfPresent(String.self, forKey: .midHash) ?? ""
+        likeCount = try c.decodeIfPresent(Int64.self, forKey: .likeCount) ?? 0
+        colorful = try c.decodeIfPresent(Int32.self, forKey: .colorful) ?? 0
+        count = try c.decodeIfPresent(Int32.self, forKey: .count) ?? 0
+        isSelf = try c.decodeIfPresent(Bool.self, forKey: .isSelf) ?? false
     }
 }
 

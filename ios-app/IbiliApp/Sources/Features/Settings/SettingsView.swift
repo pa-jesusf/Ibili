@@ -105,7 +105,7 @@ struct SettingsView: View {
                             in: 0...11,
                             step: 1
                         )
-                        Text("参考上游的 0-11 云屏蔽等级。当前经典 XML 弹幕源不返回 weight 字段，设置已预留，后续接入分段弹幕后可直接生效。")
+                        Text("参考上游的 0-11 云屏蔽等级。当前对携带 weight 的分段弹幕生效；如果回退到经典 XML 弹幕源，则不会误把所有弹幕都当成 0 级过滤。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }

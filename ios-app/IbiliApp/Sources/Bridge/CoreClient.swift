@@ -172,9 +172,9 @@ public final class CoreClient: @unchecked Sendable {
         return try call("video.playurl.tv", args: A(aid: aid, cid: cid, qn: qn), decoding: PlayUrlDTO.self)
     }
 
-    public func danmakuList(cid: Int64) throws -> DanmakuTrackDTO {
-        struct A: Encodable { let cid: Int64 }
-        return try call("danmaku.list", args: A(cid: cid), decoding: DanmakuTrackDTO.self)
+    public func danmakuList(cid: Int64, durationSec: Int64) throws -> DanmakuTrackDTO {
+        struct A: Encodable { let cid: Int64; let duration_sec: Int64 }
+        return try call("danmaku.list", args: A(cid: cid, duration_sec: durationSec), decoding: DanmakuTrackDTO.self)
     }
 
     /// Resolve the canonical playback `cid` for a `bvid` via

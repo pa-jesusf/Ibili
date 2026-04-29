@@ -98,13 +98,28 @@ pub struct PlayUrl {
 pub struct DanmakuItem {
     /// Time in seconds when the comment should appear.
     pub time_sec: f32,
-    /// Mode: 1/2/3 = scrolling, 4 = bottom-anchored, 5 = top-anchored.
+    /// Mode: 1/2/3 = scrolling, 4 = bottom-anchored, 5 = top-anchored,
+    /// 7 = special/advanced danmaku.
     pub mode: i32,
     /// 0xRRGGBB.
     pub color: u32,
     /// Pixel font size as authored.
     pub font_size: i32,
     pub text: String,
+    /// Upstream cloud-block weight, 0...11.
+    pub weight: i32,
+    /// Whether `weight` came from the segmented protobuf source.
+    pub has_weight: bool,
+    /// Sender identity hash used by upstream to detect self-sent danmaku.
+    pub mid_hash: String,
+    /// Upstream like count for this danmaku.
+    pub like_count: i64,
+    /// Upstream colorful enum value, e.g. VIP gradual color.
+    pub colorful: i32,
+    /// Duplicate count after upstream/client-side coalescing.
+    pub count: i32,
+    /// Best-effort self flag derived from the active session and upstream data.
+    pub is_self: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]

@@ -96,7 +96,10 @@ struct PlayurlArgs { aid: i64, cid: i64, #[serde(default = "default_qn")] qn: i6
 fn default_qn() -> i64 { 0 }
 
 #[derive(Deserialize)]
-struct DanmakuArgs { cid: i64 }
+struct DanmakuArgs {
+    cid: i64,
+    #[serde(default)] duration_sec: i64,
+}
 
 #[derive(Deserialize)]
 struct VideoViewArgs { bvid: String }
@@ -139,7 +142,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "danmaku.list" => {
             let a: DanmakuArgs = serde_json::from_value(args)?;
-            to_value(c.inner.danmaku_list(a.cid)?)
+            to_value(c.inner.danmaku_list(a.cid, a.duration_sec)?)
         }
         "video.view_cid" => {
             let a: VideoViewArgs = serde_json::from_value(args)?;
