@@ -61,7 +61,7 @@ struct SearchResultsView: View {
                     }
 
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
-                        ForEach(Array(vm.results.enumerated()), id: \.element.id) { idx, item in
+                        ForEach(vm.results) { item in
                             NavigationLink(value: feedItem(from: item)) {
                                 SearchResultCardView(
                                     item: item,
@@ -71,7 +71,7 @@ struct SearchResultsView: View {
                             }
                             .buttonStyle(.plain)
                             .onAppear {
-                                prefetchCovers(after: idx, cardWidth: cardW)
+                                prefetchCovers(around: item, cardWidth: cardW)
                             }
                         }
                     }
@@ -152,9 +152,10 @@ struct SearchResultsView: View {
         }
     }
 
-    private func prefetchCovers(after index: Int, cardWidth: CGFloat) {
+    private func prefetchCovers(around item: SearchVideoItemDTO, cardWidth: CGFloat) {
         let lookahead = 18
-        let start = min(index + 1, vm.results.count)
+        guard let idx = vm.results.firstIndex(where: { $0.id == item.id }) else { return }
+        let start = min(idx + 1, vm.results.count)
         let end = min(start + lookahead, vm.results.count)
         guard start < end else { return }
         let covers = vm.results[start..<end].map(\.cover)

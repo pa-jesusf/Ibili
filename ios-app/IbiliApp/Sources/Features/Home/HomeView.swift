@@ -56,6 +56,7 @@ struct HomeView: View {
                         })
                         .onAppear {
                             prefetch.cardAppeared(item, allItems: vm.items)
+                            prefetchCovers(around: item, cardWidth: cardW)
                             if item.aid == vm.items.last?.aid {
                                 Task { await vm.loadMore() }
                             }
@@ -78,5 +79,20 @@ struct HomeView: View {
                 prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()))
             }
         }
+    }
+
+    /// Pre-warm cover images ahead of the user's scroll position so
+    /// cells already have their covers cached by the time they appear.
+    private func prefetchCovers(around item: FeedItemDTO, cardWidth: CGFloat) {
+        let lookahead = 18
+        guard let idx = vm.items.firstIndex(where: { $0.aid == item.aid }) else { return }
+        let start = min(idx + 1, vm.items.count)
+        let end = min(start + lookahead, vm.items.count)
+        guard start < end else { return }
+        let covers = vm.items[start..<end].map(\.cover)
+        let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
+        CoverImagePrefetcher.shared.prefetch(covers,
+                                             targetPointSize: size,
+                                             quality: settings.resolvedImageQuality())
     }
 }
