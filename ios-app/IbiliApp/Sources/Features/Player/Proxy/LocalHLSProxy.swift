@@ -24,18 +24,11 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     struct Source {
         let videoCandidates: [URL]
-        let audioCandidates: [URL]                 // empty when single-stream
+        let audioCandidates: [URL]
         let videoProbe: ISOBMFF.Probe
         let audioProbe: ISOBMFF.Probe?
         let videoBandwidthHint: Int?
-        /// RFC6381 codec string for the video track (e.g.
-        /// `"avc1.640032"`, `"hvc1.2.4.L150.B0"`). Forwarded to the
-        /// HLS master playlist's `CODECS` attribute. Empty string means
-        /// "unknown" — the master playlist falls back to omitting
-        /// `CODECS`. AVPlayer needs this for HEVC Main10 / HDR.
         let videoCodec: String
-        /// RFC6381 codec string for the audio track. Empty when there
-        /// is no separate audio track or the upstream omitted it.
         let audioCodec: String
     }
 
@@ -50,6 +43,7 @@ final class LocalHLSProxy: @unchecked Sendable {
         var port: UInt16 = 0
         var sources: [String: Source] = [:]
         var localFiles: [String: URL] = [:]
+        var remuxSessions: [String: RemuxRegistration] = [:]
         /// `true` between the listener's `.ready` event and the next
         /// `.failed` / `.cancelled` event. iOS will tear the listener
         /// down once the app has been suspended in the background long
@@ -76,6 +70,34 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     func unregisterLocalFile(token: String) {
         state.withLock { _ = $0.localFiles.removeValue(forKey: token) }
+    }
+
+    struct RemuxRegistration {
+        let session: StreamingRemuxSession
+        let audioCandidates: [URL]
+        let audioProbe: ISOBMFF.Probe?
+    }
+
+    func registerRemuxSession(token: String,
+                              session: StreamingRemuxSession,
+                              audioCandidates: [URL] = [],
+                              audioProbe: ISOBMFF.Probe? = nil) throws -> URL {
+        try ensureRunning()
+        let reg = RemuxRegistration(session: session,
+                                    audioCandidates: audioCandidates,
+                                    audioProbe: audioProbe)
+        let port = state.withLock { s -> UInt16 in
+            s.remuxSessions[token] = reg
+            return s.port
+        }
+        guard let url = URL(string: "http://127.0.0.1:\(port)/remux/\(token)/master.m3u8") else {
+            throw ProxyServerError.invalidServerURL
+        }
+        return url
+    }
+
+    func unregisterRemuxSession(token: String) {
+        state.withLock { _ = $0.remuxSessions.removeValue(forKey: token) }
     }
 
     private init() {
@@ -440,6 +462,17 @@ final class LocalHLSProxy: @unchecked Sendable {
             return
         }
 
+        if parts.count == 3, parts[0] == "remux" {
+            let token = parts[1]
+            let resource = parts[2]
+            guard let reg = state.withLock({ $0.remuxSessions[token] }) else {
+                respondError(conn: conn, status: 410, body: "Token expired")
+                return
+            }
+            await serveRemuxResource(reg: reg, resource: resource, request: request, conn: conn)
+            return
+        }
+
         // Expected: ["play", "<token>", "<resource>"]
         guard parts.count == 3, parts[0] == "play" else {
             respondError(conn: conn, status: 404, body: "Not Found")
@@ -499,6 +532,112 @@ final class LocalHLSProxy: @unchecked Sendable {
     private func serveMediaPlaylist(probe: ISOBMFF.Probe, segmentPath: String, conn: NWConnection) {
         let body = HLSPlaylistBuilder.makeMedia(probe: probe, segmentPath: segmentPath)
         respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
+    }
+
+    // MARK: - Streaming remux routes
+
+    private func serveRemuxResource(reg: RemuxRegistration,
+                                    resource: String,
+                                    request: HTTPRequestHead,
+                                    conn: NWConnection) async {
+        AppLog.info("player", "remux 代理请求", metadata: [
+            "resource": resource,
+            "range": request.range.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "-",
+        ])
+        switch resource {
+        case "master.m3u8":
+            serveRemuxMasterPlaylist(reg: reg, conn: conn)
+        case "video.m3u8":
+            serveRemuxVideoPlaylist(session: reg.session, conn: conn)
+        case "audio.m3u8":
+            if let probe = reg.audioProbe {
+                serveMediaPlaylist(probe: probe, segmentPath: "a.seg", conn: conn)
+            } else {
+                respondError(conn: conn, status: 404, body: "No audio track")
+            }
+        case "a.seg":
+            if !reg.audioCandidates.isEmpty {
+                await serveSegment(candidates: reg.audioCandidates,
+                                   request: request, conn: conn, label: "audio")
+            } else {
+                respondError(conn: conn, status: 404, body: "No audio track")
+            }
+        case "init.mp4":
+            logRemuxInitDiagnostics(fileURL: reg.session.initSegmentPath)
+            await serveLocalFile(fileURL: reg.session.initSegmentPath,
+                                 request: request, conn: conn)
+        default:
+            if resource.hasPrefix("seg-"), resource.hasSuffix(".m4s"),
+               let index = Int(resource.dropFirst(4).dropLast(4)) {
+                await serveLocalFile(fileURL: reg.session.segmentPath(index),
+                                     request: request, conn: conn)
+            } else {
+                respondError(conn: conn, status: 404, body: "Not Found")
+            }
+        }
+    }
+
+    private func serveRemuxMasterPlaylist(reg: RemuxRegistration, conn: NWConnection) {
+        let lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            "#EXT-X-INDEPENDENT-SEGMENTS",
+            "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+            "video.m3u8",
+        ]
+        let body = lines.joined(separator: "\n") + "\n"
+        AppLog.info("player", "remux master.m3u8", metadata: [
+            "hasAudio": "false",
+            "body": body,
+        ])
+        respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
+    }
+
+    private func serveRemuxVideoPlaylist(session: StreamingRemuxSession, conn: NWConnection) {
+        let playlistURL = session.outputDirectory.appendingPathComponent("live.m3u8")
+        guard var content = try? String(contentsOf: playlistURL, encoding: .utf8) else {
+            respondError(conn: conn, status: 503, body: "Playlist not ready yet")
+            return
+        }
+        let dirPrefix = session.outputDirectory.path
+        content = content.replacingOccurrences(of: dirPrefix + "/", with: "")
+        let initExists = FileManager.default.fileExists(atPath: session.initSegmentPath.path)
+        let initSize = ((try? FileManager.default.attributesOfItem(atPath: session.initSegmentPath.path)[.size]) as? NSNumber)?.intValue ?? -1
+        let seg0Path = session.segmentPath(0).path
+        let seg0Exists = FileManager.default.fileExists(atPath: seg0Path)
+        let seg0Size = ((try? FileManager.default.attributesOfItem(atPath: seg0Path)[.size]) as? NSNumber)?.intValue ?? -1
+        AppLog.info("player", "remux video.m3u8", metadata: [
+            "initExists": String(initExists),
+            "initSize": String(initSize),
+            "seg0Exists": String(seg0Exists),
+            "seg0Size": String(seg0Size),
+            "bodyPrefix": String(content.prefix(1500)),
+        ])
+        respondText(conn: conn, body: content, contentType: "application/vnd.apple.mpegurl")
+    }
+
+    private func logRemuxInitDiagnostics(fileURL: URL) {
+        guard let data = try? Data(contentsOf: fileURL) else {
+            AppLog.warning("player", "remux init.mp4 诊断失败", metadata: [
+                "path": fileURL.path,
+                "reason": "read failed",
+            ])
+            return
+        }
+        let boxes = MP4BoxDiagnostics(data: data)
+        AppLog.info("player", "remux init.mp4 诊断", metadata: [
+            "path": fileURL.path,
+            "size": String(data.count),
+            "topBoxes": boxes.topLevelTypes.joined(separator: ","),
+            "majorBrand": boxes.majorBrand ?? "-",
+            "compatibleBrands": boxes.compatibleBrands.joined(separator: ","),
+            "sampleEntries": boxes.sampleEntries.joined(separator: ","),
+            "hasHvcC": String(boxes.contains(type: "hvcC")),
+            "hvcC": boxes.hvcCDescription ?? "-",
+            "hasDvcC": String(boxes.contains(type: "dvcC")),
+            "hasDvvC": String(boxes.contains(type: "dvvC")),
+            "allBoxTypes": boxes.allTypes.prefix(80).joined(separator: ","),
+        ])
     }
 
     // MARK: - Segment route (with CDN failover)
@@ -642,6 +781,129 @@ final class LocalHLSProxy: @unchecked Sendable {
 }
 
 // MARK: - HTTP request parsing
+
+private struct MP4BoxDiagnostics {
+    let topLevelTypes: [String]
+    let allTypes: [String]
+    let sampleEntries: [String]
+    let majorBrand: String?
+    let compatibleBrands: [String]
+    let hvcCDescription: String?
+
+    init(data: Data) {
+        var topLevelTypes: [String] = []
+        var allTypes: [String] = []
+        var sampleEntries: [String] = []
+        var majorBrand: String?
+        var compatibleBrands: [String] = []
+        var hvcCDescription: String?
+
+        func fourCC(at offset: Int) -> String? {
+            guard offset >= 0, offset + 4 <= data.count else { return nil }
+            let bytes = data[offset..<(offset + 4)]
+            guard bytes.allSatisfy({ $0 >= 32 && $0 <= 126 }) else { return nil }
+            return String(bytes: bytes, encoding: .ascii)
+        }
+
+        func uint32(at offset: Int) -> UInt64? {
+            guard offset >= 0, offset + 4 <= data.count else { return nil }
+            return data[offset..<(offset + 4)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        }
+
+        func uint64(at offset: Int) -> UInt64? {
+            guard offset >= 0, offset + 8 <= data.count else { return nil }
+            return data[offset..<(offset + 8)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        }
+
+        func boxHeader(at offset: Int, end: Int) -> (type: String, payloadStart: Int, boxEnd: Int)? {
+            guard offset + 8 <= end,
+                  let rawSize = uint32(at: offset),
+                  let type = fourCC(at: offset + 4) else { return nil }
+            var headerSize = 8
+            var boxSize = rawSize
+            if rawSize == 1 {
+                guard let largesize = uint64(at: offset + 8) else { return nil }
+                headerSize = 16
+                boxSize = largesize
+            } else if rawSize == 0 {
+                boxSize = UInt64(end - offset)
+            }
+            guard boxSize >= UInt64(headerSize) else { return nil }
+            let boxEnd64 = UInt64(offset) + boxSize
+            guard boxEnd64 <= UInt64(end) else { return nil }
+            return (type, offset + headerSize, Int(boxEnd64))
+        }
+
+        func describeHvcC(start: Int, end: Int) -> String? {
+            guard start + 13 <= end else { return nil }
+            let configurationVersion = data[start]
+            let profileByte = data[start + 1]
+            let generalProfileSpace = (profileByte >> 6) & 0x03
+            let generalTierFlag = (profileByte >> 5) & 0x01
+            let generalProfileIDC = profileByte & 0x1f
+            let compatibility = uint32(at: start + 2) ?? 0
+            let generalLevelIDC = data[start + 12]
+            return "version=\(configurationVersion),profileSpace=\(generalProfileSpace),tier=\(generalTierFlag),profileIDC=\(generalProfileIDC),compat=0x\(String(compatibility, radix: 16)),levelIDC=\(generalLevelIDC)"
+        }
+
+        func parseBoxes(start: Int, end: Int, depth: Int) {
+            var offset = start
+            while offset + 8 <= end {
+                guard let header = boxHeader(at: offset, end: end) else { break }
+                if depth == 0 { topLevelTypes.append(header.type) }
+                allTypes.append(header.type)
+
+                if header.type == "ftyp" {
+                    majorBrand = fourCC(at: header.payloadStart)
+                    var brandOffset = header.payloadStart + 8
+                    while brandOffset + 4 <= header.boxEnd {
+                        if let brand = fourCC(at: brandOffset) {
+                            compatibleBrands.append(brand)
+                        }
+                        brandOffset += 4
+                    }
+                } else if header.type == "hvcC" {
+                    hvcCDescription = describeHvcC(start: header.payloadStart, end: header.boxEnd)
+                }
+
+                if header.type == "stsd" {
+                    var entryOffset = header.payloadStart + 8
+                    while entryOffset + 8 <= header.boxEnd {
+                        guard let entry = boxHeader(at: entryOffset, end: header.boxEnd) else { break }
+                        sampleEntries.append(entry.type)
+                        allTypes.append(entry.type)
+                        let childStart = visualSampleEntryChildStart(payloadStart: entry.payloadStart, boxEnd: entry.boxEnd)
+                        parseBoxes(start: childStart, end: entry.boxEnd, depth: depth + 1)
+                        entryOffset = entry.boxEnd
+                    }
+                } else if ["moov", "trak", "edts", "mdia", "minf", "dinf", "stbl", "mvex", "moof", "traf"].contains(header.type) {
+                    parseBoxes(start: header.payloadStart, end: header.boxEnd, depth: depth + 1)
+                }
+
+                offset = header.boxEnd
+            }
+        }
+
+        func visualSampleEntryChildStart(payloadStart: Int, boxEnd: Int) -> Int {
+            let visualSampleEntryHeaderLength = 78
+            let start = payloadStart + visualSampleEntryHeaderLength
+            return start <= boxEnd ? start : boxEnd
+        }
+
+        parseBoxes(start: 0, end: data.count, depth: 0)
+
+        self.topLevelTypes = topLevelTypes
+        self.allTypes = allTypes
+        self.sampleEntries = sampleEntries
+        self.majorBrand = majorBrand
+        self.compatibleBrands = compatibleBrands
+        self.hvcCDescription = hvcCDescription
+    }
+
+    func contains(type: String) -> Bool {
+        allTypes.contains(type) || sampleEntries.contains(type)
+    }
+}
 
 private struct HTTPRequestHead {
     let method: String

@@ -701,8 +701,17 @@ final class PlayerViewModel: ObservableObject {
                         Task { await self.fallbackToRemux(source: source, generation: generation, detail: detail) }
                         return
                     }
+                    if self.isUsingRemuxFallback, failingQn > 0 {
+                        self.blockedQns.insert(failingQn)
+                        AppLog.warning("player", "remux fallback 失败，自动降档", metadata: [
+                            "detail": detail,
+                            "blockedQn": String(failingQn),
+                        ])
+                        Task { await self.reload() }
+                        return
+                    }
                     let alreadyBlocked = failingQn > 0 && self.blockedQns.contains(failingQn)
-                    if failingQn > 0, !alreadyBlocked, !self.isUsingRemuxFallback {
+                    if failingQn > 0, !alreadyBlocked {
                         self.blockedQns.insert(failingQn)
                         AppLog.warning("player", "尝试自动恢复播放(降档)", metadata: [
                             "detail": detail,
