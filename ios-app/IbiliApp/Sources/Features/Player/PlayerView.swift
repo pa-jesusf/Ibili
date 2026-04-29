@@ -40,6 +40,12 @@ final class PlayerViewModel: ObservableObject {
     /// Cap of 1 keeps us from looping when the upstream playurl itself
     /// is genuinely broken.
     private var autoReloadAttempts: Int = 0
+    /// qns that AVPlayer has refused for the current `(aid, cid)` since
+    /// the last fresh `load(...)`. When an item fails playback we drop
+    /// its qn into this set and reload at the next-highest available
+    /// qn instead of looping on the same broken variant. Reset on a
+    /// fresh load so a future video starts with a clean slate.
+    private var blockedQns: Set<Int64> = []
     /// Preparation backing the currently visible player. Stored so a
     /// later low->high upgrade can release the old proxy token without
     /// tearing down the newly-promoted stream.
@@ -53,6 +59,34 @@ final class PlayerViewModel: ObservableObject {
     private var pendingUpgradeTask: Task<Void, Never>?
 
     func load(item: FeedItemDTO, preferredQn: Int64, fastLoad: Bool) async {
+        // Some entry points (notably the search results grid) hand us
+        // a `FeedItemDTO` with `cid == 0` because the upstream
+        // search-by-type endpoint omits cids. Resolve it via the view
+        // API before doing anything player-related — otherwise both
+        // the web and TV playurl calls hit "请求错误 / 啥都木有".
+        var item = item
+        if item.cid == 0 {
+            do {
+                let resolvedCid: Int64 = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.videoViewCid(bvid: item.bvid)
+                }.value
+                item = FeedItemDTO(
+                    aid: item.aid,
+                    bvid: item.bvid,
+                    cid: resolvedCid,
+                    title: item.title,
+                    cover: item.cover,
+                    author: item.author,
+                    durationSec: item.durationSec,
+                    play: item.play,
+                    danmaku: item.danmaku
+                )
+            } catch {
+                isLoading = false
+                errorText = "无法解析视频信息: \((error as NSError).localizedDescription)"
+                return
+            }
+        }
         if player != nil, aid == item.aid, cid == item.cid {
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
                 "aid": String(item.aid),
@@ -63,11 +97,16 @@ final class PlayerViewModel: ObservableObject {
         let startedAt = CFAbsoluteTimeGetCurrent()
         loadGeneration &+= 1
         let generation = loadGeneration
+        // Treat a `reload()` of the same video (which zeroes aid/cid)
+        // as the same load context so we keep the blocked-qn set; only
+        // a fresh navigation to a different (aid,cid) wipes it.
+        let isSameVideo = (lastLoadedItem?.aid == item.aid && lastLoadedItem?.cid == item.cid)
         aid = item.aid; cid = item.cid
         lastLoadedItem = item
         lastPreferredQn = preferredQn
         lastFastLoad = fastLoad
         autoReloadAttempts = 0
+        if !isSameVideo { blockedQns.removeAll() }
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
         cancelPendingUpgrade()
@@ -619,13 +658,25 @@ final class PlayerViewModel: ObservableObject {
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
                         "detail": detail,
                     ])
-                    // The most common cause we see is a stale
-                    // `127.0.0.1:<port>` from before iOS killed the
-                    // local listener while the app was suspended. Take
-                    // one shot at rebuilding the player against a
-                    // freshly-bound proxy port before surfacing an
-                    // error to the user.
-                    if self.autoReloadAttempts < 1 {
+                    // Two distinct recovery paths:
+                    //   * Stale local proxy (iOS killed our listener
+                    //     while suspended) — retry once with the same
+                    //     qn against a freshly-bound proxy.
+                    //   * The asset/qn itself is unplayable (typically
+                    //     HDR/DV variants the device claims to support
+                    //     but actually rejects with CoreMedia -12927).
+                    //     Mark the qn as blocked and reload at the
+                    //     next-highest available qn instead of looping.
+                    let failingQn = self.currentQn
+                    let alreadyBlocked = failingQn > 0 && self.blockedQns.contains(failingQn)
+                    if failingQn > 0, !alreadyBlocked {
+                        self.blockedQns.insert(failingQn)
+                        AppLog.warning("player", "尝试自动恢复播放(降档)", metadata: [
+                            "detail": detail,
+                            "blockedQn": String(failingQn),
+                        ])
+                        Task { await self.reload() }
+                    } else if self.autoReloadAttempts < 1 {
                         self.autoReloadAttempts += 1
                         AppLog.warning("player", "尝试自动恢复播放", metadata: [
                             "detail": detail,
@@ -664,10 +715,51 @@ final class PlayerViewModel: ObservableObject {
                                  fallback: Int64) -> Int64 {
         let codes = Set(qualities.map(\.qn)).union([fallback])
         let sorted = codes.sorted(by: >)
-        guard let highest = sorted.first else { return fallback }
+        guard let absoluteHighest = sorted.first else { return fallback }
+        // Filter against (a) what the device's decoder + display chain
+        // can actually play and (b) qns that AVPlayer has already
+        // refused this session (typically HDR/DV/8K variants the
+        // device claims to support but actually chokes on for this
+        // particular asset). Keeping unsupported qns out of the auto
+        // pick is what saves us from CoreMedia -12927.
+        let playable = sorted.filter { Self.deviceSupports(qn: $0) && !blockedQns.contains($0) }
+        let highest = playable.first ?? absoluteHighest
         guard preferredQn > 0 else { return highest }
-        return sorted.first(where: { $0 <= preferredQn }) ?? highest
+        return playable.first(where: { $0 <= preferredQn })
+            ?? sorted.first(where: { $0 <= preferredQn })
+            ?? highest
     }
+
+    /// Static device capability map. We only block qns that the device
+    /// can never play; codec-level surprises (e.g. an asset that
+    /// advertises HDR but actually fails) are caught dynamically by
+    /// `blockedQns` once AVPlayer reports the failure.
+    ///
+    /// qn → required capability:
+    /// * 125 = HDR10/HLG  → `AVPlayer.availableHDRModes` includes hdr10/hlg
+    /// * 126 = Dolby Vision → availableHDRModes includes dolbyVision
+    /// * 127 = 8K — no clean public API to detect 8K HEVC decode; we
+    ///   trust upstream and rely on the dynamic blocklist if it fails.
+    private static func deviceSupports(qn: Int64) -> Bool {
+        switch qn {
+        case 125: return hdrCapability.allowsHDR
+        case 126: return hdrCapability.allowsDolbyVision
+        default:  return true
+        }
+    }
+
+    private struct HDRCapability {
+        let allowsHDR: Bool
+        let allowsDolbyVision: Bool
+    }
+
+    private static let hdrCapability: HDRCapability = {
+        let modes = AVPlayer.availableHDRModes
+        return HDRCapability(
+            allowsHDR: modes.contains(.hdr10) || modes.contains(.hlg) || modes.contains(.dolbyVision),
+            allowsDolbyVision: modes.contains(.dolbyVision)
+        )
+    }()
 
     private func qualityLabel(for qn: Int64) -> String {
         switch qn {

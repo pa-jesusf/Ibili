@@ -26,6 +26,15 @@ final class LocalHLSProxy: @unchecked Sendable {
         let videoProbe: ISOBMFF.Probe
         let audioProbe: ISOBMFF.Probe?
         let videoBandwidthHint: Int?
+        /// RFC6381 codec string for the video track (e.g.
+        /// `"avc1.640032"`, `"hvc1.2.4.L150.B0"`). Forwarded to the
+        /// HLS master playlist's `CODECS` attribute. Empty string means
+        /// "unknown" — the master playlist falls back to omitting
+        /// `CODECS`. AVPlayer needs this for HEVC Main10 / HDR.
+        let videoCodec: String
+        /// RFC6381 codec string for the audio track. Empty when there
+        /// is no separate audio track or the upstream omitted it.
+        let audioCodec: String
     }
 
     private let queue = DispatchQueue(label: "ibili.hls.proxy", qos: .userInitiated)
@@ -252,7 +261,9 @@ final class LocalHLSProxy: @unchecked Sendable {
             videoBandwidthHint: source.videoBandwidthHint,
             hasSeparateAudio: source.audioProbe != nil,
             videoMediaPath: "video.m3u8",
-            audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8"
+            audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8",
+            videoCodec: source.videoCodec,
+            audioCodec: source.audioCodec
         )
         respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
     }

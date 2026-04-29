@@ -160,6 +160,36 @@ impl<'de> Deserialize<'de> for DashAudio {
 }
 
 impl Core {
+    /// Resolve the default page `cid` for a `bvid` via
+    /// `/x/web-interface/view`. Used by callers that only have a bvid
+    /// (e.g. the search results screen — `searchByType` does not return
+    /// cids on video rows). Returns the cid of `pages[0]` which is what
+    /// the playurl endpoint expects for a single-part video.
+    pub fn video_view_cid(&self, bvid: &str) -> CoreResult<i64> {
+        const URL_VIEW: &str = "https://api.bilibili.com/x/web-interface/view";
+
+        #[derive(Deserialize)]
+        struct ViewData {
+            #[serde(default)] cid: i64,
+            #[serde(default)] pages: Vec<ViewPage>,
+        }
+        #[derive(Deserialize)]
+        struct ViewPage {
+            #[serde(default)] cid: i64,
+        }
+
+        let data: ViewData = self
+            .http
+            .get_web(URL_VIEW, &[("bvid".to_string(), bvid.to_string())])?;
+        if data.cid > 0 { return Ok(data.cid); }
+        if let Some(p) = data.pages.first() {
+            if p.cid > 0 { return Ok(p.cid); }
+        }
+        Err(CoreError::Internal(format!(
+            "view returned no cid for bvid={bvid}"
+        )))
+    }
+
     pub fn video_playurl(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
         match self.video_playurl_web(aid, cid, qn) {
             Ok(play) => Ok(play),
@@ -240,6 +270,8 @@ impl Core {
             audio_backup_urls: Vec::new(),
             accept_quality,
             accept_description,
+            video_codec: String::new(),
+            audio_codec: String::new(),
             debug_message: None,
         })
     }
@@ -308,15 +340,16 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
             let video_ranked = rank_urls(&video_candidates, Some(DEFAULT_CDN_HOST), false, false);
             if let Some(video_url) = video_ranked.first().cloned() {
                 let video_backups = video_ranked.into_iter().skip(1).collect::<Vec<_>>();
-                let (audio_url, audio_backups) = match audio {
+                let video_codec = video.codecs.clone();
+                let (audio_url, audio_backups, audio_codec) = match audio {
                     Some(a) => {
                         let candidates = collect_candidates(&a.base_url, &a.backup_url);
                         let ranked = rank_urls(&candidates, Some(DEFAULT_CDN_HOST), true, false);
                         let primary = ranked.first().cloned();
                         let backups = ranked.into_iter().skip(1).collect::<Vec<_>>();
-                        (primary, backups)
+                        (primary, backups, a.codecs.clone())
                     }
-                    None => (None, Vec::new()),
+                    None => (None, Vec::new(), String::new()),
                 };
                 return Ok(PlayUrl {
                     url: video_url,
@@ -329,7 +362,9 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
                     audio_backup_urls: audio_backups,
                     accept_quality,
                     accept_description,
-            debug_message: None,
+                    video_codec,
+                    audio_codec,
+                    debug_message: None,
                 });
             }
         }
@@ -348,6 +383,8 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
         audio_backup_urls: Vec::new(),
         accept_quality,
         accept_description,
+        video_codec: String::new(),
+        audio_codec: String::new(),
         debug_message: None,
     })
 }

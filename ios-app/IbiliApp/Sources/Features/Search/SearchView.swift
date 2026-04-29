@@ -38,7 +38,14 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if vm.hasSubmittedQuery && !vm.query.isEmpty {
+        // Show results only while the field still matches the query
+        // that produced them. As soon as the user edits the search
+        // text we slide back to the landing view so we don't show
+        // stale matches that no longer correspond to what's in the
+        // search field.
+        if vm.hasSubmittedQuery,
+           !vm.submittedQuery.isEmpty,
+           vm.query == vm.submittedQuery {
             VStack(spacing: 0) {
                 SearchTypeBar(vm: vm)
                 Divider().opacity(0.4)
@@ -56,7 +63,9 @@ struct SearchView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if vm.hasSubmittedQuery && !vm.query.isEmpty {
+        if vm.hasSubmittedQuery,
+           !vm.submittedQuery.isEmpty,
+           vm.query == vm.submittedQuery {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     isFiltersSheetPresented = true

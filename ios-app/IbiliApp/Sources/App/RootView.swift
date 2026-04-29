@@ -17,23 +17,51 @@ struct RootView: View {
 
 struct MainTabView: View {
     var body: some View {
-        TabView {
-            NavigationStack {
-                HomeView()
-                    .navigationTitle("推荐")
+        // On iOS 18+ we use the new `Tab(role: .search)` initializer
+        // so SwiftUI renders the search tab the way Apple Music does:
+        // a separate magnifying-glass capsule next to the rest of the
+        // tab bar that, when tapped, expands a long search field at
+        // the bottom and collapses the other tabs into a single pill.
+        // On iOS 16/17 we fall back to a plain extra `.tabItem`,
+        // which still works but doesn't get the floating split look.
+        if #available(iOS 18.0, *) {
+            TabView {
+                Tab("首页", systemImage: "house.fill") {
+                    NavigationStack {
+                        HomeView()
+                            .navigationTitle("推荐")
+                    }
+                }
+                Tab("我的", systemImage: "person.crop.circle") {
+                    NavigationStack {
+                        ProfileView()
+                            .navigationTitle("我的")
+                    }
+                }
+                Tab(role: .search) {
+                    SearchView()
+                }
             }
-            .tabItem { Label("首页", systemImage: "house.fill") }
+            .tint(IbiliTheme.accent)
+        } else {
+            TabView {
+                NavigationStack {
+                    HomeView()
+                        .navigationTitle("推荐")
+                }
+                .tabItem { Label("首页", systemImage: "house.fill") }
 
-            SearchView()
-                .tabItem { Label("搜索", systemImage: "magnifyingglass") }
+                SearchView()
+                    .tabItem { Label("搜索", systemImage: "magnifyingglass") }
 
-            NavigationStack {
-                ProfileView()
-                    .navigationTitle("我的")
+                NavigationStack {
+                    ProfileView()
+                        .navigationTitle("我的")
+                }
+                .tabItem { Label("我的", systemImage: "person.crop.circle") }
             }
-            .tabItem { Label("我的", systemImage: "person.crop.circle") }
+            .tint(IbiliTheme.accent)
         }
-        .tint(IbiliTheme.accent)
     }
 }
 

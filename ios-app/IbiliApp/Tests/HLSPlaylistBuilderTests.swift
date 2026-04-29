@@ -33,6 +33,52 @@ final class HLSPlaylistBuilderTests: XCTestCase {
         XCTAssertTrue(master.contains("#EXT-X-STREAM-INF:BANDWIDTH="))
     }
 
+    func testMasterWithCodecsEmitsCodecsAndAudioGroupCodec() {
+        let master = HLSPlaylistBuilder.makeMaster(
+            videoBandwidthHint: 6_000_000,
+            hasSeparateAudio: true,
+            videoMediaPath: "video.m3u8",
+            audioMediaPath: "audio.m3u8",
+            videoCodec: "avc1.640032",
+            audioCodec: "mp4a.40.2"
+        )
+        XCTAssertTrue(master.contains(#"CODECS="avc1.640032,mp4a.40.2""#),
+                      "EXT-X-STREAM-INF must combine video+audio codecs")
+        XCTAssertTrue(master.contains(#"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud""#))
+        XCTAssertTrue(master.contains(#",CODECS="mp4a.40.2""#),
+                      "EXT-X-MEDIA must also carry the audio codec")
+        XCTAssertFalse(master.contains("VIDEO-RANGE="),
+                       "AVC must not be tagged as HDR")
+    }
+
+    func testMasterWithHEVCMain10EmitsVideoRangePQ() {
+        let master = HLSPlaylistBuilder.makeMaster(
+            videoBandwidthHint: 12_000_000,
+            hasSeparateAudio: true,
+            videoMediaPath: "video.m3u8",
+            audioMediaPath: "audio.m3u8",
+            videoCodec: "hvc1.2.4.L150.B0",
+            audioCodec: "mp4a.40.2"
+        )
+        XCTAssertTrue(master.contains(#"CODECS="hvc1.2.4.L150.B0,mp4a.40.2""#))
+        XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"),
+                      "HEVC profile 2 (Main10) must be flagged HDR PQ for AVPlayer")
+    }
+
+    func testMasterWithDolbyVisionEmitsVideoRangePQ() {
+        let master = HLSPlaylistBuilder.makeMaster(
+            videoBandwidthHint: 18_000_000,
+            hasSeparateAudio: true,
+            videoMediaPath: "video.m3u8",
+            audioMediaPath: "audio.m3u8",
+            videoCodec: "dvh1.08.07",
+            audioCodec: "mp4a.40.2"
+        )
+        XCTAssertTrue(master.contains(#"CODECS="dvh1.08.07,mp4a.40.2""#))
+        XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"),
+                      "Dolby Vision (dvh1.*) must be flagged HDR PQ for AVPlayer")
+    }
+
     // MARK: - Media
 
     func testMediaPlaylistEmitsMapAndOneLinePerFragment() {

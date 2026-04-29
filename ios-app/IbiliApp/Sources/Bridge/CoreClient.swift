@@ -164,6 +164,16 @@ public final class CoreClient: @unchecked Sendable {
         return try call("danmaku.list", args: A(cid: cid), decoding: DanmakuTrackDTO.self)
     }
 
+    /// Resolve the canonical playback `cid` for a `bvid` via
+    /// `/x/web-interface/view`. Used when navigating from the search
+    /// results screen, where the search-by-type endpoint does not
+    /// return cids on video rows.
+    public func videoViewCid(bvid: String) throws -> Int64 {
+        struct A: Encodable { let bvid: String }
+        struct R: Decodable { let cid: Int64 }
+        return try call("video.view_cid", args: A(bvid: bvid), decoding: R.self).cid
+    }
+
     /// Keyword search for videos. `page` is 1-based; `order`, `duration` and
     /// `tids` mirror upstream PiliPlus search parameters.
     public func searchVideo(

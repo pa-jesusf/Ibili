@@ -28,6 +28,12 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var errorText: String? = nil
 
+    /// The exact query string that produced `results`. Distinct from
+    /// `query` so the UI can hide stale results as soon as the user
+    /// starts editing the search field; we only consider results
+    /// "current" when `query == submittedQuery`.
+    @Published private(set) var submittedQuery: String = ""
+
     /// `true` once the user has triggered at least one search since the
     /// view appeared. Drives the landing → results swap.
     @Published private(set) var hasSubmittedQuery: Bool = false
@@ -44,6 +50,7 @@ final class SearchViewModel: ObservableObject {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         query = trimmed
+        submittedQuery = trimmed
         hasSubmittedQuery = true
         results = []
         page = 0
@@ -75,6 +82,7 @@ final class SearchViewModel: ObservableObject {
     /// user dismisses the search field via the system Cancel button.
     func reset() {
         query = ""
+        submittedQuery = ""
         results = []
         page = 0
         hasMore = false

@@ -59,6 +59,21 @@ pub struct PlayUrl {
     /// Human-readable labels matching `accept_quality` 1:1
     /// (e.g. `["高清 1080P+", "高清 1080P", ...]`).
     pub accept_description: Vec<String>,
+    /// RFC6381 codec string for the picked video stream
+    /// (e.g. `"avc1.640032"`, `"hvc1.2.4.L150.B0"`). Empty string
+    /// when the upstream response did not provide one (legacy `durl`
+    /// MP4 path). The iOS layer forwards this into the local HLS
+    /// master playlist's `CODECS` attribute so AVPlayer can route to
+    /// the correct decoder pipeline (Main10/HDR HEVC etc.) before
+    /// fetching segments — without it some HDR variants fail with
+    /// `CoreMediaErrorDomain -12927`.
+    #[serde(default)]
+    pub video_codec: String,
+    /// RFC6381 codec string for the picked audio stream (e.g.
+    /// `"mp4a.40.2"`, `"ec-3"`). Empty when there is no separate
+    /// audio track or the upstream omitted it.
+    #[serde(default)]
+    pub audio_codec: String,
     /// Diagnostic message for non-fatal degradations (e.g. wbi/playurl
     /// failed and we silently fell back to tv_durl). Surfaced by the iOS
     /// layer into the in-app log viewer so the cause is visible.

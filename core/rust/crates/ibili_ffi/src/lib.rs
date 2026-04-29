@@ -99,6 +99,9 @@ fn default_qn() -> i64 { 0 }
 struct DanmakuArgs { cid: i64 }
 
 #[derive(Deserialize)]
+struct VideoViewArgs { bvid: String }
+
+#[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
     #[serde(default = "default_search_page")] page: i64,
@@ -137,6 +140,11 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "danmaku.list" => {
             let a: DanmakuArgs = serde_json::from_value(args)?;
             to_value(c.inner.danmaku_list(a.cid)?)
+        }
+        "video.view_cid" => {
+            let a: VideoViewArgs = serde_json::from_value(args)?;
+            let cid = c.inner.video_view_cid(&a.bvid)?;
+            Ok(json!({ "cid": cid }))
         }
         "search.video" => {
             let a: SearchVideoArgs = serde_json::from_value(args)?;

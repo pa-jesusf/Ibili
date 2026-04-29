@@ -99,6 +99,16 @@ public struct PlayUrlDTO: Decodable {
     public let audioBackupUrls: [String]
     public let acceptQuality: [Int64]
     public let acceptDescription: [String]
+    /// RFC6381 codec string for the video track (e.g. `"avc1.640032"`,
+    /// `"hvc1.2.4.L150.B0"`). Empty string when unknown (legacy `durl`
+    /// MP4 path). Forwarded into the local HLS master playlist's
+    /// `CODECS` attribute so AVPlayer can dispatch to the correct
+    /// decoder pipeline (HEVC Main10 / HDR) before fetching segments.
+    public let videoCodec: String
+    /// RFC6381 codec string for the audio track (e.g. `"mp4a.40.2"`,
+    /// `"ec-3"`). Empty when there is no separate audio track or the
+    /// upstream omitted it.
+    public let audioCodec: String
     public let debugMessage: String?
     enum CodingKeys: String, CodingKey {
         case url, format, quality
@@ -109,7 +119,26 @@ public struct PlayUrlDTO: Decodable {
         case audioBackupUrls = "audio_backup_urls"
         case acceptQuality = "accept_quality"
         case acceptDescription = "accept_description"
+        case videoCodec = "video_codec"
+        case audioCodec = "audio_codec"
         case debugMessage = "debug_message"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = try c.decode(String.self, forKey: .url)
+        audioUrl = try c.decodeIfPresent(String.self, forKey: .audioUrl)
+        format = try c.decode(String.self, forKey: .format)
+        streamType = try c.decode(String.self, forKey: .streamType)
+        quality = try c.decode(Int64.self, forKey: .quality)
+        durationMs = try c.decode(Int64.self, forKey: .durationMs)
+        backupUrls = try c.decodeIfPresent([String].self, forKey: .backupUrls) ?? []
+        audioBackupUrls = try c.decodeIfPresent([String].self, forKey: .audioBackupUrls) ?? []
+        acceptQuality = try c.decodeIfPresent([Int64].self, forKey: .acceptQuality) ?? []
+        acceptDescription = try c.decodeIfPresent([String].self, forKey: .acceptDescription) ?? []
+        videoCodec = try c.decodeIfPresent(String.self, forKey: .videoCodec) ?? ""
+        audioCodec = try c.decodeIfPresent(String.self, forKey: .audioCodec) ?? ""
+        debugMessage = try c.decodeIfPresent(String.self, forKey: .debugMessage)
     }
 }
 
