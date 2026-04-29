@@ -17,6 +17,8 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var isVideoReady = false
     @Published private(set) var availableQualities: [(qn: Int64, label: String)] = []
     @Published var currentQn: Int64 = 0
+    @Published private(set) var availableAudioQualities: [(qn: Int64, label: String)] = []
+    @Published var currentAudioQn: Int64 = 0
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
     /// Lightweight handle the SwiftUI player container hands us so we
     /// can drive a snapshot crossfade across an AVPlayer identity swap
@@ -72,7 +74,7 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func load(item: FeedItemDTO, preferredQn: Int64, fastLoad: Bool) async {
+    func load(item: FeedItemDTO, preferredQn: Int64, preferredAudioQn: Int64 = 0, fastLoad: Bool) async {
         // Some entry points (notably the search results grid) hand us
         // a `FeedItemDTO` with `cid == 0` because the upstream
         // search-by-type endpoint omits cids. Resolve it via the view
@@ -126,6 +128,7 @@ final class PlayerViewModel: ObservableObject {
             sourceByQn.removeAll()
         }
         isUsingRemuxFallback = false
+        if preferredAudioQn > 0 { currentAudioQn = preferredAudioQn }
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
         cancelPendingUpgrade()
@@ -166,6 +169,8 @@ final class PlayerViewModel: ObservableObject {
             let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
             self.availableQualities = finalQualities
             self.sourceByQn[info.quality] = info
+            self.availableAudioQualities = normalizedAudioQualities(from: info)
+            self.currentAudioQn = info.audioQuality
 
             // Decide whether to race the lowest variant against the
             // preferred one. We only do it when the user opted in AND
@@ -419,6 +424,8 @@ final class PlayerViewModel: ObservableObject {
             applyRate()
             self.availableQualities = normalizedQualities(from: info)
             self.currentQn = info.quality
+            self.availableAudioQualities = normalizedAudioQualities(from: info)
+            self.currentAudioQn = info.audioQuality
             var meta = prep.logSummary
             meta["aid"] = String(aid)
             meta["cid"] = String(cid)
@@ -847,8 +854,12 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64) async throws -> PlayUrlDTO {
+        try await fetchPlayUrl(aid: aid, cid: cid, qn: qn, audioQn: currentAudioQn)
+    }
+
+    private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
         try await Task.detached {
-            try CoreClient.shared.playUrl(aid: aid, cid: cid, qn: qn)
+            try CoreClient.shared.playUrl(aid: aid, cid: cid, qn: qn, audioQn: audioQn)
         }.value
     }
 
@@ -916,13 +927,75 @@ final class PlayerViewModel: ObservableObject {
 
     private func qualityLabel(for qn: Int64) -> String {
         switch qn {
+        case 127: return "8K"
+        case 126: return "杜比"
+        case 125: return "HDR"
         case 120: return "4K"
+        case 116: return "1080P60"
         case 112: return "1080P+"
         case 80: return "1080P"
+        case 74: return "720P60"
         case 64: return "720P"
         case 32: return "480P"
         case 16: return "360P"
+        case 6: return "240P"
         default: return "画质 \(qn)"
+        }
+    }
+
+    private func normalizedAudioQualities(from info: PlayUrlDTO) -> [(qn: Int64, label: String)] {
+        guard !info.acceptAudioQuality.isEmpty else { return [] }
+        return zip(info.acceptAudioQuality, info.acceptAudioDescription)
+            .map { (qn: $0.0, label: $0.1) }
+    }
+
+    func switchAudioQuality(to audioQn: Int64) async {
+        guard let player else { return }
+        let generation = loadGeneration
+        let resumeAt = player.currentTime()
+        let wasPlaying = player.timeControlStatus == .playing
+        cancelPendingUpgrade()
+        AppLog.info("player", "开始切换音质", metadata: [
+            "aid": String(aid),
+            "cid": String(cid),
+            "fromAudioQn": String(currentAudioQn),
+            "toAudioQn": String(audioQn),
+        ])
+        do {
+            isVideoReady = false
+            itemStatusObservation = nil
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            activePreparation?.release()
+            activePreparation = nil
+            isUsingRemuxFallback = false
+            let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: currentQn, audioQn: audioQn)
+            self.sourceByQn[info.quality] = info
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            let prep = try await engine.makeItem(for: info)
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            if let item = lastLoadedItem {
+                applyPresentationMetadata(to: prep.item, for: item)
+            }
+            activePreparation = prep
+            observeItemStatus(prep.item, generation: generation)
+            player.replaceCurrentItem(with: prep.item)
+            await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+            if wasPlaying { player.play() }
+            applyRate()
+            self.currentAudioQn = info.audioQuality
+            self.availableAudioQualities = normalizedAudioQualities(from: info)
+            AppLog.info("player", "音质切换成功", metadata: [
+                "audioQuality": String(info.audioQuality),
+                "audioQualityLabel": info.audioQualityLabel,
+            ])
+        } catch {
+            errorText = error.localizedDescription
+            AppLog.error("player", "音质切换失败", error: error, metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "toAudioQn": String(audioQn),
+            ])
         }
     }
 
@@ -1424,6 +1497,7 @@ struct PlayerView: View {
             // so a slow danmaku endpoint can never hold up first frame.
             async let video: Void = vm.load(item: item,
                                             preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                                            preferredAudioQn: Int64(settings.preferredAudioQn),
                                             fastLoad: settings.fastLoad)
             async let danmaku: Void = loadDanmaku()
             _ = await (video, danmaku)
@@ -1486,6 +1560,24 @@ struct PlayerView: View {
                 } label: { chip(icon: "slider.horizontal.3", text: currentQualityLabel) }
             }
 
+            if !vm.availableAudioQualities.isEmpty {
+                Menu {
+                    ForEach(vm.availableAudioQualities, id: \.qn) { q in
+                        Button {
+                            Task {
+                                await vm.switchAudioQuality(to: q.qn)
+                            }
+                        } label: {
+                            if q.qn == vm.currentAudioQn {
+                                Label(q.label, systemImage: "checkmark")
+                            } else {
+                                Text(q.label)
+                            }
+                        }
+                    }
+                } label: { chip(icon: "hifispeaker", text: currentAudioQualityLabel) }
+            }
+
             Button {
                 settings.danmakuEnabled.toggle()
             } label: {
@@ -1511,6 +1603,10 @@ struct PlayerView: View {
 
     private var currentQualityLabel: String {
         vm.availableQualities.first { $0.qn == vm.currentQn }?.label ?? "清晰度"
+    }
+
+    private var currentAudioQualityLabel: String {
+        vm.availableAudioQualities.first { $0.qn == vm.currentAudioQn }?.label ?? "音质"
     }
 
     private func loadDanmaku() async {

@@ -15,12 +15,25 @@ struct SettingsView: View {
     ]
     private let preferredVideoQualityOptions: [(label: String, value: Int)] = [
         ("默认最高", 0),
-        ("360P", 16),
-        ("480P", 32),
-        ("720P", 64),
-        ("1080P", 80),
-        ("1080P+", 112),
+        ("8K", 127),
+        ("杜比", 126),
+        ("HDR", 125),
         ("4K", 120),
+        ("1080P60", 116),
+        ("1080P+", 112),
+        ("1080P", 80),
+        ("720P60", 74),
+        ("720P", 64),
+        ("480P", 32),
+        ("360P", 16),
+    ]
+
+    private let preferredAudioQualityOptions: [(label: String, value: Int)] = [
+        ("Hi-Res无损", 30251),
+        ("杜比全景声", 30250),
+        ("192K", 30280),
+        ("132K", 30232),
+        ("64K", 30216),
     ]
 
     var body: some View {
@@ -54,6 +67,11 @@ struct SettingsView: View {
                     set: { settings.preferredQn = $0 }
                 )) {
                     ForEach(preferredVideoQualityOptions, id: \.value) { opt in
+                        Text(opt.label).tag(opt.value)
+                    }
+                }
+                Picker("默认音质", selection: $settings.preferredAudioQn) {
+                    ForEach(preferredAudioQualityOptions, id: \.value) { opt in
                         Text(opt.label).tag(opt.value)
                     }
                 }

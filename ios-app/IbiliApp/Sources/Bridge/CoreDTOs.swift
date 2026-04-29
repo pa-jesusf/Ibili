@@ -110,6 +110,10 @@ public struct PlayUrlDTO: Decodable {
     /// upstream omitted it.
     public let audioCodec: String
     public let debugMessage: String?
+    public let audioQuality: Int64
+    public let audioQualityLabel: String
+    public let acceptAudioQuality: [Int64]
+    public let acceptAudioDescription: [String]
     enum CodingKeys: String, CodingKey {
         case url, format, quality
         case audioUrl = "audio_url"
@@ -122,6 +126,10 @@ public struct PlayUrlDTO: Decodable {
         case videoCodec = "video_codec"
         case audioCodec = "audio_codec"
         case debugMessage = "debug_message"
+        case audioQuality = "audio_quality"
+        case audioQualityLabel = "audio_quality_label"
+        case acceptAudioQuality = "accept_audio_quality"
+        case acceptAudioDescription = "accept_audio_description"
     }
 
     public init(from decoder: Decoder) throws {
@@ -139,6 +147,10 @@ public struct PlayUrlDTO: Decodable {
         videoCodec = try c.decodeIfPresent(String.self, forKey: .videoCodec) ?? ""
         audioCodec = try c.decodeIfPresent(String.self, forKey: .audioCodec) ?? ""
         debugMessage = try c.decodeIfPresent(String.self, forKey: .debugMessage)
+        audioQuality = try c.decodeIfPresent(Int64.self, forKey: .audioQuality) ?? 0
+        audioQualityLabel = try c.decodeIfPresent(String.self, forKey: .audioQualityLabel) ?? ""
+        acceptAudioQuality = try c.decodeIfPresent([Int64].self, forKey: .acceptAudioQuality) ?? []
+        acceptAudioDescription = try c.decodeIfPresent([String].self, forKey: .acceptAudioDescription) ?? []
     }
 }
 

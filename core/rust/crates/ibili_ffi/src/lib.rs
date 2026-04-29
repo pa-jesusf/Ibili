@@ -92,7 +92,7 @@ struct FeedArgs { #[serde(default)] idx: i64, #[serde(default = "default_ps")] p
 fn default_ps() -> i64 { 20 }
 
 #[derive(Deserialize)]
-struct PlayurlArgs { aid: i64, cid: i64, #[serde(default = "default_qn")] qn: i64 }
+struct PlayurlArgs { aid: i64, cid: i64, #[serde(default = "default_qn")] qn: i64, #[serde(default)] audio_qn: i64 }
 fn default_qn() -> i64 { 0 }
 
 #[derive(Deserialize)]
@@ -131,7 +131,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "video.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
-            to_value(c.inner.video_playurl(a.aid, a.cid, a.qn)?)
+            to_value(c.inner.video_playurl_with_audio(a.aid, a.cid, a.qn, a.audio_qn)?)
         }
         "video.playurl.tv" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;

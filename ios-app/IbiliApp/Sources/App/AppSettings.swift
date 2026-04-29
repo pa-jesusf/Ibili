@@ -12,8 +12,12 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.feed.imageQuality") var imageQualityRaw: Int = 0
     /// Preferred initial video quality (Bilibili `qn` code).
     /// `0` means "use the highest quality available for this video".
-    /// Common values: 16=360P, 32=480P, 64=720P, 80=1080P, 112=1080P+, 120=4K.
+    /// Common values: 16=360P, 32=480P, 64=720P, 80=1080P, 112=1080P+, 120=4K,
+    /// 116=1080P60, 125=HDR, 126=杜比, 127=8K.
     @AppStorage("ibili.player.preferredQn") var preferredQn: Int = 0
+    /// Preferred audio quality (Bilibili audio stream id).
+    /// 30251=Hi-Res, 30250=杜比全景声, 30280=192K, 30232=132K, 30216=64K.
+    @AppStorage("ibili.player.preferredAudioQn") var preferredAudioQn: Int = 30251
     /// One-shot migration for older builds that hard-coded `64` (720P) as the
     /// implicit default. New default behaviour is "highest available".
     @AppStorage("ibili.player.preferredQnMigrated") private var preferredQnMigrated: Bool = false

@@ -191,7 +191,11 @@ impl Core {
     }
 
     pub fn video_playurl(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
-        match self.video_playurl_web(aid, cid, qn) {
+        self.video_playurl_with_audio(aid, cid, qn, 0)
+    }
+
+    pub fn video_playurl_with_audio(&self, aid: i64, cid: i64, qn: i64, audio_qn: i64) -> CoreResult<PlayUrl> {
+        match self.video_playurl_web_with_audio(aid, cid, qn, audio_qn) {
             Ok(play) => Ok(play),
             Err(web_err) => {
                 let web_msg = format!("wbi/playurl failed → fell back to tv_durl: {web_err}");
@@ -216,7 +220,7 @@ impl Core {
         self.video_playurl_tv(aid, cid, qn)
     }
 
-    fn video_playurl_web(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
+    fn video_playurl_web_with_audio(&self, aid: i64, cid: i64, qn: i64, audio_qn: i64) -> CoreResult<PlayUrl> {
         let qn = if qn <= 0 { 80 } else { qn };
         let wbi_key = self.fetch_wbi_key()?;
         let params = vec![
@@ -232,7 +236,7 @@ impl Core {
             ("web_location".into(), "1315873".into()),
         ];
         let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
-        build_playurl_from_web_response(response, qn)
+        build_playurl_from_web_response(response, qn, audio_qn)
     }
 
     /// Mirrors `VideoHttp.tvPlayUrl` from upstream PiliPlus.
@@ -273,6 +277,10 @@ impl Core {
             video_codec: String::new(),
             audio_codec: String::new(),
             debug_message: None,
+            audio_quality: 0,
+            audio_quality_label: String::new(),
+            accept_audio_quality: Vec::new(),
+            accept_audio_description: Vec::new(),
         })
     }
 
@@ -318,7 +326,7 @@ impl DashAudio {
     }
 }
 
-fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> CoreResult<PlayUrl> {
+fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, audio_qn: i64) -> CoreResult<PlayUrl> {
     let accept_quality = if response.accept_quality.is_empty() {
         response.dash.as_ref()
             .map(|dash| collect_dash_qualities(&dash.video))
@@ -335,21 +343,23 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
     if let Some(dash) = response.dash {
         let target_qn = pick_target_quality(requested_qn, &accept_quality, &dash.video);
         if let Some(video) = pick_video_stream(&dash.video, target_qn) {
-            let audio = pick_audio_stream(&dash.all_audio());
+            let all_audio = dash.all_audio();
+            let (accept_audio_quality, accept_audio_description) = collect_audio_qualities(&all_audio);
+            let audio = pick_audio_stream_by_quality(&all_audio, audio_qn);
             let video_candidates = collect_candidates(&video.base_url, &video.backup_url);
             let video_ranked = rank_urls(&video_candidates, Some(DEFAULT_CDN_HOST), false, false);
             if let Some(video_url) = video_ranked.first().cloned() {
                 let video_backups = video_ranked.into_iter().skip(1).collect::<Vec<_>>();
                 let video_codec = video.codecs.clone();
-                let (audio_url, audio_backups, audio_codec) = match audio {
+                let (audio_url, audio_backups, audio_codec, picked_audio_qn) = match audio {
                     Some(a) => {
                         let candidates = collect_candidates(&a.base_url, &a.backup_url);
                         let ranked = rank_urls(&candidates, Some(DEFAULT_CDN_HOST), true, false);
                         let primary = ranked.first().cloned();
                         let backups = ranked.into_iter().skip(1).collect::<Vec<_>>();
-                        (primary, backups, a.codecs.clone())
+                        (primary, backups, a.codecs.clone(), a.id)
                     }
-                    None => (None, Vec::new(), String::new()),
+                    None => (None, Vec::new(), String::new(), 0),
                 };
                 return Ok(PlayUrl {
                     url: video_url,
@@ -365,6 +375,10 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
                     video_codec,
                     audio_codec,
                     debug_message: None,
+                    audio_quality: picked_audio_qn,
+                    audio_quality_label: audio_quality_label(picked_audio_qn),
+                    accept_audio_quality,
+                    accept_audio_description,
                 });
             }
         }
@@ -386,6 +400,10 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64) -> 
         video_codec: String::new(),
         audio_codec: String::new(),
         debug_message: None,
+        audio_quality: 0,
+        audio_quality_label: String::new(),
+        accept_audio_quality: Vec::new(),
+        accept_audio_description: Vec::new(),
     })
 }
 
@@ -445,6 +463,41 @@ fn pick_audio_stream(audio: &[DashAudio]) -> Option<DashAudio> {
         .cloned()
 }
 
+fn pick_audio_stream_by_quality(audio: &[DashAudio], preferred_id: i64) -> Option<DashAudio> {
+    if preferred_id <= 0 {
+        return pick_audio_stream(audio);
+    }
+    if let Some(exact) = audio.iter().find(|a| a.id == preferred_id) {
+        return Some(exact.clone());
+    }
+    let mut sorted: Vec<&DashAudio> = audio.iter().collect();
+    sorted.sort_by(|a, b| b.id.cmp(&a.id));
+    sorted.into_iter()
+        .find(|a| a.id <= preferred_id)
+        .or_else(|| audio.iter().min_by_key(|a| a.id))
+        .cloned()
+}
+
+fn collect_audio_qualities(audio: &[DashAudio]) -> (Vec<i64>, Vec<String>) {
+    let mut ids: Vec<i64> = audio.iter().map(|a| a.id).collect();
+    ids.sort_unstable_by(|a, b| b.cmp(a));
+    ids.dedup();
+    let labels: Vec<String> = ids.iter().map(|id| audio_quality_label(*id)).collect();
+    (ids, labels)
+}
+
+fn audio_quality_label(id: i64) -> String {
+    match id {
+        30251 => "Hi-Res无损".into(),
+        30250 | 30255 => "杜比全景声".into(),
+        30280 => "192K".into(),
+        30232 => "132K".into(),
+        30216 => "64K".into(),
+        0 => String::new(),
+        _ => format!("音质 {id}"),
+    }
+}
+
 /// Codec preference score for picking the best video stream.
 ///
 /// HEVC / Dolby Vision is always preferred on iOS: Apple Silicon has
@@ -478,13 +531,18 @@ fn audio_codec_score(codecs: &str) -> i32 {
 
 fn quality_label(qn: i64) -> String {
     match qn {
+        127 => "8K".into(),
+        126 => "杜比".into(),
+        125 => "HDR".into(),
         120 => "4K".into(),
+        116 => "1080P60".into(),
         112 => "1080P+".into(),
         80 => "1080P".into(),
         74 => "720P60".into(),
         64 => "720P".into(),
         32 => "480P".into(),
         16 => "360P".into(),
+        6 => "240P".into(),
         _ => format!("画质 {qn}"),
     }
 }

@@ -79,6 +79,19 @@ pub struct PlayUrl {
     /// layer into the in-app log viewer so the cause is visible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug_message: Option<String>,
+    /// Audio quality id of the picked audio stream (e.g. 30280=192K,
+    /// 30251=Hi-Res, 30250=Dolby Atmos). 0 when no separate audio.
+    #[serde(default)]
+    pub audio_quality: i64,
+    /// Human-readable label for the picked audio quality.
+    #[serde(default)]
+    pub audio_quality_label: String,
+    /// Available audio quality ids, in descending quality order.
+    #[serde(default)]
+    pub accept_audio_quality: Vec<i64>,
+    /// Human-readable labels for `accept_audio_quality`, 1:1.
+    #[serde(default)]
+    pub accept_audio_description: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
