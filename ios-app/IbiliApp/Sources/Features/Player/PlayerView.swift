@@ -1277,25 +1277,23 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.exitsFullScreenWhenPlaybackEnds = false
         vc.videoGravity = .resizeAspect
 
-        // Mount the danmaku host inside the contentOverlayView so it persists
-        // when AVKit moves the player into fullscreen.
-        let host = UIHostingController(rootView: DanmakuOverlay(
-            controller: danmaku,
-            opacity: danmakuEnabled ? danmakuOpacity : 0
-        ))
-        host.view.backgroundColor = .clear
-        host.view.isUserInteractionEnabled = false
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        if let overlay = vc.contentOverlayView {
-            overlay.addSubview(host.view)
+        // Mount the danmaku canvas directly into contentOverlayView.
+        // Using a raw UIView instead of UIHostingController avoids
+        // SwiftUI re-render overhead and fixes the width-shrink bug
+        // after fullscreen→portrait transitions.
+        danmaku.setItems([])
+        if let canvas = danmaku.canvasView, let overlay = vc.contentOverlayView {
+            canvas.translatesAutoresizingMaskIntoConstraints = false
+            canvas.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
+            overlay.addSubview(canvas)
             NSLayoutConstraint.activate([
-                host.view.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
-                host.view.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
-                host.view.topAnchor.constraint(equalTo: overlay.topAnchor),
-                host.view.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
+                canvas.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
+                canvas.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
+                canvas.topAnchor.constraint(equalTo: overlay.topAnchor),
+                canvas.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
             ])
+            context.coordinator.danmakuCanvas = canvas
         }
-        context.coordinator.host = host
         return vc
     }
 
@@ -1314,16 +1312,12 @@ struct PlayerContainer: UIViewControllerRepresentable {
             vc.player = player
             context.coordinator.assignedPlayerID = incomingPlayerID
         }
-        // Push opacity changes through to the hosting controller.
-        context.coordinator.host?.rootView = DanmakuOverlay(
-            controller: danmaku,
-            opacity: danmakuEnabled ? danmakuOpacity : 0
-        )
+        context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
     }
 
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay {
         var parent: PlayerContainer
-        var host: UIHostingController<DanmakuOverlay>?
+        weak var danmakuCanvas: DanmakuCanvasView?
         var assignedPlayerID: ObjectIdentifier?
         /// Most recent in-flight crossfade overlay. Held weakly so we
         /// don't extend its life past `removeFromSuperview`.
@@ -1350,8 +1344,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
             // hosting controller's superview chain. We snapshot via
             // `view.snapshotView(afterScreenUpdates:)` which captures
             // AVPlayerLayer contents on iOS 16+.
-            guard let host,
-                  let containerView = host.view.superview?.superview ?? host.view.superview
+            guard let canvas = danmakuCanvas,
+                  let containerView = canvas.superview?.superview ?? canvas.superview
             else { return }
             // Drop any stale crossfade still on screen.
             activeCrossfade?.removeFromSuperview()
