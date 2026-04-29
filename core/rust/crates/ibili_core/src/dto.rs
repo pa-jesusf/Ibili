@@ -83,3 +83,31 @@ pub struct DanmakuItem {
 pub struct DanmakuTrack {
     pub items: Vec<DanmakuItem>,
 }
+
+/// One video result row from `/x/web-interface/wbi/search/type?search_type=video`.
+///
+/// Field set is intentionally a superset of [`FeedItem`] so the iOS layer
+/// can render search hits with the same card UI; the search-only metadata
+/// (`like`, `pubdate`) sits at the end.
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchVideoItem {
+    pub aid: i64,
+    pub bvid: String,
+    pub cid: i64,
+    pub title: String,
+    pub cover: String,
+    pub author: String,
+    pub duration_sec: i64,
+    pub play: i64,
+    pub danmaku: i64,
+    pub like: i64,
+    /// Unix seconds. `0` means upstream did not provide a publish date.
+    pub pubdate: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchVideoPage {
+    pub items: Vec<SearchVideoItem>,
+    pub num_results: i64,
+    pub num_pages: i64,
+}

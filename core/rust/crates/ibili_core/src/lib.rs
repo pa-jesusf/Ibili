@@ -14,6 +14,7 @@ pub mod feed;
 pub mod video;
 pub mod danmaku;
 pub mod cdn;
+pub mod search;
 
 use std::sync::Arc;
 

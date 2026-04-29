@@ -24,6 +24,9 @@ struct MainTabView: View {
             }
             .tabItem { Label("首页", systemImage: "house.fill") }
 
+            SearchView()
+                .tabItem { Label("搜索", systemImage: "magnifyingglass") }
+
             NavigationStack {
                 ProfileView()
                     .navigationTitle("我的")

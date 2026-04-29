@@ -98,6 +98,16 @@ fn default_qn() -> i64 { 0 }
 #[derive(Deserialize)]
 struct DanmakuArgs { cid: i64 }
 
+#[derive(Deserialize)]
+struct SearchVideoArgs {
+    keyword: String,
+    #[serde(default = "default_search_page")] page: i64,
+    #[serde(default)] order: Option<String>,
+    #[serde(default)] duration: Option<i64>,
+    #[serde(default)] tids: Option<i64>,
+}
+fn default_search_page() -> i64 { 1 }
+
 fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> {
     match method {
         "session.snapshot" => to_value(c.inner.session_snapshot()),
@@ -127,6 +137,16 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "danmaku.list" => {
             let a: DanmakuArgs = serde_json::from_value(args)?;
             to_value(c.inner.danmaku_list(a.cid)?)
+        }
+        "search.video" => {
+            let a: SearchVideoArgs = serde_json::from_value(args)?;
+            to_value(c.inner.search_video(
+                &a.keyword,
+                a.page,
+                a.order.as_deref(),
+                a.duration,
+                a.tids,
+            )?)
         }
         _ => Err(CoreError::InvalidArgument(format!("unknown method: {method}"))),
     }

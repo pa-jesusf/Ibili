@@ -163,6 +163,35 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable { let cid: Int64 }
         return try call("danmaku.list", args: A(cid: cid), decoding: DanmakuTrackDTO.self)
     }
+
+    /// Keyword search for videos. `page` is 1-based; `order`, `duration` and
+    /// `tids` mirror upstream PiliPlus search parameters.
+    public func searchVideo(
+        keyword: String,
+        page: Int64 = 1,
+        order: String? = nil,
+        duration: Int64? = nil,
+        tids: Int64? = nil
+    ) throws -> SearchVideoPageDTO {
+        struct A: Encodable {
+            let keyword: String
+            let page: Int64
+            let order: String?
+            let duration: Int64?
+            let tids: Int64?
+        }
+        return try call(
+            "search.video",
+            args: A(
+                keyword: keyword,
+                page: page,
+                order: order,
+                duration: duration,
+                tids: tids
+            ),
+            decoding: SearchVideoPageDTO.self
+        )
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {

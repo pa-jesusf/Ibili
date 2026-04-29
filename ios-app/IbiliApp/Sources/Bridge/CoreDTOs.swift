@@ -131,3 +131,40 @@ public struct DanmakuItemDTO: Decodable {
 public struct DanmakuTrackDTO: Decodable {
     public let items: [DanmakuItemDTO]
 }
+
+// MARK: - Search
+
+/// One video result from `/x/web-interface/wbi/search/type?search_type=video`.
+/// Field set is a strict superset of `FeedItemDTO`, with extra `like` and
+/// `pubdate` (unix seconds) for the search result row.
+public struct SearchVideoItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { aid }
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let author: String
+    public let durationSec: Int64
+    public let play: Int64
+    public let danmaku: Int64
+    public let like: Int64
+    /// Unix seconds. `0` means upstream did not provide a publish date.
+    public let pubdate: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover, author, play, danmaku, like, pubdate
+        case durationSec = "duration_sec"
+    }
+}
+
+public struct SearchVideoPageDTO: Decodable {
+    public let items: [SearchVideoItemDTO]
+    public let numResults: Int64
+    public let numPages: Int64
+    enum CodingKeys: String, CodingKey {
+        case items
+        case numResults = "num_results"
+        case numPages = "num_pages"
+    }
+}
