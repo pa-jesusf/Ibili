@@ -29,7 +29,7 @@ final class FeedPrefetchCoordinator: ObservableObject {
         self.preferredQn = preferredQn
     }
 
-    func cardAppeared(_ item: FeedItemDTO, indexInFeed: Int, allItems: [FeedItemDTO]) {
+    func cardAppeared(_ item: FeedItemDTO, allItems: [FeedItemDTO]) {
         guard !visibleAids.contains(item.aid) else { return }
         visibleAids.insert(item.aid)
         orderedItems = allItems

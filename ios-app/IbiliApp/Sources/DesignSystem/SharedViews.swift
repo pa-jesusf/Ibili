@@ -82,11 +82,11 @@ private final class RemoteImageLoader: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     if let img = UIImage(data: data) {
-                        ImageCache.shared.cache.setObject(img, forKey: url as NSURL,
+                        let display = downsample(img, to: url)
+                        ImageCache.shared.cache.setObject(display, forKey: url as NSURL,
                                                          cost: data.count)
                         await MainActor.run {
-                            // Only commit if our target URL hasn't changed.
-                            if self.loadedURL == url { self.image = img; self.failed = false }
+                            if self.loadedURL == url { self.image = display; self.failed = false }
                         }
                         return
                     }
@@ -102,6 +102,19 @@ private final class RemoteImageLoader: ObservableObject {
     }
 
     deinit { task?.cancel() }
+
+    private nonisolated func downsample(_ image: UIImage, to url: URL) -> UIImage {
+        let maxDim: CGFloat = UIScreen.main.bounds.width * UIScreen.main.scale
+        let size = image.size
+        let scale = min(maxDim / max(size.width, 1), maxDim / max(size.height, 1))
+        guard scale < 0.9 else { return image }
+        let targetSize = CGSize(width: (size.width * scale).rounded(),
+                                height: (size.height * scale).rounded())
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+    }
 }
 
 /// Cover image with caching + retry. Replaces the previous `AsyncImage` based
@@ -135,7 +148,6 @@ struct RemoteImage: View {
         .onChange(of: resolvedURL) { loader.load($0) }
     }
 }
-
 
 /// QR code rendered via CoreImage.
 struct QRCodeImage: View {

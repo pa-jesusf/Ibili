@@ -1322,7 +1322,17 @@ struct PlayerContainer: UIViewControllerRepresentable {
         weak var activeCrossfade: UIView?
         private var rateBeforeTransition: Float = 1.0
         private var wasPlayingBeforeTransition = false
+        private var preTransitionRate: Float?
+        private var preTransitionWasPlaying: Bool?
         init(parent: PlayerContainer) { self.parent = parent }
+
+        func prepareForFullscreenTransition(player: AVPlayer?) {
+            guard let player else { return }
+            preTransitionWasPlaying = player.timeControlStatus == .playing || player.rate > 0
+            let activeRate = player.rate
+            let defaultRate = player.defaultRate
+            preTransitionRate = activeRate > 0 ? activeRate : (defaultRate > 0 ? defaultRate : 1.0)
+        }
 
         // MARK: PlayerSwapOverlay
 
@@ -1406,10 +1416,17 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func capturePlaybackState(from vc: AVPlayerViewController) {
-            wasPlayingBeforeTransition = vc.player?.timeControlStatus == .playing || (vc.player?.rate ?? 0) > 0
-            let defaultRate = vc.player?.defaultRate ?? 0
-            let activeRate = vc.player?.rate ?? 0
-            rateBeforeTransition = activeRate > 0 ? activeRate : (defaultRate > 0 ? defaultRate : 1.0)
+            if let pre = preTransitionWasPlaying {
+                wasPlayingBeforeTransition = pre
+                rateBeforeTransition = preTransitionRate ?? 1.0
+                preTransitionWasPlaying = nil
+                preTransitionRate = nil
+            } else {
+                wasPlayingBeforeTransition = vc.player?.timeControlStatus == .playing || (vc.player?.rate ?? 0) > 0
+                let defaultRate = vc.player?.defaultRate ?? 0
+                let activeRate = vc.player?.rate ?? 0
+                rateBeforeTransition = activeRate > 0 ? activeRate : (defaultRate > 0 ? defaultRate : 1.0)
+            }
         }
 
         private func restorePlaybackState(on vc: AVPlayerViewController) {
@@ -1682,6 +1699,9 @@ struct PlayerView: View {
         let sel = NSSelectorFromString(selectorName)
         Orientation.preparePhoneFullscreenLandscape()
         isFullscreen = true
+        if let coordinator = playerVCRef.vc?.delegate as? PlayerContainer.Coordinator {
+            coordinator.prepareForFullscreenTransition(player: vm.player)
+        }
         AppLog.info("player", "请求进入全屏", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),

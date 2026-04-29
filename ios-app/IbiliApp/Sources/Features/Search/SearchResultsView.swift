@@ -100,6 +100,7 @@ struct SearchResultsView: View {
             }
             Button("取消", role: .cancel) {}
         }
+        .modifier(ProMotionScrollHint())
     }
 
     @ViewBuilder
