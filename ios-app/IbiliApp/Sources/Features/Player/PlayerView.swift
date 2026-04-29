@@ -1194,6 +1194,14 @@ enum Orientation {
         if UIDevice.current.userInterfaceIdiom == .phone {
             phoneSupportedMask = mask == .portrait ? .portrait : .allButUpsideDown
         }
+        requestWithoutMaskChange(mask)
+    }
+
+    /// Request a geometry update without changing the supported mask.
+    /// Used when the mask has already been widened (e.g. by
+    /// `preparePhoneFullscreenLandscape`) and we just need to
+    /// trigger the rotation.
+    static func requestWithoutMaskChange(_ mask: UIInterfaceOrientationMask) {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else { return }
@@ -1213,7 +1221,7 @@ enum Orientation {
             let value: UIDeviceOrientation
             switch mask {
             case .portrait:        value = .portrait
-            case .landscapeLeft:   value = .landscapeRight   // swapped intentionally
+            case .landscapeLeft:   value = .landscapeRight
             case .landscapeRight:  value = .landscapeLeft
             case .landscape:       value = .landscapeLeft
             default:               value = .portrait
@@ -1221,6 +1229,7 @@ enum Orientation {
             AppLog.debug("player", "使用旧版方式请求设备方向", metadata: [
                 "requestedMask": interfaceOrientationMaskDescription(mask),
                 "deviceOrientation": deviceOrientationDescription(value),
+            ])
             ])
             UIDevice.current.setValue(value.rawValue, forKey: "orientation")
         }
@@ -1380,22 +1389,16 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 "playing": String(wasPlayingBeforeTransition),
             ])
             parent.onFullscreenChange(true)
-            // If the device is already in landscape, AVKit is entering
-            // fullscreen because of the hardware rotation we just
-            // reacted to. Requesting another geometry update here is
-            // redundant and iOS often rejects it because the original
-            // host controller still reports portrait support during the
-            // hand-off. Keep the explicit landscape request only for
-            // cases like tapping the native fullscreen button while the
-            // device remains portrait.
-            if currentDeviceOrientation.isLandscape {
-                AppLog.debug("player", "跳过进入全屏时的横屏方向请求：设备已经处于横屏")
-            } else {
-                Orientation.request(.landscape)
-            }
+            let targetMask: UIInterfaceOrientationMask = currentDeviceOrientation == .landscapeRight
+                ? .landscapeLeft : .landscapeRight
+            Orientation.requestWithoutMaskChange(targetMask)
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
                 self.restorePlaybackState(on: vc)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
+                    guard let self, let vc else { return }
+                    self.restorePlaybackState(on: vc)
+                }
             }
         }
         func playerViewController(_ vc: AVPlayerViewController,
@@ -1412,6 +1415,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 self.parent.onFullscreenChange(false)
                 Orientation.request(.portrait)
                 self.restorePlaybackState(on: vc)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
+                    guard let self, let vc else { return }
+                    self.restorePlaybackState(on: vc)
+                }
             }
         }
 
@@ -1549,8 +1556,8 @@ struct PlayerView: View {
         }
         .onDisappear {
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
-            vm.pauseForDeactivation()
             if !isFullscreen {
+                vm.pauseForDeactivation()
                 Orientation.request(.portrait)
             }
         }
@@ -1702,6 +1709,10 @@ struct PlayerView: View {
         if let coordinator = playerVCRef.vc?.delegate as? PlayerContainer.Coordinator {
             coordinator.prepareForFullscreenTransition(player: vm.player)
         }
+        let deviceOrientation = UIDevice.current.orientation
+        let targetLandscapeMask: UIInterfaceOrientationMask = deviceOrientation == .landscapeRight
+            ? .landscapeLeft : .landscapeRight
+        Orientation.requestWithoutMaskChange(targetLandscapeMask)
         AppLog.info("player", "请求进入全屏", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
