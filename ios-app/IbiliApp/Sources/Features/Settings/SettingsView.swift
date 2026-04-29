@@ -35,6 +35,10 @@ struct SettingsView: View {
         ("132K", 30232),
         ("64K", 30216),
     ]
+    private let danmakuFrameRateOptions: [(label: String, value: Int)] = [
+        ("30 帧", 30),
+        ("60 帧", 60),
+    ]
 
     var body: some View {
         Form {
@@ -85,6 +89,33 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Slider(value: $settings.danmakuOpacity, in: 0.1...1.0)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("弹幕屏蔽等级")
+                            Spacer()
+                            Text("\(settings.resolvedDanmakuBlockLevel()) 级")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { Double(settings.resolvedDanmakuBlockLevel()) },
+                                set: { settings.danmakuBlockLevel = Int($0.rounded()) }
+                            ),
+                            in: 0...11,
+                            step: 1
+                        )
+                        Text("参考上游的 0-11 云屏蔽等级。当前经典 XML 弹幕源不返回 weight 字段，设置已预留，后续接入分段弹幕后可直接生效。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Picker("弹幕帧率", selection: Binding(
+                        get: { settings.resolvedDanmakuFrameRate() },
+                        set: { settings.danmakuFrameRate = $0 }
+                    )) {
+                        ForEach(danmakuFrameRateOptions, id: \.value) { opt in
+                            Text(opt.label).tag(opt.value)
+                        }
                     }
                 }
                 Toggle("手机横屏自动进入/退出全屏", isOn: $settings.autoRotateFullscreen)

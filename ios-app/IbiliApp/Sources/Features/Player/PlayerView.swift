@@ -4,6 +4,24 @@ import AVFoundation
 import UIKit
 import os
 
+private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> FeedItemDTO {
+    guard item.cid == 0 else { return item }
+    let resolvedCid: Int64 = try await Task.detached(priority: .userInitiated) {
+        try CoreClient.shared.videoViewCid(bvid: item.bvid)
+    }.value
+    return FeedItemDTO(
+        aid: item.aid,
+        bvid: item.bvid,
+        cid: resolvedCid,
+        title: item.title,
+        cover: item.cover,
+        author: item.author,
+        durationSec: item.durationSec,
+        play: item.play,
+        danmaku: item.danmaku
+    )
+}
+
 @MainActor
 final class PlayerViewModel: ObservableObject {
     @Published var isLoading = true
@@ -81,27 +99,12 @@ final class PlayerViewModel: ObservableObject {
         // API before doing anything player-related — otherwise both
         // the web and TV playurl calls hit "请求错误 / 啥都木有".
         var item = item
-        if item.cid == 0 {
-            do {
-                let resolvedCid: Int64 = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.videoViewCid(bvid: item.bvid)
-                }.value
-                item = FeedItemDTO(
-                    aid: item.aid,
-                    bvid: item.bvid,
-                    cid: resolvedCid,
-                    title: item.title,
-                    cover: item.cover,
-                    author: item.author,
-                    durationSec: item.durationSec,
-                    play: item.play,
-                    danmaku: item.danmaku
-                )
-            } catch {
-                isLoading = false
-                errorText = "无法解析视频信息: \((error as NSError).localizedDescription)"
-                return
-            }
+        do {
+            item = try await resolvePlayableItemIfNeeded(item)
+        } catch {
+            isLoading = false
+            errorText = "无法解析视频信息: \((error as NSError).localizedDescription)"
+            return
         }
         if player != nil, aid == item.aid, cid == item.cid {
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
@@ -1246,6 +1249,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let danmaku: DanmakuController
     let danmakuEnabled: Bool
     let danmakuOpacity: Double
+    let danmakuFrameRate: Int
     /// Called once, with the just-created AVPlayerViewController. Lets the
     /// SwiftUI parent drive native fullscreen entry/exit.
     let onCreated: (AVPlayerViewController) -> Void
@@ -1282,6 +1286,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         // SwiftUI re-render overhead and fixes the width-shrink bug
         // after fullscreen→portrait transitions.
         let canvas = danmaku.prepareCanvas()
+        canvas.preferredFrameRate = danmakuFrameRate
         if let overlay = vc.contentOverlayView {
             canvas.translatesAutoresizingMaskIntoConstraints = false
             canvas.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
@@ -1312,6 +1317,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             vc.player = player
             context.coordinator.assignedPlayerID = incomingPlayerID
         }
+        context.coordinator.danmakuCanvas?.preferredFrameRate = danmakuFrameRate
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
     }
 
@@ -1465,6 +1471,7 @@ struct PlayerView: View {
                         danmaku: danmaku,
                         danmakuEnabled: settings.danmakuEnabled,
                         danmakuOpacity: settings.danmakuOpacity,
+                        danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
                         onCreated: { vc in playerVCRef.vc = vc },
                         onFullscreenChange: { fs in isFullscreen = fs },
                         onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
@@ -1627,17 +1634,18 @@ struct PlayerView: View {
     }
 
     private func loadDanmaku() async {
-        AppLog.info("danmaku", "开始加载弹幕", metadata: [
-            "cid": String(item.cid),
-        ])
         do {
-            let track = try await Task.detached { [cid = item.cid] in
+            let resolvedItem = try await resolvePlayableItemIfNeeded(item)
+            AppLog.info("danmaku", "开始加载弹幕", metadata: [
+                "cid": String(resolvedItem.cid),
+            ])
+            let track = try await Task.detached { [cid = resolvedItem.cid] in
                 try CoreClient.shared.danmakuList(cid: cid)
             }.value
             danmaku.setItems(track.items)
             if let p = vm.player { danmaku.attach(p) }
             AppLog.info("danmaku", "弹幕加载完成", metadata: [
-                "cid": String(item.cid),
+                "cid": String(resolvedItem.cid),
                 "count": String(track.items.count),
             ])
         } catch {

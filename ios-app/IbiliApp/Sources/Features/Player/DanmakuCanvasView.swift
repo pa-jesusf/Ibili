@@ -18,11 +18,22 @@ import Combine
 @MainActor
 final class DanmakuCanvasView: UIView {
 
+    private static let supportedFrameRates: Set<Int> = [30, 60]
+
     // MARK: - Configuration
 
     var laneCount: Int = 14 { didSet { rebuildLanes() } }
     var scrollDuration: Double = 8.0
     var staticDuration: Double = 4.0
+    var preferredFrameRate: Int {
+        get { storedFrameRate }
+        set {
+            let clamped = Self.supportedFrameRates.contains(newValue) ? newValue : 60
+            guard storedFrameRate != clamped else { return }
+            storedFrameRate = clamped
+            reconfigureTiming()
+        }
+    }
     private let seekResyncThreshold: Double = 0.5
     private let perTickCap = 12
 
@@ -40,6 +51,7 @@ final class DanmakuCanvasView: UIView {
     private weak var player: AVPlayer?
     private var timeObserver: Any?
     private var displayLink: CADisplayLink?
+    private var storedFrameRate: Int = 60
     private var currentPlaybackTime: Double = 0
     private var needsRedraw = false
 
@@ -50,15 +62,11 @@ final class DanmakuCanvasView: UIView {
     private final class CachedText {
         let line: CTLine
         let size: CGSize
-        let fillColor: UIColor
-        let outlineWidth: CGFloat
         let drawInset: CGFloat
 
-        init(line: CTLine, size: CGSize, fillColor: UIColor, outlineWidth: CGFloat, drawInset: CGFloat) {
+        init(line: CTLine, size: CGSize, drawInset: CGFloat) {
             self.line = line
             self.size = size
-            self.fillColor = fillColor
-            self.outlineWidth = outlineWidth
             self.drawInset = drawInset
         }
     }
@@ -107,7 +115,12 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Public API
 
     func setItems(_ items: [DanmakuItemDTO]) {
-        all = items.sorted { $0.timeSec < $1.timeSec }
+        // Upstream handles mode 7 with a dedicated special-danmaku parser.
+        // Our current canvas only supports plain scroll/top/bottom text, so
+        // dropping advanced JSON danmaku here avoids rendering raw payloads.
+        all = items
+            .filter { $0.mode != 7 }
+            .sorted { $0.timeSec < $1.timeSec }
         cursor = 0
         active.removeAll()
         rebuildLanes()
@@ -116,9 +129,9 @@ final class DanmakuCanvasView: UIView {
     }
 
     func attach(_ player: AVPlayer) {
-        detach()
+        removeTimeObserverIfNeeded()
         self.player = player
-        let interval = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
+        let interval = CMTime(seconds: 1.0 / Double(storedFrameRate), preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
             guard let self else { return }
             let secs = t.seconds.isFinite ? t.seconds : 0
@@ -129,26 +142,48 @@ final class DanmakuCanvasView: UIView {
 
     func detach() {
         stopDisplayLink()
-        if let timeObserver, let player {
-            player.removeTimeObserver(timeObserver)
-        }
-        timeObserver = nil
+        removeTimeObserverIfNeeded()
         player = nil
         active.removeAll()
         needsRedraw = true
         setNeedsDisplay()
     }
 
+    private func reconfigureTiming() {
+        if let player {
+            attach(player)
+        }
+        if let displayLink {
+            applyPreferredFrameRate(to: displayLink)
+        }
+    }
+
     private func startDisplayLink() {
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(displayTick))
-        if #available(iOS 15.0, *) {
-            link.preferredFrameRateRange = CAFrameRateRange(
-                minimum: 30, maximum: 120, preferred: 60
-            )
-        }
+        applyPreferredFrameRate(to: link)
         link.add(to: .main, forMode: .common)
         displayLink = link
+    }
+
+    private func applyPreferredFrameRate(to link: CADisplayLink) {
+        if #available(iOS 15.0, *) {
+            let rate = Float(storedFrameRate)
+            link.preferredFrameRateRange = CAFrameRateRange(
+                minimum: rate,
+                maximum: rate,
+                preferred: rate
+            )
+        } else {
+            link.preferredFramesPerSecond = storedFrameRate
+        }
+    }
+
+    private func removeTimeObserverIfNeeded() {
+        if let timeObserver, let player {
+            player.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
     }
 
     private func stopDisplayLink() {
@@ -258,12 +293,12 @@ final class DanmakuCanvasView: UIView {
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
+            .foregroundColor: fillColor,
         ]
         let str = NSAttributedString(string: item.text, attributes: attrs)
         let line = CTLineCreateWithAttributedString(str)
         let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
-        let outlineWidth = max(1.25, fontSize * 0.055)
-        let drawInset = ceil(outlineWidth) + 2
+        let drawInset: CGFloat = 2
         let size = CGSize(
             width: ceil(bounds.width) + drawInset * 2,
             height: ceil(bounds.height) + drawInset * 2
@@ -271,8 +306,6 @@ final class DanmakuCanvasView: UIView {
         return CachedText(
             line: line,
             size: size,
-            fillColor: fillColor,
-            outlineWidth: outlineWidth,
             drawInset: drawInset
         )
     }
@@ -319,15 +352,6 @@ final class DanmakuCanvasView: UIView {
             ctx.textMatrix = .identity
             ctx.translateBy(x: x + ct.drawInset, y: y + ct.size.height - ct.drawInset)
             ctx.scaleBy(x: 1, y: -1)
-
-            ctx.setLineJoin(.round)
-            ctx.setTextDrawingMode(.stroke)
-            ctx.setLineWidth(ct.outlineWidth)
-            ctx.setStrokeColor(UIColor.black.withAlphaComponent(0.92).cgColor)
-            CTLineDraw(ct.line, ctx)
-
-            ctx.setTextDrawingMode(.fill)
-            ctx.setFillColor(ct.fillColor.cgColor)
             CTLineDraw(ct.line, ctx)
             ctx.restoreGState()
         }
@@ -336,9 +360,11 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Lifecycle
 
     deinit {
-        displayLink?.invalidate()
-        if let timeObserver, let player {
-            player.removeTimeObserver(timeObserver)
+        MainActor.assumeIsolated {
+            displayLink?.invalidate()
+            if let timeObserver, let player {
+                player.removeTimeObserver(timeObserver)
+            }
         }
     }
 }

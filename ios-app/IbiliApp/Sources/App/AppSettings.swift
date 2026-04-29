@@ -25,6 +25,10 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.player.danmakuEnabled") var danmakuEnabled: Bool = true
     /// Danmaku opacity, 0.1 ... 1.0.
     @AppStorage("ibili.player.danmakuOpacity") var danmakuOpacity: Double = 0.85
+    /// Upstream-compatible danmaku cloud-block weight, 0...11.
+    @AppStorage("ibili.player.danmakuBlockLevel") var danmakuBlockLevel: Int = 0
+    /// Preferred danmaku render/update frame rate.
+    @AppStorage("ibili.player.danmakuFrameRate") var danmakuFrameRate: Int = 60
     /// When enabled, rotating to landscape automatically enters fullscreen,
     /// rotating back to portrait exits fullscreen. Tap of the fullscreen
     /// button always rotates regardless of this setting.
@@ -41,6 +45,7 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.debug.exportRemuxSample") var exportRemuxSample: Bool = false
 
     private let maxFeedColumns = 3
+    private let supportedDanmakuFrameRates = [30, 60]
 
     /// Resolves the effective column count given the current layout context.
     /// iOS defaults to 2 columns on phones and opens at most 3 columns.
@@ -75,5 +80,21 @@ final class AppSettings: ObservableObject {
             preferredQnMigrated = true
         }
         return preferredQn
+    }
+
+    func resolvedDanmakuBlockLevel() -> Int {
+        let resolved = min(max(danmakuBlockLevel, 0), 11)
+        if danmakuBlockLevel != resolved {
+            danmakuBlockLevel = resolved
+        }
+        return resolved
+    }
+
+    func resolvedDanmakuFrameRate() -> Int {
+        let resolved = supportedDanmakuFrameRates.contains(danmakuFrameRate) ? danmakuFrameRate : 60
+        if danmakuFrameRate != resolved {
+            danmakuFrameRate = resolved
+        }
+        return resolved
     }
 }
