@@ -97,6 +97,9 @@ final class HLSProxyEngine: PlaybackEngine {
             release: { [weak self] in
                 self?.liveTokens.remove(token)
                 LocalHLSProxy.shared.unregister(token: token)
+            },
+            exportDiagnostics: { reason in
+                await LocalHLSProxy.shared.exportDiagnostics(token: token, reason: reason)
             }
         )
     }

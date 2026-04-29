@@ -668,6 +668,7 @@ final class PlayerViewModel: ObservableObject {
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
                         "detail": detail,
                     ])
+                    await self.exportActiveDiagnostics(reason: "AVPlayerItem failed: \(detail)", generation: generation)
                     // Two distinct recovery paths:
                     //   * Stale local proxy (iOS killed our listener
                     //     while suspended) — retry once with the same
@@ -700,6 +701,16 @@ final class PlayerViewModel: ObservableObject {
                     break
                 }
             }
+        }
+    }
+
+    private func exportActiveDiagnostics(reason: String, generation: UInt64) async {
+        guard loadGeneration == generation, let preparation = activePreparation else { return }
+        if let url = await preparation.exportDiagnostics(reason) {
+            AppLog.info("player", "播放器失败诊断文件已导出", metadata: [
+                "path": url.path,
+                "qn": String(currentQn),
+            ])
         }
     }
 

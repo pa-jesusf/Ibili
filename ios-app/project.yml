@@ -42,6 +42,8 @@ targets:
           - zh-Hans
           - en
         LSRequiresIPhoneOS: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations:
@@ -75,8 +77,19 @@ targets:
     dependencies:
       - framework: Frameworks/IbiliCore.xcframework
         embed: false
+      - framework: Frameworks/FFmpegRemux.xcframework
+        embed: false
       - sdk: Security.framework
       - sdk: CoreFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: VideoToolbox.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: AVFoundation.framework
+      - sdk: CoreImage.framework
+      - sdk: libz.tbd
+      - sdk: libbz2.tbd
+      - sdk: libiconv.tbd
 
   IbiliTests:
     type: bundle.unit-test

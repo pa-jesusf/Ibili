@@ -8,6 +8,7 @@ struct EnginePreparation {
     let logSummary: [String: String]
     let totalElapsedMs: Int
     let release: @MainActor () -> Void
+    let exportDiagnostics: @MainActor (_ reason: String) async -> URL?
 }
 
 /// Abstraction over how a `PlayUrlDTO` becomes an `AVPlayerItem`.

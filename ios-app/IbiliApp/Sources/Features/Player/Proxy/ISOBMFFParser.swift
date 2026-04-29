@@ -19,6 +19,8 @@ enum ISOBMFF {
         /// Byte length of the init blob (covers `ftyp` + everything up to
         /// the start of `sidx`).
         let length: UInt64
+
+        var range: ClosedRange<UInt64> { offset...(offset + length - 1) }
     }
 
     struct SegmentIndexEntry: Equatable {
@@ -28,6 +30,8 @@ enum ISOBMFF {
         let length: UInt64
         /// Fragment duration in `timescale` ticks.
         let durationTicks: UInt64
+
+        var range: ClosedRange<UInt64> { offset...(offset + length - 1) }
     }
 
     struct SegmentIndex: Equatable {

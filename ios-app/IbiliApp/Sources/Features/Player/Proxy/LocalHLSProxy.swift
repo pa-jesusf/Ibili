@@ -20,6 +20,8 @@ import os
 final class LocalHLSProxy: @unchecked Sendable {
     static let shared = LocalHLSProxy()
 
+    private static let remuxSampleFragmentCount = 2
+
     struct Source {
         let videoCandidates: [URL]
         let audioCandidates: [URL]                 // empty when single-stream
@@ -119,6 +121,205 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     private func lookupSource(token: String) -> Source? {
         state.withLock { $0.sources[token] }
+    }
+
+    func exportDiagnostics(token: String, reason: String) async -> URL? {
+        guard let source = lookupSource(token: token) else {
+            AppLog.warning("player", "HLS 诊断导出失败：token 不存在", metadata: ["token": token])
+            return nil
+        }
+        do {
+            let dir = try makeDiagnosticsDirectory(token: token)
+            let master = HLSPlaylistBuilder.makeMaster(
+                videoBandwidthHint: source.videoBandwidthHint,
+                hasSeparateAudio: source.audioProbe != nil,
+                videoMediaPath: "video.m3u8",
+                audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8",
+                videoCodec: source.videoCodec,
+                audioCodec: source.audioCodec
+            )
+            try write(master, to: dir.appendingPathComponent("master.m3u8"))
+            try write(HLSPlaylistBuilder.makeMedia(probe: source.videoProbe, segmentPath: "v.seg"),
+                      to: dir.appendingPathComponent("video.m3u8"))
+            if let audioProbe = source.audioProbe {
+                try write(HLSPlaylistBuilder.makeMedia(probe: audioProbe, segmentPath: "a.seg"),
+                          to: dir.appendingPathComponent("audio.m3u8"))
+            }
+
+            var exported: [String: String] = [:]
+            exported.merge(try await exportStreamArtifacts(
+                label: "video",
+                candidates: source.videoCandidates,
+                probe: source.videoProbe,
+                directory: dir
+            )) { _, new in new }
+            if let audioProbe = source.audioProbe, !source.audioCandidates.isEmpty {
+                exported.merge(try await exportStreamArtifacts(
+                    label: "audio",
+                    candidates: source.audioCandidates,
+                    probe: audioProbe,
+                    directory: dir
+                )) { _, new in new }
+            }
+
+            let shouldExportRemuxSample = UserDefaults.standard.bool(forKey: "ibili.debug.exportRemuxSample")
+            if shouldExportRemuxSample {
+                exported.merge(try await exportRemuxSamples(source: source, directory: dir)) { _, new in new }
+                try writeRemuxPOCScript(to: dir)
+                exported["ffmpeg-remux-poc.sh"] = "generated"
+            }
+
+            let metadata: [String: Any] = [
+                "reason": reason,
+                "token": token,
+                "videoCodec": source.videoCodec,
+                "audioCodec": source.audioCodec,
+                "videoCandidates": source.videoCandidates.map(\.absoluteString),
+                "audioCandidates": source.audioCandidates.map(\.absoluteString),
+                "videoInitRange": rangeDescription(source.videoProbe.initSegment.range),
+                "videoFirstFragmentRange": source.videoProbe.index.entries.first.map { rangeDescription($0.range) } ?? "-",
+                "audioInitRange": source.audioProbe.map { rangeDescription($0.initSegment.range) } ?? "-",
+                "audioFirstFragmentRange": source.audioProbe?.index.entries.first.map { rangeDescription($0.range) } ?? "-",
+                "videoFragmentCount": source.videoProbe.index.entries.count,
+                "audioFragmentCount": source.audioProbe?.index.entries.count ?? 0,
+                "exportRemuxSample": shouldExportRemuxSample,
+                "remuxSampleFragmentCount": Self.remuxSampleFragmentCount,
+                "exported": exported,
+            ]
+            let metadataData = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys])
+            try metadataData.write(to: dir.appendingPathComponent("metadata.json"), options: [.atomic])
+            AppLog.info("player", "HLS 诊断导出完成", metadata: [
+                "path": dir.path,
+                "reason": reason,
+                "token": token,
+            ])
+            return dir
+        } catch {
+            AppLog.error("player", "HLS 诊断导出失败", error: error, metadata: [
+                "token": token,
+                "reason": reason,
+            ])
+            return nil
+        }
+    }
+
+    private func makeDiagnosticsDirectory(token: String) throws -> URL {
+        let documents = try FileManager.default.url(
+            for: .documentDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let safeTimestamp = formatter.string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let shortToken = String(token.prefix(8))
+        let dir = documents
+            .appendingPathComponent("ibili-diagnostics", isDirectory: true)
+            .appendingPathComponent("hls-\(safeTimestamp)-\(shortToken)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func exportStreamArtifacts(label: String,
+                                       candidates: [URL],
+                                       probe: ISOBMFF.Probe,
+                                       directory: URL) async throws -> [String: String] {
+        guard let url = candidates.first else { return [:] }
+        var exported: [String: String] = [:]
+        let initRange = probe.initSegment.range
+        let initResponse = try await ProxyURLLoader.shared.fetch(url: url, range: initRange)
+        let initName = "\(label)-init.mp4"
+        try initResponse.data.write(to: directory.appendingPathComponent(initName), options: [.atomic])
+        exported[initName] = rangeDescription(initRange)
+
+        if let first = probe.index.entries.first {
+            let fragmentResponse = try await ProxyURLLoader.shared.fetch(url: url, range: first.range)
+            let fragmentName = "\(label)-fragment-000.m4s"
+            try fragmentResponse.data.write(to: directory.appendingPathComponent(fragmentName), options: [.atomic])
+            exported[fragmentName] = rangeDescription(first.range)
+        }
+        return exported
+    }
+
+    private func exportRemuxSamples(source: Source, directory: URL) async throws -> [String: String] {
+        var exported: [String: String] = [:]
+        if let videoURL = source.videoCandidates.first {
+            let videoOut = directory.appendingPathComponent("video-remux-sample.m4s")
+            let rangeText = try await exportRemuxSample(
+                url: videoURL,
+                probe: source.videoProbe,
+                output: videoOut
+            )
+            exported["video-remux-sample.m4s"] = rangeText
+        }
+        if let audioURL = source.audioCandidates.first, let audioProbe = source.audioProbe {
+            let audioOut = directory.appendingPathComponent("audio-remux-sample.m4s")
+            let rangeText = try await exportRemuxSample(
+                url: audioURL,
+                probe: audioProbe,
+                output: audioOut
+            )
+            exported["audio-remux-sample.m4s"] = rangeText
+        }
+        return exported
+    }
+
+    private func exportRemuxSample(url: URL, probe: ISOBMFF.Probe, output: URL) async throws -> String {
+        let selectedFragments = Array(probe.index.entries.prefix(Self.remuxSampleFragmentCount))
+        var sample = Data()
+        let initRange = probe.initSegment.range
+        sample.append(try await ProxyURLLoader.shared.fetch(url: url, range: initRange).data)
+        var ranges = [rangeDescription(initRange)]
+        for entry in selectedFragments {
+            sample.append(try await ProxyURLLoader.shared.fetch(url: url, range: entry.range).data)
+            ranges.append(rangeDescription(entry.range))
+        }
+        try sample.write(to: output, options: [.atomic])
+        return "\(sample.count) bytes; ranges=\(ranges.joined(separator: ","))"
+    }
+
+    private func writeRemuxPOCScript(to directory: URL) throws {
+        let script = """
+        #!/bin/sh
+        set -eu
+        cd "$(dirname "$0")"
+        if ! command -v ffmpeg >/dev/null 2>&1; then
+          echo "ffmpeg not found. Install with: brew install ffmpeg" >&2
+          exit 1
+        fi
+        if [ ! -f video-remux-sample.m4s ]; then
+          echo "video-remux-sample.m4s not found. Enable remux sample export and reproduce the failure." >&2
+          exit 1
+        fi
+        mkdir -p remux-out
+        if [ -f audio-remux-sample.m4s ]; then
+          ffmpeg -hide_banner -y -i video-remux-sample.m4s -i audio-remux-sample.m4s \\
+            -map 0:v:0 -map 1:a:0 -c copy -tag:v hvc1 remux-out/remux.mp4
+        else
+          ffmpeg -hide_banner -y -i video-remux-sample.m4s \\
+            -map 0:v:0 -c copy -tag:v hvc1 remux-out/remux.mp4
+        fi
+        ffmpeg -hide_banner -y -i remux-out/remux.mp4 \\
+          -c copy -hls_segment_type fmp4 -hls_time 5 -hls_playlist_type vod \\
+          -hls_fmp4_init_filename init.mp4 \\
+          -hls_segment_filename 'remux-out/seg-%03d.m4s' \\
+          remux-out/remux.m3u8
+        ffprobe -hide_banner -show_streams -show_format remux-out/remux.mp4 > remux-out/ffprobe-remux.txt 2>&1 || true
+        echo "Generated remux-out/remux.m3u8 and remux-out/remux.mp4"
+        """
+        let url = directory.appendingPathComponent("ffmpeg-remux-poc.sh")
+        try Data(script.utf8).write(to: url, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func write(_ string: String, to url: URL) throws {
+        try Data(string.utf8).write(to: url, options: [.atomic])
+    }
+
+    private func rangeDescription(_ range: ClosedRange<UInt64>) -> String {
+        "\(range.lowerBound)-\(range.upperBound)"
     }
 
     // MARK: - Lifecycle

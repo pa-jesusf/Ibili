@@ -71,10 +71,11 @@ struct SettingsView: View {
                 }
                 Toggle("手机横屏自动进入/退出全屏", isOn: $settings.autoRotateFullscreen)
                 Toggle("快速加载", isOn: $settings.fastLoad)
+                Toggle("失败时导出 remux 样本（调试）", isOn: $settings.exportRemuxSample)
             } header: {
                 Text("播放")
             } footer: {
-                Text("快速加载开启后会同时加载最低画质与首选画质，加快视频内容显示速度，首选画质加载好后无缝升级。")
+                Text("快速加载会同时加载最低画质与首选画质。remux 样本仅导出开头数个 m4s fragment，用于验证 AVPlayer remux 路线。")
             }
         }
         .navigationTitle("显示设置")

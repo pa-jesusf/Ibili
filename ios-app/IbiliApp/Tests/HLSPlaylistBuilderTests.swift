@@ -33,7 +33,7 @@ final class HLSPlaylistBuilderTests: XCTestCase {
         XCTAssertTrue(master.contains("#EXT-X-STREAM-INF:BANDWIDTH="))
     }
 
-    func testMasterWithCodecsEmitsCodecsAndAudioGroupCodec() {
+    func testMasterWithCodecsEmitsCodecsOnStreamInf() {
         let master = HLSPlaylistBuilder.makeMaster(
             videoBandwidthHint: 6_000_000,
             hasSeparateAudio: true,
@@ -45,13 +45,11 @@ final class HLSPlaylistBuilderTests: XCTestCase {
         XCTAssertTrue(master.contains(#"CODECS="avc1.640032,mp4a.40.2""#),
                       "EXT-X-STREAM-INF must combine video+audio codecs")
         XCTAssertTrue(master.contains(#"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud""#))
-        XCTAssertTrue(master.contains(#",CODECS="mp4a.40.2""#),
-                      "EXT-X-MEDIA must also carry the audio codec")
         XCTAssertFalse(master.contains("VIDEO-RANGE="),
                        "AVC must not be tagged as HDR")
     }
 
-    func testMasterWithHEVCMain10EmitsVideoRangePQ() {
+    func testMasterWithHEVCMain10OmitsVideoRange() {
         let master = HLSPlaylistBuilder.makeMaster(
             videoBandwidthHint: 12_000_000,
             hasSeparateAudio: true,
@@ -61,11 +59,11 @@ final class HLSPlaylistBuilderTests: XCTestCase {
             audioCodec: "mp4a.40.2"
         )
         XCTAssertTrue(master.contains(#"CODECS="hvc1.2.4.L150.B0,mp4a.40.2""#))
-        XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"),
-                      "HEVC profile 2 (Main10) must be flagged HDR PQ for AVPlayer")
+        XCTAssertFalse(master.contains("VIDEO-RANGE="),
+                       "The local proxy omits VIDEO-RANGE because AVPlayer rejected this generated master before init parsing")
     }
 
-    func testMasterWithDolbyVisionEmitsVideoRangePQ() {
+    func testMasterWithDolbyVisionOmitsVideoRange() {
         let master = HLSPlaylistBuilder.makeMaster(
             videoBandwidthHint: 18_000_000,
             hasSeparateAudio: true,
@@ -75,8 +73,22 @@ final class HLSPlaylistBuilderTests: XCTestCase {
             audioCodec: "mp4a.40.2"
         )
         XCTAssertTrue(master.contains(#"CODECS="dvh1.08.07,mp4a.40.2""#))
-        XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"),
-                      "Dolby Vision (dvh1.*) must be flagged HDR PQ for AVPlayer")
+        XCTAssertFalse(master.contains("VIDEO-RANGE="))
+    }
+
+    func testMasterAudioMediaDoesNotCarryCodecs() {
+        let master = HLSPlaylistBuilder.makeMaster(
+            videoBandwidthHint: 6_000_000,
+            hasSeparateAudio: true,
+            videoMediaPath: "video.m3u8",
+            audioMediaPath: "audio.m3u8",
+            videoCodec: "hev1.1.6.L120.90",
+            audioCodec: "mp4a.40.2"
+        )
+        let mediaLine = master.components(separatedBy: "\n")
+            .first { $0.hasPrefix("#EXT-X-MEDIA:") } ?? ""
+        XCTAssertFalse(mediaLine.contains("CODECS="),
+                       "EXT-X-MEDIA must not carry CODECS (not a valid attribute per RFC 8216)")
     }
 
     // MARK: - Media

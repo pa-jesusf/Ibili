@@ -31,6 +31,10 @@ final class AppSettings: ObservableObject {
     /// won, the player seamlessly upgrades to the preferred quality
     /// once it finishes preparing.
     @AppStorage("ibili.player.fastLoad") var fastLoad: Bool = false
+    /// Developer-only diagnostic option. When enabled, a playback
+    /// failure exports a short upstream m4s sample plus an ffmpeg remux
+    /// script for AVPlayer compatibility testing.
+    @AppStorage("ibili.debug.exportRemuxSample") var exportRemuxSample: Bool = false
 
     private let maxFeedColumns = 3
 
