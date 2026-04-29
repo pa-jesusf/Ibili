@@ -72,10 +72,23 @@ enum HLSPlaylistBuilder {
     /// the Bilibili side: HEVC Main10 (`hvc1.2.*` / `hev1.2.*`) or
     /// Dolby Vision (`dvh1.*` / `dvhe.*`). Bilibili always ships these
     /// with PQ transfer.
+    ///
+    /// AV1 HDR uses `av01.P.LLX.DD.*` where `DD` = bit depth; `10`
+    /// indicates 10-bit HDR content.
     private static func isHDRTransfer(codec: String) -> Bool {
         let lower = codec.lowercased()
-        return lower.hasPrefix("hvc1.2") || lower.hasPrefix("hev1.2")
-            || lower.hasPrefix("dvh1.") || lower.hasPrefix("dvhe.")
+        if lower.hasPrefix("hvc1.2") || lower.hasPrefix("hev1.2")
+            || lower.hasPrefix("dvh1.") || lower.hasPrefix("dvhe.") {
+            return true
+        }
+        if lower.hasPrefix("av01.") {
+            let parts = lower.split(separator: ".")
+            if parts.count >= 4 {
+                let bitDepth = parts[3]
+                return bitDepth == "10" || bitDepth == "12"
+            }
+        }
+        return false
     }
 
     /// Media playlist describing one fMP4 source by byte ranges.

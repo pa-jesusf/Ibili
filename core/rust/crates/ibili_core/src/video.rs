@@ -445,10 +445,29 @@ fn pick_audio_stream(audio: &[DashAudio]) -> Option<DashAudio> {
         .cloned()
 }
 
+/// Codec preference score for picking the best video stream.
+///
+/// HEVC / Dolby Vision is always preferred on iOS: Apple Silicon has
+/// dedicated hardware decoders and HEVC delivers better quality per bit
+/// than H.264 at every resolution. For HDR quality levels (qn >= 125)
+/// H.264 additionally cannot carry PQ/HLG transfer characteristics, so
+/// picking it would produce an unplayable stream.
+///
+/// AV1 (`av01.*`) is scored below HEVC: while Apple Silicon decodes AV1
+/// in hardware from A17 Pro onwards, AVPlayer's HLS byte-range fMP4
+/// path has exhibited intermittent failures with AV1 content; HEVC is
+/// the safer default.
 fn video_codec_score(codecs: &str) -> i32 {
-    if codecs.starts_with("avc1") { 300 }
-    else if codecs.starts_with("hev1") || codecs.starts_with("hvc1") { 200 }
-    else { 100 }
+    if codecs.starts_with("hev1") || codecs.starts_with("hvc1")
+        || codecs.starts_with("dvh1") || codecs.starts_with("dvhe") {
+        400
+    } else if codecs.starts_with("av01") {
+        300
+    } else if codecs.starts_with("avc1") {
+        200
+    } else {
+        50
+    }
 }
 
 fn audio_codec_score(codecs: &str) -> i32 {

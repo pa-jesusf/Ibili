@@ -200,6 +200,8 @@ final class PlayerViewModel: ObservableObject {
                     meta["quality"] = String(info.quality)
                     meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
                     meta["streamType"] = info.streamType
+                    meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
+                    meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
                     meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
                     meta["prepMs"] = String(hiWarm.preparation.totalElapsedMs)
                     meta["startupMs"] = String(startupMs)
@@ -217,6 +219,8 @@ final class PlayerViewModel: ObservableObject {
                     meta["quality"] = String(loInfo.quality)
                     meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
                     meta["streamType"] = loInfo.streamType
+                    meta["videoCodec"] = loInfo.videoCodec.isEmpty ? "-" : loInfo.videoCodec
+                    meta["audioCodec"] = loInfo.audioCodec.isEmpty ? "-" : loInfo.audioCodec
                     meta["separateAudio"] = loInfo.audioUrl == nil ? "false" : "true"
                     meta["prepMs"] = String(loWarm.preparation.totalElapsedMs)
                     meta["startupMs"] = String(startupMs)
@@ -284,6 +288,8 @@ final class PlayerViewModel: ObservableObject {
                 meta["quality"] = String(info.quality)
                 meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
                 meta["streamType"] = info.streamType
+                meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
+                meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
                 meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
                 meta["prepMs"] = String(prep.totalElapsedMs)
                 meta["startupMs"] = String(startupMs)
@@ -387,6 +393,8 @@ final class PlayerViewModel: ObservableObject {
             meta["quality"] = String(info.quality)
             meta["resumeSec"] = String(format: "%.3f", resumeAt.seconds)
             meta["streamType"] = info.streamType
+            meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
+            meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
             meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
             meta["prepMs"] = String(prep.totalElapsedMs)
             AppLog.info("player", "清晰度切换成功", metadata: meta)
@@ -605,6 +613,8 @@ final class PlayerViewModel: ObservableObject {
         AppLog.info("player", "快速加载无缝升级", metadata: [
             "fromQn": String(self.currentQn),
             "toQn": String(hiInfo.quality),
+            "videoCodec": hiInfo.videoCodec.isEmpty ? "-" : hiInfo.videoCodec,
+            "audioCodec": hiInfo.audioCodec.isEmpty ? "-" : hiInfo.audioCodec,
             "resumeSec": String(format: "%.3f", resumeAt.seconds),
             "prepMs": String(hiWarm.preparation.totalElapsedMs),
         ])
