@@ -457,9 +457,24 @@ fn pick_video_stream(videos: &[DashVideo], target_qn: i64) -> Option<DashVideo> 
         .cloned()
 }
 
+/// Map audio stream id to a quality tier for sorting/comparison.
+/// Higher score = better quality. B站's ids are NOT monotonically
+/// ordered by quality: 30280(192K) > 30251(Hi-Res) numerically,
+/// but Hi-Res is higher quality.
+fn audio_quality_rank(id: i64) -> i32 {
+    match id {
+        30251 => 500,          // Hi-Res无损
+        30250 | 30255 => 400,  // 杜比全景声
+        30280 => 300,          // 192K
+        30232 => 200,          // 132K
+        30216 => 100,          // 64K
+        _ => 0,
+    }
+}
+
 fn pick_audio_stream(audio: &[DashAudio]) -> Option<DashAudio> {
     audio.iter()
-        .max_by_key(|item| (audio_codec_score(&item.codecs), item.bandwidth, item.id))
+        .max_by_key(|item| (audio_quality_rank(item.id), audio_codec_score(&item.codecs), item.bandwidth))
         .cloned()
 }
 
@@ -470,17 +485,18 @@ fn pick_audio_stream_by_quality(audio: &[DashAudio], preferred_id: i64) -> Optio
     if let Some(exact) = audio.iter().find(|a| a.id == preferred_id) {
         return Some(exact.clone());
     }
+    let preferred_rank = audio_quality_rank(preferred_id);
     let mut sorted: Vec<&DashAudio> = audio.iter().collect();
-    sorted.sort_by(|a, b| b.id.cmp(&a.id));
+    sorted.sort_by(|a, b| audio_quality_rank(b.id).cmp(&audio_quality_rank(a.id)));
     sorted.into_iter()
-        .find(|a| a.id <= preferred_id)
-        .or_else(|| audio.iter().min_by_key(|a| a.id))
+        .find(|a| audio_quality_rank(a.id) <= preferred_rank)
+        .or_else(|| audio.iter().min_by_key(|a| audio_quality_rank(a.id)))
         .cloned()
 }
 
 fn collect_audio_qualities(audio: &[DashAudio]) -> (Vec<i64>, Vec<String>) {
     let mut ids: Vec<i64> = audio.iter().map(|a| a.id).collect();
-    ids.sort_unstable_by(|a, b| b.cmp(a));
+    ids.sort_unstable_by(|a, b| audio_quality_rank(*b).cmp(&audio_quality_rank(*a)));
     ids.dedup();
     let labels: Vec<String> = ids.iter().map(|id| audio_quality_label(*id)).collect();
     (ids, labels)
