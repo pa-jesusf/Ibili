@@ -49,6 +49,7 @@ final class LocalHLSProxy: @unchecked Sendable {
     private struct State {
         var port: UInt16 = 0
         var sources: [String: Source] = [:]
+        var localFiles: [String: URL] = [:]
         /// `true` between the listener's `.ready` event and the next
         /// `.failed` / `.cancelled` event. iOS will tear the listener
         /// down once the app has been suspended in the background long
@@ -61,6 +62,21 @@ final class LocalHLSProxy: @unchecked Sendable {
     /// view checks this when it returns to foreground so it can rebuild
     /// the AVPlayer item against a freshly-bound port.
     var isHealthy: Bool { state.withLock { $0.listenerHealthy && $0.port != 0 } }
+
+    var currentPort: UInt16 { state.withLock { $0.port } }
+
+    func registerLocalFile(token: String, fileURL: URL) throws {
+        try ensureRunning()
+        state.withLock { $0.localFiles[token] = fileURL }
+    }
+
+    func updateLocalFile(token: String, fileURL: URL) {
+        state.withLock { $0.localFiles[token] = fileURL }
+    }
+
+    func unregisterLocalFile(token: String) {
+        state.withLock { _ = $0.localFiles.removeValue(forKey: token) }
+    }
 
     private init() {
         // iOS will close our `NWListener` socket once the app has been
@@ -413,6 +429,17 @@ final class LocalHLSProxy: @unchecked Sendable {
     private func dispatch(request: HTTPRequestHead, conn: NWConnection) async {
         let path = request.path
         let parts = path.split(separator: "/").map(String.init)
+
+        if parts.count == 3, parts[0] == "file" {
+            let token = parts[1]
+            guard let fileURL = state.withLock({ $0.localFiles[token] }) else {
+                respondError(conn: conn, status: 410, body: "Token expired")
+                return
+            }
+            await serveLocalFile(fileURL: fileURL, request: request, conn: conn)
+            return
+        }
+
         // Expected: ["play", "<token>", "<resource>"]
         guard parts.count == 3, parts[0] == "play" else {
             respondError(conn: conn, status: 404, body: "Not Found")
@@ -509,6 +536,59 @@ final class LocalHLSProxy: @unchecked Sendable {
         }
         let detail = lastError.map { ProxyURLLoader.debugSummary(of: $0) } ?? "no candidates"
         respondError(conn: conn, status: 502, body: "Upstream failed: \(detail)")
+    }
+
+    // MARK: - Local file route
+
+    private func serveLocalFile(fileURL: URL, request: HTTPRequestHead, conn: NWConnection) async {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let fileSize = (attrs[.size] as? NSNumber)?.uint64Value,
+              fileSize > 0 else {
+            respondError(conn: conn, status: 404, body: "File not found")
+            return
+        }
+
+        guard let handle = FileHandle(forReadingAtPath: fileURL.path) else {
+            respondError(conn: conn, status: 500, body: "Cannot open file")
+            return
+        }
+        defer { try? handle.close() }
+
+        let totalSize = fileSize
+
+        if let range = request.range {
+            let start = range.lowerBound
+            let end = min(range.upperBound, totalSize - 1)
+            guard start <= end, start < totalSize else {
+                respondError(conn: conn, status: 416, body: "Range Not Satisfiable")
+                return
+            }
+            let length = end - start + 1
+            handle.seek(toFileOffset: start)
+            let data = handle.readData(ofLength: Int(length))
+
+            var head = "HTTP/1.1 206 Partial Content\r\n"
+            head += "Content-Type: video/mp4\r\n"
+            head += "Content-Length: \(data.count)\r\n"
+            head += "Content-Range: bytes \(start)-\(end)/\(totalSize)\r\n"
+            head += "Accept-Ranges: bytes\r\n"
+            head += "Connection: close\r\n"
+            head += "\r\n"
+            var packet = Data(head.utf8)
+            packet.append(data)
+            conn.send(content: packet, completion: .contentProcessed { _ in conn.cancel() })
+        } else {
+            let data = handle.readDataToEndOfFile()
+            var head = "HTTP/1.1 200 OK\r\n"
+            head += "Content-Type: video/mp4\r\n"
+            head += "Content-Length: \(data.count)\r\n"
+            head += "Accept-Ranges: bytes\r\n"
+            head += "Connection: close\r\n"
+            head += "\r\n"
+            var packet = Data(head.utf8)
+            packet.append(data)
+            conn.send(content: packet, completion: .contentProcessed { _ in conn.cancel() })
+        }
     }
 
     // MARK: - Response writers

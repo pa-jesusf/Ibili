@@ -35,13 +35,24 @@ enum RemuxInputBuilder {
     private static let fastProbeRange: ClosedRange<UInt64> = 0...(262_143)
     private static let slowProbeRange: ClosedRange<UInt64> = 0...(1_048_575)
 
+    static let initialFragmentCount = 15
+
     static func prepareInputs(for source: PlayUrlDTO) async throws -> RemuxPreparedInput {
+        try await prepareInputs(for: source, fragmentLimit: nil)
+    }
+
+    static func prepareInitialInputs(for source: PlayUrlDTO) async throws -> RemuxPreparedInput {
+        try await prepareInputs(for: source, fragmentLimit: initialFragmentCount)
+    }
+
+    private static func prepareInputs(for source: PlayUrlDTO, fragmentLimit: Int?) async throws -> RemuxPreparedInput {
         let startedAt = CFAbsoluteTimeGetCurrent()
-        let workspace = try makeWorkspace(for: source)
-        let outputMP4 = workspace.appendingPathComponent("remux.mp4")
-        let videoSample = workspace.appendingPathComponent("video-source.m4s")
-        let audioSample = source.audioUrl == nil ? nil : workspace.appendingPathComponent("audio-source.m4s")
-        let metadataURL = workspace.appendingPathComponent("remux-metadata.json")
+        let workspace = try makeWorkspace(for: source, partial: fragmentLimit != nil)
+        let suffix = fragmentLimit.map { "-partial-\($0)" } ?? ""
+        let outputMP4 = workspace.appendingPathComponent("remux\(suffix).mp4")
+        let videoSample = workspace.appendingPathComponent("video-source\(suffix).m4s")
+        let audioSample = source.audioUrl == nil ? nil : workspace.appendingPathComponent("audio-source\(suffix).m4s")
+        let metadataURL = workspace.appendingPathComponent("remux-metadata\(suffix).json")
 
         if FileManager.default.fileExists(atPath: outputMP4.path) {
             let cachedAudioSample: URL?
@@ -85,7 +96,8 @@ enum RemuxInputBuilder {
             label: "video",
             url: videoURL,
             probe: video.probe,
-            output: videoSample
+            output: videoSample,
+            fragmentLimit: fragmentLimit
         )
         var audioBytes = 0
         if let audio, let audioURL = audioOrdered.first, let audioSample {
@@ -93,7 +105,8 @@ enum RemuxInputBuilder {
                 label: "audio",
                 url: audioURL,
                 probe: audio.probe,
-                output: audioSample
+                output: audioSample,
+                fragmentLimit: fragmentLimit
             )
         }
 
@@ -179,7 +192,8 @@ enum RemuxInputBuilder {
     private static func writeConcatenatedFMP4(label: String,
                                              url: URL,
                                              probe: ISOBMFF.Probe,
-                                             output: URL) async throws -> Int {
+                                             output: URL,
+                                             fragmentLimit: Int? = nil) async throws -> Int {
         guard !probe.index.entries.isEmpty else { throw RemuxInputBuilderError.emptyFragmentIndex(label: label) }
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: output.path) {
@@ -194,15 +208,17 @@ enum RemuxInputBuilder {
         try handle.write(contentsOf: initData)
         totalBytes += initData.count
 
-        for (index, entry) in probe.index.entries.enumerated() {
+        let count = fragmentLimit.map { min($0, probe.index.entries.count) } ?? probe.index.entries.count
+        for index in 0..<count {
             try Task.checkCancellation()
+            let entry = probe.index.entries[index]
             let data = try await ProxyURLLoader.shared.fetch(url: url, range: entry.range).data
             try handle.write(contentsOf: data)
             totalBytes += data.count
-            if index == 0 || (index + 1) % 20 == 0 || index == probe.index.entries.count - 1 {
+            if index == 0 || (index + 1) % 20 == 0 || index == count - 1 {
                 AppLog.info("player", "remux 输入下载进度", metadata: [
                     "label": label,
-                    "fragment": "\(index + 1)/\(probe.index.entries.count)",
+                    "fragment": "\(index + 1)/\(count)",
                     "bytes": String(totalBytes),
                 ])
             }
@@ -210,7 +226,11 @@ enum RemuxInputBuilder {
         return totalBytes
     }
 
-    private static func makeWorkspace(for source: PlayUrlDTO) throws -> URL {
+    static func workspaceURL(for source: PlayUrlDTO) throws -> URL {
+        try makeWorkspace(for: source)
+    }
+
+    private static func makeWorkspace(for source: PlayUrlDTO, partial: Bool = false) throws -> URL {
         let caches = try FileManager.default.url(
             for: .cachesDirectory,
             in: .userDomainMask,
