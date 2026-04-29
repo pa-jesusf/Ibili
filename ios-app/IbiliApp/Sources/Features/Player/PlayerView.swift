@@ -1281,8 +1281,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
         // Using a raw UIView instead of UIHostingController avoids
         // SwiftUI re-render overhead and fixes the width-shrink bug
         // after fullscreen→portrait transitions.
-        danmaku.setItems([])
-        if let canvas = danmaku.canvasView, let overlay = vc.contentOverlayView {
+        let canvas = danmaku.prepareCanvas()
+        if let overlay = vc.contentOverlayView {
             canvas.translatesAutoresizingMaskIntoConstraints = false
             canvas.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
             overlay.addSubview(canvas)

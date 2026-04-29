@@ -12,14 +12,18 @@ import Combine
 final class DanmakuController {
     private(set) var canvasView: DanmakuCanvasView?
 
-    func setItems(_ items: [DanmakuItemDTO]) {
+    @discardableResult
+    func prepareCanvas() -> DanmakuCanvasView {
         ensureCanvas()
-        canvasView?.setItems(items)
+        return canvasView!
+    }
+
+    func setItems(_ items: [DanmakuItemDTO]) {
+        prepareCanvas().setItems(items)
     }
 
     func attach(_ player: AVPlayer) {
-        ensureCanvas()
-        canvasView?.attach(player)
+        prepareCanvas().attach(player)
     }
 
     func detach() {

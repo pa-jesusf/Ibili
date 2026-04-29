@@ -50,9 +50,16 @@ final class DanmakuCanvasView: UIView {
     private final class CachedText {
         let line: CTLine
         let size: CGSize
-        init(line: CTLine, size: CGSize) {
+        let fillColor: UIColor
+        let outlineWidth: CGFloat
+        let drawInset: CGFloat
+
+        init(line: CTLine, size: CGSize, fillColor: UIColor, outlineWidth: CGFloat, drawInset: CGFloat) {
             self.line = line
             self.size = size
+            self.fillColor = fillColor
+            self.outlineWidth = outlineWidth
+            self.drawInset = drawInset
         }
     }
 
@@ -237,11 +244,12 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Text rendering
 
     private let baseFontSize: CGFloat = 18
-    private let strokeWidth: CGFloat = 1.5
 
     private func makeText(_ item: DanmakuItemDTO) -> CachedText {
         let fontSize = baseFontSize * (item.fontSize > 0 ? CGFloat(item.fontSize) / 25.0 : 1.0)
-        let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+        let baseFont = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+        let font = baseFont.fontDescriptor.withDesign(.rounded)
+            .map { UIFont(descriptor: $0, size: fontSize) } ?? baseFont
 
         let r = CGFloat((item.color >> 16) & 0xFF) / 255
         let g = CGFloat((item.color >> 8) & 0xFF) / 255
@@ -250,15 +258,23 @@ final class DanmakuCanvasView: UIView {
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: fillColor,
-            .strokeColor: UIColor.black,
-            .strokeWidth: -(strokeWidth * 100 / fontSize),
         ]
         let str = NSAttributedString(string: item.text, attributes: attrs)
         let line = CTLineCreateWithAttributedString(str)
         let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
-        let size = CGSize(width: ceil(bounds.width) + 4, height: ceil(bounds.height) + 2)
-        return CachedText(line: line, size: size)
+        let outlineWidth = max(1.25, fontSize * 0.055)
+        let drawInset = ceil(outlineWidth) + 2
+        let size = CGSize(
+            width: ceil(bounds.width) + drawInset * 2,
+            height: ceil(bounds.height) + drawInset * 2
+        )
+        return CachedText(
+            line: line,
+            size: size,
+            fillColor: fillColor,
+            outlineWidth: outlineWidth,
+            drawInset: drawInset
+        )
     }
 
     // MARK: - Draw
@@ -301,8 +317,17 @@ final class DanmakuCanvasView: UIView {
 
             ctx.saveGState()
             ctx.textMatrix = .identity
-            ctx.translateBy(x: x + 2, y: y + ct.size.height - 2)
+            ctx.translateBy(x: x + ct.drawInset, y: y + ct.size.height - ct.drawInset)
             ctx.scaleBy(x: 1, y: -1)
+
+            ctx.setLineJoin(.round)
+            ctx.setTextDrawingMode(.stroke)
+            ctx.setLineWidth(ct.outlineWidth)
+            ctx.setStrokeColor(UIColor.black.withAlphaComponent(0.92).cgColor)
+            CTLineDraw(ct.line, ctx)
+
+            ctx.setTextDrawingMode(.fill)
+            ctx.setFillColor(ct.fillColor.cgColor)
             CTLineDraw(ct.line, ctx)
             ctx.restoreGState()
         }
