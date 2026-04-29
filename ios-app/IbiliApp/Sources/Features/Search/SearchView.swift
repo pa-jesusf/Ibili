@@ -40,13 +40,9 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        // Show results only while the field still matches the query
-        // that produced them. As soon as the user edits the search
-        // text we slide back to the landing view so we don't show
-        // stale matches that no longer correspond to what's in the
-        // search field.
         if vm.hasSubmittedQuery,
-           !vm.submittedQuery.isEmpty {
+           !vm.submittedQuery.isEmpty,
+           vm.query == vm.submittedQuery {
             VStack(spacing: 0) {
                 SearchTypeBar(vm: vm)
                 Divider().opacity(0.4)
@@ -66,24 +62,15 @@ struct SearchView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if vm.hasSubmittedQuery,
-           !vm.submittedQuery.isEmpty {
+           !vm.submittedQuery.isEmpty,
+           vm.query == vm.submittedQuery {
             ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 12) {
-                    Button {
-                        isFiltersSheetPresented = true
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                    }
-                    .foregroundStyle(IbiliTheme.accent)
-
-                    Button {
-                        vm.reset()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title3)
-                    }
-                    .foregroundStyle(IbiliTheme.textSecondary)
+                Button {
+                    isFiltersSheetPresented = true
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
                 }
+                .foregroundStyle(IbiliTheme.accent)
             }
         }
     }

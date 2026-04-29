@@ -125,6 +125,7 @@ impl Core {
                 like: r.like,
                 pubdate: if r.pubdate > 0 { r.pubdate } else { r.senddate },
             })
+            .filter(|item| item.aid > 0 && !item.bvid.is_empty())
             .collect();
         let num_pages = if raw.num_pages > 0 { raw.num_pages } else { raw.pages };
         Ok(SearchVideoPage {

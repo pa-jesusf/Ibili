@@ -80,12 +80,7 @@ struct SearchResultsView: View {
 
                     searchPaginationBar
                         .padding(.horizontal, hPad)
-                        .padding(.bottom, 8)
-
-                    if vm.hasMore && !vm.isLoading {
-                        pullNextPageFooter
-                            .padding(.bottom, 20)
-                    }
+                        .padding(.bottom, 20)
                 }
                 .onChange(of: scrollID) { _ in
                     withAnimation(.easeOut(duration: 0.2)) {
@@ -105,24 +100,6 @@ struct SearchResultsView: View {
             }
             Button("取消", role: .cancel) {}
         }
-    }
-
-    private var pullNextPageFooter: some View {
-        Button {
-            vm.loadNextPage()
-            scrollID = UUID()
-        } label: {
-            VStack(spacing: 6) {
-                Image(systemName: "arrow.down.circle")
-                    .font(.title2)
-                Text("继续下拉加载下一页")
-                    .font(.caption)
-            }
-            .foregroundStyle(IbiliTheme.textSecondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-        }
-        .buttonStyle(.plain)
     }
 
     @ViewBuilder
