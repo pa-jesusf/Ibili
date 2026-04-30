@@ -2,6 +2,7 @@ import SwiftUI
 
 enum IbiliTheme {
     static let accent = Color(red: 0.98, green: 0.36, blue: 0.55)
+    static let accentUIColor = UIColor(red: 0.98, green: 0.36, blue: 0.55, alpha: 1.0)
     static let background = Color(.systemBackground)
     static let surface = Color(.secondarySystemBackground)
     static let textPrimary = Color.primary

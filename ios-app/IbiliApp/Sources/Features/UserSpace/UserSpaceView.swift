@@ -205,12 +205,22 @@ struct UserSpaceView: View {
 
     // MARK: Tabs
 
+    @ViewBuilder
     private var tabBar: some View {
-        IbiliSegmentedTabs(
-            tabs: Tab.allCases,
-            title: { $0.title },
-            selection: $tab
-        )
+        if #available(iOS 26.0, *) {
+            NativeIsolatedPicker(
+                items: Array(Tab.allCases),
+                title: { $0.title },
+                selection: $tab
+            )
+            .frame(height: 32)
+        } else {
+            IbiliSegmentedTabs(
+                tabs: Tab.allCases,
+                title: { $0.title },
+                selection: $tab
+            )
+        }
     }
 
     // MARK: Content list

@@ -32,12 +32,22 @@ struct VideoDetailContent: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                IbiliSegmentedTabs(
-                    tabs: Tab.allCases,
-                    title: { $0.rawValue },
-                    selection: $tab
-                )
-                .padding(.horizontal, 16)
+                if #available(iOS 26.0, *) {
+                        NativeIsolatedPicker(
+                            items: Array(Tab.allCases),
+                            title: { $0.rawValue },
+                            selection: $tab
+                        )
+                        .frame(height: 32)
+                        .padding(.horizontal, 16)
+                } else {
+                    IbiliSegmentedTabs(
+                        tabs: Tab.allCases,
+                        title: { $0.rawValue },
+                        selection: $tab
+                    )
+                    .padding(.horizontal, 16)
+                }
 
                 Group {
                     switch tab {
