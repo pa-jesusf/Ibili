@@ -6,44 +6,47 @@ struct RootView: View {
     @StateObject private var router = DeepLinkRouter()
 
     var body: some View {
-        Group {
-            if session.isLoggedIn {
-                MainTabView()
-                    .transition(.opacity)
-            } else {
-                LoginView()
-                    .transition(.opacity)
+        ZStack {
+            Group {
+                if session.isLoggedIn {
+                    MainTabView()
+                        .transition(.opacity)
+                } else {
+                    LoginView()
+                        .transition(.opacity)
+                }
+            }
+
+            // Player is presented as a horizontal-slide overlay above
+            // the tab interface — *not* a `.fullScreenCover` — so that
+            // the user's right-edge swipe-back actually reveals the
+            // previous screen (home / search) underneath instead of a
+            // black backdrop. Slides in from the trailing edge to
+            // match the iOS push idiom and inverts on dismiss.
+            if router.pending != nil {
+                DeepLinkPlayerHost()
+                    .environmentObject(router)
+                    .tint(IbiliTheme.accent)
+                    .transition(.move(edge: .trailing))
+                    .zIndex(1)
             }
         }
+        .animation(.easeOut(duration: 0.28), value: router.pending != nil)
         .environmentObject(router)
         .environment(\.openURL, OpenURLAction { url in
             router.handle(url)
         })
-        .fullScreenCover(isPresented: Binding(
-            get: { router.pending != nil },
-            set: { if !$0 { router.pending = nil } }
-        )) {
-            // Host the player inside a wrapper that observes the router
-            // directly. When `router.pending` changes (e.g. user tapped
-            // a related video) we re-key on the aid so SwiftUI tears
-            // down the previous player and mounts a fresh one — that
-            // way back-from-related goes straight to the home tab
-            // instead of stacking covers and creating a 套娃 chain.
-            DeepLinkPlayerHost()
-                .environmentObject(router)
-                .tint(IbiliTheme.accent)
-        }
     }
 }
 
-/// Wrapper inside the root `.fullScreenCover` that swaps its `PlayerView`
-/// whenever `DeepLinkRouter.pending` changes — including taps on related
-/// videos from inside the player. Re-keying via `.id(...)` is what gives
-/// us the "replace, don't stack" behaviour requested by the user.
+/// Wrapper that hosts the active `PlayerView` and listens to the
+/// router so taps on related videos *replace* the current player
+/// rather than stacking. Re-keying via `.id(...)` is what gives us
+/// the "replace, don't stack" behaviour requested by the user.
 private struct DeepLinkPlayerHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
     /// Live drag offset — set while the user pans from the leading
-    /// edge so we can mirror the iOS "swipe-to-pop" parallax / fade.
+    /// edge so we can mirror the iOS "swipe-to-pop" parallax.
     @State private var swipeOffsetX: CGFloat = 0
 
     var body: some View {
@@ -55,13 +58,8 @@ private struct DeepLinkPlayerHost: View {
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
                                 Button {
-                                    router.pending = nil
+                                    dismiss()
                                 } label: {
-                                    // Back-arrow rather than dismiss-X
-                                    // since this presentation supports an
-                                    // edge-swipe-to-dismiss gesture below
-                                    // and reads as a navigation pop, not
-                                    // a modal dismissal.
                                     Image(systemName: "chevron.backward")
                                         .fontWeight(.semibold)
                                 }
@@ -72,12 +70,13 @@ private struct DeepLinkPlayerHost: View {
                 }
             }
         }
+        .background(IbiliTheme.background)
         .offset(x: swipeOffsetX)
         // Restore the iOS interactive-pop gesture by hosting an
-        // invisible DragGesture region pinned to the leading edge. We
-        // only consume drags that *start* within the first ~16pt so it
-        // never fights vertical scroll views or horizontal carousels
-        // inside the player content.
+        // invisible DragGesture region pinned to the leading edge.
+        // We only consume drags that *start* within the first ~16pt
+        // so it never fights vertical scroll views or horizontal
+        // carousels inside the player content.
         .overlay(alignment: .leading) {
             Color.clear
                 .frame(width: 14)
@@ -85,8 +84,6 @@ private struct DeepLinkPlayerHost: View {
                 .gesture(
                     DragGesture(minimumDistance: 8)
                         .onChanged { v in
-                            // Only follow if the gesture is dominantly
-                            // horizontal & rightward.
                             guard v.translation.width > 0,
                                   abs(v.translation.width) > abs(v.translation.height) else {
                                 return
@@ -97,16 +94,7 @@ private struct DeepLinkPlayerHost: View {
                             let dx = v.translation.width
                             let vx = v.predictedEndTranslation.width
                             if dx > 80 || vx > 200 {
-                                // Commit dismiss — animate the host off
-                                // the trailing edge before clearing the
-                                // router pending so the cover unwinds.
-                                withAnimation(.easeOut(duration: 0.18)) {
-                                    swipeOffsetX = 1200
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                                    router.pending = nil
-                                    swipeOffsetX = 0
-                                }
+                                dismiss()
                             } else {
                                 withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                                     swipeOffsetX = 0
@@ -114,6 +102,17 @@ private struct DeepLinkPlayerHost: View {
                             }
                         }
                 )
+        }
+    }
+
+    /// Tear the host down. Resetting `swipeOffsetX` first means the
+    /// system trailing-edge transition starts from offset 0 rather
+    /// than mid-drag — so the dismiss animation reads as a clean
+    /// horizontal slide regardless of how far the user dragged.
+    private func dismiss() {
+        swipeOffsetX = 0
+        withAnimation(.easeOut(duration: 0.28)) {
+            router.pending = nil
         }
     }
 }

@@ -183,6 +183,38 @@ impl HttpClient {
         unwrap_envelope(body)
     }
 
+    /// POST a multipart form with one binary file part plus arbitrary
+    /// text fields. Used by `upload_bfs` (image attachments for
+    /// reply / dynamic). The file MIME type is sniffed from the file
+    /// extension; falls back to `application/octet-stream`.
+    pub fn post_multipart_web<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        text_fields: &[(&str, String)],
+        file_field: &str,
+        file_name: String,
+        file_bytes: Vec<u8>,
+    ) -> CoreResult<T> {
+        use reqwest::blocking::multipart::{Form, Part};
+        let mime = mime_for_filename(&file_name);
+        let part = Part::bytes(file_bytes)
+            .file_name(file_name)
+            .mime_str(mime)
+            .map_err(|e| CoreError::Network(format!("multipart mime: {e}")))?;
+        let mut form = Form::new().part(file_field.to_string(), part);
+        for (k, v) in text_fields {
+            form = form.text(k.to_string(), v.clone());
+        }
+        let resp = self.client.post(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .multipart(form)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
     /// Read the `bili_jct` cookie (CSRF token) from the shared jar.
     /// Returns `None` if the user has not logged in via web cookies yet.
     pub fn csrf_token(&self) -> Option<String> {
@@ -230,3 +262,13 @@ fn unwrap_envelope<T: DeserializeOwned>(body: String) -> CoreResult<T> {
     env.data.ok_or_else(|| CoreError::Decode("missing data".into()))
 }
 
+
+fn mime_for_filename(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".png") { "image/png" }
+    else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { "image/jpeg" }
+    else if lower.ends_with(".gif") { "image/gif" }
+    else if lower.ends_with(".webp") { "image/webp" }
+    else if lower.ends_with(".heic") { "image/heic" }
+    else { "application/octet-stream" }
+}

@@ -71,9 +71,16 @@ final class CommentListViewModel: ObservableObject {
         }
     }
 
-    private func currentAction(for rpid: Int64) -> Int32 {
-        if top?.rpid == rpid { return top?.action ?? 0 }
+    private func currentAction(for rpid: Int64) -> Int32 {        if top?.rpid == rpid { return top?.action ?? 0 }
         return items.first(where: { $0.rpid == rpid })?.action ?? 0
+    }
+
+    /// Insert a freshly-submitted reply at the top of the list so the
+    /// user sees their own comment immediately — saves a full page
+    /// refetch round-trip after `replyAdd`.
+    func prependLocal(_ item: ReplyItemDTO) {
+        items.insert(item, at: 0)
+        total += 1
     }
 
     private func applyLikeDelta(rpid: Int64, action: Int32) {

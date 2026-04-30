@@ -189,6 +189,36 @@ fn default_dm_color() -> i32 { 16777215 }
 fn default_dm_fontsize() -> i32 { 25 }
 
 #[derive(Deserialize)]
+struct ReplyAddArgs {
+    oid: i64,
+    #[serde(default = "default_reply_type")] kind: i32,
+    message: String,
+    #[serde(default)] root: i64,
+    #[serde(default)] parent: i64,
+    #[serde(default)] pictures: Vec<ibili_core::dto::ReplyPicture>,
+}
+
+#[derive(Deserialize)]
+struct UploadBfsArgs {
+    /// Base64-encoded image bytes. Keeping the FFI text-only avoids
+    /// needing a parallel binary entry point — the iOS layer encodes
+    /// the JPEG/PNG once and we decode here.
+    bytes_b64: String,
+    #[serde(default = "default_bfs_name")] file_name: String,
+    #[serde(default = "default_bfs_biz")] biz: String,
+    #[serde(default = "default_bfs_category")] category: String,
+}
+fn default_bfs_name() -> String { "image.jpg".into() }
+fn default_bfs_biz() -> String { "new_dyn".into() }
+fn default_bfs_category() -> String { "daily".into() }
+
+#[derive(Deserialize)]
+struct EmotePanelArgs {
+    #[serde(default = "default_emote_business")] business: String,
+}
+fn default_emote_business() -> String { "reply".into() }
+
+#[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
     #[serde(default = "default_search_page")] page: i64,
@@ -319,6 +349,29 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                 a.fontsize,
             )?;
             Ok(Value::Object(Default::default()))
+        }
+        "interaction.reply_add" => {
+            let a: ReplyAddArgs = serde_json::from_value(args)?;
+            to_value(c.inner.reply_add(
+                a.oid,
+                a.kind,
+                &a.message,
+                a.root,
+                a.parent,
+                a.pictures,
+            )?)
+        }
+        "interaction.upload_bfs" => {
+            let a: UploadBfsArgs = serde_json::from_value(args)?;
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(a.bytes_b64.as_bytes())
+                .map_err(|e| ibili_core::CoreError::InvalidArgument(format!("base64: {e}")))?;
+            to_value(c.inner.upload_bfs(bytes, a.file_name, &a.biz, &a.category)?)
+        }
+        "interaction.emote_panel" => {
+            let a: EmotePanelArgs = serde_json::from_value(args)?;
+            to_value(c.inner.emote_panel(&a.business)?)
         }
         "search.video" => {
             let a: SearchVideoArgs = serde_json::from_value(args)?;

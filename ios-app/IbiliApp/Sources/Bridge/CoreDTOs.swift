@@ -527,6 +527,55 @@ public struct ReplyItemDTO: Decodable, Hashable, Identifiable {
         pictures = try c.decodeIfPresent([String].self, forKey: .pictures) ?? []
         jumpUrls = try c.decodeIfPresent([ReplyJumpUrlDTO].self, forKey: .jumpUrls) ?? []
     }
+
+    /// Memberwise initializer for synthesizing a local-echo reply when
+    /// the user has just submitted a new comment — avoids a refetch
+    /// of the entire page just to surface their own message.
+    public init(
+        rpid: Int64,
+        oid: Int64,
+        root: Int64 = 0,
+        parent: Int64 = 0,
+        mid: Int64,
+        uname: String,
+        face: String,
+        level: Int32 = 0,
+        vipStatus: Int32 = 0,
+        message: String,
+        ctime: Int64 = Int64(Date().timeIntervalSince1970),
+        like: Int64 = 0,
+        action: Int32 = 0,
+        replyCount: Int32 = 0,
+        upActionLike: Bool = false,
+        upActionReply: Bool = false,
+        location: String = "",
+        previewReplies: [ReplyItemDTO] = [],
+        emotes: [ReplyEmoteDTO] = [],
+        pictures: [String] = [],
+        jumpUrls: [ReplyJumpUrlDTO] = []
+    ) {
+        self.rpid = rpid
+        self.oid = oid
+        self.root = root
+        self.parent = parent
+        self.mid = mid
+        self.uname = uname
+        self.face = face
+        self.level = level
+        self.vipStatus = vipStatus
+        self.message = message
+        self.ctime = ctime
+        self.like = like
+        self.action = action
+        self.replyCount = replyCount
+        self.upActionLike = upActionLike
+        self.upActionReply = upActionReply
+        self.location = location
+        self.previewReplies = previewReplies
+        self.emotes = emotes
+        self.pictures = pictures
+        self.jumpUrls = jumpUrls
+    }
 }
 
 public struct ReplyPageDTO: Decodable {
@@ -602,4 +651,53 @@ public struct FavFolderInfoDTO: Decodable, Identifiable, Hashable {
         case favState = "fav_state"
         case mediaCount = "media_count"
     }
+}
+
+/// One image attached to a comment. Wire-compatible with what the
+/// `pictures` parameter on `/x/v2/reply/add` expects.
+public struct ReplyPictureDTO: Codable, Hashable {
+    public let imgSrc: String
+    public let imgWidth: Int32
+    public let imgHeight: Int32
+    public let imgSize: Double
+
+    public init(imgSrc: String, imgWidth: Int32, imgHeight: Int32, imgSize: Double) {
+        self.imgSrc = imgSrc
+        self.imgWidth = imgWidth
+        self.imgHeight = imgHeight
+        self.imgSize = imgSize
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case imgSrc = "img_src"
+        case imgWidth = "img_width"
+        case imgHeight = "img_height"
+        case imgSize = "img_size"
+    }
+}
+
+public struct ReplyAddResultDTO: Decodable {
+    public let rpid: Int64
+    public let toast: String
+}
+
+public struct UploadedImageDTO: Decodable {
+    public let url: String
+    public let width: Int32
+    public let height: Int32
+    public let size: Double
+}
+
+public struct EmoteDTO: Decodable, Hashable, Identifiable {
+    public var id: String { text + url }
+    public let text: String
+    public let url: String
+}
+
+public struct EmotePackageDTO: Decodable, Hashable, Identifiable {
+    public let id: Int64
+    public let text: String
+    public let url: String
+    public let kind: Int32
+    public let emotes: [EmoteDTO]
 }

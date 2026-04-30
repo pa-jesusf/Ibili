@@ -13,6 +13,8 @@ struct CommentListView: View {
     let oid: Int64
     @StateObject private var vm = CommentListViewModel()
     @State private var thread: ReplyItemDTO?
+    @State private var showSendSheet = false
+    @EnvironmentObject private var session: AppSession
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
@@ -39,6 +41,31 @@ struct CommentListView: View {
                     .foregroundStyle(IbiliTheme.textSecondary)
                 }
             }
+            .padding(.bottom, 8)
+
+            // Composer entry — tapping anywhere opens the comment send
+            // sheet. Only shown to logged-in users; otherwise the
+            // anonymous reader sees a hint to sign in.
+            Button {
+                if session.isLoggedIn { showSendSheet = true }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.pencil")
+                        .imageScale(.small)
+                        .foregroundStyle(IbiliTheme.accent)
+                    Text(session.isLoggedIn ? "发条友善的评论…" : "登录后即可发表评论")
+                        .font(.footnote)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(
+                    Capsule().fill(IbiliTheme.surface)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!session.isLoggedIn)
             .padding(.bottom, 12)
 
             if let top = vm.top {
@@ -73,6 +100,16 @@ struct CommentListView: View {
         .sheet(item: $thread) { root in
             CommentThreadSheet(root: root)
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showSendSheet) {
+            CommentSendSheet(
+                oid: oid,
+                kind: 1,
+                selfMid: session.mid,
+                selfName: ""
+            ) { echo in
+                vm.prependLocal(echo)
+            }
         }
     }
 }

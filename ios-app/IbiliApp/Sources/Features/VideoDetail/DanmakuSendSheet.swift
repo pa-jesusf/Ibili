@@ -1,14 +1,21 @@
 import SwiftUI
 
-/// Bottom sheet for composing and posting a danmaku at the current
-/// playhead. Color + mode (滚动 / 顶端 / 底端) selectable; submit calls
-/// `CoreClient.sendDanmaku` and dismisses on success. Shows an inline
-/// error and keeps the text on failure so the user can retry.
+/// Compact bottom sheet for posting a danmaku at the current playhead.
+///
+/// Visual: a single rounded card with the input field + 发送 button
+/// on the first row, character counter + a 选项 toggle on the
+/// second row, and an expandable panel below carrying mode (滚动 /
+/// 顶端 / 底端) and the official-style color palette.
+///
+/// The progress is captured at *click time* via `progressProvider`
+/// rather than at sheet-present time, so a user who scrubs after
+/// opening the sheet still posts at the position they're actually
+/// looking at.
 struct DanmakuSendSheet: View {
     let aid: Int64
     let cid: Int64
-    /// Current playhead in milliseconds, captured at present time.
-    let progressMs: Int64
+    /// Resolves to the live playhead in milliseconds at submit time.
+    let progressProvider: () -> Int64
     /// Invoked once the server has accepted the danmaku. The host
     /// typically uses this to inject a local-echo bullet into the
     /// renderer instead of refetching the full track.
@@ -21,10 +28,9 @@ struct DanmakuSendSheet: View {
     @State private var mode: Int32 = 1
     @State private var isSending = false
     @State private var errorText: String?
+    @State private var optionsExpanded = false
     @FocusState private var focused: Bool
 
-    /// Bilibili's "official" preset palette (subset). Keeps the sheet
-    /// compact — power users can extend later.
     private let palette: [(name: String, value: Int32)] = [
         ("白", 16_777_215),
         ("红", 16_711_680),
@@ -36,96 +42,119 @@ struct DanmakuSendSheet: View {
         ("紫", 10_233_776),
     ]
 
+    private let charLimit = 100
+
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                TextField("发送一条友善的弹幕", text: $text, axis: .vertical)
-                    .font(.body)
-                    .focused($focused)
-                    .lineLimit(1...4)
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(IbiliTheme.surface))
-
-                Text("位置 · \(BiliFormat.duration(Int64(progressMs / 1000)))")
-                    .font(.caption)
-                    .foregroundStyle(IbiliTheme.textSecondary)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("模式").font(.caption.weight(.medium)).foregroundStyle(IbiliTheme.textSecondary)
-                    HStack(spacing: 8) {
-                        modeButton(label: "滚动", value: 1)
-                        modeButton(label: "顶端", value: 5)
-                        modeButton(label: "底端", value: 4)
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("颜色").font(.caption.weight(.medium)).foregroundStyle(IbiliTheme.textSecondary)
-                    HStack(spacing: 10) {
-                        ForEach(palette, id: \.value) { p in
-                            Button {
-                                color = p.value
-                            } label: {
-                                Circle()
-                                    .fill(Color(rgb: p.value))
-                                    .frame(width: 28, height: 28)
-                                    .overlay(
-                                        Circle().stroke(
-                                            color == p.value ? IbiliTheme.accent : Color.black.opacity(0.1),
-                                            lineWidth: color == p.value ? 2.5 : 1
-                                        )
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(p.name)
-                        }
-                    }
-                }
-
-                if let err = errorText {
-                    Label(err, systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .navigationTitle("发送弹幕")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
+        VStack(spacing: 12) {
+            CompactComposerCard(
+                text: $text,
+                placeholder: "发个弹幕吧…",
+                charLimit: charLimit,
+                isSending: isSending,
+                focused: $focused,
+                onSend: { Task { await send() } },
+                trailing: {
                     Button {
-                        Task { await send() }
+                        optionsExpanded.toggle()
                     } label: {
-                        if isSending {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("发送").fontWeight(.semibold)
+                        HStack(spacing: 4) {
+                            Image(systemName: optionsExpanded ? "chevron.down" : "slider.horizontal.3")
+                                .imageScale(.small)
+                            Text(optionsExpanded ? "收起" : "颜色 / 模式")
+                                .font(.caption.weight(.medium))
                         }
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
                     }
-                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty || isSending)
+                    .buttonStyle(.plain)
                 }
+            )
+
+            if optionsExpanded {
+                optionsPanel
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .top)),
+                            removal: .opacity
+                        )
+                    )
             }
-            .onAppear { focused = true }
+
+            if let err = errorText {
+                Label(err, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .presentationDetents([.medium])
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .presentationDetents(optionsExpanded ? [.height(330)] : [.height(180)])
         .presentationDragIndicator(.visible)
+        .modifier(MaterialSheetBackground())
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: optionsExpanded)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+        }
+    }
+
+    private var optionsPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("模式")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .frame(width: 36, alignment: .leading)
+                modeButton(label: "滚动", value: 1)
+                modeButton(label: "顶端", value: 5)
+                modeButton(label: "底端", value: 4)
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 10) {
+                Text("颜色")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .frame(width: 36, alignment: .leading)
+                ForEach(palette, id: \.value) { p in
+                    Button {
+                        color = p.value
+                    } label: {
+                        Circle()
+                            .fill(Color(rgb: p.value))
+                            .frame(width: 22, height: 22)
+                            .overlay(
+                                Circle().stroke(
+                                    color == p.value ? IbiliTheme.accent : Color.black.opacity(0.12),
+                                    lineWidth: color == p.value ? 2 : 0.8
+                                )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(p.name)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(IbiliTheme.surface)
+        )
     }
 
     @ViewBuilder
     private func modeButton(label: String, value: Int32) -> some View {
         Button { mode = value } label: {
             Text(label)
-                .font(.footnote.weight(.medium))
-                .padding(.horizontal, 14).padding(.vertical, 7)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 12).padding(.vertical, 5)
                 .foregroundStyle(mode == value ? .white : IbiliTheme.textPrimary)
                 .background(
-                    Capsule().fill(mode == value ? IbiliTheme.accent : IbiliTheme.surface)
+                    Capsule().fill(mode == value ? IbiliTheme.accent : Color.primary.opacity(0.06))
                 )
         }
         .buttonStyle(.plain)
@@ -133,7 +162,11 @@ struct DanmakuSendSheet: View {
 
     private func send() async {
         let msg = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !msg.isEmpty else { return }
+        guard !msg.isEmpty, msg.count <= charLimit else { return }
+        // Snapshot the playhead at click time, NOT at sheet-present
+        // time. Otherwise scrubbing while the sheet is open would
+        // post the bullet to the wrong moment in the video.
+        let progressMs = progressProvider()
         isSending = true
         errorText = nil
         defer { isSending = false }
@@ -144,9 +177,6 @@ struct DanmakuSendSheet: View {
                     progressMs: progressMs, mode: mode, color: color
                 )
             }.value
-            // Synthesize a local-echo item the host can inject into
-            // the live renderer so the user immediately sees their
-            // bullet instead of having to wait for a track refetch.
             let echo = DanmakuItemDTO(
                 timeSec: Float(Double(progressMs) / 1000.0),
                 mode: mode,
@@ -164,13 +194,24 @@ struct DanmakuSendSheet: View {
 }
 
 private extension Color {
-    /// Decode a packed RGB integer (Bilibili wire format) into a SwiftUI
-    /// Color. `#RRGGBB` semantics — top byte ignored.
     init(rgb: Int32) {
         let v = UInt32(bitPattern: rgb)
         let r = Double((v >> 16) & 0xFF) / 255.0
         let g = Double((v >> 8) & 0xFF) / 255.0
         let b = Double(v & 0xFF) / 255.0
         self.init(red: r, green: g, blue: b)
+    }
+}
+
+/// Apply `.presentationBackground(.regularMaterial)` only on the OS
+/// versions that support it (iOS 16.4+) — older targets fall back to
+/// the system default sheet background.
+private struct MaterialSheetBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content.presentationBackground(.regularMaterial)
+        } else {
+            content
+        }
     }
 }

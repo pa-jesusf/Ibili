@@ -34,6 +34,12 @@ const URL_REPLY_ACTION: &str = "https://api.bilibili.com/x/v2/reply/action";
 /// Send a danmaku for the given cid (legacy XML-style endpoint, but
 /// PiliPlus and the official web client both still post here).
 const URL_DM_POST: &str = "https://api.bilibili.com/x/v2/dm/post";
+/// Top-level / nested comment submit. Mirrors `ReplyHttp.replyAdd`.
+const URL_REPLY_ADD: &str = "https://api.bilibili.com/x/v2/reply/add";
+/// Image upload for dynamic / reply attachments.
+const URL_UPLOAD_BFS: &str = "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs";
+/// User emote panel (business=reply for comment composer).
+const URL_EMOTE_PANEL: &str = "https://api.bilibili.com/x/emote/user/panel/web";
 
 #[derive(Default, Deserialize)]
 struct ToastWire {
@@ -311,6 +317,126 @@ impl Core {
         ];
         let _: Value = self.http.post_form_web(URL_DM_POST, &params)?;
         Ok(())
+    }
+
+    /// Submit a top-level / nested comment.
+    ///
+    /// `pictures` is a list of `{img_src, img_width, img_height,
+    /// img_size}` objects produced by `upload_bfs`. We *never* set
+    /// `sync_to_dynamic` — comments must not leak to the user's
+    /// dynamic feed.
+    pub fn reply_add(
+        &self,
+        oid: i64,
+        kind: i32,
+        message: &str,
+        root: i64,
+        parent: i64,
+        pictures: Vec<crate::dto::ReplyPicture>,
+    ) -> CoreResult<crate::dto::ReplyAddResult> {
+        let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        let mut params: Vec<(String, String)> = vec![
+            ("type".into(), kind.to_string()),
+            ("oid".into(), oid.to_string()),
+            ("message".into(), message.to_string()),
+            ("plat".into(), "1".into()),
+            ("csrf".into(), csrf),
+        ];
+        if root != 0 {
+            params.push(("root".into(), root.to_string()));
+        }
+        if parent != 0 {
+            params.push(("parent".into(), parent.to_string()));
+        }
+        if !pictures.is_empty() {
+            let json = serde_json::to_string(&pictures)
+                .map_err(|e| CoreError::Decode(e.to_string()))?;
+            params.push(("pictures".into(), json));
+        }
+        #[derive(Default, Deserialize)]
+        struct Wire {
+            #[serde(default)] rpid: i64,
+            #[serde(default)] success_toast: String,
+        }
+        let raw: Wire = self.http.post_form_web(URL_REPLY_ADD, &params)?;
+        Ok(crate::dto::ReplyAddResult {
+            rpid: raw.rpid,
+            toast: raw.success_toast,
+        })
+    }
+
+    /// Upload an image to bfs (used by reply / dynamic attachments).
+    /// `bytes` is the raw image data, `file_name` is used solely to
+    /// hint a content type.
+    pub fn upload_bfs(
+        &self,
+        bytes: Vec<u8>,
+        file_name: String,
+        biz: &str,
+        category: &str,
+    ) -> CoreResult<crate::dto::UploadedImage> {
+        let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        #[derive(Default, Deserialize)]
+        struct Wire {
+            #[serde(default)] image_url: String,
+            #[serde(default)] image_width: i32,
+            #[serde(default)] image_height: i32,
+            #[serde(default)] img_size: f64,
+        }
+        let raw: Wire = self.http.post_multipart_web(
+            URL_UPLOAD_BFS,
+            &[
+                ("biz", biz.to_string()),
+                ("category", category.to_string()),
+                ("csrf", csrf),
+            ],
+            "file_up",
+            file_name,
+            bytes,
+        )?;
+        Ok(crate::dto::UploadedImage {
+            url: raw.image_url,
+            width: raw.image_width,
+            height: raw.image_height,
+            size: raw.img_size,
+        })
+    }
+
+    /// Fetch the user's emote panel (sticker packages). `business` is
+    /// `reply` for the comment composer; the panel can also drive the
+    /// dynamic composer with `dynamic` but we don't expose that yet.
+    pub fn emote_panel(&self, business: &str) -> CoreResult<Vec<crate::dto::EmotePackage>> {
+        #[derive(Default, Deserialize)]
+        struct Root {
+            #[serde(default)] packages: Vec<RawPackage>,
+        }
+        #[derive(Default, Deserialize)]
+        struct RawPackage {
+            #[serde(default)] id: i64,
+            #[serde(default)] text: String,
+            #[serde(default)] url: String,
+            #[serde(default)] r#type: i32,
+            #[serde(default)] emote: Vec<RawEmote>,
+        }
+        #[derive(Default, Deserialize)]
+        struct RawEmote {
+            #[serde(default)] text: String,
+            #[serde(default)] url: String,
+        }
+        let params: Vec<(String, String)> = vec![
+            ("business".into(), business.to_string()),
+            ("web_location".into(), "333.1245".into()),
+        ];
+        let raw: Root = self.http.get_web(URL_EMOTE_PANEL, &params)?;
+        Ok(raw.packages.into_iter().map(|p| crate::dto::EmotePackage {
+            id: p.id,
+            text: p.text,
+            url: p.url,
+            kind: p.r#type,
+            emotes: p.emote.into_iter()
+                .map(|e| crate::dto::Emote { text: e.text, url: e.url })
+                .collect(),
+        }).collect())
     }
 }
 

@@ -415,3 +415,46 @@ pub struct FavFolderInfo {
     pub fav_state: i32,
     pub media_count: i32,
 }
+
+/// Image attached to a comment. Wire format is what `/x/v2/reply/add`
+/// expects in its `pictures` JSON-encoded array param.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ReplyPicture {
+    pub img_src: String,
+    pub img_width: i32,
+    pub img_height: i32,
+    pub img_size: f64,
+}
+
+/// Result of submitting a comment.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ReplyAddResult {
+    pub rpid: i64,
+    pub toast: String,
+}
+
+/// Image returned by the bfs upload endpoint.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct UploadedImage {
+    pub url: String,
+    pub width: i32,
+    pub height: i32,
+    pub size: f64,
+}
+
+/// One emote in a panel package.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct Emote {
+    pub text: String,
+    pub url: String,
+}
+
+/// One emote package — these populate tabs in the comment composer.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct EmotePackage {
+    pub id: i64,
+    pub text: String,
+    pub url: String,
+    pub kind: i32,
+    pub emotes: Vec<Emote>,
+}

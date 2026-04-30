@@ -387,6 +387,59 @@ public final class CoreClient: @unchecked Sendable {
             progress_ms: progressMs, mode: mode, color: color, fontsize: fontsize
         ))
     }
+
+    /// Submit a top-level / nested comment. `pictures` carry image
+    /// attachments returned from `uploadBfs`. Passing an empty array
+    /// posts a text-only comment.
+    public func replyAdd(
+        oid: Int64,
+        kind: Int32 = 1,
+        message: String,
+        root: Int64 = 0,
+        parent: Int64 = 0,
+        pictures: [ReplyPictureDTO] = []
+    ) throws -> ReplyAddResultDTO {
+        struct A: Encodable {
+            let oid: Int64
+            let kind: Int32
+            let message: String
+            let root: Int64
+            let parent: Int64
+            let pictures: [ReplyPictureDTO]
+        }
+        return try call("interaction.reply_add", args: A(
+            oid: oid, kind: kind, message: message,
+            root: root, parent: parent, pictures: pictures
+        ), decoding: ReplyAddResultDTO.self)
+    }
+
+    /// Upload an image attachment. `bytes` is the raw image data
+    /// (jpeg/png recommended); the iOS layer base64-encodes it once
+    /// for the FFI hop.
+    public func uploadBfs(
+        bytes: Data,
+        fileName: String = "image.jpg"
+    ) throws -> UploadedImageDTO {
+        struct A: Encodable {
+            let bytes_b64: String
+            let file_name: String
+            let biz: String
+            let category: String
+        }
+        let b64 = bytes.base64EncodedString()
+        return try call("interaction.upload_bfs", args: A(
+            bytes_b64: b64, file_name: fileName,
+            biz: "new_dyn", category: "daily"
+        ), decoding: UploadedImageDTO.self)
+    }
+
+    /// Fetch the current account's emote panel for the given business
+    /// (`reply` for the comment composer).
+    public func emotePanel(business: String = "reply") throws -> [EmotePackageDTO] {
+        struct A: Encodable { let business: String }
+        return try call("interaction.emote_panel", args: A(business: business),
+                        decoding: [EmotePackageDTO].self)
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {
