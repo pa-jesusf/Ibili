@@ -141,18 +141,15 @@ struct SettingsView: View {
                 Text("控制视频详情页右下角显示 BV 号或旧版 av 号。")
             }
 
-            cardMetaSection(
-                title: "首页卡片显示",
-                showPlay: $settings.homeShowPlay,
-                showDuration: $settings.homeShowDuration,
-                showPubdate: $settings.homeShowPubdate,
-                showAuthor: $settings.homeShowAuthor,
-                stat: Binding(
-                    get: { settings.homeCardStat },
-                    set: { settings.homeCardStat = $0 }
-                ),
-                footer: "调整首页卡片显示的各项信息。"
-            )
+            Section {
+                Toggle("播放数", isOn: $settings.homeShowPlay)
+                Toggle("时长", isOn: $settings.homeShowDuration)
+                Toggle("UP 主", isOn: $settings.homeShowAuthor)
+            } header: {
+                Text("首页卡片显示")
+            } footer: {
+                Text("首页推荐流仅下发有限信息，为保持视觉一致不提供投稿时间与数据角标选项。")
+            }
 
             cardMetaSection(
                 title: "搜索结果卡片显示",

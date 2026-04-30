@@ -21,17 +21,19 @@ struct RootView: View {
             // the tab interface — *not* a `.fullScreenCover` — so that
             // the user's right-edge swipe-back actually reveals the
             // previous screen (home / search) underneath instead of a
-            // black backdrop. Slides in from the trailing edge to
-            // match the iOS push idiom and inverts on dismiss.
+            // black backdrop. The host drives its own slide-in/out
+            // animation off a single offset state so SwiftUI's render
+            // loop can keep it on the ProMotion 120 Hz path; we
+            // deliberately don't combine `.transition(.move)` with a
+            // separate offset, because that doubles up the work and
+            // tends to fall back to 60 Hz.
             if router.pending != nil {
                 DeepLinkPlayerHost()
                     .environmentObject(router)
                     .tint(IbiliTheme.accent)
-                    .transition(.move(edge: .trailing))
                     .zIndex(1)
             }
         }
-        .animation(.easeOut(duration: 0.28), value: router.pending != nil)
         .environmentObject(router)
         .environment(\.openURL, OpenURLAction { url in
             router.handle(url)
@@ -45,9 +47,28 @@ struct RootView: View {
 /// the "replace, don't stack" behaviour requested by the user.
 private struct DeepLinkPlayerHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
-    /// Live drag offset — set while the user pans from the leading
-    /// edge so we can mirror the iOS "swipe-to-pop" parallax.
-    @State private var swipeOffsetX: CGFloat = 0
+    /// Single source of truth for the host's horizontal position.
+    /// Driven by:
+    ///   - `onAppear`: animates from `screenWidth` → 0 (slide-in).
+    ///   - swipe-back drag: tracks the user's finger directly.
+    ///   - `dismiss()`: animates to `screenWidth` then clears
+    ///     `router.pending`. Keeping a single state variable means
+    ///     the only animation in flight is one CADisplayLink-driven
+    ///     `.interactiveSpring`, which automatically opts into the
+    ///     ProMotion 120 Hz path.
+    @State private var offsetX: CGFloat = UIScreen.main.bounds.width
+
+    /// Native UIKit-style spring. `interpolatingSpring` produces a
+    /// physics curve that SwiftUI drives via the underlying
+    /// `CADisplayLink`, which on ProMotion devices ticks at 120 Hz
+    /// for the duration of the animation. Fixed-duration curves
+    /// (`easeOut`, `linear`) clamp to the legacy 60 Hz path on some
+    /// SwiftUI builds; springs do not.
+    private static let slideSpring: Animation = .interactiveSpring(
+        response: 0.34,
+        dampingFraction: 0.86,
+        blendDuration: 0
+    )
 
     var body: some View {
         NavigationStack {
@@ -71,7 +92,18 @@ private struct DeepLinkPlayerHost: View {
             }
         }
         .background(IbiliTheme.background)
-        .offset(x: swipeOffsetX)
+        .offset(x: offsetX)
+        .onAppear {
+            // Start off-screen, then animate in. Doing it in
+            // `onAppear` (rather than via a parent `.transition`)
+            // means the slide is driven by exactly one offset
+            // animation, which keeps the frame budget free for
+            // 120 Hz.
+            offsetX = UIScreen.main.bounds.width
+            withAnimation(Self.slideSpring) {
+                offsetX = 0
+            }
+        }
         // Restore the iOS interactive-pop gesture by hosting an
         // invisible DragGesture region pinned to the leading edge.
         // We only consume drags that *start* within the first ~16pt
@@ -88,7 +120,11 @@ private struct DeepLinkPlayerHost: View {
                                   abs(v.translation.width) > abs(v.translation.height) else {
                                 return
                             }
-                            swipeOffsetX = v.translation.width
+                            // Track the finger directly, no
+                            // animation — the per-frame offset
+                            // assignment is what actually runs the
+                            // 120 Hz draw loop while the user drags.
+                            offsetX = v.translation.width
                         }
                         .onEnded { v in
                             let dx = v.translation.width
@@ -96,8 +132,8 @@ private struct DeepLinkPlayerHost: View {
                             if dx > 80 || vx > 200 {
                                 dismiss()
                             } else {
-                                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                                    swipeOffsetX = 0
+                                withAnimation(Self.slideSpring) {
+                                    offsetX = 0
                                 }
                             }
                         }
@@ -105,16 +141,17 @@ private struct DeepLinkPlayerHost: View {
         }
     }
 
-    /// Tear the host down. We deliberately *don't* reset
-    /// `swipeOffsetX` before clearing `pending` — doing so would
-    /// snap the host back to origin, then the parent ZStack's
-    /// `.move(edge: .trailing)` removal would slide it off again,
-    /// producing two visible animations. Letting the transition
-    /// run from the current dragged offset gives a single,
-    /// continuous slide-out. The host view is torn down on removal
-    /// so the `swipeOffsetX = 0` reset isn't needed for next time.
+    /// Slide off-screen, then drop the routed item. Splitting the
+    /// "animate offset out" from the "clear pending" steps means
+    /// the host's removal isn't tied to a SwiftUI insertion/removal
+    /// transition — there's only ever a single offset animation in
+    /// flight, which keeps the path on ProMotion's 120 Hz cadence.
     private func dismiss() {
-        withAnimation(.easeOut(duration: 0.28)) {
+        let width = UIScreen.main.bounds.width
+        withAnimation(Self.slideSpring) {
+            offsetX = width
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) {
             router.pending = nil
         }
     }

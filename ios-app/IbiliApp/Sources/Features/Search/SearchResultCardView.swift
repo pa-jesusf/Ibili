@@ -31,7 +31,7 @@ struct SearchResultCardView: View {
                 pubdate: item.pubdate,
                 stats: FeedCardStats(danmaku: item.danmaku, like: item.like),
                 config: meta,
-                titleFont: .system(size: 13, weight: .medium),
+                titleFont: .system(size: 15, weight: .medium),
                 showAuthorIcon: true
             )
             .padding(.horizontal, 8)

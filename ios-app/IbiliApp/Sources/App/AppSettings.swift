@@ -138,12 +138,16 @@ final class AppSettings: ObservableObject {
     }
 
     var homeCardMeta: FeedCardMetaConfig {
+        // Home recommendation feed never carries a like count and
+        // rarely carries a pubdate, so we hard-disable both slots
+        // regardless of the user's stored preference — keeps every
+        // home card visually consistent.
         FeedCardMetaConfig(
             showPlay: homeShowPlay,
             showDuration: homeShowDuration,
-            showPubdate: homeShowPubdate,
+            showPubdate: false,
             showAuthor: homeShowAuthor,
-            stat: homeCardStat
+            stat: .none
         )
     }
 
