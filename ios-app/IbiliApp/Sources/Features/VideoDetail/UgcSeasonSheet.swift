@@ -129,7 +129,6 @@ private struct EpisodeRow: View {
                         HStack(spacing: 3) {
                             Image(systemName: "waveform")
                                 .imageScale(.small)
-                            Text("播放中")
                         }
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.white)
