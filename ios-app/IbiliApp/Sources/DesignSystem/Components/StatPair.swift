@@ -12,6 +12,10 @@ struct StatPair: View {
     let systemName: String
     let activeSystemName: String
     let count: Int64
+    /// When set, overrides the auto-formatted `count` and is rendered
+    /// verbatim under the icon. Used by buttons like 稍后再看 where a
+    /// numeric badge has no meaning.
+    var labelOverride: String? = nil
     var isActive: Bool = false
     var tint: Color = IbiliTheme.accent
     var action: () -> Void
@@ -24,7 +28,7 @@ struct StatPair: View {
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(isActive ? tint : IbiliTheme.textPrimary)
                     .frame(height: 26)
-                Text(BiliFormat.compactCount(count))
+                Text(labelOverride ?? BiliFormat.compactCount(count))
                     .font(.caption)
                     .foregroundStyle(isActive ? tint : IbiliTheme.textSecondary)
                     .monospacedDigit()

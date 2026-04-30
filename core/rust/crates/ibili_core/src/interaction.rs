@@ -47,16 +47,23 @@ struct PromptWire {
 impl Core {
     /// Toggle like state on a UGC video.
     /// `like_action` is 1 (点赞) or 2 (取消点赞).
+    ///
+    /// NOTE: the bilibili `app/v2/view/like` endpoint inverts the
+    /// natural reading — `like=0` means "like this video", `like=1`
+    /// means "cancel like". Upstream PiliPlus encodes it as
+    /// `type ? '0' : '1'` where `type = !hasLike`. We translate our
+    /// caller-friendly 1/2 codes here so callers don't need to know.
     pub fn archive_like(&self, aid: i64, like_action: i32) -> CoreResult<LikeResult> {
         let access_key = self.session.read().access_key().ok_or(CoreError::AuthRequired)?;
-        let action = if like_action == 2 { 2 } else { 1 };
+        let want_like = like_action != 2;
+        let like_param = if want_like { "0" } else { "1" };
         let params: Vec<(String, String)> = vec![
             ("access_key".into(), access_key),
             ("aid".into(), aid.to_string()),
-            ("like".into(), action.to_string()),
+            ("like".into(), like_param.into()),
         ];
         let _: Value = self.http.post_signed_app(URL_LIKE_APP, params)?;
-        Ok(LikeResult { liked: if action == 1 { 1 } else { 0 }, toast: String::new() })
+        Ok(LikeResult { liked: if want_like { 1 } else { 0 }, toast: String::new() })
     }
 
     /// App-flavoured 点踩 endpoint (web does not support dislike).

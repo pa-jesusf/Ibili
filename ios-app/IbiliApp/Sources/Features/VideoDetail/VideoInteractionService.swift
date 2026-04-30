@@ -25,6 +25,10 @@ final class VideoInteractionService: ObservableObject {
     /// `id`s of the folders the current video is already in. Used to
     /// preselect rows in the long-press folder picker.
     @Published private(set) var favoritedFolderIds: Set<Int64> = []
+    /// True while `hydrate` is in flight. Lets the action row hold a
+    /// loader instead of flashing wrong (default-false) icons before
+    /// the server's relation state arrives.
+    @Published private(set) var isHydrating: Bool = false
     @Published var lastToast: String?
 
     init() {}
@@ -39,16 +43,20 @@ final class VideoInteractionService: ObservableObject {
     /// folder list so the action row can render the correct active
     /// states and the long-press folder picker has data immediately.
     func hydrate(aid: Int64, bvid: String, ownerMid: Int64?) async {
-        // Relation (like/coin/fav/follow) state.
+        isHydrating = true
+        // Concurrently fetch relation state + folder list to halve
+        // the on-screen "buttons not yet hydrated" window.
         let snapshot = await Task.detached { () -> (ArchiveRelationDTO?, [FavFolderInfoDTO]) in
-            let rel = try? CoreClient.shared.archiveRelation(aid: aid, bvid: bvid)
-            // Folder list is keyed off the *self* mid, not the uploader.
-            let selfMid = CoreClient.shared.sessionSnapshot().mid
-            var folders: [FavFolderInfoDTO] = []
-            if selfMid > 0 {
-                folders = (try? CoreClient.shared.favFolders(rid: aid, upMid: selfMid)) ?? []
-            }
-            _ = ownerMid // currently unused; uploader follow state comes from `rel.attention`
+            async let relTask: ArchiveRelationDTO? = {
+                try? CoreClient.shared.archiveRelation(aid: aid, bvid: bvid)
+            }()
+            async let foldersTask: [FavFolderInfoDTO] = {
+                let selfMid = CoreClient.shared.sessionSnapshot().mid
+                guard selfMid > 0 else { return [] }
+                return (try? CoreClient.shared.favFolders(rid: aid, upMid: selfMid)) ?? []
+            }()
+            let (rel, folders) = await (relTask, foldersTask)
+            _ = ownerMid // unused; uploader follow state lives in `rel.attention`
             return (rel, folders)
         }.value
 
@@ -67,6 +75,7 @@ final class VideoInteractionService: ObservableObject {
         } else if let first = snapshot.1.first {
             defaultFolderId = first.folderId
         }
+        isHydrating = false
     }
 
     // MARK: - Like

@@ -61,6 +61,7 @@ struct VideoActionRow: View {
                 systemName: "clock",
                 activeSystemName: "clock.fill",
                 count: 0,
+                labelOverride: "稍后",
                 isActive: interaction.state.inWatchLater,
                 action: { interaction.toggleWatchLater(aid: aid) }
             )

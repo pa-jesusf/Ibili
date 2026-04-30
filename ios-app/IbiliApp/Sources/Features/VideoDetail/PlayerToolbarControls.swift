@@ -1,36 +1,40 @@
 import SwiftUI
 
-/// Navigation-bar trailing controls for the player. Uses plain
-/// `Button` / `Menu` items so SwiftUI renders them with the same
-/// system style as the leading back button.
+/// Individual nav-bar trailing controls for the player. Split into
+/// three sibling `ToolbarItem`s so SwiftUI renders them as discrete
+/// circular system buttons (matching the leading back chevron) rather
+/// than a single fused capsule.
 ///
-/// Quality menus expose readable text labels (e.g. "1080P+", "Hi-Res")
-/// rather than ambiguous tv-glyph variants — the screenshot-only
-/// affordance was too easy to misread.
-struct PlayerToolbarControls: View {
-    let qualities: [(qn: Int64, label: String)]
-    let currentQn: Int64
-    let audioQualities: [(qn: Int64, label: String)]
-    let currentAudioQn: Int64
-    @Binding var danmakuEnabled: Bool
-    let onPickQuality: (Int64) -> Void
-    let onPickAudioQuality: (Int64) -> Void
+/// Quality glyph is picked per-qn so the user can tell 1080P/4K/8K
+/// apart without expanding the menu, while keeping a fixed-width icon
+/// (no text inflating the toolbar item).
 
+struct PlayerToolbarDanmaku: View {
+    @Binding var danmakuEnabled: Bool
     var body: some View {
-        // Danmaku toggle
         Button {
             danmakuEnabled.toggle()
         } label: {
             Image(systemName: danmakuEnabled ? "text.bubble.fill" : "text.bubble")
         }
         .tint(danmakuEnabled ? IbiliTheme.accent : nil)
+        .accessibilityLabel(danmakuEnabled ? "关闭弹幕" : "开启弹幕")
+    }
+}
 
-        // Video quality
-        if !qualities.isEmpty {
+struct PlayerToolbarVideoQuality: View {
+    let qualities: [(qn: Int64, label: String)]
+    let currentQn: Int64
+    let onPick: (Int64) -> Void
+
+    var body: some View {
+        if qualities.isEmpty {
+            EmptyView()
+        } else {
             Menu {
                 ForEach(qualities, id: \.qn) { q in
                     Button {
-                        onPickQuality(q.qn)
+                        onPick(q.qn)
                     } label: {
                         if q.qn == currentQn {
                             Label(q.label, systemImage: "checkmark")
@@ -40,18 +44,41 @@ struct PlayerToolbarControls: View {
                     }
                 }
             } label: {
-                Text(currentQualityLabel)
-                    .font(.footnote.weight(.semibold))
-                    .lineLimit(1)
+                Image(systemName: qualityIcon(for: currentQn))
             }
+            .accessibilityLabel("画质")
         }
+    }
 
-        // Audio quality
-        if !audioQualities.isEmpty {
+    /// Distinct SF Symbol per quality bucket. 8K/4K use the dedicated
+    /// resolution glyphs; 1080P/720P use the filled/outline TV pair so
+    /// the gap is visible without text; SD/360P use the smaller-screen
+    /// glyph so it reads as a downshift.
+    private func qualityIcon(for qn: Int64) -> String {
+        switch qn {
+        case 127: return "8k.tv"
+        case 120, 125, 126: return "4k.tv"
+        case 116, 112, 80: return "tv.fill"
+        case 64, 74: return "tv"
+        case 32, 16, 6: return "play.tv"
+        default: return "tv"
+        }
+    }
+}
+
+struct PlayerToolbarAudioQuality: View {
+    let audioQualities: [(qn: Int64, label: String)]
+    let currentAudioQn: Int64
+    let onPick: (Int64) -> Void
+
+    var body: some View {
+        if audioQualities.isEmpty {
+            EmptyView()
+        } else {
             Menu {
                 ForEach(audioQualities, id: \.qn) { q in
                     Button {
-                        onPickAudioQuality(q.qn)
+                        onPick(q.qn)
                     } label: {
                         if q.qn == currentAudioQn {
                             Label(q.label, systemImage: "checkmark")
@@ -63,34 +90,7 @@ struct PlayerToolbarControls: View {
             } label: {
                 Image(systemName: "hifispeaker")
             }
-        }
-    }
-
-    /// Short label for the active video quality. Falls back to the
-    /// first character of the upstream label so we always render
-    /// *something* if the qn isn't in our table.
-    private var currentQualityLabel: String {
-        if let match = qualities.first(where: { $0.qn == currentQn })?.label {
-            return shortQualityLabel(for: currentQn, fallback: match)
-        }
-        return shortQualityLabel(for: currentQn, fallback: "画质")
-    }
-
-    private func shortQualityLabel(for qn: Int64, fallback: String) -> String {
-        switch qn {
-        case 127: return "8K"
-        case 126: return "杜比"
-        case 125: return "HDR"
-        case 120: return "4K"
-        case 116: return "1080P60"
-        case 112: return "1080P+"
-        case 80:  return "1080P"
-        case 74:  return "720P60"
-        case 64:  return "720P"
-        case 32:  return "480P"
-        case 16:  return "360P"
-        case 6:   return "流畅"
-        default:  return fallback
+            .accessibilityLabel("音质")
         }
     }
 }

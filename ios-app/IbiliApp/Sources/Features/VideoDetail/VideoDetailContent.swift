@@ -57,11 +57,19 @@ struct VideoDetailContent: View {
         .background(IbiliTheme.background)
         .task(id: "\(item.aid):\(item.bvid)") {
             interaction.reset(stat: vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0))
-            await vm.bootstrap(aid: item.aid, bvid: item.bvid)
-            if let stat = vm.view?.stat { interaction.reset(stat: stat) }
-            if let v = vm.view {
-                await interaction.hydrate(aid: v.aid, bvid: v.bvid, ownerMid: v.owner.mid)
+            // Run detail (view info) and relation hydrate concurrently.
+            // The hydrate call only needs aid+bvid which are already
+            // known from the feed item, so it doesn't have to wait for
+            // the heavier `view` payload to come back. Saves ~1 RTT
+            // off the total time-to-correct-button-state.
+            if item.aid > 0 || !item.bvid.isEmpty {
+                async let bootstrapTask: Void = vm.bootstrap(aid: item.aid, bvid: item.bvid)
+                async let hydrateTask: Void = interaction.hydrate(aid: item.aid, bvid: item.bvid, ownerMid: nil)
+                _ = await (bootstrapTask, hydrateTask)
+            } else {
+                await vm.bootstrap(aid: item.aid, bvid: item.bvid)
             }
+            if let stat = vm.view?.stat { interaction.reset(stat: stat) }
         }
         .onChange(of: interaction.lastToast) { newToast in
             guard let m = newToast, !m.isEmpty else { return }
@@ -97,14 +105,21 @@ struct VideoDetailContent: View {
             .padding(.horizontal, 16)
 
             if let stat = vm.view?.stat {
-                VideoActionRow(
-                    aid: vm.view?.aid ?? item.aid,
-                    bvid: vm.view?.bvid ?? item.bvid,
-                    title: vm.view?.title ?? item.title,
-                    stat: stat,
-                    interaction: interaction
-                )
-                .padding(.horizontal, 8)
+                if interaction.isHydrating {
+                    // Don't flash default-false icons before relation
+                    // state arrives — show a spacer-height loader.
+                    HStack { Spacer(); ProgressView(); Spacer() }
+                        .frame(height: 64)
+                } else {
+                    VideoActionRow(
+                        aid: vm.view?.aid ?? item.aid,
+                        bvid: vm.view?.bvid ?? item.bvid,
+                        title: vm.view?.title ?? item.title,
+                        stat: stat,
+                        interaction: interaction
+                    )
+                    .padding(.horizontal, 8)
+                }
             }
 
             if let owner = vm.view?.owner {

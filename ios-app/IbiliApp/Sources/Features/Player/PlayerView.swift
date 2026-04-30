@@ -1502,19 +1502,24 @@ struct PlayerView: View {
 
             VideoDetailContent(item: item)
         }
-        .navigationTitle("播放")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !isFullscreen, vm.player != nil {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    PlayerToolbarControls(
+                ToolbarItem(placement: .topBarTrailing) {
+                    PlayerToolbarDanmaku(danmakuEnabled: $settings.danmakuEnabled)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    PlayerToolbarVideoQuality(
                         qualities: vm.availableQualities,
                         currentQn: vm.currentQn,
+                        onPick: { qn in Task { await vm.switchQuality(to: qn) } }
+                    )
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    PlayerToolbarAudioQuality(
                         audioQualities: vm.availableAudioQualities,
                         currentAudioQn: vm.currentAudioQn,
-                        danmakuEnabled: $settings.danmakuEnabled,
-                        onPickQuality: { qn in Task { await vm.switchQuality(to: qn) } },
-                        onPickAudioQuality: { qn in Task { await vm.switchAudioQuality(to: qn) } }
+                        onPick: { qn in Task { await vm.switchAudioQuality(to: qn) } }
                     )
                 }
             }
