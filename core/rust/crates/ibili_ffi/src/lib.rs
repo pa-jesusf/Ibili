@@ -159,6 +159,14 @@ struct FavFoldersArgs {
 }
 
 #[derive(Deserialize)]
+struct HeartbeatArgs {
+    #[serde(default)] aid: i64,
+    #[serde(default)] bvid: String,
+    cid: i64,
+    played_seconds: i64,
+}
+
+#[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
     #[serde(default = "default_search_page")] page: i64,
@@ -262,6 +270,15 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "interaction.fav_folders" => {
             let a: FavFoldersArgs = serde_json::from_value(args)?;
             to_value(c.inner.fav_folders(a.rid, a.up_mid)?)
+        }
+        "interaction.heartbeat" => {
+            let a: HeartbeatArgs = serde_json::from_value(args)?;
+            c.inner.archive_heartbeat(a.aid, &a.bvid, a.cid, a.played_seconds)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "interaction.watchlater_aids" => {
+            let aids = c.inner.watchlater_aids()?;
+            to_value(aids)
         }
         "search.video" => {
             let a: SearchVideoArgs = serde_json::from_value(args)?;

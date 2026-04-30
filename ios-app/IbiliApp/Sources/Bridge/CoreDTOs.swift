@@ -114,6 +114,14 @@ public struct PlayUrlDTO: Decodable {
     public let audioQualityLabel: String
     public let acceptAudioQuality: [Int64]
     public let acceptAudioDescription: [String]
+    /// Server-recorded resume position for this cid, in milliseconds.
+    /// Zero when the account has no history for the cid (or playback
+    /// is anonymous). The player seeks to it on first ready.
+    public let lastPlayTimeMs: Int64
+    /// Server's preferred resume cid for the same aid — set when the
+    /// last watch was on a different page. Currently exposed but not
+    /// auto-followed.
+    public let lastPlayCid: Int64
     enum CodingKeys: String, CodingKey {
         case url, format, quality
         case audioUrl = "audio_url"
@@ -130,6 +138,8 @@ public struct PlayUrlDTO: Decodable {
         case audioQualityLabel = "audio_quality_label"
         case acceptAudioQuality = "accept_audio_quality"
         case acceptAudioDescription = "accept_audio_description"
+        case lastPlayTimeMs = "last_play_time_ms"
+        case lastPlayCid = "last_play_cid"
     }
 
     public init(from decoder: Decoder) throws {
@@ -151,6 +161,8 @@ public struct PlayUrlDTO: Decodable {
         audioQualityLabel = try c.decodeIfPresent(String.self, forKey: .audioQualityLabel) ?? ""
         acceptAudioQuality = try c.decodeIfPresent([Int64].self, forKey: .acceptAudioQuality) ?? []
         acceptAudioDescription = try c.decodeIfPresent([String].self, forKey: .acceptAudioDescription) ?? []
+        lastPlayTimeMs = try c.decodeIfPresent(Int64.self, forKey: .lastPlayTimeMs) ?? 0
+        lastPlayCid = try c.decodeIfPresent(Int64.self, forKey: .lastPlayCid) ?? 0
     }
 }
 
@@ -376,6 +388,24 @@ public struct RelatedVideoItemDTO: Decodable, Identifiable, Hashable {
 
 // MARK: - Replies
 
+public struct ReplyEmoteDTO: Decodable, Hashable {
+    public let name: String
+    public let url: String
+    /// 1 = small inline (≈18pt), 2 = large inline (≈32pt).
+    public let size: Int32
+}
+
+public struct ReplyJumpUrlDTO: Decodable, Hashable {
+    public let keyword: String
+    public let title: String
+    public let url: String
+    public let prefixIcon: String
+    enum CodingKeys: String, CodingKey {
+        case keyword, title, url
+        case prefixIcon = "prefix_icon"
+    }
+}
+
 public struct ReplyItemDTO: Decodable, Hashable, Identifiable {
     public var id: Int64 { rpid }
     public let rpid: Int64
@@ -396,14 +426,43 @@ public struct ReplyItemDTO: Decodable, Hashable, Identifiable {
     public let upActionReply: Bool
     public let location: String
     public let previewReplies: [ReplyItemDTO]
+    public let emotes: [ReplyEmoteDTO]
+    public let pictures: [String]
+    public let jumpUrls: [ReplyJumpUrlDTO]
 
     enum CodingKeys: String, CodingKey {
-        case rpid, oid, root, parent, mid, uname, face, level, message, ctime, like, action, location
+        case rpid, oid, root, parent, mid, uname, face, level, message, ctime, like, action, location, emotes, pictures
         case vipStatus = "vip_status"
         case replyCount = "reply_count"
         case upActionLike = "up_action_like"
         case upActionReply = "up_action_reply"
         case previewReplies = "preview_replies"
+        case jumpUrls = "jump_urls"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rpid = try c.decode(Int64.self, forKey: .rpid)
+        oid = try c.decode(Int64.self, forKey: .oid)
+        root = try c.decode(Int64.self, forKey: .root)
+        parent = try c.decode(Int64.self, forKey: .parent)
+        mid = try c.decode(Int64.self, forKey: .mid)
+        uname = try c.decode(String.self, forKey: .uname)
+        face = try c.decode(String.self, forKey: .face)
+        level = try c.decode(Int32.self, forKey: .level)
+        vipStatus = try c.decode(Int32.self, forKey: .vipStatus)
+        message = try c.decode(String.self, forKey: .message)
+        ctime = try c.decode(Int64.self, forKey: .ctime)
+        like = try c.decode(Int64.self, forKey: .like)
+        action = try c.decode(Int32.self, forKey: .action)
+        replyCount = try c.decode(Int32.self, forKey: .replyCount)
+        upActionLike = try c.decode(Bool.self, forKey: .upActionLike)
+        upActionReply = try c.decode(Bool.self, forKey: .upActionReply)
+        location = try c.decode(String.self, forKey: .location)
+        previewReplies = try c.decodeIfPresent([ReplyItemDTO].self, forKey: .previewReplies) ?? []
+        emotes = try c.decodeIfPresent([ReplyEmoteDTO].self, forKey: .emotes) ?? []
+        pictures = try c.decodeIfPresent([String].self, forKey: .pictures) ?? []
+        jumpUrls = try c.decodeIfPresent([ReplyJumpUrlDTO].self, forKey: .jumpUrls) ?? []
     }
 }
 

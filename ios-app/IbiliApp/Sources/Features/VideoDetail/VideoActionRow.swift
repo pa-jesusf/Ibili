@@ -22,6 +22,7 @@ struct VideoActionRow: View {
                 activeSystemName: "hand.thumbsup.fill",
                 count: max(stat.like, interaction.state.likeCount),
                 isActive: interaction.state.liked,
+                showProgressRing: interaction.tripleAnimating,
                 action: { interaction.toggleLike(aid: aid) },
                 onLongPress: { interaction.triple(aid: aid) }
             )
@@ -30,6 +31,7 @@ struct VideoActionRow: View {
                 activeSystemName: "bitcoinsign.circle.fill",
                 count: max(stat.coin, interaction.state.coinCount),
                 isActive: interaction.state.coined,
+                showProgressRing: interaction.tripleAnimating,
                 action: {
                     if !interaction.state.coined { coinDialog = true }
                 }
@@ -39,6 +41,7 @@ struct VideoActionRow: View {
                 activeSystemName: "star.fill",
                 count: max(stat.favorite, interaction.state.favoriteCount),
                 isActive: interaction.state.favorited,
+                showProgressRing: interaction.tripleAnimating || interaction.favoriteAnimating,
                 action: {
                     // Tap → toggle in/out of the default folder. If the
                     // user has no folders yet, fall back to opening the
@@ -49,7 +52,10 @@ struct VideoActionRow: View {
                         folderSheet = true
                     }
                 },
-                onLongPress: { folderSheet = true }
+                onLongPress: {
+                    interaction.setFavoriteAnimating(true)
+                    folderSheet = true
+                }
             )
             StatPair(
                 systemName: "square.and.arrow.up",
@@ -83,6 +89,12 @@ struct VideoActionRow: View {
         }
         .sheet(isPresented: $folderSheet) {
             FavoriteFolderPickerSheet(aid: aid, interaction: interaction)
+        }
+        .onChange(of: folderSheet) { isOpen in
+            // Stop the favourite ring once the picker has visibly
+            // appeared / dismissed; ring is only meant to bridge the
+            // gesture-to-sheet gap.
+            if !isOpen { interaction.setFavoriteAnimating(false) }
         }
     }
 

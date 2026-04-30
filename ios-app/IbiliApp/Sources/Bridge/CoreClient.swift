@@ -340,6 +340,20 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable { let rid: Int64; let up_mid: Int64 }
         return try call("interaction.fav_folders", args: A(rid: rid, up_mid: upMid), decoding: [FavFolderInfoDTO].self)
     }
+
+    /// Report a UGC playback heartbeat so Bilibili records the
+    /// position into the user's history. `playedSeconds` is the
+    /// current playhead in whole seconds. No-op for anonymous
+    /// sessions.
+    public func archiveHeartbeat(aid: Int64, bvid: String, cid: Int64, playedSeconds: Int64) throws {
+        struct A: Encodable { let aid: Int64; let bvid: String; let cid: Int64; let played_seconds: Int64 }
+        try callVoid("interaction.heartbeat", args: A(aid: aid, bvid: bvid, cid: cid, played_seconds: playedSeconds))
+    }
+
+    /// Aids currently in the active account's 稍后再看 list.
+    public func watchLaterAids() throws -> [Int64] {
+        return try call("interaction.watchlater_aids", decoding: [Int64].self)
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {

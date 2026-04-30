@@ -23,6 +23,12 @@ const URL_WATCHLATER_ADD: &str = "https://api.bilibili.com/x/v2/history/toview/a
 const URL_WATCHLATER_DEL: &str = "https://api.bilibili.com/x/v2/history/toview/v2/dels";
 const URL_ARCHIVE_RELATION: &str = "https://api.bilibili.com/x/web-interface/archive/relation";
 const URL_FAV_FOLDERS: &str = "https://api.bilibili.com/x/v3/fav/folder/created/list-all";
+const URL_HEARTBEAT_WEB: &str = "https://api.bilibili.com/x/click-interface/web/heartbeat";
+/// Returns the current account's 稍后再看 list (capped server-side
+/// at ~100 most-recent entries). Used for membership lookup so the
+/// detail page can render the watch-later button in its true state
+/// instead of always-off.
+const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/web";
 
 #[derive(Default, Deserialize)]
 struct ToastWire {
@@ -94,8 +100,16 @@ impl Core {
     /// One-click 三连 — applies like+coin(2)+fav atomically server-side.
     pub fn archive_triple(&self, aid: i64) -> CoreResult<TripleResult> {
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        // Upstream PiliPlus sends these extra params; the like leg of the
+        // triple endpoint silently no-ops without `eab_x/ramval/source/ga`.
         let params: Vec<(String, String)> = vec![
             ("aid".into(), aid.to_string()),
+            ("eab_x".into(), "2".into()),
+            ("ramval".into(), "0".into()),
+            ("source".into(), "web_normal".into()),
+            ("ga".into(), "1".into()),
+            ("spmid".into(), "333.788.0.0".into()),
+            ("statistics".into(), "{\"appId\":100,\"platform\":5}".into()),
             ("csrf".into(), csrf),
         ];
         let raw: TripleWire = self.http.post_form_web(URL_TRIPLE_WEB, &params)?;
@@ -206,6 +220,64 @@ impl Core {
             media_count: f.media_count,
         }).collect())
     }
+
+    /// Report a UGC playback heartbeat so Bilibili records the
+    /// position into the user's history. Mirrors PiliPlus
+    /// `VideoHttp.heartBeat` with `type=3` (ugc) and uses the *web*
+    /// session csrf — the field comes from the `bili_jct` cookie.
+    /// `played_seconds` is the current playback time in seconds.
+    /// Returns Ok(()) when the user is not logged in (no-op).
+    pub fn archive_heartbeat(
+        &self,
+        aid: i64,
+        bvid: &str,
+        cid: i64,
+        played_seconds: i64,
+    ) -> CoreResult<()> {
+        let Some(csrf) = self.http.csrf_token() else { return Ok(()); };
+        let mut params: Vec<(String, String)> = vec![
+            ("cid".into(), cid.to_string()),
+            ("type".into(), "3".into()),
+            ("played_time".into(), played_seconds.max(0).to_string()),
+            ("csrf".into(), csrf),
+        ];
+        // Upstream sends `bvid` only — we send whichever identifier
+        // the caller has. Both being present is harmless.
+        if !bvid.is_empty() { params.push(("bvid".into(), bvid.to_string())); }
+        if aid > 0 { params.push(("aid".into(), aid.to_string())); }
+        let _: Value = self.http.post_form_web(URL_HEARTBEAT_WEB, &params)?;
+        Ok(())
+    }
+
+    /// Fetch the aids currently in the user's 稍后再看 list. Returns an
+    /// empty vec for anonymous sessions. Used by the detail page to
+    /// initialize the watch-later button's active state on hydrate.
+    pub fn watchlater_aids(&self) -> CoreResult<Vec<i64>> {
+        if self.session.read().access_key().is_none() {
+            return Ok(Vec::new());
+        }
+        let raw: WatchLaterListWire = self.http.get_web(URL_WATCHLATER_LIST, &[])?;
+        Ok(raw.list.into_iter().map(|item| item.aid).collect())
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct WatchLaterListWire {
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    list: Vec<WatchLaterItemWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct WatchLaterItemWire {
+    #[serde(default)] aid: i64,
+}
+
+fn null_as_empty_vec<'de, D, T>(de: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(de)?.unwrap_or_default())
 }
 
 #[derive(Default, Deserialize)]

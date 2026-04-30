@@ -11,9 +11,10 @@
 //!   comment, page-based.
 
 use crate::Core;
-use crate::dto::{ReplyItem, ReplyPage};
+use crate::dto::{ReplyEmote, ReplyItem, ReplyJumpUrl, ReplyPage};
 use crate::error::{CoreError, CoreResult};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 const URL_REPLY_MAIN: &str = "https://api.bilibili.com/x/v2/reply/main";
 const URL_REPLY_DETAIL: &str = "https://api.bilibili.com/x/v2/reply/reply";
@@ -92,7 +93,48 @@ fn string_or_int<'de, D: serde::Deserializer<'de>>(de: D) -> Result<LevelWire, D
 }
 
 #[derive(Default, Deserialize)]
-struct ContentWire { #[serde(default)] message: String }
+struct ContentWire {
+    #[serde(default)] message: String,
+    /// Bilibili ships emote metadata as `{ "[doge]": { url, meta:{size} } }`.
+    /// We deserialise into a map so the iOS layer doesn’t need a JSON parser.
+    #[serde(default, deserialize_with = "emote_map_or_empty")]
+    emote: HashMap<String, EmoteWire>,
+    /// Inline picture attachments — always wrapped in objects with `img_src`.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pictures: Vec<PictureWire>,
+    /// Server-tagged jump targets: `"BV1xx": { title, pc_url, prefix_icon, … }`.
+    #[serde(default, deserialize_with = "jump_map_or_empty")]
+    jump_url: HashMap<String, JumpUrlWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct EmoteWire {
+    #[serde(default)] url: String,
+    #[serde(default)] meta: EmoteMetaWire,
+}
+
+#[derive(Default, Deserialize)]
+struct EmoteMetaWire { #[serde(default)] size: i32 }
+
+#[derive(Default, Deserialize)]
+struct PictureWire {
+    #[serde(default)] img_src: String,
+}
+
+#[derive(Default, Deserialize)]
+struct JumpUrlWire {
+    #[serde(default)] title: String,
+    #[serde(default)] pc_url: String,
+    #[serde(default)] prefix_icon: String,
+}
+
+fn emote_map_or_empty<'de, D: serde::Deserializer<'de>>(de: D) -> Result<HashMap<String, EmoteWire>, D::Error> {
+    Ok(Option::<HashMap<String, EmoteWire>>::deserialize(de).ok().flatten().unwrap_or_default())
+}
+
+fn jump_map_or_empty<'de, D: serde::Deserializer<'de>>(de: D) -> Result<HashMap<String, JumpUrlWire>, D::Error> {
+    Ok(Option::<HashMap<String, JumpUrlWire>>::deserialize(de).ok().flatten().unwrap_or_default())
+}
 
 #[derive(Default, Deserialize)]
 struct ReplyControlWire {
@@ -182,6 +224,21 @@ impl Core {
 }
 
 fn map_reply(r: ReplyWire) -> ReplyItem {
+    let emotes: Vec<ReplyEmote> = r.content.emote.into_iter()
+        .map(|(name, w)| ReplyEmote { name, url: w.url, size: w.meta.size.max(1) })
+        .collect();
+    let pictures: Vec<String> = r.content.pictures.into_iter()
+        .map(|p| p.img_src)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let jump_urls: Vec<ReplyJumpUrl> = r.content.jump_url.into_iter()
+        .map(|(keyword, j)| ReplyJumpUrl {
+            keyword,
+            title: j.title,
+            url: j.pc_url,
+            prefix_icon: j.prefix_icon,
+        })
+        .collect();
     ReplyItem {
         rpid: r.rpid,
         oid: r.oid,
@@ -201,5 +258,8 @@ fn map_reply(r: ReplyWire) -> ReplyItem {
         up_action_reply: r.reply_control.up_action.reply,
         location: r.reply_control.location,
         preview_replies: r.replies.into_iter().map(map_reply).collect(),
+        emotes,
+        pictures,
+        jump_urls,
     }
 }

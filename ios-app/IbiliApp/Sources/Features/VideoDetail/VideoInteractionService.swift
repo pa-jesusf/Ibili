@@ -29,6 +29,15 @@ final class VideoInteractionService: ObservableObject {
     /// loader instead of flashing wrong (default-false) icons before
     /// the server's relation state arrives.
     @Published private(set) var isHydrating: Bool = false
+    /// True while a long-press 三连 operation is in flight. Drives the
+    /// progress ring SwiftUI overlays around the like/coin/favorite
+    /// trio so the user has clear feedback that the long-press was
+    /// recognised even before the network round-trip lands.
+    @Published private(set) var tripleAnimating: Bool = false
+    /// Same idea, but specifically for the long-press “pick favourite
+    /// folder” affordance — ring sweeps around the heart icon while
+    /// the picker sheet animates in / the API call settles.
+    @Published private(set) var favoriteAnimating: Bool = false
     @Published var lastToast: String?
 
     init() {}
@@ -44,9 +53,10 @@ final class VideoInteractionService: ObservableObject {
     /// states and the long-press folder picker has data immediately.
     func hydrate(aid: Int64, bvid: String, ownerMid: Int64?) async {
         isHydrating = true
-        // Concurrently fetch relation state + folder list to halve
-        // the on-screen "buttons not yet hydrated" window.
-        let snapshot = await Task.detached { () -> (ArchiveRelationDTO?, [FavFolderInfoDTO]) in
+        // Concurrently fetch relation state + folder list + watch-later
+        // membership so all three buttons can render their *real* state
+        // on first paint instead of defaulting to inactive.
+        let snapshot = await Task.detached { () -> (ArchiveRelationDTO?, [FavFolderInfoDTO], Set<Int64>) in
             async let relTask: ArchiveRelationDTO? = {
                 try? CoreClient.shared.archiveRelation(aid: aid, bvid: bvid)
             }()
@@ -55,9 +65,13 @@ final class VideoInteractionService: ObservableObject {
                 guard selfMid > 0 else { return [] }
                 return (try? CoreClient.shared.favFolders(rid: aid, upMid: selfMid)) ?? []
             }()
-            let (rel, folders) = await (relTask, foldersTask)
+            async let watchLaterTask: Set<Int64> = {
+                let aids = (try? CoreClient.shared.watchLaterAids()) ?? []
+                return Set(aids)
+            }()
+            let (rel, folders, wl) = await (relTask, foldersTask, watchLaterTask)
             _ = ownerMid // unused; uploader follow state lives in `rel.attention`
-            return (rel, folders)
+            return (rel, folders, wl)
         }.value
 
         if let rel = snapshot.0 {
@@ -66,6 +80,10 @@ final class VideoInteractionService: ObservableObject {
             state.favorited = rel.favorited
             state.followed = rel.attention
         }
+        // Watch-later membership: server returns the full toview list
+        // (capped ~100 most-recent), so contains() is the right check.
+        // Anonymous sessions yield an empty set → inWatchLater=false.
+        state.inWatchLater = snapshot.2.contains(aid)
         folders = snapshot.1
         favoritedFolderIds = Set(snapshot.1.filter { $0.favState == 1 }.map { $0.folderId })
         // Bilibili marks the default folder via `attr & 1 == 1`. Fall
@@ -181,27 +199,51 @@ final class VideoInteractionService: ObservableObject {
     // MARK: - Triple
 
     func triple(aid: Int64) {
+        // Idempotency guard: if all three are already done, just nudge
+        // the user instead of hitting the server (which would otherwise
+        // try to add another coin on top of the existing 1, racing the
+        // 2-coin cap and flashing a confusing toast).
+        if state.liked && state.coined && state.favorited {
+            lastToast = "已三连过"
+            return
+        }
         let old = state
         state.liked = true
         state.coined = true
         state.favorited = true
+        tripleAnimating = true
         Task.detached { [weak self] in
+            // Floor the in-flight window at ~0.7s so the ring sweep
+            // is always visible — instant successes otherwise flash
+            // off before the eye registers the animation.
+            async let minDelay: () = Task.sleep(nanoseconds: 700_000_000)
             do {
                 let r = try CoreClient.shared.archiveTriple(aid: aid)
+                try? await minDelay
                 await MainActor.run {
                     self?.state.liked = r.like || (self?.state.liked ?? false)
                     self?.state.coined = r.coin || (self?.state.coined ?? false)
                     self?.state.favorited = r.fav || (self?.state.favorited ?? false)
                     if r.prompt { self?.lastToast = "三连成功" }
+                    self?.tripleAnimating = false
                 }
             } catch {
+                try? await minDelay
                 await MainActor.run {
                     self?.state = old
                     self?.lastToast = "三连失败"
+                    self?.tripleAnimating = false
                     AppLog.error("interaction", "三连失败", error: error, metadata: ["aid": String(aid)])
                 }
             }
         }
+    }
+
+    /// Begin / end the long-press favourite ring animation. Called by
+    /// `VideoActionRow` around presenting the folder picker so the
+    /// user gets the same visual confirmation the triple ring gives.
+    func setFavoriteAnimating(_ animating: Bool) {
+        favoriteAnimating = animating
     }
 
     // MARK: - Follow

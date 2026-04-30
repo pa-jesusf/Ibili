@@ -2,13 +2,20 @@ import SwiftUI
 
 /// Top-level comment list. Each row taps into a `CommentThreadSheet`
 /// when the comment has nested replies.
+///
+/// Rendering strategy: the parent video-detail page already lives inside
+/// a single `ScrollView`; we use `LazyVStack` so SwiftUI only composes
+/// rows currently in (or near) the viewport. Avatar fetches go through
+/// `RemoteImage` (NSCache-backed) so they survive scroll-recycle. Bilibili
+/// emote / picture / jump-link parsing happens once at row level via
+/// `RichReplyText` + `ReplyPictureGrid`.
 struct CommentListView: View {
     let oid: Int64
     @StateObject private var vm = CommentListViewModel()
     @State private var thread: ReplyItemDTO?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        LazyVStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("评论")
                     .font(.headline)
@@ -32,6 +39,7 @@ struct CommentListView: View {
                     .foregroundStyle(IbiliTheme.textSecondary)
                 }
             }
+            .padding(.bottom, 12)
 
             if let top = vm.top {
                 CommentRow(item: top, upperMid: vm.upperMid, isPinned: true) { thread = top }
@@ -77,14 +85,11 @@ struct CommentRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            AsyncImage(url: URL(string: BiliImageURL.resized(item.face, pointSize: CGSize(width: 32, height: 32), quality: 75))) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: Circle().fill(IbiliTheme.surface)
-                }
-            }
-            .frame(width: 32, height: 32)
-            .clipShape(Circle())
+            RemoteImage(url: item.face,
+                        targetPointSize: CGSize(width: 32, height: 32),
+                        quality: 75)
+                .frame(width: 32, height: 32)
+                .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -107,11 +112,12 @@ struct CommentRow: View {
                     }
                     Spacer()
                 }
-                Text(item.message)
+                RichReplyText(message: item.message,
+                              emotes: item.emotes,
+                              jumpUrls: item.jumpUrls,
+                              lineLimit: 6)
                     .font(.footnote)
                     .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(6)
-                    .lineSpacing(2)
                     .contextMenu {
                         Button {
                             UIPasteboard.general.string = item.message
@@ -120,6 +126,10 @@ struct CommentRow: View {
                             SelectableTextPresenter.present(text: item.message, title: "选择复制评论")
                         } label: { Label("选择复制", systemImage: "selection.pin.in.out") }
                     }
+                if !item.pictures.isEmpty {
+                    ReplyPictureGrid(urls: item.pictures)
+                        .padding(.top, 2)
+                }
                 HStack(spacing: 14) {
                     Label(BiliFormat.compactCount(item.like), systemImage: "hand.thumbsup")
                     if item.replyCount > 0 {
@@ -144,6 +154,32 @@ struct CommentRow: View {
         .contentShape(Rectangle())
         .onTapGesture {
             if item.replyCount > 0 { onOpenThread() }
+        }
+    }
+}
+
+/// Picture attachment grid for a reply. 1 → wide, 2 → side-by-side,
+/// 3+ → 3-column. Each tile uses `RemoteImage` so re-scrolling doesn't
+/// re-fetch.
+struct ReplyPictureGrid: View {
+    let urls: [String]
+
+    var body: some View {
+        let cols = urls.count == 1 ? 1 : (urls.count == 2 ? 2 : 3)
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: cols)
+        LazyVGrid(columns: columns, spacing: 4) {
+            ForEach(Array(urls.enumerated()), id: \.offset) { _, u in
+                GeometryReader { geo in
+                    RemoteImage(url: u,
+                                contentMode: .fill,
+                                targetPointSize: CGSize(width: geo.size.width, height: geo.size.width),
+                                quality: 75)
+                        .frame(width: geo.size.width, height: geo.size.width)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .aspectRatio(1, contentMode: .fit)
+            }
         }
     }
 }

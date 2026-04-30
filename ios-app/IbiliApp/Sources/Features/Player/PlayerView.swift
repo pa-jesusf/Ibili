@@ -49,6 +49,19 @@ final class PlayerViewModel: ObservableObject {
     private let discoveryQn: Int64 = 120
     private let engine: PlaybackEngine = HLSProxyEngine.shared
     private var sourceByQn: [Int64: PlayUrlDTO] = [:]
+    /// Server-recorded resume position for the *current* (aid,cid).
+    /// Captured from `playurl.last_play_time_ms` and consumed once when
+    /// the AVPlayerItem first reaches `.readyToPlay` so we don't fight
+    /// AVPlayer's own initial seek behaviour.
+    private var pendingResumeMs: Int64 = 0
+    /// Snapshot of the current bvid so the heartbeat call carries the
+    /// same identifier upstream PiliPlus uses (`bvid` for ugc).
+    private var bvid: String = ""
+    /// Periodic time observer token driving heartbeat reports.
+    private var heartbeatObserverToken: Any?
+    /// Last reported playhead second — heartbeat skips repeats so we
+    /// don't spam the API when paused.
+    private var lastHeartbeatSec: Int64 = -1
     private var remuxFallbackAttemptedQns: Set<Int64> = []
     private var isUsingRemuxFallback = false
     private var itemStatusObservation: NSKeyValueObservation?
@@ -84,6 +97,7 @@ final class PlayerViewModel: ObservableObject {
     deinit {
         MainActor.assumeIsolated {
             player?.pause()
+            stopHeartbeat()
             itemStatusObservation = nil
             activePreparation?.release()
             activePreparation = nil
@@ -121,6 +135,7 @@ final class PlayerViewModel: ObservableObject {
         // a fresh navigation to a different (aid,cid) wipes it.
         let isSameVideo = (lastLoadedItem?.aid == item.aid && lastLoadedItem?.cid == item.cid)
         aid = item.aid; cid = item.cid
+        bvid = item.bvid
         lastLoadedItem = item
         lastPreferredQn = preferredQn
         lastFastLoad = fastLoad
@@ -134,6 +149,7 @@ final class PlayerViewModel: ObservableObject {
         if preferredAudioQn > 0 { currentAudioQn = preferredAudioQn }
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
+        stopHeartbeat()
         cancelPendingUpgrade()
         AppLog.info("player", "开始加载播放器", metadata: [
             "aid": String(item.aid),
@@ -174,6 +190,11 @@ final class PlayerViewModel: ObservableObject {
             self.sourceByQn[info.quality] = info
             self.availableAudioQualities = normalizedAudioQualities(from: info)
             self.currentAudioQn = info.audioQuality
+            // Capture server-recorded resume position. Treated as a
+            // single-shot — `observeItemStatus` consumes it on the
+            // first `.readyToPlay`, then zeroes the field so future
+            // quality switches don't re-seek backward.
+            self.pendingResumeMs = info.lastPlayTimeMs
 
             // Decide whether to race the lowest variant against the
             // preferred one. We only do it when the user opted in AND
@@ -480,6 +501,75 @@ final class PlayerViewModel: ObservableObject {
         discardWarmPlayerTask(readyTask)
     }
 
+    /// Install a periodic time observer that reports the playhead to
+    /// Bilibili every ~15 seconds plus on natural completion. Mirrors
+    /// PiliPlus' `makeHeartBeat(type: .status / .completed)` cadence
+    /// — that's how the cloud "history / 继续观看" works.
+    private func startHeartbeatIfNeeded() {
+        guard let player, heartbeatObserverToken == nil else { return }
+        let interval = CMTime(seconds: 15, preferredTimescale: 1)
+        let aidSnap = aid
+        let bvidSnap = bvid
+        let cidSnap = cid
+        heartbeatObserverToken = player.addPeriodicTimeObserver(
+            forInterval: interval, queue: .main
+        ) { [weak self] time in
+            guard let self else { return }
+            // Only beat while actually playing — paused users don't
+            // want their saved position racing forward.
+            guard self.player?.timeControlStatus == .playing else { return }
+            let sec = Int64(CMTimeGetSeconds(time))
+            guard sec >= 0, sec != self.lastHeartbeatSec else { return }
+            self.lastHeartbeatSec = sec
+            Task.detached(priority: .background) {
+                try? CoreClient.shared.archiveHeartbeat(
+                    aid: aidSnap, bvid: bvidSnap, cid: cidSnap, playedSeconds: sec
+                )
+            }
+        }
+        // Also send a final heartbeat when the item finishes naturally
+        // — keeps the cloud history in sync with "watched to end" so
+        // the user doesn't get re-prompted to resume next time.
+        if let item = player.currentItem {
+            NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                let sec = Int64(CMTimeGetSeconds(item.duration))
+                Task.detached(priority: .background) {
+                    try? CoreClient.shared.archiveHeartbeat(
+                        aid: aidSnap, bvid: bvidSnap, cid: cidSnap, playedSeconds: sec
+                    )
+                }
+            }
+        }
+    }
+
+    /// Tear down the periodic heartbeat observer. Called on load swap
+    /// and `deinit` so a stale closure can't keep firing on the next
+    /// video.
+    private func stopHeartbeat() {
+        if let token = heartbeatObserverToken {
+            player?.removeTimeObserver(token)
+            heartbeatObserverToken = nil
+        }
+        // Best-effort terminal beat for the *just-stopped* video so the
+        // cloud history matches the actual stop position even if the
+        // user dismissed without finishing.
+        if aid > 0, cid > 0, let position = player?.currentTime() {
+            let sec = Int64(CMTimeGetSeconds(position))
+            let aidSnap = aid, bvidSnap = bvid, cidSnap = cid
+            Task.detached(priority: .background) {
+                try? CoreClient.shared.archiveHeartbeat(
+                    aid: aidSnap, bvid: bvidSnap, cid: cidSnap, playedSeconds: sec
+                )
+            }
+        }
+        lastHeartbeatSec = -1
+    }
+
     /// Cancel and reap a hidden warm-player task. If the task already
     /// completed we synchronously stop its muted player and release its
     /// proxy token.
@@ -705,6 +795,29 @@ final class PlayerViewModel: ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     self.isVideoReady = true
+                    // Seek to the server-recorded resume position
+                    // exactly once per load. Cleared so a later
+                    // quality-switch readyToPlay event keeps the
+                    // user's current position intact.
+                    if self.pendingResumeMs > 0 {
+                        let ms = self.pendingResumeMs
+                        self.pendingResumeMs = 0
+                        // Discard if effectively at end (within 3s of
+                        // duration) — bilibili reports the *terminal*
+                        // position when the user finished the video.
+                        let durationSec = item.duration.isNumeric ? CMTimeGetSeconds(item.duration) : 0
+                        let resumeSec = Double(ms) / 1000.0
+                        if durationSec <= 0 || resumeSec < durationSec - 3 {
+                            let target = CMTime(seconds: resumeSec, preferredTimescale: 600)
+                            Task { @MainActor in
+                                await self.player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .init(seconds: 1, preferredTimescale: 600))
+                                AppLog.info("player", "已跳转到云端记录进度", metadata: [
+                                    "resumeMs": String(ms),
+                                ])
+                            }
+                        }
+                    }
+                    self.startHeartbeatIfNeeded()
                 case .failed:
                     let detail = item.error?.localizedDescription ?? "unknown"
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
@@ -1562,6 +1675,10 @@ struct PlayerView: View {
         .onAppear {
             if didBootstrap {
                 UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+                // Re-acquire the audio channel — a prior onDisappear may
+                // have released it via .notifyOthersOnDeactivation, and
+                // AVPlayer won't make sound until the session is active.
+                configureAudioSession()
                 vm.activatePlayback()
                 if let p = vm.player { danmaku.attach(p) }
             }
@@ -1571,6 +1688,10 @@ struct PlayerView: View {
             if !isFullscreen {
                 vm.pauseForDeactivation()
                 Orientation.request(.portrait)
+                // Hand the audio channel back so any interrupted app
+                // (Apple Music etc.) can resume — fixes the 哔哩哔哩
+                // “震住” Apple Music regression.
+                deactivateAudioSession()
             }
         }
     }
@@ -1682,6 +1803,22 @@ struct PlayerView: View {
             try s.setActive(true, options: [])
         } catch {
             AppLog.warning("player", "音频会话配置失败", metadata: [
+                "error": error.localizedDescription,
+            ])
+        }
+    }
+
+    /// Release the shared audio session and tell iOS to resume any other
+    /// app whose audio we interrupted (e.g. Apple Music). Without
+    /// `.notifyOthersOnDeactivation` the previously-playing app stays
+    /// paused indefinitely — this is the 哔哩哔哩 behaviour we explicitly
+    /// want to avoid.
+    private func deactivateAudioSession() {
+        let s = AVAudioSession.sharedInstance()
+        do {
+            try s.setActive(false, options: [.notifyOthersOnDeactivation])
+        } catch {
+            AppLog.warning("player", "音频会话释放失败", metadata: [
                 "error": error.localizedDescription,
             ])
         }

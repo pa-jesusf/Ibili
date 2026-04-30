@@ -1,6 +1,12 @@
 import SwiftUI
 
-/// Sheet showing the full reply thread for a single root comment.
+/// Sheet showing the full reply thread (楼中楼) for a single root comment.
+///
+/// The sheet runs its own `LazyVStack` and a small page-based loader; we
+/// only fetch the next page when the *last* visible row appears, so users
+/// who only scan the top of a thread never pay for the rest. Avatars +
+/// rich content reuse the same `RemoteImage` / `RichReplyText` pipeline
+/// as the main list.
 struct CommentThreadSheet: View {
     let root: ReplyItemDTO
 
@@ -20,10 +26,18 @@ struct CommentThreadSheet: View {
                     ForEach(replies) { r in
                         CommentRow(item: r, upperMid: 0, isPinned: false) {}
                             .padding(.horizontal, 16)
+                            .onAppear {
+                                if r.id == replies.last?.id, !isEnd, !isLoading {
+                                    Task { await loadMore() }
+                                }
+                            }
                         Divider()
                     }
                     if isLoading {
                         HStack { Spacer(); ProgressView(); Spacer() }
+                            .padding(.vertical, 12)
+                    } else if isEnd, !replies.isEmpty {
+                        HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
                             .padding(.vertical, 12)
                     }
                 }

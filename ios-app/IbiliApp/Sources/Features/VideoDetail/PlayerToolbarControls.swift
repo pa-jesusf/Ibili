@@ -44,25 +44,52 @@ struct PlayerToolbarVideoQuality: View {
                     }
                 }
             } label: {
-                Image(systemName: qualityIcon(for: currentQn))
+                qualityIconView(for: currentQn)
             }
             .accessibilityLabel("画质")
         }
     }
 
-    /// Distinct SF Symbol per quality bucket. 8K/4K use the dedicated
-    /// resolution glyphs; 1080P/720P use the filled/outline TV pair so
-    /// the gap is visible without text; SD/360P use the smaller-screen
-    /// glyph so it reads as a downshift.
-    private func qualityIcon(for qn: Int64) -> String {
+    /// Toolbar glyph for the current quality. SF Symbols ships
+    /// dedicated `8k.tv` / `4k.tv` icons that read instantly. For
+    /// 1080P / 720P / 480P / 360P the resolution-bearing symbols
+    /// either don't exist or look identical at toolbar size, so we
+    /// hand-draw a tiny rounded rectangle with the canonical Bilibili
+    /// shorthand (FHD/HD/SD/LD) inside — fixed-width, won't stretch
+    /// the toolbar item, and tells the user the picked tier at a
+    /// glance without expanding the menu.
+    @ViewBuilder
+    private func qualityIconView(for qn: Int64) -> some View {
         switch qn {
-        case 127: return "8k.tv"
-        case 120, 125, 126: return "4k.tv"
-        case 116, 112, 80: return "tv.fill"
-        case 64, 74: return "tv"
-        case 32, 16, 6: return "play.tv"
-        default: return "tv"
+        case 127: Image(systemName: "8k.tv")
+        case 120, 125, 126: Image(systemName: "4k.tv")
+        case 116, 112, 80: QualityBadge(text: "FHD")
+        case 64, 74:        QualityBadge(text: "HD")
+        case 32:            QualityBadge(text: "SD")
+        case 16, 6:         QualityBadge(text: "LD")
+        default:            Image(systemName: "tv")
         }
+    }
+}
+
+/// Lightweight 28x18 badge that mimics the visual weight of an SF
+/// Symbol toolbar glyph but renders short text inside a rounded
+/// outline. Avoids the toolbar-stretching that a free-floating
+/// `Text("1080P+")` causes.
+private struct QualityBadge: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .heavy, design: .rounded))
+            .monospaced()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, 3)
+            .frame(width: 28, height: 18)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(lineWidth: 1.6)
+            )
     }
 }
 

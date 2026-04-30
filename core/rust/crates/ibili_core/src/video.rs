@@ -22,6 +22,11 @@ struct PlayUrlRoot {
     #[serde(default, deserialize_with = "null_as_default")] accept_quality: Vec<i64>,
     #[serde(default, deserialize_with = "null_as_default")] accept_description: Vec<String>,
     #[serde(default)] dash: Option<Dash>,
+    /// Bilibili-recorded resume position in milliseconds. Present
+    /// for logged-in playback when the user previously watched this
+    /// cid; absent / 0 otherwise.
+    #[serde(default)] last_play_time: i64,
+    #[serde(default)] last_play_cid: i64,
 }
 
 #[derive(Clone, Deserialize)]
@@ -285,6 +290,8 @@ impl Core {
             audio_quality_label: String::new(),
             accept_audio_quality: Vec::new(),
             accept_audio_description: Vec::new(),
+            last_play_time_ms: r.last_play_time,
+            last_play_cid: r.last_play_cid,
         })
     }
 
@@ -383,6 +390,8 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
                     audio_quality_label: audio_quality_label(picked_audio_qn),
                     accept_audio_quality,
                     accept_audio_description,
+                    last_play_time_ms: response.last_play_time,
+                    last_play_cid: response.last_play_cid,
                 });
             }
         }
@@ -408,6 +417,8 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
         audio_quality_label: String::new(),
         accept_audio_quality: Vec::new(),
         accept_audio_description: Vec::new(),
+        last_play_time_ms: response.last_play_time,
+        last_play_cid: response.last_play_cid,
     })
 }
 

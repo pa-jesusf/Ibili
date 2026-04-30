@@ -92,6 +92,18 @@ pub struct PlayUrl {
     /// Human-readable labels for `accept_audio_quality`, 1:1.
     #[serde(default)]
     pub accept_audio_description: Vec<String>,
+    /// Server-recorded resume position for the *current cid*, in
+    /// milliseconds. 0 when the account has no history for this cid
+    /// or the response did not carry it (anonymous playback). The
+    /// player layer seeks to this on first ready when non-zero.
+    #[serde(default)]
+    pub last_play_time_ms: i64,
+    /// Server's "best resume target" cid for the same aid — set when
+    /// the user previously stopped on a different page. We don't yet
+    /// auto-switch pages on this signal but expose it so the iOS
+    /// layer can offer a "继续观看 P3" prompt.
+    #[serde(default)]
+    pub last_play_cid: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -282,6 +294,28 @@ pub struct ReplyPage {
     pub total: i64,
 }
 
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ReplyEmote {
+    /// e.g. `"[doge]"`. Includes the brackets.
+    pub name: String,
+    /// CDN URL of the emote PNG/animated WebP.
+    pub url: String,
+    /// 1 = small (inline 18pt), 2 = large (inline 32pt).
+    pub size: i32,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ReplyJumpUrl {
+    /// The literal substring inside the message (e.g. `"BV1xx411y7yu"` or `"av12345"`).
+    pub keyword: String,
+    /// Display title returned by the server (e.g. video title). May be empty.
+    pub title: String,
+    /// Best-effort canonical URL (`https://www.bilibili.com/video/BVxxx`).
+    pub url: String,
+    /// Optional small icon CDN URL displayed before the keyword.
+    pub prefix_icon: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct ReplyItem {
     pub rpid: i64,
@@ -304,6 +338,16 @@ pub struct ReplyItem {
     /// First few preview replies (upstream `replies` array) when this
     /// is a top-level comment.
     pub preview_replies: Vec<ReplyItem>,
+    /// Emotes keyed by their bracketed name. The iOS layer scans `message`
+    /// for these tokens and inlines the matching image at runtime.
+    pub emotes: Vec<ReplyEmote>,
+    /// Inline picture attachments — fully-qualified CDN URLs in original
+    /// upstream order. Rendered as a 2/3-column grid below the message.
+    pub pictures: Vec<String>,
+    /// `keyword → metadata` map of inline jump links (e.g. when the user
+    /// types a BV id, the server detects it server-side and ships this so
+    /// we can render it as a tappable chip routing into the player).
+    pub jump_urls: Vec<ReplyJumpUrl>,
 }
 
 // ---------- Write-action results ----------
