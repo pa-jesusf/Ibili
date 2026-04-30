@@ -20,6 +20,11 @@ final class VideoInteractionService: ObservableObject {
     }
 
     @Published private(set) var state = State()
+    @Published private(set) var folders: [FavFolderInfoDTO] = []
+    @Published private(set) var defaultFolderId: Int64 = 0
+    /// `id`s of the folders the current video is already in. Used to
+    /// preselect rows in the long-press folder picker.
+    @Published private(set) var favoritedFolderIds: Set<Int64> = []
     @Published var lastToast: String?
 
     init() {}
@@ -28,6 +33,40 @@ final class VideoInteractionService: ObservableObject {
         state.likeCount = stat.like
         state.coinCount = stat.coin
         state.favoriteCount = stat.favorite
+    }
+
+    /// Pull the server-side relation state plus the user's favourite
+    /// folder list so the action row can render the correct active
+    /// states and the long-press folder picker has data immediately.
+    func hydrate(aid: Int64, bvid: String, ownerMid: Int64?) async {
+        // Relation (like/coin/fav/follow) state.
+        let snapshot = await Task.detached { () -> (ArchiveRelationDTO?, [FavFolderInfoDTO]) in
+            let rel = try? CoreClient.shared.archiveRelation(aid: aid, bvid: bvid)
+            // Folder list is keyed off the *self* mid, not the uploader.
+            let selfMid = CoreClient.shared.sessionSnapshot().mid
+            var folders: [FavFolderInfoDTO] = []
+            if selfMid > 0 {
+                folders = (try? CoreClient.shared.favFolders(rid: aid, upMid: selfMid)) ?? []
+            }
+            _ = ownerMid // currently unused; uploader follow state comes from `rel.attention`
+            return (rel, folders)
+        }.value
+
+        if let rel = snapshot.0 {
+            state.liked = rel.liked
+            state.coined = rel.coinNumber > 0
+            state.favorited = rel.favorited
+            state.followed = rel.attention
+        }
+        folders = snapshot.1
+        favoritedFolderIds = Set(snapshot.1.filter { $0.favState == 1 }.map { $0.folderId })
+        // Bilibili marks the default folder via `attr & 1 == 1`. Fall
+        // back to the first folder so we always have a target.
+        if let def = snapshot.1.first(where: { $0.attr & 1 == 1 }) {
+            defaultFolderId = def.folderId
+        } else if let first = snapshot.1.first {
+            defaultFolderId = first.folderId
+        }
     }
 
     // MARK: - Like
@@ -82,17 +121,47 @@ final class VideoInteractionService: ObservableObject {
     /// the simple toggle we just use one folder.)
     func toggleFavorite(aid: Int64, defaultFolderId: Int64) {
         let old = state
+        let oldFolderIds = favoritedFolderIds
         let willFav = !state.favorited
         state.favorited = willFav
         state.favoriteCount = max(0, state.favoriteCount + (willFav ? 1 : -1))
         let addIds: [Int64] = willFav ? [defaultFolderId] : []
-        let delIds: [Int64] = willFav ? [] : [defaultFolderId]
+        let delIds: [Int64] = willFav ? [] : Array(oldFolderIds)
+        if willFav { favoritedFolderIds = [defaultFolderId] } else { favoritedFolderIds.removeAll() }
         Task.detached { [weak self] in
             do {
                 _ = try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
             } catch {
                 await MainActor.run {
                     self?.state = old
+                    self?.favoritedFolderIds = oldFolderIds
+                    self?.lastToast = "收藏失败"
+                    AppLog.error("interaction", "收藏失败", error: error, metadata: ["aid": String(aid)])
+                }
+            }
+        }
+    }
+
+    /// Apply a folder selection from the long-press picker. `selected`
+    /// is the new full set of folder ids the video should belong to.
+    func applyFavoriteSelection(aid: Int64, selected: Set<Int64>) {
+        let old = state
+        let oldFolderIds = favoritedFolderIds
+        let addIds = Array(selected.subtracting(oldFolderIds))
+        let delIds = Array(oldFolderIds.subtracting(selected))
+        if addIds.isEmpty, delIds.isEmpty { return }
+        favoritedFolderIds = selected
+        state.favorited = !selected.isEmpty
+        // Don't try to back-compute count — will be re-hydrated from
+        // server toast or the next detail view refresh.
+        Task.detached { [weak self] in
+            do {
+                _ = try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
+                await MainActor.run { self?.lastToast = "收藏已更新" }
+            } catch {
+                await MainActor.run {
+                    self?.state = old
+                    self?.favoritedFolderIds = oldFolderIds
                     self?.lastToast = "收藏失败"
                     AppLog.error("interaction", "收藏失败", error: error, metadata: ["aid": String(aid)])
                 }

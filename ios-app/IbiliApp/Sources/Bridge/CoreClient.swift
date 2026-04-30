@@ -326,6 +326,20 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable { let aid: Int64 }
         try callVoid("interaction.watchlater_del", args: A(aid: aid))
     }
+
+    /// Read like/coin/favorite/follow state for a video (server-side).
+    public func archiveRelation(aid: Int64 = 0, bvid: String = "") throws -> ArchiveRelationDTO {
+        struct A: Encodable { let aid: Int64; let bvid: String }
+        return try call("interaction.archive_relation", args: A(aid: aid, bvid: bvid), decoding: ArchiveRelationDTO.self)
+    }
+
+    /// List favourite folders owned by `upMid`. Pass `rid` (an aid) to
+    /// have the server populate `fav_state` for each folder relative
+    /// to that video.
+    public func favFolders(rid: Int64 = 0, upMid: Int64) throws -> [FavFolderInfoDTO] {
+        struct A: Encodable { let rid: Int64; let up_mid: Int64 }
+        return try call("interaction.fav_folders", args: A(rid: rid, up_mid: upMid), decoding: [FavFolderInfoDTO].self)
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {

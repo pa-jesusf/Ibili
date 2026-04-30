@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// Toggle for displaying BV vs legacy AV id on the video detail page.
+enum VideoIdDisplay: String, CaseIterable, Identifiable {
+    case bv
+    case av
+    var id: String { rawValue }
+    var label: String { self == .bv ? "BV 号" : "AV 号" }
+}
+
 /// User-tunable display preferences. Persisted via `@AppStorage`.
 @MainActor
 final class AppSettings: ObservableObject {
@@ -43,6 +51,14 @@ final class AppSettings: ObservableObject {
     /// failure exports a short upstream m4s sample plus an ffmpeg remux
     /// script for AVPlayer compatibility testing.
     @AppStorage("ibili.debug.exportRemuxSample") var exportRemuxSample: Bool = false
+
+    /// Whether the video detail page displays the canonical BV id or
+    /// the legacy `av<aid>` form. Mirrors the upstream toggle.
+    @AppStorage("ibili.video.idDisplay") var videoIdDisplayRaw: String = VideoIdDisplay.bv.rawValue
+    var videoIdDisplay: VideoIdDisplay {
+        get { VideoIdDisplay(rawValue: videoIdDisplayRaw) ?? .bv }
+        set { videoIdDisplayRaw = newValue.rawValue }
+    }
 
     private let maxFeedColumns = 3
     private let supportedDanmakuFrameRates = [30, 60]

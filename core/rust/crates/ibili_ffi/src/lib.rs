@@ -153,6 +153,12 @@ struct RelationArgs { fid: i64, #[serde(default = "default_relation_act")] act: 
 fn default_relation_act() -> i32 { 1 }
 
 #[derive(Deserialize)]
+struct FavFoldersArgs {
+    #[serde(default)] rid: i64,
+    up_mid: i64,
+}
+
+#[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
     #[serde(default = "default_search_page")] page: i64,
@@ -248,6 +254,14 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: AidArgs = serde_json::from_value(args)?;
             c.inner.watchlater_del(a.aid)?;
             Ok(Value::Object(Default::default()))
+        }
+        "interaction.archive_relation" => {
+            let a: VideoViewArgs = serde_json::from_value(args)?;
+            to_value(c.inner.archive_relation(a.aid, &a.bvid)?)
+        }
+        "interaction.fav_folders" => {
+            let a: FavFoldersArgs = serde_json::from_value(args)?;
+            to_value(c.inner.fav_folders(a.rid, a.up_mid)?)
         }
         "search.video" => {
             let a: SearchVideoArgs = serde_json::from_value(args)?;

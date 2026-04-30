@@ -31,67 +31,16 @@ struct VideoDetailContent: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                VideoIntroSection(
-                    title: vm.view?.title ?? item.title,
-                    stat: vm.view?.stat,
-                    pubdate: vm.view?.pubdate ?? 0,
-                    bvid: item.bvid
-                )
-                .padding(.horizontal, 16)
-
-                if let stat = vm.view?.stat {
-                    VideoActionRow(aid: item.aid, bvid: item.bvid, stat: stat, interaction: interaction)
-                        .padding(.horizontal, 8)
-                }
-
-                if let owner = vm.view?.owner {
-                    UploaderCardView(owner: owner, interaction: interaction)
-                        .padding(.horizontal, 16)
-                }
-
-                if let v = vm.view, !v.desc.isEmpty || !v.descV2.isEmpty {
-                    VideoDescriptionView(desc: v.desc, descV2: v.descV2)
-                        .padding(.horizontal, 16)
-                }
-
-                if let v = vm.view {
-                    if let season = v.ugcSeason, season.id > 0 {
-                        VideoSeasonCard(source: .season(season, currentCid: item.cid)) { aid, bvid, _ in
-                            // Picking another episode from the season — for
-                            // simplicity we navigate by re-bootstrapping when
-                            // bvid changed. Detailed wiring (push another
-                            // PlayerView) is left to a follow-up.
-                            if let bvid {
-                                Task { await vm.bootstrap(aid: aid ?? 0, bvid: bvid) }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    } else if v.pages.count > 1 {
-                        VideoSeasonCard(source: .pages(v.pages, currentCid: item.cid)) { _, _, _ in
-                            // Re-bootstrap not needed for parts (same bvid);
-                            // a future iteration will retarget the player VM
-                            // to the picked cid.
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                }
-
-                if let tags = vm.view?.tags, !tags.isEmpty {
-                    VideoTagsView(tags: tags)
-                        .padding(.horizontal, 16)
-                }
-
                 Picker("", selection: $tab) {
                     ForEach(Tab.allCases) { t in Text(t.rawValue).tag(t) }
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
-                .padding(.top, 4)
 
                 Group {
                     switch tab {
                     case .intro:
-                        introTabBody
+                        introBody
                     case .replies:
                         CommentListView(oid: item.aid)
                             .padding(.horizontal, 16)
@@ -110,6 +59,9 @@ struct VideoDetailContent: View {
             interaction.reset(stat: vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0))
             await vm.bootstrap(aid: item.aid, bvid: item.bvid)
             if let stat = vm.view?.stat { interaction.reset(stat: stat) }
+            if let v = vm.view {
+                await interaction.hydrate(aid: v.aid, bvid: v.bvid, ownerMid: v.owner.mid)
+            }
         }
         .onChange(of: interaction.lastToast) { newToast in
             guard let m = newToast, !m.isEmpty else { return }
@@ -130,6 +82,68 @@ struct VideoDetailContent: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: toast)
+    }
+
+    @ViewBuilder
+    private var introBody: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VideoIntroSection(
+                title: vm.view?.title ?? item.title,
+                stat: vm.view?.stat,
+                pubdate: vm.view?.pubdate ?? 0,
+                aid: vm.view?.aid ?? item.aid,
+                bvid: vm.view?.bvid ?? item.bvid
+            )
+            .padding(.horizontal, 16)
+
+            if let stat = vm.view?.stat {
+                VideoActionRow(
+                    aid: vm.view?.aid ?? item.aid,
+                    bvid: vm.view?.bvid ?? item.bvid,
+                    title: vm.view?.title ?? item.title,
+                    stat: stat,
+                    interaction: interaction
+                )
+                .padding(.horizontal, 8)
+            }
+
+            if let owner = vm.view?.owner {
+                UploaderCardView(owner: owner, interaction: interaction)
+                    .padding(.horizontal, 16)
+            }
+
+            if let v = vm.view, !v.desc.isEmpty || !v.descV2.isEmpty {
+                VideoDescriptionView(desc: v.desc, descV2: v.descV2)
+                    .padding(.horizontal, 16)
+            }
+
+            if let v = vm.view {
+                if let season = v.ugcSeason, season.id > 0 {
+                    VideoSeasonCard(source: .season(season, currentCid: item.cid)) { aid, bvid, _ in
+                        if let bvid {
+                            Task { await vm.bootstrap(aid: aid ?? 0, bvid: bvid) }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                } else if v.pages.count > 1 {
+                    VideoSeasonCard(source: .pages(v.pages, currentCid: item.cid)) { _, _, _ in }
+                        .padding(.horizontal, 16)
+                }
+            }
+
+            if let tags = vm.view?.tags, !tags.isEmpty {
+                VideoTagsView(tags: tags)
+                    .padding(.horizontal, 16)
+            }
+
+            if vm.isLoading, vm.view == nil {
+                HStack { Spacer(); ProgressView(); Spacer() }
+                    .padding(.vertical, 30)
+            } else if let err = vm.errorText, vm.view == nil {
+                emptyState(title: "详情加载失败", symbol: "exclamationmark.triangle", message: err)
+                    .padding(.vertical, 20)
+            }
+        }
     }
 
     @ViewBuilder

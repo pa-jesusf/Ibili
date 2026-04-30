@@ -6,7 +6,17 @@ struct VideoIntroSection: View {
     let title: String
     let stat: VideoStatDTO?
     let pubdate: Int64
+    let aid: Int64
     let bvid: String
+
+    @EnvironmentObject private var settings: AppSettings
+
+    private var idLabel: String {
+        switch settings.videoIdDisplay {
+        case .av: return "av\(aid)"
+        case .bv: return bvid
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -14,6 +24,15 @@ struct VideoIntroSection: View {
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(IbiliTheme.textPrimary)
                 .lineSpacing(2)
+                .textSelection(.enabled)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = title
+                    } label: { Label("复制标题", systemImage: "doc.on.doc") }
+                    Button {
+                        SelectableTextPresenter.present(text: title, title: "选择复制标题")
+                    } label: { Label("选择复制", systemImage: "selection.pin.in.out") }
+                }
 
             HStack(spacing: 12) {
                 if let stat {
@@ -25,10 +44,15 @@ struct VideoIntroSection: View {
                         .foregroundStyle(IbiliTheme.textSecondary)
                 }
                 Spacer(minLength: 0)
-                Text(bvid)
+                Text(idLabel)
                     .font(.caption.monospaced())
                     .foregroundStyle(IbiliTheme.textSecondary)
                     .textSelection(.enabled)
+                    .contextMenu {
+                        Button {
+                            UIPasteboard.general.string = idLabel
+                        } label: { Label("复制\(settings.videoIdDisplay == .av ? "AV" : "BV")号", systemImage: "doc.on.doc") }
+                    }
             }
             .font(.footnote)
             .foregroundStyle(IbiliTheme.textSecondary)

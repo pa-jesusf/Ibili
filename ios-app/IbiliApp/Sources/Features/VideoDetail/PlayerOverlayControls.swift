@@ -49,7 +49,7 @@ struct PlayerOverlayControls: View {
                         }
                     }
                 } label: {
-                    overlaySymbol("4k.tv")
+                    overlaySymbol(qualityIcon(for: currentQn))
                 }
             }
 
@@ -87,7 +87,21 @@ struct PlayerOverlayControls: View {
                 }
             }
         }
-        .padding(8)
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+    }
+
+    /// SF Symbol picked to reflect the active video quality. Falls back
+    /// to a neutral TV glyph when the qn is unknown.
+    private func qualityIcon(for qn: Int64) -> String {
+        switch qn {
+        case 127: return "8k.tv"                  // 8K
+        case 120, 125, 126: return "4k.tv"        // 4K / HDR / 杜比
+        case 116, 112, 80: return "tv.fill"       // 1080P / 1080P+ / 1080P60
+        case 64, 74: return "tv"                  // 720P / 720P60
+        case 32, 16, 6: return "play.tv"          // 480P / 360P / 流畅
+        default: return "tv"
+        }
     }
 
     private func overlaySymbol(_ name: String) -> some View {

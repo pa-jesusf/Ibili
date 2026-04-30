@@ -335,3 +335,36 @@ pub struct FavoriteResult {
     pub prompt: bool,
     pub toast: String,
 }
+
+// ---------- Read-only relation queries ----------
+
+/// Server-side relation state for a UGC video — used to seed the
+/// detail page's like/coin/favorite/follow buttons so users don't
+/// re-fire mutations that the server would 412 anyway.
+///
+/// Backed by `/x/web-interface/archive/relation`.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ArchiveRelation {
+    pub liked: bool,
+    pub disliked: bool,
+    pub favorited: bool,
+    /// Whether the current account follows the uploader.
+    pub attention: bool,
+    /// Number of coins this account already threw at the video (0/1/2).
+    pub coin_number: i32,
+}
+
+/// One favourite folder owned by the current user.
+/// Backed by `/x/v3/fav/folder/created/list-all?type=2&rid=<aid>&up_mid=<mid>`.
+/// When `rid` is supplied, `fav_state == 1` indicates the video is
+/// already in this folder.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct FavFolderInfo {
+    pub id: i64,
+    pub fid: i64,
+    pub mid: i64,
+    pub attr: i32,
+    pub title: String,
+    pub fav_state: i32,
+    pub media_count: i32,
+}

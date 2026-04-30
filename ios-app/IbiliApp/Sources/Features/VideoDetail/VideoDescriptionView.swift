@@ -10,6 +10,14 @@ struct VideoDescriptionView: View {
 
     var body: some View {
         ExpandableText(text: rendered, lineLimit: 3, font: .footnote)
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = rendered
+                } label: { Label("复制全部", systemImage: "doc.on.doc") }
+                Button {
+                    SelectableTextPresenter.present(text: rendered, title: "选择复制简介")
+                } label: { Label("选择复制", systemImage: "selection.pin.in.out") }
+            }
     }
 
     private var rendered: String {

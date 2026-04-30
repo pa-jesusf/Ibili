@@ -1465,7 +1465,7 @@ struct PlayerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .topTrailing) {
+            ZStack {
                 Color.black
                 if let p = vm.player {
                     PlayerContainer(
@@ -1497,7 +1497,8 @@ struct PlayerView: View {
                             .padding(.horizontal)
                     }
                 }
-
+            }
+            .overlay(alignment: .topTrailing) {
                 if !isFullscreen, vm.player != nil {
                     PlayerOverlayControls(
                         qualities: vm.availableQualities,

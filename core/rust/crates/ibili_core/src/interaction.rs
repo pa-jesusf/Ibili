@@ -8,7 +8,7 @@
 //! identical to upstream so server-side gating behaves the same.
 
 use crate::Core;
-use crate::dto::{CoinResult, FavoriteResult, LikeResult, TripleResult};
+use crate::dto::{ArchiveRelation, CoinResult, FavFolderInfo, FavoriteResult, LikeResult, TripleResult};
 use crate::error::{CoreError, CoreResult};
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,6 +21,8 @@ const URL_FAV_DEAL: &str = "https://api.bilibili.com/x/v3/fav/resource/deal";
 const URL_RELATION_MOD: &str = "https://api.bilibili.com/x/relation/modify";
 const URL_WATCHLATER_ADD: &str = "https://api.bilibili.com/x/v2/history/toview/add";
 const URL_WATCHLATER_DEL: &str = "https://api.bilibili.com/x/v2/history/toview/v2/dels";
+const URL_ARCHIVE_RELATION: &str = "https://api.bilibili.com/x/web-interface/archive/relation";
+const URL_FAV_FOLDERS: &str = "https://api.bilibili.com/x/v3/fav/folder/created/list-all";
 
 #[derive(Default, Deserialize)]
 struct ToastWire {
@@ -152,4 +154,96 @@ impl Core {
         let _: Value = self.http.post_form_web(URL_WATCHLATER_DEL, &params)?;
         Ok(())
     }
+
+    /// Read the current account's like/coin/favorite/follow state for
+    /// a given video. Backed by `/x/web-interface/archive/relation`.
+    /// Returns a default-zero struct when the user is not logged in.
+    pub fn archive_relation(&self, aid: i64, bvid: &str) -> CoreResult<ArchiveRelation> {
+        if self.session.read().access_key().is_none() {
+            return Ok(ArchiveRelation::default());
+        }
+        let mut params: Vec<(String, String)> = Vec::new();
+        if aid > 0 { params.push(("aid".into(), aid.to_string())); }
+        if !bvid.is_empty() { params.push(("bvid".into(), bvid.to_string())); }
+        let raw: ArchiveRelationWire = self.http.get_web(URL_ARCHIVE_RELATION, &params)?;
+        Ok(ArchiveRelation {
+            liked: raw.like.unwrap_or(false),
+            disliked: raw.dislike.unwrap_or(false),
+            favorited: raw.favorite.unwrap_or(false),
+            attention: raw.attention.map(|v| v >= 0).unwrap_or(false),
+            coin_number: raw.coin.unwrap_or(0),
+        })
+    }
+
+    /// List all favourite folders the current user owns. When `rid`
+    /// (an aid) is non-zero each entry's `fav_state` reflects whether
+    /// the video is already in that folder. Backed by
+    /// `/x/v3/fav/folder/created/list-all`.
+    pub fn fav_folders(&self, rid: i64, up_mid: i64) -> CoreResult<Vec<FavFolderInfo>> {
+        if self.session.read().access_key().is_none() {
+            return Ok(Vec::new());
+        }
+        let mut params: Vec<(String, String)> = vec![
+            ("type".into(), "2".into()),
+            ("up_mid".into(), up_mid.to_string()),
+        ];
+        if rid > 0 { params.push(("rid".into(), rid.to_string())); }
+        let raw: FavFoldersWire = self.http.get_web(URL_FAV_FOLDERS, &params)?;
+        Ok(raw.list.into_iter().map(|f| FavFolderInfo {
+            id: f.id,
+            fid: f.fid.unwrap_or(0),
+            mid: f.mid,
+            attr: f.attr,
+            title: f.title,
+            fav_state: f.fav_state.unwrap_or(0),
+            media_count: f.media_count,
+        }).collect())
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct ArchiveRelationWire {
+    /// Bilibili returns ints (0/1) most of the time but PiliPlus
+    /// observed booleans on some endpoints — accept either via
+    /// `IntOrBool`.
+    #[serde(default, deserialize_with = "deser_loose_bool")]
+    like: Option<bool>,
+    #[serde(default, deserialize_with = "deser_loose_bool")]
+    dislike: Option<bool>,
+    #[serde(default, deserialize_with = "deser_loose_bool")]
+    favorite: Option<bool>,
+    /// `-999` = not following; >= 0 follow code.
+    #[serde(default)]
+    attention: Option<i32>,
+    #[serde(default)]
+    coin: Option<i32>,
+}
+
+fn deser_loose_bool<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error;
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(match v {
+        Some(Value::Bool(b)) => Some(b),
+        Some(Value::Number(n)) => n.as_i64().map(|x| x != 0),
+        Some(Value::Null) | None => None,
+        Some(other) => return Err(D::Error::custom(format!("expected bool|int, got {other}"))),
+    })
+}
+
+#[derive(Default, Deserialize)]
+struct FavFoldersWire {
+    #[serde(default)]
+    list: Vec<FavFolderWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct FavFolderWire {
+    #[serde(default)] id: i64,
+    #[serde(default)] fid: Option<i64>,
+    #[serde(default)] mid: i64,
+    #[serde(default)] attr: i32,
+    #[serde(default)] title: String,
+    #[serde(default)] fav_state: Option<i32>,
+    #[serde(default)] media_count: i32,
 }

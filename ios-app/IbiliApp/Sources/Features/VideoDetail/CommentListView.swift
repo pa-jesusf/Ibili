@@ -112,6 +112,14 @@ struct CommentRow: View {
                     .foregroundStyle(IbiliTheme.textPrimary)
                     .lineLimit(6)
                     .lineSpacing(2)
+                    .contextMenu {
+                        Button {
+                            UIPasteboard.general.string = item.message
+                        } label: { Label("复制全部", systemImage: "doc.on.doc") }
+                        Button {
+                            SelectableTextPresenter.present(text: item.message, title: "选择复制评论")
+                        } label: { Label("选择复制", systemImage: "selection.pin.in.out") }
+                    }
                 HStack(spacing: 14) {
                     Label(BiliFormat.compactCount(item.like), systemImage: "hand.thumbsup")
                     if item.replyCount > 0 {

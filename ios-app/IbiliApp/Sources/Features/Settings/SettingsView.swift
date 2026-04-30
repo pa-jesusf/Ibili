@@ -126,6 +126,21 @@ struct SettingsView: View {
             } footer: {
                 Text("快速加载会同时加载最低画质与首选画质。remux 样本仅导出开头数个 m4s fragment，用于验证 AVPlayer remux 路线。")
             }
+
+            Section {
+                Picker("视频编号显示", selection: Binding(
+                    get: { settings.videoIdDisplay },
+                    set: { settings.videoIdDisplay = $0 }
+                )) {
+                    ForEach(VideoIdDisplay.allCases) { v in
+                        Text(v.label).tag(v)
+                    }
+                }
+            } header: {
+                Text("视频详情页")
+            } footer: {
+                Text("控制视频详情页右下角显示 BV 号或旧版 av 号。")
+            }
         }
         .navigationTitle("显示设置")
         .navigationBarTitleDisplayMode(.inline)

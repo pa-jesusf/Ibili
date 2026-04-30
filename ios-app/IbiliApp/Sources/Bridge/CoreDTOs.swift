@@ -446,3 +446,38 @@ public struct FavoriteResultDTO: Decodable {
     public let prompt: Bool
     public let toast: String
 }
+
+/// Server-side relation state for a UGC video.
+/// Backed by Rust `interaction.archive_relation`.
+public struct ArchiveRelationDTO: Decodable {
+    public let liked: Bool
+    public let disliked: Bool
+    public let favorited: Bool
+    public let attention: Bool
+    public let coinNumber: Int32
+
+    enum CodingKeys: String, CodingKey {
+        case liked, disliked, favorited, attention
+        case coinNumber = "coin_number"
+    }
+}
+
+/// One favourite folder owned by the current user. `favState == 1`
+/// indicates the queried video already lives inside this folder.
+public struct FavFolderInfoDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { folderId }
+    public let folderId: Int64
+    public let fid: Int64
+    public let mid: Int64
+    public let attr: Int32
+    public let title: String
+    public let favState: Int32
+    public let mediaCount: Int32
+
+    enum CodingKeys: String, CodingKey {
+        case folderId = "id"
+        case fid, mid, attr, title
+        case favState = "fav_state"
+        case mediaCount = "media_count"
+    }
+}
