@@ -106,9 +106,6 @@ struct SettingsView: View {
                             in: 0...11,
                             step: 1
                         )
-                        Text("参考上游的 0-11 云屏蔽等级。当前对携带 weight 的分段弹幕生效；如果回退到经典 XML 弹幕源，则不会误把所有弹幕都当成 0 级过滤。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
                     }
                     Picker("弹幕帧率", selection: Binding(
                         get: { settings.resolvedDanmakuFrameRate() },
@@ -125,7 +122,7 @@ struct SettingsView: View {
             } header: {
                 Text("播放")
             } footer: {
-                Text("快速加载会同时加载最低画质与首选画质。remux 样本仅导出开头数个 m4s fragment，用于验证 AVPlayer remux 路线。")
+                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换。remux 样本导出 m4s fragment，用于debug。")
             }
 
             Section {
@@ -153,7 +150,7 @@ struct SettingsView: View {
                     get: { settings.homeCardStat },
                     set: { settings.homeCardStat = $0 }
                 ),
-                footer: "首页卡片仅在推荐流提供时显示投稿时间。"
+                footer: "调整首页卡片显示的各项信息。"
             )
 
             cardMetaSection(
@@ -166,7 +163,7 @@ struct SettingsView: View {
                     get: { settings.searchCardStat },
                     set: { settings.searchCardStat = $0 }
                 ),
-                footer: "搜索结果卡片始终包含投稿时间。"
+                footer: "调整搜索结果卡片显示的各项信息。"
             )
         }
         .navigationTitle("设置")
