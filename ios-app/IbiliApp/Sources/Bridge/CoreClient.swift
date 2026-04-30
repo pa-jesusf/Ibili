@@ -220,15 +220,15 @@ public final class CoreClient: @unchecked Sendable {
 
     /// Fetch the full video detail (title, owner, stat, pages, ugc_season,
     /// tags, descV2). Backed by `/x/web-interface/wbi/view`.
-    public func videoViewFull(bvid: String) throws -> VideoViewDTO {
-        struct A: Encodable { let bvid: String }
-        return try call("video.view_full", args: A(bvid: bvid), decoding: VideoViewDTO.self)
+    public func videoViewFull(aid: Int64 = 0, bvid: String = "") throws -> VideoViewDTO {
+        struct A: Encodable { let aid: Int64; let bvid: String }
+        return try call("video.view_full", args: A(aid: aid, bvid: bvid), decoding: VideoViewDTO.self)
     }
 
     /// List of related videos (`/x/web-interface/archive/related`).
-    public func videoRelated(bvid: String) throws -> [RelatedVideoItemDTO] {
-        struct A: Encodable { let bvid: String }
-        return try call("video.related", args: A(bvid: bvid), decoding: [RelatedVideoItemDTO].self)
+    public func videoRelated(aid: Int64 = 0, bvid: String = "") throws -> [RelatedVideoItemDTO] {
+        struct A: Encodable { let aid: Int64; let bvid: String }
+        return try call("video.related", args: A(aid: aid, bvid: bvid), decoding: [RelatedVideoItemDTO].self)
     }
 
     // MARK: - Comments

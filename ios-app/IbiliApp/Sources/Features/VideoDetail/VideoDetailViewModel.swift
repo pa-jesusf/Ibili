@@ -12,48 +12,57 @@ final class VideoDetailViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorText: String?
 
+    private(set) var aid: Int64 = 0
     private(set) var bvid: String = ""
 
     /// Best-effort initial fill from the home/search list — lets us
     /// render title/cover before the network round-trip lands.
     func seed(from item: FeedItemDTO) {
+        aid = item.aid
         bvid = item.bvid
     }
 
-    func bootstrap(bvid: String) async {
-        guard self.view == nil || self.bvid != bvid else { return }
+    func bootstrap(aid: Int64, bvid: String) async {
+        guard self.view == nil || self.aid != aid || self.bvid != bvid else { return }
+        self.aid = aid
         self.bvid = bvid
         isLoading = true
         errorText = nil
-        async let detail: VideoViewDTO = Task.detached(priority: .userInitiated) {
-            try CoreClient.shared.videoViewFull(bvid: bvid)
-        }.value
-        async let relatedList: [RelatedVideoItemDTO] = Task.detached(priority: .utility) {
-            (try? CoreClient.shared.videoRelated(bvid: bvid)) ?? []
-        }.value
-
         do {
-            let v = try await detail
+            let v = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
+            }.value
+            let resolvedBvid = v.bvid.isEmpty ? bvid : v.bvid
+            self.aid = v.aid
+            self.bvid = resolvedBvid
             self.view = v
-            self.related = await relatedList
+            self.related = await Task.detached(priority: .utility) {
+                (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
+            }.value
             AppLog.info("video", "视频详情加载成功", metadata: [
-                "bvid": bvid,
+                "aid": String(v.aid),
+                "bvid": resolvedBvid,
                 "tags": String(v.tags.count),
                 "pages": String(v.pages.count),
             ])
         } catch {
             self.errorText = (error as NSError).localizedDescription
-            self.related = await relatedList
-            AppLog.error("video", "视频详情加载失败", error: error, metadata: ["bvid": bvid])
+            self.related = []
+            AppLog.error("video", "视频详情加载失败", error: error, metadata: [
+                "aid": String(aid),
+                "bvid": bvid,
+            ])
         }
         isLoading = false
     }
 
     func refreshStat() async {
-        guard !bvid.isEmpty else { return }
-        if let updated = try? await Task.detached(priority: .utility) { [bvid = self.bvid] in
-            try CoreClient.shared.videoViewFull(bvid: bvid)
+        guard aid > 0 || !bvid.isEmpty else { return }
+        if let updated = try? await Task.detached(priority: .utility) { [aid = self.aid, bvid = self.bvid] in
+            try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
         }.value {
+            self.aid = updated.aid
+            self.bvid = updated.bvid.isEmpty ? bvid : updated.bvid
             self.view = updated
         }
     }

@@ -574,6 +574,16 @@ fn quality_label(qn: i64) -> String {
 const URL_VIEW_FULL: &str = "https://api.bilibili.com/x/web-interface/wbi/view";
 const URL_RELATED: &str = "https://api.bilibili.com/x/web-interface/archive/related";
 
+fn video_lookup_params(aid: i64, bvid: &str) -> CoreResult<Vec<(String, String)>> {
+    if !bvid.is_empty() {
+        return Ok(vec![("bvid".to_string(), bvid.to_string())]);
+    }
+    if aid > 0 {
+        return Ok(vec![("aid".to_string(), aid.to_string())]);
+    }
+    Err(CoreError::InvalidArgument("aid and bvid empty".into()))
+}
+
 #[derive(Deserialize)]
 struct ViewFullRoot {
     #[serde(default)] aid: i64,
@@ -690,12 +700,9 @@ struct RelatedItemWire {
 impl Core {
     /// Fetch the full video detail used by the player detail page.
     /// Mirrors `VideoHttp.videoIntro` (`/x/web-interface/wbi/view`).
-    pub fn video_view_full(&self, bvid: &str) -> CoreResult<VideoView> {
-        if bvid.is_empty() {
-            return Err(CoreError::InvalidArgument("bvid empty".into()));
-        }
+    pub fn video_view_full(&self, aid: i64, bvid: &str) -> CoreResult<VideoView> {
         let key = self.fetch_wbi_key()?;
-        let params = vec![("bvid".to_string(), bvid.to_string())];
+        let params = video_lookup_params(aid, bvid)?;
         let raw: ViewFullRoot = self.http.get_signed_web(URL_VIEW_FULL, params, &key)?;
         let tags = self.video_tags(raw.aid).unwrap_or_default();
         Ok(map_view_full(raw, tags))
@@ -714,13 +721,11 @@ impl Core {
 
     /// Mirrors `Api.relatedList` — list of related videos shown on the
     /// detail page "相关视频" tab.
-    pub fn video_related(&self, bvid: &str) -> CoreResult<Vec<RelatedVideoItem>> {
-        if bvid.is_empty() {
-            return Err(CoreError::InvalidArgument("bvid empty".into()));
-        }
+    pub fn video_related(&self, aid: i64, bvid: &str) -> CoreResult<Vec<RelatedVideoItem>> {
+        let params = video_lookup_params(aid, bvid)?;
         let raw: Vec<RelatedItemWire> = self.http.get_web(
             URL_RELATED,
-            &[("bvid".to_string(), bvid.to_string())],
+            &params,
         )?;
         Ok(raw.into_iter().map(map_related_item).collect())
     }

@@ -56,13 +56,13 @@ struct VideoDetailContent: View {
 
                 if let v = vm.view {
                     if let season = v.ugcSeason, season.id > 0 {
-                        VideoSeasonCard(source: .season(season, currentCid: item.cid)) { _, bvid, _ in
+                        VideoSeasonCard(source: .season(season, currentCid: item.cid)) { aid, bvid, _ in
                             // Picking another episode from the season — for
                             // simplicity we navigate by re-bootstrapping when
                             // bvid changed. Detailed wiring (push another
                             // PlayerView) is left to a follow-up.
                             if let bvid {
-                                Task { await vm.bootstrap(bvid: bvid) }
+                                Task { await vm.bootstrap(aid: aid ?? 0, bvid: bvid) }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -106,9 +106,9 @@ struct VideoDetailContent: View {
         }
         .scrollIndicators(.hidden)
         .background(IbiliTheme.background)
-        .task(id: item.bvid) {
+        .task(id: "\(item.aid):\(item.bvid)") {
             interaction.reset(stat: vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0))
-            await vm.bootstrap(bvid: item.bvid)
+            await vm.bootstrap(aid: item.aid, bvid: item.bvid)
             if let stat = vm.view?.stat { interaction.reset(stat: stat) }
         }
         .onChange(of: interaction.lastToast) { newToast in

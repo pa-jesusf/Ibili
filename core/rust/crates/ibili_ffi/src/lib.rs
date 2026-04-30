@@ -102,7 +102,10 @@ struct DanmakuArgs {
 }
 
 #[derive(Deserialize)]
-struct VideoViewArgs { bvid: String }
+struct VideoViewArgs {
+    #[serde(default)] aid: i64,
+    #[serde(default)] bvid: String,
+}
 
 #[derive(Deserialize)]
 struct ReplyMainArgs {
@@ -196,11 +199,11 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "video.view_full" => {
             let a: VideoViewArgs = serde_json::from_value(args)?;
-            to_value(c.inner.video_view_full(&a.bvid)?)
+            to_value(c.inner.video_view_full(a.aid, &a.bvid)?)
         }
         "video.related" => {
             let a: VideoViewArgs = serde_json::from_value(args)?;
-            to_value(c.inner.video_related(&a.bvid)?)
+            to_value(c.inner.video_related(a.aid, &a.bvid)?)
         }
         "reply.main" => {
             let a: ReplyMainArgs = serde_json::from_value(args)?;
