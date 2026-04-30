@@ -19,20 +19,49 @@ struct RootView: View {
         .environment(\.openURL, OpenURLAction { url in
             router.handle(url)
         })
-        .fullScreenCover(item: $router.pending) { item in
-            NavigationStack {
-                PlayerView(item: item)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                router.pending = nil
-                            } label: {
-                                Image(systemName: "xmark")
+        .fullScreenCover(isPresented: Binding(
+            get: { router.pending != nil },
+            set: { if !$0 { router.pending = nil } }
+        )) {
+            // Host the player inside a wrapper that observes the router
+            // directly. When `router.pending` changes (e.g. user tapped
+            // a related video) we re-key on the aid so SwiftUI tears
+            // down the previous player and mounts a fresh one — that
+            // way back-from-related goes straight to the home tab
+            // instead of stacking covers and creating a 套娃 chain.
+            DeepLinkPlayerHost()
+                .environmentObject(router)
+                .tint(IbiliTheme.accent)
+        }
+    }
+}
+
+/// Wrapper inside the root `.fullScreenCover` that swaps its `PlayerView`
+/// whenever `DeepLinkRouter.pending` changes — including taps on related
+/// videos from inside the player. Re-keying via `.id(...)` is what gives
+/// us the "replace, don't stack" behaviour requested by the user.
+private struct DeepLinkPlayerHost: View {
+    @EnvironmentObject private var router: DeepLinkRouter
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let item = router.pending {
+                    PlayerView(item: item)
+                        .id("\(item.aid):\(item.bvid)")
+                        .toolbar {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button {
+                                    router.pending = nil
+                                } label: {
+                                    Image(systemName: "xmark")
+                                }
                             }
                         }
-                    }
+                } else {
+                    Color.clear
+                }
             }
-            .tint(IbiliTheme.accent)
         }
     }
 }

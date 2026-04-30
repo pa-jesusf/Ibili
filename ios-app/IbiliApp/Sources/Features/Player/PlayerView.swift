@@ -45,6 +45,11 @@ final class PlayerViewModel: ObservableObject {
 
     private var aid: Int64 = 0
     private var cid: Int64 = 0
+    /// Public read-only accessors so views (e.g. the danmaku-send sheet)
+    /// can grab the currently-playing identifiers without having to
+    /// thread `(aid, cid)` through every state binding.
+    var currentAid: Int64 { aid }
+    var currentCid: Int64 { cid }
     private var loadGeneration: UInt64 = 0
     private let discoveryQn: Int64 = 120
     private let engine: PlaybackEngine = HLSProxyEngine.shared
@@ -1570,6 +1575,13 @@ struct PlayerView: View {
     @State private var lastDeviceOrientation: UIDeviceOrientation = .portrait
     /// Weak handle to the AVPlayerViewController so we can drive native FS.
     @State private var playerVCRef = PlayerVCBox()
+    /// Long-press on the danmaku toggle opens this sheet for sending.
+    @State private var showDanmakuSheet = false
+    /// One-shot transient hint that surfaces when the user enables
+    /// danmaku, telling them they can long-press the toggle to send one.
+    /// Suppressible via `AppSettings.showDanmakuSendHint`.
+    @State private var danmakuHint: String?
+    @State private var danmakuHintWork: DispatchWorkItem?
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -1619,7 +1631,10 @@ struct PlayerView: View {
         .toolbar {
             if !isFullscreen, vm.player != nil {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarDanmaku(danmakuEnabled: $settings.danmakuEnabled)
+                    PlayerToolbarDanmaku(
+                        danmakuEnabled: $settings.danmakuEnabled,
+                        onLongPress: { showDanmakuSheet = true }
+                    )
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     PlayerToolbarVideoQuality(
@@ -1694,6 +1709,47 @@ struct PlayerView: View {
                 deactivateAudioSession()
             }
         }
+        .onChange(of: settings.danmakuEnabled) { newValue in
+            // Surface a one-shot reminder the first few times the user
+            // enables danmaku — long-press to send is otherwise hidden.
+            // Users can disable this from 设置 once they've internalised
+            // the gesture.
+            guard newValue, settings.showDanmakuSendHint else { return }
+            danmakuHint = "长按弹幕开关可发送弹幕（可在设置中关闭提示）"
+            danmakuHintWork?.cancel()
+            let work = DispatchWorkItem { danmakuHint = nil }
+            danmakuHintWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work)
+        }
+        .overlay(alignment: .top) {
+            if let m = danmakuHint {
+                Text(m)
+                    .font(.footnote)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Capsule().fill(.regularMaterial))
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: danmakuHint)
+        .sheet(isPresented: $showDanmakuSheet) {
+            DanmakuSendSheet(
+                aid: vm.currentAid > 0 ? vm.currentAid : item.aid,
+                cid: vm.currentCid > 0 ? vm.currentCid : item.cid,
+                progressMs: currentPlayheadMs()
+            )
+        }
+    }
+
+    /// Snapshot the live AVPlayer playhead in milliseconds. Falls back
+    /// to 0 if the player isn't ready or the time is invalid.
+    private func currentPlayheadMs() -> Int64 {
+        guard let p = vm.player else { return 0 }
+        let t = p.currentTime()
+        guard t.isValid, !t.isIndefinite else { return 0 }
+        let s = CMTimeGetSeconds(t)
+        guard s.isFinite, s >= 0 else { return 0 }
+        return Int64(s * 1000)
     }
 
     @ViewBuilder

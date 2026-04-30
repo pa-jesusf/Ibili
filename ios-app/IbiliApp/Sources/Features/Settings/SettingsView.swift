@@ -80,6 +80,7 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("显示弹幕", isOn: $settings.danmakuEnabled)
+                Toggle("启用弹幕时显示发送提示", isOn: $settings.showDanmakuSendHint)
                 if settings.danmakuEnabled {
                     VStack(alignment: .leading) {
                         HStack {

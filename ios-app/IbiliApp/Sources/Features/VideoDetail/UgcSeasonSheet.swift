@@ -3,62 +3,166 @@ import SwiftUI
 /// Sheet listing every episode in a 合集 (UGC season). Sections are
 /// flattened when only one section exists; otherwise rendered with
 /// section headers.
+///
+/// Visual: reuses the same row idiom as the related-video list — cover
+/// thumbnail on the left with duration overlay, title + meta stacked on
+/// the right. The currently-playing episode gets a subtle accent
+/// background + a small "正在播放" pill so it stands out without
+/// breaking the rhythm of the rest of the list. Tapping any other row
+/// dismisses the sheet and routes through `DeepLinkRouter` so the new
+/// video replaces the player (consistent with related-tap behaviour).
+///
+/// On appear we scroll the current episode into view, and offer a
+/// "定位" toolbar button so users who scroll away can jump back.
 struct UgcSeasonSheet: View {
     let season: UgcSeasonDTO
     let currentCid: Int64
     let onPick: (_ aid: Int64, _ bvid: String, _ cid: Int64) -> Void
 
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(season.sections) { section in
-                    if season.sections.count > 1 {
-                        Section(section.title.isEmpty ? "正片" : section.title) {
-                            ForEach(section.episodes) { ep in
-                                row(ep)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(season.sections.enumerated()), id: \.element.id) { si, section in
+                            if season.sections.count > 1 {
+                                HStack {
+                                    Text(section.title.isEmpty ? "正片" : section.title)
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(IbiliTheme.textSecondary)
+                                    Spacer()
+                                    Text("\(section.episodes.count) 集")
+                                        .font(.caption2)
+                                        .foregroundStyle(IbiliTheme.textSecondary)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.top, si == 0 ? 4 : 16)
+                                .padding(.bottom, 6)
+                            }
+                            ForEach(Array(section.episodes.enumerated()), id: \.element.id) { ei, ep in
+                                EpisodeRow(
+                                    episode: ep,
+                                    index: ei + 1,
+                                    isCurrent: ep.cid == currentCid
+                                )
+                                .id(ep.cid)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if ep.cid == currentCid {
+                                        dismiss()
+                                    } else {
+                                        onPick(ep.aid, ep.bvid, ep.cid)
+                                        dismiss()
+                                    }
+                                }
+                                if ei < section.episodes.count - 1 {
+                                    Divider().padding(.leading, 132)
+                                }
                             }
                         }
-                    } else {
-                        ForEach(section.episodes) { ep in
-                            row(ep)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .navigationTitle(season.title.isEmpty ? "合集" : season.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            scrollToCurrent(proxy)
+                        } label: {
+                            Label("定位", systemImage: "scope")
+                                .labelStyle(.titleAndIcon)
+                                .font(.footnote.weight(.medium))
                         }
+                        .disabled(currentCid == 0)
+                    }
+                }
+                .onAppear {
+                    // Defer until the lazy stack has had a chance to
+                    // realise the current row, otherwise scrollTo silently
+                    // no-ops on the first frame.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        scrollToCurrent(proxy)
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle(season.title.isEmpty ? "合集" : season.title)
-            .navigationBarTitleDisplayMode(.inline)
         }
     }
 
-    @ViewBuilder
-    private func row(_ ep: UgcSeasonEpisodeDTO) -> some View {
-        Button {
-            onPick(ep.aid, ep.bvid, ep.cid)
-        } label: {
-            HStack(spacing: 12) {
-                if ep.cid == currentCid {
-                    Image(systemName: "play.fill")
-                        .font(.footnote)
-                        .foregroundStyle(IbiliTheme.accent)
-                        .frame(width: 16)
-                } else {
-                    Color.clear.frame(width: 16, height: 16)
+    private func scrollToCurrent(_ proxy: ScrollViewProxy) {
+        guard currentCid != 0 else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            proxy.scrollTo(currentCid, anchor: .center)
+        }
+    }
+}
+
+/// One row in the season list — same Apple-rhythm shape as the related
+/// list. Shows the episode index in a small leading badge so users
+/// playing through a long season can quickly tell which 集 is which.
+private struct EpisodeRow: View {
+    let episode: UgcSeasonEpisodeDTO
+    let index: Int
+    let isCurrent: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack(alignment: .bottomTrailing) {
+                RemoteImage(url: episode.cover,
+                            contentMode: .fill,
+                            targetPointSize: CGSize(width: 240, height: 150),
+                            quality: 75)
+                    .frame(width: 120, height: 75)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(IbiliTheme.accent, lineWidth: isCurrent ? 1.5 : 0)
+                    )
+                if episode.durationSec > 0 {
+                    Text(BiliFormat.duration(episode.durationSec))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 1.5)
+                        .background(Capsule().fill(.black.opacity(0.6)))
+                        .padding(6)
                 }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(ep.title)
-                        .font(.subheadline)
-                        .foregroundStyle(ep.cid == currentCid ? IbiliTheme.accent : IbiliTheme.textPrimary)
-                        .lineLimit(2)
-                    if ep.durationSec > 0 {
-                        Text(BiliFormat.duration(ep.durationSec))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(IbiliTheme.textSecondary)
+                if isCurrent {
+                    HStack(spacing: 3) {
+                        Image(systemName: "waveform")
+                            .imageScale(.small)
+                        Text("播放中")
                     }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(IbiliTheme.accent))
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
-            .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(String(format: "%02d", index))
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(isCurrent ? IbiliTheme.accent : IbiliTheme.textSecondary)
+                    Text(episode.title)
+                        .font(.footnote.weight(isCurrent ? .semibold : .medium))
+                        .foregroundStyle(isCurrent ? IbiliTheme.accent : IbiliTheme.textPrimary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(
+            isCurrent
+                ? IbiliTheme.accent.opacity(0.06)
+                : Color.clear
+        )
     }
 }

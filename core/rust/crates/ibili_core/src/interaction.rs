@@ -31,6 +31,9 @@ const URL_HEARTBEAT_WEB: &str = "https://api.bilibili.com/x/click-interface/web/
 const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/web";
 /// Like / un-like a single comment. Mirrors PiliPlus `ReplyHttp.likeReply`.
 const URL_REPLY_ACTION: &str = "https://api.bilibili.com/x/v2/reply/action";
+/// Send a danmaku for the given cid (legacy XML-style endpoint, but
+/// PiliPlus and the official web client both still post here).
+const URL_DM_POST: &str = "https://api.bilibili.com/x/v2/dm/post";
 
 #[derive(Default, Deserialize)]
 struct ToastWire {
@@ -275,6 +278,38 @@ impl Core {
             ("csrf".into(), csrf),
         ];
         let _: Value = self.http.post_form_web(URL_REPLY_ACTION, &params)?;
+        Ok(())
+    }
+
+    /// Post a danmaku to the given cid. `progress_ms` is the playback
+    /// position in milliseconds, `mode` is the scroll mode (1 = roll,
+    /// 4 = bottom, 5 = top), `color` is RGB packed (e.g. 16777215 = white),
+    /// `fontsize` is 25 (standard) or 18 (small).
+    pub fn send_danmaku(
+        &self,
+        aid: i64,
+        cid: i64,
+        msg: &str,
+        progress_ms: i64,
+        mode: i32,
+        color: i32,
+        fontsize: i32,
+    ) -> CoreResult<()> {
+        let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        let params: Vec<(String, String)> = vec![
+            ("type".into(), "1".into()),
+            ("oid".into(), cid.to_string()),
+            ("aid".into(), aid.to_string()),
+            ("msg".into(), msg.to_string()),
+            ("progress".into(), progress_ms.to_string()),
+            ("color".into(), color.to_string()),
+            ("fontsize".into(), fontsize.to_string()),
+            ("mode".into(), mode.to_string()),
+            ("pool".into(), "0".into()),
+            ("plat".into(), "1".into()),
+            ("csrf".into(), csrf),
+        ];
+        let _: Value = self.http.post_form_web(URL_DM_POST, &params)?;
         Ok(())
     }
 }

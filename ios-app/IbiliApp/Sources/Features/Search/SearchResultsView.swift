@@ -8,6 +8,7 @@ import UIKit
 struct SearchResultsView: View {
     @ObservedObject var vm: SearchViewModel
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var pageInputText: String = ""
     @State private var isPageInputPresented: Bool = false
@@ -62,7 +63,9 @@ struct SearchResultsView: View {
 
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                         ForEach(vm.results) { item in
-                            NavigationLink(value: feedItem(from: item)) {
+                            Button {
+                                router.pending = feedItem(from: item)
+                            } label: {
                                 SearchResultCardView(
                                     item: item,
                                     cardWidth: cardW,

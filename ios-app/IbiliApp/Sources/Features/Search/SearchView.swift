@@ -18,9 +18,6 @@ struct SearchView: View {
                 .navigationTitle("搜索")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbarContent }
-                .navigationDestination(for: FeedItemDTO.self) { item in
-                    PlayerView(item: item)
-                }
         }
         .tint(IbiliTheme.accent)
         .searchable(

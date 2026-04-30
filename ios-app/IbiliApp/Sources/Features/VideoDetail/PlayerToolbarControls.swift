@@ -11,6 +11,9 @@ import SwiftUI
 
 struct PlayerToolbarDanmaku: View {
     @Binding var danmakuEnabled: Bool
+    /// Long-press handler — typically opens the danmaku-send sheet.
+    var onLongPress: (() -> Void)? = nil
+
     var body: some View {
         Button {
             danmakuEnabled.toggle()
@@ -19,6 +22,16 @@ struct PlayerToolbarDanmaku: View {
         }
         .tint(danmakuEnabled ? IbiliTheme.accent : nil)
         .accessibilityLabel(danmakuEnabled ? "关闭弹幕" : "开启弹幕")
+        .accessibilityHint("长按发送弹幕")
+        // Toolbar items can't easily host both a tap-Button and a
+        // long-press gesture, but `simultaneousGesture` works with the
+        // standard Button machinery on iOS 16+.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.4)
+                .onEnded { _ in
+                    onLongPress?()
+                }
+        )
     }
 }
 

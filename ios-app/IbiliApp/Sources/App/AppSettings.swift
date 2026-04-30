@@ -31,6 +31,9 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.player.preferredQnMigrated") private var preferredQnMigrated: Bool = false
     /// Whether to show danmaku overlay during playback.
     @AppStorage("ibili.player.danmakuEnabled") var danmakuEnabled: Bool = true
+    /// Show a transient "长按可发送弹幕" hint when danmaku is enabled.
+    /// Off ⇒ user has acknowledged it and doesn't want to be reminded.
+    @AppStorage("ibili.player.showDanmakuSendHint") var showDanmakuSendHint: Bool = true
     /// Danmaku opacity, 0.1 ... 1.0.
     @AppStorage("ibili.player.danmakuOpacity") var danmakuOpacity: Double = 0.85
     /// Upstream-compatible danmaku cloud-block weight, 0...11.

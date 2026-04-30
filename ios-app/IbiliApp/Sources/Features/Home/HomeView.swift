@@ -5,6 +5,7 @@ struct HomeView: View {
     @StateObject private var vm = HomeViewModel()
     @StateObject private var prefetch = FeedPrefetchCoordinator()
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
 
     var body: some View {
@@ -43,7 +44,14 @@ struct HomeView: View {
             ScrollView {
                 LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                     ForEach(vm.items) { item in
-                        NavigationLink(value: item) {
+                        Button {
+                            // Route every video tap through the router so
+                            // the player always lives in the global cover
+                            // host. This keeps the back-stack flat: tap
+                            // related → re-key player → back goes to home,
+                            // never to a previous video. (See `RootView`.)
+                            router.pending = item
+                        } label: {
                             VideoCardView(
                                 item: item,
                                 cardWidth: cardW,
@@ -70,9 +78,6 @@ struct HomeView: View {
                 if vm.isLoading && !vm.items.isEmpty {
                     ProgressView().padding()
                 }
-            }
-            .navigationDestination(for: FeedItemDTO.self) { item in
-                PlayerView(item: item)
             }
             .modifier(ProMotionScrollHint())
             .onAppear {

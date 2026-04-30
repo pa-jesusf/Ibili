@@ -175,6 +175,20 @@ struct ReplyLikeArgs {
 }
 
 #[derive(Deserialize)]
+struct SendDanmakuArgs {
+    aid: i64,
+    cid: i64,
+    msg: String,
+    #[serde(default)] progress_ms: i64,
+    #[serde(default = "default_dm_mode")] mode: i32,
+    #[serde(default = "default_dm_color")] color: i32,
+    #[serde(default = "default_dm_fontsize")] fontsize: i32,
+}
+fn default_dm_mode() -> i32 { 1 }
+fn default_dm_color() -> i32 { 16777215 }
+fn default_dm_fontsize() -> i32 { 25 }
+
+#[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
     #[serde(default = "default_search_page")] page: i64,
@@ -291,6 +305,19 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "interaction.reply_like" => {
             let a: ReplyLikeArgs = serde_json::from_value(args)?;
             c.inner.reply_like(a.oid, a.kind, a.rpid, a.action)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "interaction.send_danmaku" => {
+            let a: SendDanmakuArgs = serde_json::from_value(args)?;
+            c.inner.send_danmaku(
+                a.aid,
+                a.cid,
+                &a.msg,
+                a.progress_ms,
+                a.mode,
+                a.color,
+                a.fontsize,
+            )?;
             Ok(Value::Object(Default::default()))
         }
         "search.video" => {

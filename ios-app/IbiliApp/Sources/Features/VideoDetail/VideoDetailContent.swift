@@ -22,6 +22,16 @@ struct VideoDetailContent: View {
     @State private var toastWork: DispatchWorkItem?
     @State private var toast: String?
 
+    /// Last reported Y of the in-content `DetailTabBar` (in the
+    /// ScrollView's coordinate space). When this drops below 0 the
+    /// picker has scrolled above the viewport.
+    @State private var tabBarY: CGFloat = .greatestFiniteMagnitude
+    @State private var lastTabBarY: CGFloat = .greatestFiniteMagnitude
+    /// Whether the floating top picker is on screen. Driven by direction
+    /// detection so the bar appears as soon as the user starts scrolling
+    /// up, regardless of how far down they currently are.
+    @State private var floatingTabsVisible: Bool = false
+
     enum Tab: String, CaseIterable, Identifiable {
         case intro = "简介"
         case replies = "评论"
@@ -30,42 +40,95 @@ struct VideoDetailContent: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Picker("", selection: $tab) {
-                    ForEach(Tab.allCases) { t in Text(t.rawValue).tag(t) }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    // Anchor target for "scroll back to the top" when the
+                    // user taps the segmented control's already-selected
+                    // segment. Sits just above the picker so the picker
+                    // ends up flush with the navigation bar.
+                    Color.clear.frame(height: 0).id("tabBarTop")
 
-                Group {
-                    switch tab {
-                    case .intro:
-                        introBody
-                    case .replies:
-                        CommentListView(oid: item.aid)
-                            .padding(.horizontal, 16)
-                    case .related:
-                        RelatedVideoList(
-                            items: vm.related,
-                            isLoadingMore: vm.isLoadingMoreRelated,
-                            isEnd: vm.relatedIsEnd,
-                            onTap: { feedItem in
-                                router.pending = feedItem
-                            },
-                            onReachEnd: {
-                                Task { await vm.loadMoreRelated() }
+                    DetailTabBar(selection: $tab) { tapped in
+                        // Tap on already-selected segment ⇒ scroll back
+                        // up to the top of the tab content.
+                        if tapped == tab {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                proxy.scrollTo("tabBarTop", anchor: .top)
                             }
-                        )
-                        .padding(.horizontal, 12)
+                        } else {
+                            tab = tapped
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .background(
+                        // Publish the picker's Y position in the ScrollView's
+                        // coordinate space. Once the picker scrolls above
+                        // the viewport top we know to start considering the
+                        // floating overlay.
+                        GeometryReader { g in
+                            Color.clear.preference(
+                                key: TabBarOffsetKey.self,
+                                value: g.frame(in: .named("detailScroll")).minY
+                            )
+                        }
+                    )
+
+                    Group {
+                        switch tab {
+                        case .intro:
+                            introBody
+                        case .replies:
+                            CommentListView(oid: item.aid)
+                                .padding(.horizontal, 16)
+                        case .related:
+                            RelatedVideoList(
+                                items: vm.related,
+                                isLoadingMore: vm.isLoadingMoreRelated,
+                                isEnd: vm.relatedIsEnd,
+                                onTap: { feedItem in
+                                    router.pending = feedItem
+                                },
+                                onReachEnd: {
+                                    Task { await vm.loadMoreRelated() }
+                                }
+                            )
+                            .padding(.horizontal, 12)
+                        }
+                    }
+                    .padding(.bottom, 24)
                 }
-                .padding(.bottom, 24)
+                .padding(.top, 12)
             }
-            .padding(.top, 12)
+            .coordinateSpace(name: "detailScroll")
+            .onPreferenceChange(TabBarOffsetKey.self) { y in
+                handleScroll(y: y)
+            }
+            .scrollIndicators(.hidden)
+            .background(IbiliTheme.background)
+            // Floating tab bar that snaps in when the user scrolls back
+            // up while the static picker is still off-screen. Hidden the
+            // moment they start scrolling down again so it doesn't fight
+            // the user's reading flow.
+            .overlay(alignment: .top) {
+                if floatingTabsVisible {
+                    DetailTabBar(selection: $tab) { tapped in
+                        if tapped == tab {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                proxy.scrollTo("tabBarTop", anchor: .top)
+                            }
+                        } else {
+                            tab = tapped
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: floatingTabsVisible)
         }
-        .scrollIndicators(.hidden)
-        .background(IbiliTheme.background)
         .task(id: "\(item.aid):\(item.bvid)") {
             interaction.reset(stat: vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0))
             // Run detail (view info) and relation hydrate concurrently.
@@ -145,10 +208,21 @@ struct VideoDetailContent: View {
 
             if let v = vm.view {
                 if let season = v.ugcSeason, season.id > 0 {
-                    VideoSeasonCard(source: .season(season, currentCid: item.cid)) { aid, bvid, _ in
-                        if let bvid {
-                            Task { await vm.bootstrap(aid: aid ?? 0, bvid: bvid) }
-                        }
+                    VideoSeasonCard(source: .season(season, currentCid: item.cid)) { aid, bvid, cid in
+                        // Tapping any other episode in the 合集 should
+                        // *replace* the player, mirroring how related-tap
+                        // works. Hand off to the router so the cover host
+                        // re-keys onto the new video and the previous
+                        // player tears down (no 套娃 chain).
+                        guard cid != item.cid else { return }
+                        let next = FeedItemDTO(
+                            aid: aid ?? 0,
+                            bvid: bvid ?? "",
+                            cid: cid,
+                            title: "", cover: "", author: "",
+                            durationSec: 0, play: 0, danmaku: 0
+                        )
+                        router.pending = next
                     }
                     .padding(.horizontal, 16)
                 } else if v.pages.count > 1 {
@@ -183,5 +257,84 @@ struct VideoDetailContent: View {
         } else {
             EmptyView()
         }
+    }
+
+    /// Drive the floating tab-bar visibility from the in-content
+    /// picker's Y offset. We only show the floating bar when:
+    ///   * the in-content picker is above the viewport (y < 0), and
+    ///   * the user is scrolling *up* (delta > 0)
+    /// We hide it again on any downward scroll so it doesn't compete
+    /// with the user's reading flow.
+    private func handleScroll(y: CGFloat) {
+        // Skip the very first sample — `lastTabBarY` is sentinel-init.
+        if lastTabBarY == .greatestFiniteMagnitude {
+            lastTabBarY = y
+            tabBarY = y
+            return
+        }
+        let delta = y - lastTabBarY
+        lastTabBarY = y
+        tabBarY = y
+        // Only consider transitions once the static picker has actually
+        // scrolled off-screen. While it's still visible the floating bar
+        // would be redundant.
+        let pickerOffscreen = y < -8
+        if !pickerOffscreen {
+            if floatingTabsVisible { floatingTabsVisible = false }
+            return
+        }
+        if delta > 1.5 {
+            // User is scrolling up.
+            if !floatingTabsVisible { floatingTabsVisible = true }
+        } else if delta < -1.5 {
+            // User is scrolling down.
+            if floatingTabsVisible { floatingTabsVisible = false }
+        }
+    }
+}
+
+private struct TabBarOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// Custom segmented control used for the 简介 / 评论 / 相关 picker.
+///
+/// We can't use `Picker(.segmented)` here because we need to detect
+/// taps on the *already selected* segment (to scroll to top). The
+/// callback is invoked for every tap, and the parent decides whether
+/// to mutate `selection` or to scroll-to-top.
+struct DetailTabBar: View {
+    @Binding var selection: VideoDetailContent.Tab
+    let onTap: (VideoDetailContent.Tab) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(VideoDetailContent.Tab.allCases) { t in
+                Button {
+                    onTap(t)
+                } label: {
+                    Text(t.rawValue)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(selection == t ? .white : IbiliTheme.textPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(selection == t ? IbiliTheme.accent : Color.clear)
+                                .padding(2)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(
+            Capsule(style: .continuous)
+                .fill(IbiliTheme.surface)
+        )
+        .animation(.easeInOut(duration: 0.18), value: selection)
     }
 }

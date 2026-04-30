@@ -13,6 +13,8 @@ struct PlayerOverlayControls: View {
     @Binding var danmakuEnabled: Bool
     let onPickQuality: (Int64) -> Void
     let onPickAudioQuality: (Int64) -> Void
+    /// Long-press on the danmaku toggle — usually opens the send sheet.
+    var onDanmakuLongPress: (() -> Void)? = nil
     /// Pull-out actions: AirPlay route picker, AVPlayer 文章, etc.
     /// Caller decides what the overflow menu does.
     var overflowActions: [OverflowAction] = []
@@ -33,6 +35,10 @@ struct PlayerOverlayControls: View {
                 surface: .glass,
                 tint: danmakuEnabled ? IbiliTheme.accent : .white
             ) { danmakuEnabled.toggle() }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.4)
+                    .onEnded { _ in onDanmakuLongPress?() }
+            )
 
             // Video quality menu
             if !qualities.isEmpty {

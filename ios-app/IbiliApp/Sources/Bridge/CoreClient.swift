@@ -360,6 +360,33 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable { let oid: Int64; let kind: Int32; let rpid: Int64; let action: Int32 }
         try callVoid("interaction.reply_like", args: A(oid: oid, kind: kind, rpid: rpid, action: action))
     }
+
+    /// Post a danmaku to the given cid. `progressMs` is the playhead in
+    /// milliseconds, `mode` 1 = roll, 4 = bottom, 5 = top, `color` is
+    /// packed RGB (white = 16777215).
+    public func sendDanmaku(
+        aid: Int64,
+        cid: Int64,
+        msg: String,
+        progressMs: Int64,
+        mode: Int32 = 1,
+        color: Int32 = 16_777_215,
+        fontsize: Int32 = 25
+    ) throws {
+        struct A: Encodable {
+            let aid: Int64
+            let cid: Int64
+            let msg: String
+            let progress_ms: Int64
+            let mode: Int32
+            let color: Int32
+            let fontsize: Int32
+        }
+        try callVoid("interaction.send_danmaku", args: A(
+            aid: aid, cid: cid, msg: msg,
+            progress_ms: progressMs, mode: mode, color: color, fontsize: fontsize
+        ))
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {
