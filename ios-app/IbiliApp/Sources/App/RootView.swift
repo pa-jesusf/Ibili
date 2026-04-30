@@ -57,6 +57,14 @@ private struct DeepLinkPlayerHost: View {
     ///     `.interactiveSpring`, which automatically opts into the
     ///     ProMotion 120 Hz path.
     @State private var offsetX: CGFloat = UIScreen.main.bounds.width
+    /// Tri-state lock for the leading-edge drag. `undecided` while
+    /// we're still reading the slope of the user's motion; once we
+    /// commit to either `.horizontal` (swipe-back) or `.vertical`
+    /// (the user is actually scrolling the page underneath), we
+    /// stay there for the rest of the drag. Resets in `onEnded`.
+    @State private var dragDecision: DragDecision = .undecided
+
+    private enum DragDecision { case undecided, horizontal, vertical }
 
     /// Native UIKit-style spring. `interpolatingSpring` produces a
     /// physics curve that SwiftUI drives via the underlying
@@ -106,27 +114,59 @@ private struct DeepLinkPlayerHost: View {
         }
         // Restore the iOS interactive-pop gesture by hosting an
         // invisible DragGesture region pinned to the leading edge.
-        // We only consume drags that *start* within the first ~16pt
-        // so it never fights vertical scroll views or horizontal
-        // carousels inside the player content.
+        //
+        // Industry consensus for "swipe-back vs vertical scroll":
+        //   1. Generous edge zone (~20pt) so the gesture is easy to
+        //      *start*, matching UIKit's `interactivePopGestureRecognizer`.
+        //   2. A short undecided phase: read the first ~10pt of
+        //      motion before committing. If vertical dominates,
+        //      lock the gesture to `.vertical` and stop tracking
+        //      (the user is scrolling the description / comments).
+        //      If horizontal-positive dominates by ≥1.5×, lock to
+        //      `.horizontal` and start tracking the offset. The
+        //      slope ratio of 1.5 is what Apple uses internally for
+        //      `UIScrollView.directionalLockEnabled` and what most
+        //      well-behaved apps converge on.
+        //   3. Once locked, never revisit the decision — prevents
+        //      mid-drag jitter from re-capturing scroll input.
         .overlay(alignment: .leading) {
             Color.clear
-                .frame(width: 14)
+                .frame(width: 20)
                 .contentShape(Rectangle())
                 .gesture(
-                    DragGesture(minimumDistance: 8)
+                    DragGesture(minimumDistance: 0)
                         .onChanged { v in
-                            guard v.translation.width > 0,
-                                  abs(v.translation.width) > abs(v.translation.height) else {
+                            let dx = v.translation.width
+                            let dy = v.translation.height
+                            switch dragDecision {
+                            case .vertical:
                                 return
+                            case .horizontal:
+                                if dx > 0 { offsetX = dx }
+                            case .undecided:
+                                let ax = abs(dx), ay = abs(dy)
+                                // Wait until the user has moved
+                                // at least 8pt before deciding,
+                                // otherwise fingertip noise alone
+                                // can flip the slope.
+                                guard max(ax, ay) > 8 else { return }
+                                if ay > ax {
+                                    dragDecision = .vertical
+                                } else if dx > 0 && ax > ay * 1.5 {
+                                    dragDecision = .horizontal
+                                    offsetX = dx
+                                } else {
+                                    // Ambiguous slope (close to 45°):
+                                    // treat as vertical so scroll
+                                    // wins ties, mirroring iOS's
+                                    // own bias.
+                                    dragDecision = .vertical
+                                }
                             }
-                            // Track the finger directly, no
-                            // animation — the per-frame offset
-                            // assignment is what actually runs the
-                            // 120 Hz draw loop while the user drags.
-                            offsetX = v.translation.width
                         }
                         .onEnded { v in
+                            defer { dragDecision = .undecided }
+                            guard dragDecision == .horizontal else { return }
                             let dx = v.translation.width
                             let vx = v.predictedEndTranslation.width
                             if dx > 80 || vx > 200 {
@@ -174,6 +214,12 @@ struct MainTabView: View {
                             .navigationTitle("推荐")
                     }
                 }
+                Tab("动态", systemImage: "sparkles") {
+                    NavigationStack {
+                        DynamicFeedView()
+                            .navigationTitle("动态")
+                    }
+                }
                 Tab("我的", systemImage: "person.crop.circle") {
                     NavigationStack {
                         ProfileView()
@@ -193,6 +239,12 @@ struct MainTabView: View {
                 }
                 .tabItem { Label("首页", systemImage: "house.fill") }
 
+                NavigationStack {
+                    DynamicFeedView()
+                        .navigationTitle("动态")
+                }
+                .tabItem { Label("动态", systemImage: "sparkles") }
+
                 SearchView()
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
 
@@ -211,49 +263,6 @@ struct ProfileView: View {
     @EnvironmentObject var session: AppSession
 
     var body: some View {
-        List {
-            Section("账户") {
-                LabeledContent("UID", value: String(session.mid))
-            }
-            Section("偏好") {
-                NavigationLink {
-                    SettingsView()
-                } label: {
-                    profileRowLabel("设置", systemImage: "rectangle.grid.2x2")
-                }
-            }
-            Section("诊断") {
-                NavigationLink {
-                    LogsView()
-                } label: {
-                    profileRowLabel("应用日志", systemImage: "doc.text.magnifyingglass")
-                }
-            }
-            Section {
-                Button(role: .destructive) {
-                    session.logout()
-                } label: {
-                    Text("退出登录").frame(maxWidth: .infinity, alignment: .center)
-                }
-            }
-        }
-        // Re-assert the accent tint at the List level so the row
-        // icons stay pink after pushing a detail view and popping back.
-        // SwiftUI's TabView-level `.tint` occasionally fails to
-        // propagate into NavigationStack content on push/pop, which
-        // would otherwise let the system's default blue tint bleed
-        // through into Label icons.
-        .tint(IbiliTheme.accent)
-    }
-
-    private func profileRowLabel(_ title: String, systemImage: String) -> some View {
-        Label {
-            Text(title)
-                .foregroundStyle(.primary)
-        } icon: {
-            Image(systemName: systemImage)
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(IbiliTheme.accent)
-        }
+        ProfileRoot()
     }
 }

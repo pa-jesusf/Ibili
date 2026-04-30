@@ -228,6 +228,31 @@ struct SearchVideoArgs {
 }
 fn default_search_page() -> i64 { 1 }
 
+#[derive(Deserialize)]
+struct MidArgs { mid: i64 }
+#[derive(Deserialize)]
+struct VmidPageArgs { vmid: i64, #[serde(default = "default_one_i64")] pn: i64 }
+#[derive(Deserialize)]
+struct HistoryCursorArgs { #[serde(default)] max: i64, #[serde(default)] view_at: i64 }
+#[derive(Deserialize)]
+struct FavListArgs { media_id: i64, #[serde(default = "default_one_i64")] pn: i64 }
+#[derive(Deserialize)]
+struct BangumiListArgs {
+    vmid: i64,
+    #[serde(default = "default_bangumi_kind")] kind: i32,
+    #[serde(default)] status: i32,
+    #[serde(default = "default_one_i64")] pn: i64,
+}
+fn default_bangumi_kind() -> i32 { 1 }
+fn default_one_i64() -> i64 { 1 }
+#[derive(Deserialize)]
+struct DynamicFeedArgs {
+    #[serde(default = "default_feed_type")] feed_type: String,
+    #[serde(default = "default_one_i64")] page: i64,
+    #[serde(default)] offset: String,
+}
+fn default_feed_type() -> String { "all".into() }
+
 fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> {
     match method {
         "session.snapshot" => to_value(c.inner.session_snapshot()),
@@ -382,6 +407,37 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                 a.duration,
                 a.tids,
             )?)
+        }
+        "user.card" => {
+            let a: MidArgs = serde_json::from_value(args)?;
+            to_value(c.inner.user_card(a.mid)?)
+        }
+        "user.history" => {
+            let a: HistoryCursorArgs = serde_json::from_value(args).unwrap_or(HistoryCursorArgs { max: 0, view_at: 0 });
+            to_value(c.inner.history_cursor(a.max, a.view_at)?)
+        }
+        "user.fav_resources" => {
+            let a: FavListArgs = serde_json::from_value(args)?;
+            to_value(c.inner.fav_resource_list(a.media_id, a.pn)?)
+        }
+        "user.bangumi_follow" => {
+            let a: BangumiListArgs = serde_json::from_value(args)?;
+            to_value(c.inner.bangumi_follow_list(a.vmid, a.kind, a.status, a.pn)?)
+        }
+        "user.watchlater_list" => {
+            to_value(c.inner.watchlater_list()?)
+        }
+        "user.followings" => {
+            let a: VmidPageArgs = serde_json::from_value(args)?;
+            to_value(c.inner.relation_followings(a.vmid, a.pn)?)
+        }
+        "user.followers" => {
+            let a: VmidPageArgs = serde_json::from_value(args)?;
+            to_value(c.inner.relation_followers(a.vmid, a.pn)?)
+        }
+        "dynamic.feed" => {
+            let a: DynamicFeedArgs = serde_json::from_value(args).unwrap_or(DynamicFeedArgs { feed_type: "all".into(), page: 1, offset: String::new() });
+            to_value(c.inner.dynamic_feed(&a.feed_type, a.page, &a.offset)?)
         }
         _ => Err(CoreError::InvalidArgument(format!("unknown method: {method}"))),
     }

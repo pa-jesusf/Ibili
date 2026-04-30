@@ -17,6 +17,8 @@ pub mod cdn;
 pub mod search;
 pub mod reply;
 pub mod interaction;
+pub mod user_space;
+pub mod dynamic;
 
 use std::sync::Arc;
 

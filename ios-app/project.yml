@@ -44,6 +44,7 @@ targets:
         LSRequiresIPhoneOS: true
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true
+        CADisableMinimumFrameDurationOnPhone: true
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations:

@@ -444,6 +444,60 @@ public final class CoreClient: @unchecked Sendable {
         return try call("interaction.emote_panel", args: A(business: business),
                         decoding: [EmotePackageDTO].self)
     }
+
+    // MARK: - User space
+
+    /// `/x/web-interface/card`. Public profile card with fan/following counts.
+    public func userCard(mid: Int64) throws -> UserCardDTO {
+        struct A: Encodable { let mid: Int64 }
+        return try call("user.card", args: A(mid: mid), decoding: UserCardDTO.self)
+    }
+
+    /// Watch history. `max` and `viewAt` are the cursor returned by
+    /// the previous page; pass 0 for both on the first call.
+    public func userHistory(max: Int64 = 0, viewAt: Int64 = 0) throws -> HistoryPageDTO {
+        struct A: Encodable { let max: Int64; let view_at: Int64 }
+        return try call("user.history", args: A(max: max, view_at: viewAt), decoding: HistoryPageDTO.self)
+    }
+
+    /// Videos inside a favourite folder. `pn` is 1-based.
+    public func userFavResources(mediaId: Int64, page: Int64 = 1) throws -> FavResourcePageDTO {
+        struct A: Encodable { let media_id: Int64; let pn: Int64 }
+        return try call("user.fav_resources", args: A(media_id: mediaId, pn: page), decoding: FavResourcePageDTO.self)
+    }
+
+    /// 番剧 / 影视 follow list. `kind` 1=bangumi, 2=cinema.
+    /// `status` 0=all, 1=watching, 2=finished, 3=plan.
+    public func userBangumiFollow(vmid: Int64, kind: Int32 = 1, status: Int32 = 0, page: Int64 = 1) throws -> BangumiFollowPageDTO {
+        struct A: Encodable { let vmid: Int64; let kind: Int32; let status: Int32; let pn: Int64 }
+        return try call("user.bangumi_follow", args: A(vmid: vmid, kind: kind, status: status, pn: page), decoding: BangumiFollowPageDTO.self)
+    }
+
+    /// Rich watch-later list (title / cover / progress).
+    public func userWatchLaterList() throws -> [WatchLaterItemDTO] {
+        return try call("user.watchlater_list", decoding: [WatchLaterItemDTO].self)
+    }
+
+    public func userFollowings(vmid: Int64, page: Int64 = 1) throws -> RelationPageDTO {
+        struct A: Encodable { let vmid: Int64; let pn: Int64 }
+        return try call("user.followings", args: A(vmid: vmid, pn: page), decoding: RelationPageDTO.self)
+    }
+
+    public func userFollowers(vmid: Int64, page: Int64 = 1) throws -> RelationPageDTO {
+        struct A: Encodable { let vmid: Int64; let pn: Int64 }
+        return try call("user.followers", args: A(vmid: vmid, pn: page), decoding: RelationPageDTO.self)
+    }
+
+    // MARK: - Dynamic feed
+
+    /// One page of the unified dynamic feed.
+    /// `feedType` mirrors PiliPlus: "all" | "video" | "pgc" | "article".
+    /// `offset` is empty on the first call; subsequent calls pass the
+    /// `offset` returned in the previous page.
+    public func dynamicFeed(feedType: String = "all", page: Int64 = 1, offset: String = "") throws -> DynamicFeedPageDTO {
+        struct A: Encodable { let feed_type: String; let page: Int64; let offset: String }
+        return try call("dynamic.feed", args: A(feed_type: feedType, page: page, offset: offset), decoding: DynamicFeedPageDTO.self)
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {

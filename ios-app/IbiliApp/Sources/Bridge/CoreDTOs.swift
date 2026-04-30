@@ -701,3 +701,274 @@ public struct EmotePackageDTO: Decodable, Hashable, Identifiable {
     public let kind: Int32
     public let emotes: [EmoteDTO]
 }
+
+// MARK: - User space
+
+public struct UserCardDTO: Decodable, Hashable {
+    public let mid: Int64
+    public let name: String
+    public let face: String
+    public let sign: String
+    public let follower: Int64
+    public let following: Int64
+    public let archiveCount: Int64
+    public let vipType: Int64
+    public let vipStatus: Int64
+    public let vipLabel: String
+
+    enum CodingKeys: String, CodingKey {
+        case mid, name, face, sign, follower, following
+        case archiveCount = "archive_count"
+        case vipType = "vip_type"
+        case vipStatus = "vip_status"
+        case vipLabel = "vip_label"
+    }
+}
+
+public struct HistoryItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { aid }
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let author: String
+    public let durationSec: Int64
+    public let progressSec: Int64
+    public let viewAt: Int64
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover, author
+        case durationSec = "duration_sec"
+        case progressSec = "progress_sec"
+        case viewAt = "view_at"
+    }
+}
+
+public struct HistoryPageDTO: Decodable {
+    public let items: [HistoryItemDTO]
+    public let nextMax: Int64
+    public let nextViewAt: Int64
+    enum CodingKeys: String, CodingKey {
+        case items
+        case nextMax = "next_max"
+        case nextViewAt = "next_view_at"
+    }
+}
+
+public struct FavResourceItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { aid }
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let author: String
+    public let durationSec: Int64
+    public let play: Int64
+    public let danmaku: Int64
+    public let pubdate: Int64
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover, author, play, danmaku, pubdate
+        case durationSec = "duration_sec"
+    }
+}
+
+public struct FavResourcePageDTO: Decodable {
+    public let items: [FavResourceItemDTO]
+    public let hasMore: Bool
+    enum CodingKeys: String, CodingKey {
+        case items
+        case hasMore = "has_more"
+    }
+}
+
+public struct BangumiFollowItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { seasonId }
+    public let seasonId: Int64
+    public let mediaId: Int64
+    public let title: String
+    public let cover: String
+    public let progress: String
+    public let evaluate: String
+    public let totalCount: Int64
+    enum CodingKeys: String, CodingKey {
+        case title, cover, progress, evaluate
+        case seasonId = "season_id"
+        case mediaId = "media_id"
+        case totalCount = "total_count"
+    }
+}
+
+public struct BangumiFollowPageDTO: Decodable {
+    public let items: [BangumiFollowItemDTO]
+    public let hasMore: Bool
+    enum CodingKeys: String, CodingKey {
+        case items
+        case hasMore = "has_more"
+    }
+}
+
+public struct WatchLaterItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { aid }
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let author: String
+    public let durationSec: Int64
+    public let progressSec: Int64
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover, author
+        case durationSec = "duration_sec"
+        case progressSec = "progress_sec"
+    }
+}
+
+public struct RelationUserDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { mid }
+    public let mid: Int64
+    public let name: String
+    public let face: String
+    public let sign: String
+}
+
+public struct RelationPageDTO: Decodable {
+    public let items: [RelationUserDTO]
+    public let total: Int64
+}
+
+// MARK: - Dynamic feed
+
+public enum DynamicKindDTO: String, Decodable {
+    case video, draw, word, forward, pgc, article, live
+    case unsupported
+}
+
+public struct DynamicAuthorDTO: Decodable, Hashable {
+    public let mid: Int64
+    public let name: String
+    public let face: String
+    public let pubLabel: String
+    public let pubTs: Int64
+    enum CodingKeys: String, CodingKey {
+        case mid, name, face
+        case pubLabel = "pub_label"
+        case pubTs = "pub_ts"
+    }
+}
+
+public struct DynamicStatDTO: Decodable, Hashable {
+    public let like: Int64
+    public let comment: Int64
+    public let forward: Int64
+}
+
+public struct DynamicVideoDTO: Decodable, Hashable {
+    public let aid: Int64
+    public let bvid: String
+    public let title: String
+    public let cover: String
+    public let durationLabel: String
+    public let statLabel: String
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, title, cover
+        case durationLabel = "duration_label"
+        case statLabel = "stat_label"
+    }
+}
+
+public struct DynamicImageDTO: Decodable, Hashable {
+    public let url: String
+    public let width: Int64
+    public let height: Int64
+}
+
+public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
+    public var id: String { idStr }
+    public let idStr: String
+    public let kind: DynamicKindDTO
+    public let author: DynamicAuthorDTO
+    public let stat: DynamicStatDTO
+    public let text: String
+    public let video: DynamicVideoDTO?
+    public let images: [DynamicImageDTO]
+    /// One-level forward original; the wire layer flattens deeper
+    /// nesting so we only carry a single optional indirection here.
+    public let orig: DynamicItemRefDTO?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, author, stat, text, video, images, orig
+        case idStr = "id_str"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        idStr = try c.decode(String.self, forKey: .idStr)
+        kind = (try? c.decode(DynamicKindDTO.self, forKey: .kind)) ?? .unsupported
+        author = try c.decode(DynamicAuthorDTO.self, forKey: .author)
+        stat = (try? c.decode(DynamicStatDTO.self, forKey: .stat)) ?? DynamicStatDTO(like: 0, comment: 0, forward: 0)
+        text = (try? c.decode(String.self, forKey: .text)) ?? ""
+        video = try? c.decodeIfPresent(DynamicVideoDTO.self, forKey: .video)
+        images = (try? c.decodeIfPresent([DynamicImageDTO].self, forKey: .images)) ?? []
+        orig = try? c.decodeIfPresent(DynamicItemRefDTO.self, forKey: .orig)
+    }
+}
+
+/// Same shape as `DynamicItemDTO` minus the `orig` field (no
+/// recursion). Splitting them avoids the infinite-type dance we'd
+/// otherwise need for `DynamicItemDTO` to embed itself.
+public struct DynamicItemRefDTO: Decodable, Hashable {
+    public let idStr: String
+    public let kind: DynamicKindDTO
+    public let author: DynamicAuthorDTO
+    public let stat: DynamicStatDTO
+    public let text: String
+    public let video: DynamicVideoDTO?
+    public let images: [DynamicImageDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case kind, author, stat, text, video, images
+        case idStr = "id_str"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        idStr = try c.decode(String.self, forKey: .idStr)
+        kind = (try? c.decode(DynamicKindDTO.self, forKey: .kind)) ?? .unsupported
+        author = try c.decode(DynamicAuthorDTO.self, forKey: .author)
+        stat = (try? c.decode(DynamicStatDTO.self, forKey: .stat)) ?? DynamicStatDTO(like: 0, comment: 0, forward: 0)
+        text = (try? c.decode(String.self, forKey: .text)) ?? ""
+        video = try? c.decodeIfPresent(DynamicVideoDTO.self, forKey: .video)
+        images = (try? c.decodeIfPresent([DynamicImageDTO].self, forKey: .images)) ?? []
+    }
+
+    /// Memberwise init used by `DynamicFeedView` when projecting a
+    /// fully-formed `DynamicItemDTO` into the (non-recursive) ref
+    /// type for shared body rendering.
+    public init(idStr: String, kind: DynamicKindDTO, author: DynamicAuthorDTO,
+                stat: DynamicStatDTO, text: String,
+                video: DynamicVideoDTO?, images: [DynamicImageDTO]) {
+        self.idStr = idStr
+        self.kind = kind
+        self.author = author
+        self.stat = stat
+        self.text = text
+        self.video = video
+        self.images = images
+    }
+}
+
+public struct DynamicFeedPageDTO: Decodable {
+    public let items: [DynamicItemDTO]
+    public let offset: String
+    public let hasMore: Bool
+    public let updateBaseline: String
+    public let updateNum: Int64
+    enum CodingKeys: String, CodingKey {
+        case items, offset
+        case hasMore = "has_more"
+        case updateBaseline = "update_baseline"
+        case updateNum = "update_num"
+    }
+}

@@ -66,61 +66,21 @@ struct RelatedVideoList: View {
 }
 
 /// Single row: cover left (16:10) with duration overlay, title + UP +
-/// stats stacked on the right. Sized for an Apple-feeling rhythm:
-/// 8pt vertical padding, 12pt cover-to-text gap, 13pt title, 11pt meta.
+/// stats stacked on the right. Wraps the shared `CompactVideoRow`
+/// so the "我的" → 历史 / 收藏 / 稍后再看 二级 lists render with the
+/// exact same rhythm — keeping the app's vertical-list surfaces
+/// visually consistent.
 private struct RelatedRow: View {
     let item: RelatedVideoItemDTO
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack(alignment: .bottomTrailing) {
-                RemoteImage(url: item.cover,
-                            contentMode: .fill,
-                            targetPointSize: CGSize(width: 240, height: 150),
-                            quality: 75)
-                    .frame(width: 120, height: 75)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                if item.durationSec > 0 {
-                    Text(BiliFormat.duration(item.durationSec))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 1.5)
-                        .background(Capsule().fill(.black.opacity(0.6)))
-                        .padding(6)
-                }
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                Text(item.title)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                if !item.author.isEmpty {
-                    HStack(spacing: 4) {
-                        Image(systemName: "person.crop.circle")
-                            .imageScale(.small)
-                        Text(item.author)
-                            .lineLimit(1)
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(IbiliTheme.textSecondary)
-                }
-                HStack(spacing: 12) {
-                    if item.play > 0 {
-                        Label(BiliFormat.compactCount(item.play), systemImage: "play.fill")
-                    }
-                    if item.danmaku > 0 {
-                        Label(BiliFormat.compactCount(item.danmaku), systemImage: "text.bubble")
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(IbiliTheme.textSecondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 4)
-        .contentShape(Rectangle())
+        CompactVideoRow(
+            cover: item.cover,
+            title: item.title,
+            author: item.author,
+            durationSec: item.durationSec,
+            play: item.play,
+            danmaku: item.danmaku
+        )
     }
 }
