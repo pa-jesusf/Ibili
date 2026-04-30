@@ -179,7 +179,7 @@ struct ProfileView: View {
                 NavigationLink {
                     SettingsView()
                 } label: {
-                    profileRowLabel("显示设置", systemImage: "rectangle.grid.2x2")
+                    profileRowLabel("设置", systemImage: "rectangle.grid.2x2")
                 }
             }
             Section("诊断") {

@@ -169,7 +169,7 @@ struct SettingsView: View {
                 footer: "搜索结果卡片始终包含投稿时间。"
             )
         }
-        .navigationTitle("显示设置")
+        .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
     }
 
