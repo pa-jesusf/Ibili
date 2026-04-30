@@ -1498,9 +1498,16 @@ struct PlayerView: View {
                     }
                 }
             }
-            .overlay(alignment: .topTrailing) {
-                if !isFullscreen, vm.player != nil {
-                    PlayerOverlayControls(
+            .aspectRatio(16.0/9.0, contentMode: .fit)
+
+            VideoDetailContent(item: item)
+        }
+        .navigationTitle("播放")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !isFullscreen, vm.player != nil {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    PlayerToolbarControls(
                         qualities: vm.availableQualities,
                         currentQn: vm.currentQn,
                         audioQualities: vm.availableAudioQualities,
@@ -1509,15 +1516,9 @@ struct PlayerView: View {
                         onPickQuality: { qn in Task { await vm.switchQuality(to: qn) } },
                         onPickAudioQuality: { qn in Task { await vm.switchAudioQuality(to: qn) } }
                     )
-                    .transition(.opacity)
                 }
             }
-            .aspectRatio(16.0/9.0, contentMode: .fit)
-
-            VideoDetailContent(item: item)
         }
-        .navigationTitle("播放")
-        .navigationBarTitleDisplayMode(.inline)
         .task {
             guard !didBootstrap else { return }
             didBootstrap = true

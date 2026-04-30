@@ -170,7 +170,7 @@ impl Core {
             liked: raw.like.unwrap_or(false),
             disliked: raw.dislike.unwrap_or(false),
             favorited: raw.favorite.unwrap_or(false),
-            attention: raw.attention.map(|v| v >= 0).unwrap_or(false),
+            attention: raw.attention.unwrap_or(false),
             coin_number: raw.coin.unwrap_or(0),
         })
     }
@@ -212,11 +212,25 @@ struct ArchiveRelationWire {
     dislike: Option<bool>,
     #[serde(default, deserialize_with = "deser_loose_bool")]
     favorite: Option<bool>,
-    /// `-999` = not following; >= 0 follow code.
-    #[serde(default)]
-    attention: Option<i32>,
+    /// Web returns `true`/`false`; legacy app payloads sometimes use
+    /// `-999` (not following) / >=0 (followed).
+    #[serde(default, deserialize_with = "deser_attention")]
+    attention: Option<bool>,
     #[serde(default)]
     coin: Option<i32>,
+}
+
+fn deser_attention<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error;
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(match v {
+        Some(Value::Bool(b)) => Some(b),
+        // App-style: -999 means not following; >= 0 means followed.
+        Some(Value::Number(n)) => n.as_i64().map(|x| x >= 0),
+        Some(Value::Null) | None => None,
+        Some(other) => return Err(D::Error::custom(format!("expected bool|int, got {other}"))),
+    })
 }
 
 fn deser_loose_bool<'de, D>(d: D) -> Result<Option<bool>, D::Error>
