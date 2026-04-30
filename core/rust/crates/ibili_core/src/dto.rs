@@ -154,3 +154,184 @@ pub struct SearchVideoPage {
     pub num_results: i64,
     pub num_pages: i64,
 }
+
+// ---------- Video detail (view/full) ----------
+
+/// Full video detail surface, mirrored from
+/// `/x/web-interface/wbi/view`. We keep only fields the iOS detail
+/// page consumes — pages list, ugc season, owner, stat, tags, descV2.
+#[derive(Debug, Serialize, Clone)]
+pub struct VideoView {
+    pub aid: i64,
+    pub bvid: String,
+    pub cid: i64,
+    pub title: String,
+    pub cover: String,
+    pub desc: String,
+    pub desc_v2: Vec<VideoDescNode>,
+    pub duration_sec: i64,
+    pub pubdate: i64,
+    pub ctime: i64,
+    pub videos: i32,
+    pub stat: VideoStat,
+    pub owner: VideoOwner,
+    pub pages: Vec<VideoPage>,
+    pub tags: Vec<String>,
+    pub honor: Vec<VideoHonor>,
+    pub ugc_season: Option<UgcSeason>,
+    pub redirect_url: String,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct VideoStat {
+    pub view: i64,
+    pub danmaku: i64,
+    pub reply: i64,
+    pub favorite: i64,
+    pub coin: i64,
+    pub share: i64,
+    pub like: i64,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct VideoOwner {
+    pub mid: i64,
+    pub name: String,
+    pub face: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct VideoPage {
+    pub cid: i64,
+    pub page: i32,
+    pub part: String,
+    pub duration_sec: i64,
+    pub first_frame: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct VideoDescNode {
+    /// 1=text, 2=at-user.
+    pub kind: i32,
+    pub raw_text: String,
+    pub biz_id: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct VideoHonor {
+    pub kind: i32,
+    pub desc: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UgcSeason {
+    pub id: i64,
+    pub title: String,
+    pub cover: String,
+    pub mid: i64,
+    pub intro: String,
+    pub ep_count: i32,
+    pub sections: Vec<UgcSeasonSection>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UgcSeasonSection {
+    pub id: i64,
+    pub title: String,
+    pub episodes: Vec<UgcSeasonEpisode>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UgcSeasonEpisode {
+    pub id: i64,
+    pub aid: i64,
+    pub bvid: String,
+    pub cid: i64,
+    pub title: String,
+    pub cover: String,
+    pub duration_sec: i64,
+}
+
+// ---------- Related videos ----------
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RelatedVideoItem {
+    pub aid: i64,
+    pub bvid: String,
+    pub cid: i64,
+    pub title: String,
+    pub cover: String,
+    pub author: String,
+    pub face: String,
+    pub mid: i64,
+    pub duration_sec: i64,
+    pub play: i64,
+    pub danmaku: i64,
+    pub pubdate: i64,
+}
+
+// ---------- Replies (comments) ----------
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ReplyPage {
+    pub items: Vec<ReplyItem>,
+    pub top: Option<ReplyItem>,
+    pub upper_mid: i64,
+    pub cursor_next: String,
+    pub is_end: bool,
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ReplyItem {
+    pub rpid: i64,
+    pub oid: i64,
+    pub root: i64,
+    pub parent: i64,
+    pub mid: i64,
+    pub uname: String,
+    pub face: String,
+    pub level: i32,
+    pub vip_status: i32,
+    pub message: String,
+    pub ctime: i64,
+    pub like: i64,
+    pub action: i32,
+    pub reply_count: i32,
+    pub up_action_like: bool,
+    pub up_action_reply: bool,
+    pub location: String,
+    /// First few preview replies (upstream `replies` array) when this
+    /// is a top-level comment.
+    pub preview_replies: Vec<ReplyItem>,
+}
+
+// ---------- Write-action results ----------
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct LikeResult {
+    /// Effective like state after the call: 0=not liked, 1=liked.
+    pub liked: i32,
+    pub toast: String,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct CoinResult {
+    pub like: bool,
+    pub toast: String,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct TripleResult {
+    pub like: bool,
+    pub coin: bool,
+    pub fav: bool,
+    pub multiply: i32,
+    pub prompt: bool,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct FavoriteResult {
+    pub prompt: bool,
+    pub toast: String,
+}

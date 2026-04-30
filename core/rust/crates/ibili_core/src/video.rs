@@ -1,6 +1,10 @@
 use crate::Core;
 use crate::cdn::{rank_urls, DEFAULT_CDN_HOST};
 use crate::dto::PlayUrl;
+use crate::dto::{
+    RelatedVideoItem, UgcSeason, UgcSeasonEpisode, UgcSeasonSection, VideoDescNode, VideoHonor,
+    VideoOwner, VideoPage, VideoStat, VideoView,
+};
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
 use serde::{Deserialize, Deserializer};
@@ -560,6 +564,249 @@ fn quality_label(qn: i64) -> String {
         16 => "360P".into(),
         6 => "240P".into(),
         _ => format!("画质 {qn}"),
+    }
+}
+
+// ============================================================================
+// Video detail (view full) + related videos
+// ============================================================================
+
+const URL_VIEW_FULL: &str = "https://api.bilibili.com/x/web-interface/wbi/view";
+const URL_RELATED: &str = "https://api.bilibili.com/x/web-interface/archive/related";
+
+#[derive(Deserialize)]
+struct ViewFullRoot {
+    #[serde(default)] aid: i64,
+    #[serde(default)] bvid: String,
+    #[serde(default)] cid: i64,
+    #[serde(default)] title: String,
+    #[serde(default, alias = "pic")] cover: String,
+    #[serde(default)] desc: String,
+    #[serde(default, deserialize_with = "null_as_default")] desc_v2: Vec<DescV2Wire>,
+    #[serde(default)] duration: i64,
+    #[serde(default)] pubdate: i64,
+    #[serde(default)] ctime: i64,
+    #[serde(default)] videos: i32,
+    #[serde(default)] stat: ViewStatWire,
+    #[serde(default)] owner: ViewOwnerWire,
+    #[serde(default, deserialize_with = "null_as_default")] pages: Vec<ViewPageWire>,
+    #[serde(default, deserialize_with = "null_as_default")] honor_reply: HonorReplyWire,
+    #[serde(default)] ugc_season: Option<UgcSeasonWire>,
+    #[serde(default)] redirect_url: String,
+}
+
+#[derive(Default, Deserialize)]
+struct ViewStatWire {
+    #[serde(default)] view: i64,
+    #[serde(default)] danmaku: i64,
+    #[serde(default)] reply: i64,
+    #[serde(default)] favorite: i64,
+    #[serde(default)] coin: i64,
+    #[serde(default)] share: i64,
+    #[serde(default)] like: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct ViewOwnerWire {
+    #[serde(default)] mid: i64,
+    #[serde(default)] name: String,
+    #[serde(default)] face: String,
+}
+
+#[derive(Deserialize)]
+struct ViewPageWire {
+    #[serde(default)] cid: i64,
+    #[serde(default)] page: i32,
+    #[serde(default)] part: String,
+    #[serde(default)] duration: i64,
+    #[serde(default)] first_frame: String,
+}
+
+#[derive(Deserialize)]
+struct DescV2Wire {
+    #[serde(default, alias = "type")] kind: i32,
+    #[serde(default)] raw_text: String,
+    #[serde(default)] biz_id: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct HonorReplyWire {
+    #[serde(default, deserialize_with = "null_as_default")] honor: Vec<HonorEntryWire>,
+}
+
+#[derive(Deserialize)]
+struct HonorEntryWire {
+    #[serde(default, alias = "type")] kind: i32,
+    #[serde(default)] desc: String,
+}
+
+#[derive(Deserialize)]
+struct UgcSeasonWire {
+    #[serde(default)] id: i64,
+    #[serde(default)] title: String,
+    #[serde(default)] cover: String,
+    #[serde(default)] mid: i64,
+    #[serde(default)] intro: String,
+    #[serde(default)] ep_count: i32,
+    #[serde(default, deserialize_with = "null_as_default")] sections: Vec<UgcSectionWire>,
+}
+
+#[derive(Deserialize)]
+struct UgcSectionWire {
+    #[serde(default)] id: i64,
+    #[serde(default)] title: String,
+    #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<UgcEpisodeWire>,
+}
+
+#[derive(Deserialize)]
+struct UgcEpisodeWire {
+    #[serde(default)] id: i64,
+    #[serde(default)] aid: i64,
+    #[serde(default)] bvid: String,
+    #[serde(default)] cid: i64,
+    #[serde(default)] title: String,
+    #[serde(default)] arc: UgcEpisodeArcWire,
+}
+
+#[derive(Default, Deserialize)]
+struct UgcEpisodeArcWire {
+    #[serde(default)] pic: String,
+    #[serde(default)] duration: i64,
+}
+
+#[derive(Deserialize)]
+struct RelatedItemWire {
+    #[serde(default)] aid: i64,
+    #[serde(default)] bvid: String,
+    #[serde(default)] cid: i64,
+    #[serde(default)] title: String,
+    #[serde(default)] pic: String,
+    #[serde(default)] duration: i64,
+    #[serde(default)] pubdate: i64,
+    #[serde(default)] owner: ViewOwnerWire,
+    #[serde(default)] stat: ViewStatWire,
+}
+
+impl Core {
+    /// Fetch the full video detail used by the player detail page.
+    /// Mirrors `VideoHttp.videoIntro` (`/x/web-interface/wbi/view`).
+    pub fn video_view_full(&self, bvid: &str) -> CoreResult<VideoView> {
+        if bvid.is_empty() {
+            return Err(CoreError::InvalidArgument("bvid empty".into()));
+        }
+        let key = self.fetch_wbi_key()?;
+        let params = vec![("bvid".to_string(), bvid.to_string())];
+        let raw: ViewFullRoot = self.http.get_signed_web(URL_VIEW_FULL, params, &key)?;
+        let tags = self.video_tags(raw.aid).unwrap_or_default();
+        Ok(map_view_full(raw, tags))
+    }
+
+    /// Companion endpoint that returns the user-visible tag list. We
+    /// fetch it lazily and tolerate failures (returning an empty list).
+    fn video_tags(&self, aid: i64) -> CoreResult<Vec<String>> {
+        const URL_TAG: &str = "https://api.bilibili.com/x/tag/archive/tags";
+        if aid <= 0 { return Ok(Vec::new()); }
+        #[derive(Deserialize)]
+        struct TagItem { #[serde(default)] tag_name: String }
+        let items: Vec<TagItem> = self.http.get_web(URL_TAG, &[("aid".to_string(), aid.to_string())])?;
+        Ok(items.into_iter().map(|t| t.tag_name).filter(|s| !s.is_empty()).collect())
+    }
+
+    /// Mirrors `Api.relatedList` — list of related videos shown on the
+    /// detail page "相关视频" tab.
+    pub fn video_related(&self, bvid: &str) -> CoreResult<Vec<RelatedVideoItem>> {
+        if bvid.is_empty() {
+            return Err(CoreError::InvalidArgument("bvid empty".into()));
+        }
+        let raw: Vec<RelatedItemWire> = self.http.get_web(
+            URL_RELATED,
+            &[("bvid".to_string(), bvid.to_string())],
+        )?;
+        Ok(raw.into_iter().map(map_related_item).collect())
+    }
+}
+
+fn map_view_full(r: ViewFullRoot, tags: Vec<String>) -> VideoView {
+    VideoView {
+        aid: r.aid,
+        bvid: r.bvid,
+        cid: r.cid,
+        title: r.title,
+        cover: r.cover,
+        desc: r.desc,
+        desc_v2: r.desc_v2.into_iter().map(|n| VideoDescNode {
+            kind: n.kind,
+            raw_text: n.raw_text,
+            biz_id: n.biz_id,
+        }).collect(),
+        duration_sec: r.duration,
+        pubdate: r.pubdate,
+        ctime: r.ctime,
+        videos: r.videos,
+        stat: VideoStat {
+            view: r.stat.view,
+            danmaku: r.stat.danmaku,
+            reply: r.stat.reply,
+            favorite: r.stat.favorite,
+            coin: r.stat.coin,
+            share: r.stat.share,
+            like: r.stat.like,
+        },
+        owner: VideoOwner {
+            mid: r.owner.mid,
+            name: r.owner.name,
+            face: r.owner.face,
+        },
+        pages: r.pages.into_iter().map(|p| VideoPage {
+            cid: p.cid,
+            page: p.page,
+            part: p.part,
+            duration_sec: p.duration,
+            first_frame: p.first_frame,
+        }).collect(),
+        tags,
+        honor: r.honor_reply.honor.into_iter()
+            .map(|h| VideoHonor { kind: h.kind, desc: h.desc })
+            .collect(),
+        ugc_season: r.ugc_season.map(|s| UgcSeason {
+            id: s.id,
+            title: s.title,
+            cover: s.cover,
+            mid: s.mid,
+            intro: s.intro,
+            ep_count: s.ep_count,
+            sections: s.sections.into_iter().map(|sec| UgcSeasonSection {
+                id: sec.id,
+                title: sec.title,
+                episodes: sec.episodes.into_iter().map(|ep| UgcSeasonEpisode {
+                    id: ep.id,
+                    aid: ep.aid,
+                    bvid: ep.bvid,
+                    cid: ep.cid,
+                    title: ep.title,
+                    cover: ep.arc.pic,
+                    duration_sec: ep.arc.duration,
+                }).collect(),
+            }).collect(),
+        }),
+        redirect_url: r.redirect_url,
+    }
+}
+
+fn map_related_item(r: RelatedItemWire) -> RelatedVideoItem {
+    RelatedVideoItem {
+        aid: r.aid,
+        bvid: r.bvid,
+        cid: r.cid,
+        title: r.title,
+        cover: r.pic,
+        author: r.owner.name,
+        face: r.owner.face,
+        mid: r.owner.mid,
+        duration_sec: r.duration,
+        play: r.stat.view,
+        danmaku: r.stat.danmaku,
+        pubdate: r.pubdate,
     }
 }
 

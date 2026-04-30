@@ -15,6 +15,8 @@ pub mod video;
 pub mod danmaku;
 pub mod cdn;
 pub mod search;
+pub mod reply;
+pub mod interaction;
 
 use std::sync::Arc;
 

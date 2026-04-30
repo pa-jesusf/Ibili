@@ -165,6 +165,33 @@ impl HttpClient {
         unwrap_envelope(body)
     }
 
+    /// POST to a web-flavoured endpoint with `application/x-www-form-urlencoded`
+    /// body, attaching cookies from the shared jar (so SESSDATA / bili_jct
+    /// authenticate the request). Used for write actions that require a CSRF
+    /// token (like / coin / triple / favorite / relation / watchlater /
+    /// reply.add). Caller must include `csrf` in `form` when needed.
+    pub fn post_form_web<T: DeserializeOwned>(
+        &self, url: &str, form: &[(String, String)],
+    ) -> CoreResult<T> {
+        let resp = self.client.post(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .form(form)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
+    /// Read the `bili_jct` cookie (CSRF token) from the shared jar.
+    /// Returns `None` if the user has not logged in via web cookies yet.
+    pub fn csrf_token(&self) -> Option<String> {
+        self.snapshot_cookies()
+            .into_iter()
+            .find(|(k, _)| k == "bili_jct")
+            .map(|(_, v)| v)
+    }
+
     /// Fetch raw bytes — used for endpoints that return non-JSON payloads
     /// (e.g. the deflated-XML danmaku list).
     pub fn get_bytes_web(

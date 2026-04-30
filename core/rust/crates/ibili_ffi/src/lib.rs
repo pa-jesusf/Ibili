@@ -105,6 +105,51 @@ struct DanmakuArgs {
 struct VideoViewArgs { bvid: String }
 
 #[derive(Deserialize)]
+struct ReplyMainArgs {
+    oid: i64,
+    #[serde(default = "default_reply_type")] kind: i32,
+    #[serde(default = "default_reply_sort")] sort: i32,
+    #[serde(default)] next_offset: String,
+}
+fn default_reply_type() -> i32 { 1 }
+fn default_reply_sort() -> i32 { 1 }
+
+#[derive(Deserialize)]
+struct ReplyDetailArgs {
+    oid: i64,
+    #[serde(default = "default_reply_type")] kind: i32,
+    root: i64,
+    #[serde(default = "default_page")] page: i64,
+}
+fn default_page() -> i64 { 1 }
+
+#[derive(Deserialize)]
+struct AidArgs { aid: i64 }
+
+#[derive(Deserialize)]
+struct LikeArgs { aid: i64, #[serde(default = "default_like_action")] action: i32 }
+fn default_like_action() -> i32 { 1 }
+
+#[derive(Deserialize)]
+struct CoinArgs {
+    aid: i64,
+    #[serde(default = "default_multiply")] multiply: i32,
+    #[serde(default)] also_like: bool,
+}
+fn default_multiply() -> i32 { 1 }
+
+#[derive(Deserialize)]
+struct FavoriteArgs {
+    aid: i64,
+    #[serde(default)] add_ids: Vec<i64>,
+    #[serde(default)] del_ids: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+struct RelationArgs { fid: i64, #[serde(default = "default_relation_act")] act: i32 }
+fn default_relation_act() -> i32 { 1 }
+
+#[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
     #[serde(default = "default_search_page")] page: i64,
@@ -148,6 +193,58 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: VideoViewArgs = serde_json::from_value(args)?;
             let cid = c.inner.video_view_cid(&a.bvid)?;
             Ok(json!({ "cid": cid }))
+        }
+        "video.view_full" => {
+            let a: VideoViewArgs = serde_json::from_value(args)?;
+            to_value(c.inner.video_view_full(&a.bvid)?)
+        }
+        "video.related" => {
+            let a: VideoViewArgs = serde_json::from_value(args)?;
+            to_value(c.inner.video_related(&a.bvid)?)
+        }
+        "reply.main" => {
+            let a: ReplyMainArgs = serde_json::from_value(args)?;
+            to_value(c.inner.reply_main(a.oid, a.kind, a.sort, &a.next_offset)?)
+        }
+        "reply.detail" => {
+            let a: ReplyDetailArgs = serde_json::from_value(args)?;
+            to_value(c.inner.reply_detail(a.oid, a.kind, a.root, a.page)?)
+        }
+        "interaction.like" => {
+            let a: LikeArgs = serde_json::from_value(args)?;
+            to_value(c.inner.archive_like(a.aid, a.action)?)
+        }
+        "interaction.dislike" => {
+            let a: AidArgs = serde_json::from_value(args)?;
+            c.inner.archive_dislike(a.aid)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "interaction.coin" => {
+            let a: CoinArgs = serde_json::from_value(args)?;
+            to_value(c.inner.archive_coin(a.aid, a.multiply, a.also_like)?)
+        }
+        "interaction.triple" => {
+            let a: AidArgs = serde_json::from_value(args)?;
+            to_value(c.inner.archive_triple(a.aid)?)
+        }
+        "interaction.favorite" => {
+            let a: FavoriteArgs = serde_json::from_value(args)?;
+            to_value(c.inner.archive_favorite(a.aid, &a.add_ids, &a.del_ids)?)
+        }
+        "interaction.relation" => {
+            let a: RelationArgs = serde_json::from_value(args)?;
+            c.inner.relation_modify(a.fid, a.act)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "interaction.watchlater_add" => {
+            let a: AidArgs = serde_json::from_value(args)?;
+            c.inner.watchlater_add(a.aid)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "interaction.watchlater_del" => {
+            let a: AidArgs = serde_json::from_value(args)?;
+            c.inner.watchlater_del(a.aid)?;
+            Ok(Value::Object(Default::default()))
         }
         "search.video" => {
             let a: SearchVideoArgs = serde_json::from_value(args)?;

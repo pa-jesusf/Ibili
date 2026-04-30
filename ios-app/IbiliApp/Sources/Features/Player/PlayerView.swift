@@ -1465,7 +1465,7 @@ struct PlayerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 Color.black
                 if let p = vm.player {
                     PlayerContainer(
@@ -1497,22 +1497,23 @@ struct PlayerView: View {
                             .padding(.horizontal)
                     }
                 }
+
+                if !isFullscreen, vm.player != nil {
+                    PlayerOverlayControls(
+                        qualities: vm.availableQualities,
+                        currentQn: vm.currentQn,
+                        audioQualities: vm.availableAudioQualities,
+                        currentAudioQn: vm.currentAudioQn,
+                        danmakuEnabled: $settings.danmakuEnabled,
+                        onPickQuality: { qn in Task { await vm.switchQuality(to: qn) } },
+                        onPickAudioQuality: { qn in Task { await vm.switchAudioQuality(to: qn) } }
+                    )
+                    .transition(.opacity)
+                }
             }
             .aspectRatio(16.0/9.0, contentMode: .fit)
 
-            controlBar
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(item.title).font(.headline)
-                    Text(item.author).font(.subheadline).foregroundStyle(.secondary)
-                    Divider()
-                    LabeledContent("AV", value: String(item.aid))
-                    LabeledContent("BV", value: item.bvid)
-                    LabeledContent("CID", value: String(item.cid))
-                }
-                .padding()
-            }
+            VideoDetailContent(item: item)
         }
         .navigationTitle("播放")
         .navigationBarTitleDisplayMode(.inline)

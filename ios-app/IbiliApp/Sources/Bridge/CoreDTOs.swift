@@ -239,3 +239,210 @@ public struct SearchVideoPageDTO: Decodable {
         case numPages = "num_pages"
     }
 }
+
+// MARK: - Video detail (full view)
+
+public struct VideoStatDTO: Decodable, Hashable {
+    public let view: Int64
+    public let danmaku: Int64
+    public let reply: Int64
+    public let favorite: Int64
+    public let coin: Int64
+    public let share: Int64
+    public let like: Int64
+}
+
+public struct VideoOwnerDTO: Decodable, Hashable {
+    public let mid: Int64
+    public let name: String
+    public let face: String
+}
+
+public struct VideoPageDTO: Decodable, Hashable, Identifiable {
+    public var id: Int64 { cid }
+    public let cid: Int64
+    public let page: Int32
+    public let part: String
+    public let durationSec: Int64
+    public let firstFrame: String
+    enum CodingKeys: String, CodingKey {
+        case cid, page, part
+        case durationSec = "duration_sec"
+        case firstFrame = "first_frame"
+    }
+}
+
+public struct VideoDescNodeDTO: Decodable, Hashable {
+    /// 1 = plain text, 2 = at-user.
+    public let kind: Int32
+    public let rawText: String
+    public let bizId: Int64
+    enum CodingKeys: String, CodingKey {
+        case kind = "kind"
+        case rawText = "raw_text"
+        case bizId = "biz_id"
+    }
+}
+
+public struct VideoHonorDTO: Decodable, Hashable {
+    public let kind: Int32
+    public let desc: String
+}
+
+public struct UgcSeasonEpisodeDTO: Decodable, Hashable, Identifiable {
+    public var id: Int64 { aid }
+    public let episodeId: Int64
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let durationSec: Int64
+    enum CodingKeys: String, CodingKey {
+        case episodeId = "id"
+        case aid, bvid, cid, title, cover
+        case durationSec = "duration_sec"
+    }
+}
+
+public struct UgcSeasonSectionDTO: Decodable, Hashable, Identifiable {
+    public let id: Int64
+    public let title: String
+    public let episodes: [UgcSeasonEpisodeDTO]
+}
+
+public struct UgcSeasonDTO: Decodable, Hashable, Identifiable {
+    public let id: Int64
+    public let title: String
+    public let cover: String
+    public let mid: Int64
+    public let intro: String
+    public let epCount: Int32
+    public let sections: [UgcSeasonSectionDTO]
+    enum CodingKeys: String, CodingKey {
+        case id, title, cover, mid, intro, sections
+        case epCount = "ep_count"
+    }
+}
+
+public struct VideoViewDTO: Decodable, Hashable {
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let desc: String
+    public let descV2: [VideoDescNodeDTO]
+    public let durationSec: Int64
+    public let pubdate: Int64
+    public let ctime: Int64
+    public let videos: Int32
+    public let stat: VideoStatDTO
+    public let owner: VideoOwnerDTO
+    public let pages: [VideoPageDTO]
+    public let tags: [String]
+    public let honor: [VideoHonorDTO]
+    public let ugcSeason: UgcSeasonDTO?
+    public let redirectUrl: String
+
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover, desc, videos, pubdate, ctime, stat, owner, pages, tags, honor
+        case descV2 = "desc_v2"
+        case durationSec = "duration_sec"
+        case ugcSeason = "ugc_season"
+        case redirectUrl = "redirect_url"
+    }
+}
+
+public struct RelatedVideoItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { aid }
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let author: String
+    public let face: String
+    public let mid: Int64
+    public let durationSec: Int64
+    public let play: Int64
+    public let danmaku: Int64
+    public let pubdate: Int64
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover, author, face, mid, play, danmaku, pubdate
+        case durationSec = "duration_sec"
+    }
+}
+
+// MARK: - Replies
+
+public struct ReplyItemDTO: Decodable, Hashable, Identifiable {
+    public var id: Int64 { rpid }
+    public let rpid: Int64
+    public let oid: Int64
+    public let root: Int64
+    public let parent: Int64
+    public let mid: Int64
+    public let uname: String
+    public let face: String
+    public let level: Int32
+    public let vipStatus: Int32
+    public let message: String
+    public let ctime: Int64
+    public let like: Int64
+    public let action: Int32
+    public let replyCount: Int32
+    public let upActionLike: Bool
+    public let upActionReply: Bool
+    public let location: String
+    public let previewReplies: [ReplyItemDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case rpid, oid, root, parent, mid, uname, face, level, message, ctime, like, action, location
+        case vipStatus = "vip_status"
+        case replyCount = "reply_count"
+        case upActionLike = "up_action_like"
+        case upActionReply = "up_action_reply"
+        case previewReplies = "preview_replies"
+    }
+}
+
+public struct ReplyPageDTO: Decodable {
+    public let items: [ReplyItemDTO]
+    public let top: ReplyItemDTO?
+    public let upperMid: Int64
+    public let cursorNext: String
+    public let isEnd: Bool
+    public let total: Int64
+    enum CodingKeys: String, CodingKey {
+        case items, top, total
+        case upperMid = "upper_mid"
+        case cursorNext = "cursor_next"
+        case isEnd = "is_end"
+    }
+}
+
+// MARK: - Interaction results
+
+public struct LikeResultDTO: Decodable {
+    public let liked: Int32
+    public let toast: String
+}
+
+public struct CoinResultDTO: Decodable {
+    public let like: Bool
+    public let toast: String
+}
+
+public struct TripleResultDTO: Decodable {
+    public let like: Bool
+    public let coin: Bool
+    public let fav: Bool
+    public let multiply: Int32
+    public let prompt: Bool
+}
+
+public struct FavoriteResultDTO: Decodable {
+    public let prompt: Bool
+    public let toast: String
+}

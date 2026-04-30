@@ -215,6 +215,117 @@ public final class CoreClient: @unchecked Sendable {
             decoding: SearchVideoPageDTO.self
         )
     }
+
+    // MARK: - Video detail
+
+    /// Fetch the full video detail (title, owner, stat, pages, ugc_season,
+    /// tags, descV2). Backed by `/x/web-interface/wbi/view`.
+    public func videoViewFull(bvid: String) throws -> VideoViewDTO {
+        struct A: Encodable { let bvid: String }
+        return try call("video.view_full", args: A(bvid: bvid), decoding: VideoViewDTO.self)
+    }
+
+    /// List of related videos (`/x/web-interface/archive/related`).
+    public func videoRelated(bvid: String) throws -> [RelatedVideoItemDTO] {
+        struct A: Encodable { let bvid: String }
+        return try call("video.related", args: A(bvid: bvid), decoding: [RelatedVideoItemDTO].self)
+    }
+
+    // MARK: - Comments
+
+    /// Top-level comments. `kind` is upstream's `type` (1=视频, 11=动态…).
+    /// `sort` is 1 (热门) or 2 (时间). `nextOffset` is the cursor returned
+    /// by the previous call (`""` for the first page).
+    public func replyMain(
+        oid: Int64,
+        kind: Int32 = 1,
+        sort: Int32 = 1,
+        nextOffset: String = ""
+    ) throws -> ReplyPageDTO {
+        struct A: Encodable {
+            let oid: Int64
+            let kind: Int32
+            let sort: Int32
+            let next_offset: String
+        }
+        return try call(
+            "reply.main",
+            args: A(oid: oid, kind: kind, sort: sort, next_offset: nextOffset),
+            decoding: ReplyPageDTO.self
+        )
+    }
+
+    /// Replies to a single root comment. Page-based.
+    public func replyDetail(
+        oid: Int64,
+        kind: Int32 = 1,
+        root: Int64,
+        page: Int64 = 1
+    ) throws -> ReplyPageDTO {
+        struct A: Encodable {
+            let oid: Int64
+            let kind: Int32
+            let root: Int64
+            let page: Int64
+        }
+        return try call(
+            "reply.detail",
+            args: A(oid: oid, kind: kind, root: root, page: page),
+            decoding: ReplyPageDTO.self
+        )
+    }
+
+    // MARK: - Write actions
+
+    /// Toggle like. `action` is 1 (点赞) or 2 (取消点赞).
+    public func archiveLike(aid: Int64, action: Int32 = 1) throws -> LikeResultDTO {
+        struct A: Encodable { let aid: Int64; let action: Int32 }
+        return try call("interaction.like", args: A(aid: aid, action: action), decoding: LikeResultDTO.self)
+    }
+
+    public func archiveDislike(aid: Int64) throws {
+        struct A: Encodable { let aid: Int64 }
+        try callVoid("interaction.dislike", args: A(aid: aid))
+    }
+
+    public func archiveCoin(aid: Int64, multiply: Int32 = 1, alsoLike: Bool = false) throws -> CoinResultDTO {
+        struct A: Encodable { let aid: Int64; let multiply: Int32; let also_like: Bool }
+        return try call(
+            "interaction.coin",
+            args: A(aid: aid, multiply: multiply, also_like: alsoLike),
+            decoding: CoinResultDTO.self
+        )
+    }
+
+    public func archiveTriple(aid: Int64) throws -> TripleResultDTO {
+        struct A: Encodable { let aid: Int64 }
+        return try call("interaction.triple", args: A(aid: aid), decoding: TripleResultDTO.self)
+    }
+
+    public func archiveFavorite(aid: Int64, addIds: [Int64], delIds: [Int64]) throws -> FavoriteResultDTO {
+        struct A: Encodable { let aid: Int64; let add_ids: [Int64]; let del_ids: [Int64] }
+        return try call(
+            "interaction.favorite",
+            args: A(aid: aid, add_ids: addIds, del_ids: delIds),
+            decoding: FavoriteResultDTO.self
+        )
+    }
+
+    /// Follow / unfollow a user. `act` is 1 (关注) or 2 (取消关注).
+    public func relationModify(fid: Int64, act: Int32) throws {
+        struct A: Encodable { let fid: Int64; let act: Int32 }
+        try callVoid("interaction.relation", args: A(fid: fid, act: act))
+    }
+
+    public func watchLaterAdd(aid: Int64) throws {
+        struct A: Encodable { let aid: Int64 }
+        try callVoid("interaction.watchlater_add", args: A(aid: aid))
+    }
+
+    public func watchLaterDel(aid: Int64) throws {
+        struct A: Encodable { let aid: Int64 }
+        try callVoid("interaction.watchlater_del", args: A(aid: aid))
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {
