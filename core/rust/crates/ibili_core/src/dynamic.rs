@@ -86,6 +86,14 @@ pub struct DynamicItem {
     pub video: Option<DynamicVideo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<DynamicImage>,
+    /// `oid` to pass to the comment API for this dynamic. Comes from
+    /// `basic.comment_id_str` on the wire. Zero for items where the
+    /// upstream didn't surface a comment thread (rare).
+    pub comment_id: i64,
+    /// `type` arg for the comment API — 11 for image / draw posts,
+    /// 17 for word / forward posts, 1 for embedded video archives, etc.
+    /// Mirrors `basic.comment_type` from the wire.
+    pub comment_type: i32,
     /// For forwards: the original item the user is forwarding.
     /// Boxed to keep the recursive type sized. We only carry one
     /// level of nesting — Bilibili's API doesn't really nest deeper
@@ -253,6 +261,14 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
 
     let orig = w.orig.and_then(|b| flatten_dynamic_item(*b)).map(Box::new);
 
+    let basic = w.basic.unwrap_or_default();
+    let comment_id = basic
+        .comment_id_str
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let comment_type = basic.comment_type.unwrap_or(0);
+
     Some(DynamicItem {
         id_str: w.id_str.unwrap_or_default(),
         kind,
@@ -261,6 +277,8 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         text,
         video,
         images,
+        comment_id,
+        comment_type,
         orig,
     })
 }
@@ -281,9 +299,16 @@ struct DynItemWire {
     #[serde(default, deserialize_with = "lenient_string")] id_str: Option<String>,
     #[serde(default, rename = "type", deserialize_with = "lenient_string")] kind: Option<String>,
     #[serde(default)] modules: Option<DynModulesWire>,
+    #[serde(default)] basic: Option<DynBasicWire>,
     /// Forwarded original item (1-level recursion). Use `Box` so
     /// the recursive type is sized.
     #[serde(default)] orig: Option<Box<DynItemWire>>,
+}
+
+#[derive(Default, Deserialize)]
+struct DynBasicWire {
+    #[serde(default, deserialize_with = "lenient_string")] comment_id_str: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i32")] comment_type: Option<i32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -431,4 +456,11 @@ where
         Some(Value::String(s)) => s.parse().ok(),
         _ => None,
     })
+}
+
+fn lenient_i32<'de, D>(de: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(lenient_i64(de)?.map(|v| v as i32))
 }

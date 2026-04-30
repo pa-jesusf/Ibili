@@ -11,6 +11,10 @@ import SwiftUI
 /// `RichReplyText` + `ReplyPictureGrid`.
 struct CommentListView: View {
     let oid: Int64
+    /// `kind` arg for the comment API. 1 = video, 11 = image post,
+    /// 17 = word/forward dynamic, 12 = article. Defaults to video so
+    /// existing call sites keep their current behaviour.
+    var kind: Int32 = 1
     @StateObject private var vm = CommentListViewModel()
     @State private var thread: ReplyItemDTO?
     @State private var showSendSheet = false
@@ -96,7 +100,7 @@ struct CommentListView: View {
                     .padding(.vertical, 30)
             }
         }
-        .task(id: oid) { vm.bind(oid: oid) }
+        .task(id: oid) { vm.bind(oid: oid, kind: kind) }
         .sheet(item: $thread) { root in
             CommentThreadSheet(root: root)
                 .presentationDetents([.medium, .large])
@@ -104,7 +108,7 @@ struct CommentListView: View {
         .sheet(isPresented: $showSendSheet) {
             CommentSendSheet(
                 oid: oid,
-                kind: 1,
+                kind: kind,
                 selfMid: session.mid,
                 selfName: ""
             ) { echo in

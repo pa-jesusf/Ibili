@@ -893,6 +893,8 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
     public let text: String
     public let video: DynamicVideoDTO?
     public let images: [DynamicImageDTO]
+    public let commentId: Int64
+    public let commentType: Int32
     /// One-level forward original; the wire layer flattens deeper
     /// nesting so we only carry a single optional indirection here.
     public let orig: DynamicItemRefDTO?
@@ -900,6 +902,8 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case kind, author, stat, text, video, images, orig
         case idStr = "id_str"
+        case commentId = "comment_id"
+        case commentType = "comment_type"
     }
 
     public init(from decoder: Decoder) throws {
@@ -911,6 +915,8 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
         video = try? c.decodeIfPresent(DynamicVideoDTO.self, forKey: .video)
         images = (try? c.decodeIfPresent([DynamicImageDTO].self, forKey: .images)) ?? []
+        commentId = (try? c.decode(Int64.self, forKey: .commentId)) ?? 0
+        commentType = (try? c.decode(Int32.self, forKey: .commentType)) ?? 0
         orig = try? c.decodeIfPresent(DynamicItemRefDTO.self, forKey: .orig)
     }
 }

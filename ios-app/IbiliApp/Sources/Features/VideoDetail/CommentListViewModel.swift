@@ -15,11 +15,13 @@ final class CommentListViewModel: ObservableObject {
     @Published var errorText: String?
 
     private var oid: Int64 = 0
+    private var kind: Int32 = 1
     private var nextOffset: String = ""
 
-    func bind(oid: Int64) {
-        if self.oid == oid { return }
+    func bind(oid: Int64, kind: Int32 = 1) {
+        if self.oid == oid && self.kind == kind { return }
         self.oid = oid
+        self.kind = kind
         reset()
     }
 
@@ -36,8 +38,8 @@ final class CommentListViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            let page = try await Task.detached(priority: .userInitiated) { [oid, sort, nextOffset] in
-                try CoreClient.shared.replyMain(oid: oid, kind: 1, sort: sort, nextOffset: nextOffset)
+            let page = try await Task.detached(priority: .userInitiated) { [oid, kind, sort, nextOffset] in
+                try CoreClient.shared.replyMain(oid: oid, kind: kind, sort: sort, nextOffset: nextOffset)
             }.value
             if nextOffset.isEmpty {
                 top = page.top
@@ -60,8 +62,8 @@ final class CommentListViewModel: ObservableObject {
         let nextAction: Int32 = currentAction(for: rpid) == 1 ? 0 : 1
         applyLikeDelta(rpid: rpid, action: nextAction)
         do {
-            try await Task.detached(priority: .userInitiated) { [oid] in
-                try CoreClient.shared.replyLike(oid: oid, kind: 1, rpid: rpid, action: nextAction)
+            try await Task.detached(priority: .userInitiated) { [oid, kind] in
+                try CoreClient.shared.replyLike(oid: oid, kind: kind, rpid: rpid, action: nextAction)
             }.value
         } catch {
             // rollback
