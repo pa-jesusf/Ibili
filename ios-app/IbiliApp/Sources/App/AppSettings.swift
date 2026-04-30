@@ -9,16 +9,17 @@ enum VideoIdDisplay: String, CaseIterable, Identifiable {
 }
 
 /// Which numeric stat is shown next to the publish-date line on a feed
-/// card. Users frequently switch between 弹幕 / 收藏 / 点赞 depending
-/// on what they care about; "none" hides the column entirely.
+/// card. Users frequently switch between 弹幕 / 点赞 depending on what
+/// they care about; "none" hides the column entirely. 收藏 was removed
+/// because the home recommendation feed never carries it, so the option
+/// only ever produced empty cards.
 enum FeedCardStat: String, CaseIterable, Identifiable {
-    case none, danmaku, favorite, like
+    case none, danmaku, like
     var id: String { rawValue }
     var label: String {
         switch self {
         case .none: return "不显示"
         case .danmaku: return "弹幕数"
-        case .favorite: return "收藏数"
         case .like: return "点赞数"
         }
     }
@@ -26,7 +27,6 @@ enum FeedCardStat: String, CaseIterable, Identifiable {
         switch self {
         case .none: return ""
         case .danmaku: return "text.bubble.fill"
-        case .favorite: return "star.fill"
         case .like: return "heart.fill"
         }
     }
@@ -122,6 +122,19 @@ final class AppSettings: ObservableObject {
     var searchCardStat: FeedCardStat {
         get { FeedCardStat(rawValue: searchStatRaw) ?? .danmaku }
         set { searchStatRaw = newValue.rawValue }
+    }
+
+    /// Disk-cache size cap for cover images, in MB. Stored as raw
+    /// `Int64` bytes so `ImageDiskCache` can read the same value
+    /// without going through `@AppStorage`.
+    @AppStorage("ibili.cache.imageMaxBytes") var imageCacheMaxBytesRaw: Int = 256 * 1024 * 1024
+    var imageCacheMaxMB: Int {
+        get { max(imageCacheMaxBytesRaw / (1024 * 1024), 16) }
+        set {
+            let clamped = min(max(newValue, 16), 4096)
+            imageCacheMaxBytesRaw = clamped * 1024 * 1024
+            ImageDiskCache.shared.maxBytes = Int64(clamped) * 1024 * 1024
+        }
     }
 
     var homeCardMeta: FeedCardMetaConfig {

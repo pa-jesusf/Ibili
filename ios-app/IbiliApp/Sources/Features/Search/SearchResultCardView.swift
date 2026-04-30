@@ -1,7 +1,10 @@
 import SwiftUI
 
-/// Search-result video card. Shares the cover treatment with the home
-/// feed via `VideoCoverView` and the info layout via `CardInfoSection`.
+/// Search-result video card. Visually identical to `VideoCardView`
+/// (same cover, same info section, same paddings) so the home and
+/// search surfaces present a consistent card layout. The only
+/// difference is the data source — search items carry an extra
+/// `like` count.
 struct SearchResultCardView: View {
     let item: SearchVideoItemDTO
     let cardWidth: CGFloat
@@ -28,9 +31,6 @@ struct SearchResultCardView: View {
                 pubdate: item.pubdate,
                 stats: FeedCardStats(danmaku: item.danmaku, like: item.like),
                 config: meta,
-                // Slightly smaller title than the home card so the
-                // denser search row reads as more "result-y" than
-                // "showcase-y" — matches Apple's HIG density cues.
                 titleFont: .system(size: 13, weight: .medium),
                 showAuthorIcon: true
             )

@@ -35,12 +35,21 @@ final class CoverImagePrefetcher {
             }
             tasks[url] = Task { [url] in
                 defer { Task { @MainActor in self.tasks[url] = nil } }
+                // Disk-cache hit — promote into memory without
+                // touching the network. Saves both bandwidth and
+                // CDN-warmup latency on subsequent feed scrolls.
+                if let cached = ImageDiskCache.shared.read(url),
+                   let img = UIImage(data: cached) {
+                    ImageCache.shared.cache.setObject(img, forKey: url as NSURL, cost: cached.count)
+                    return
+                }
                 do {
                     let (data, response) = try await URLSession.shared.data(from: url)
                     if Task.isCancelled { return }
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return }
                     guard let img = UIImage(data: data) else { return }
                     ImageCache.shared.cache.setObject(img, forKey: url as NSURL, cost: data.count)
+                    ImageDiskCache.shared.write(url, data: data)
                 } catch {
                     return
                 }
@@ -68,6 +77,16 @@ private final class RemoteImageLoader: ObservableObject {
             failed = false
             return
         }
+        // Disk-cache hit — decode + promote into memory cache so
+        // subsequent reads stay cheap.
+        if let diskData = ImageDiskCache.shared.read(url),
+           let raw = UIImage(data: diskData) {
+            let display = downsample(raw, to: url)
+            ImageCache.shared.cache.setObject(display, forKey: url as NSURL, cost: diskData.count)
+            image = display
+            failed = false
+            return
+        }
         task?.cancel()
         failed = false
         task = Task { [url] in
@@ -85,6 +104,7 @@ private final class RemoteImageLoader: ObservableObject {
                         let display = downsample(img, to: url)
                         ImageCache.shared.cache.setObject(display, forKey: url as NSURL,
                                                          cost: data.count)
+                        ImageDiskCache.shared.write(url, data: data)
                         await MainActor.run {
                             if self.loadedURL == url { self.image = display; self.failed = false }
                         }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
+    @StateObject private var cacheVM = ImageCacheViewModel()
 
     private let columnOptions: [(label: String, value: Int)] = [
         ("自动", 0), ("1 列", 1), ("2 列", 2), ("3 列", 3),
@@ -165,10 +166,54 @@ struct SettingsView: View {
                 ),
                 footer: "调整搜索结果卡片显示的各项信息。"
             )
+
+            Section {
+                HStack {
+                    Text("当前占用")
+                    Spacer()
+                    Text(cacheVM.usageText)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Picker("缓存上限", selection: Binding(
+                    get: { settings.imageCacheMaxMB },
+                    set: { settings.imageCacheMaxMB = $0 }
+                )) {
+                    ForEach(cacheLimitOptions, id: \.value) { opt in
+                        Text(opt.label).tag(opt.value)
+                    }
+                }
+                Button(role: .destructive) {
+                    cacheVM.clear()
+                } label: {
+                    HStack {
+                        Text("清除图片缓存")
+                        Spacer()
+                        if cacheVM.isClearing {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(cacheVM.isClearing)
+            } header: {
+                Text("缓存")
+            } footer: {
+                Text("封面图磁盘缓存。命中后无需再次请求 CDN，适配上游 cached_network_image 的体验；超出上限会按最久未使用淘汰。")
+            }
         }
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
+        .task { cacheVM.refresh() }
     }
+
+    private let cacheLimitOptions: [(label: String, value: Int)] = [
+        ("64 MB", 64),
+        ("128 MB", 128),
+        ("256 MB", 256),
+        ("512 MB", 512),
+        ("1 GB", 1024),
+        ("2 GB", 2048),
+    ]
 
     /// One reusable settings section per card screen — keeps Home and
     /// Search visually identical in 设置 while still letting users tune
@@ -197,6 +242,41 @@ struct SettingsView: View {
             Text(title)
         } footer: {
             Text(footer)
+        }
+    }
+}
+
+/// Backs the 设置 → 缓存 section. Lives next to the view because
+/// it's intentionally tiny — the cache itself does the heavy
+/// lifting; we just pull the current footprint and surface a
+/// "clear" affordance.
+@MainActor
+final class ImageCacheViewModel: ObservableObject {
+    @Published var usageText: String = "—"
+    @Published var isClearing: Bool = false
+
+    private let formatter: ByteCountFormatter = {
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useKB, .useMB, .useGB]
+        f.countStyle = .file
+        return f
+    }()
+
+    func refresh() {
+        Task.detached(priority: .utility) { [weak self] in
+            let bytes = ImageDiskCache.shared.currentBytes()
+            await MainActor.run {
+                guard let self else { return }
+                self.usageText = self.formatter.string(fromByteCount: bytes)
+            }
+        }
+    }
+
+    func clear() {
+        isClearing = true
+        ImageDiskCache.shared.clearAll { [weak self] in
+            self?.isClearing = false
+            self?.refresh()
         }
     }
 }

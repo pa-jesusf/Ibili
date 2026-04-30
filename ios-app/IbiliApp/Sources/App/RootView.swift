@@ -105,12 +105,15 @@ private struct DeepLinkPlayerHost: View {
         }
     }
 
-    /// Tear the host down. Resetting `swipeOffsetX` first means the
-    /// system trailing-edge transition starts from offset 0 rather
-    /// than mid-drag — so the dismiss animation reads as a clean
-    /// horizontal slide regardless of how far the user dragged.
+    /// Tear the host down. We deliberately *don't* reset
+    /// `swipeOffsetX` before clearing `pending` — doing so would
+    /// snap the host back to origin, then the parent ZStack's
+    /// `.move(edge: .trailing)` removal would slide it off again,
+    /// producing two visible animations. Letting the transition
+    /// run from the current dragged offset gives a single,
+    /// continuous slide-out. The host view is torn down on removal
+    /// so the `swipeOffsetX = 0` reset isn't needed for next time.
     private func dismiss() {
-        swipeOffsetX = 0
         withAnimation(.easeOut(duration: 0.28)) {
             router.pending = nil
         }

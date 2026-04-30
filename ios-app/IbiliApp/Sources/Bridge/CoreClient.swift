@@ -73,7 +73,11 @@ public final class CoreClient: @unchecked Sendable {
         }
 
         if env.ok, let d = env.data {
-            AppLog.debug("core", "Core 调用成功", metadata: [
+            // Promoted from .debug to .info so every API hit is
+            // visible in the in-app log viewer without re-enabling
+            // verbose mode — makes diagnosing failed requests much
+            // easier in the field.
+            AppLog.info("core", "API 调用成功", metadata: [
                 "method": method,
                 "ms": elapsedMilliseconds(since: startedAt),
             ])
@@ -98,7 +102,7 @@ public final class CoreClient: @unchecked Sendable {
         let startedAt = CFAbsoluteTimeGetCurrent()
         do {
             _ = try callRaw(method, args: args)
-            AppLog.debug("core", "Core void 调用完成", metadata: [
+            AppLog.info("core", "API 调用完成", metadata: [
                 "method": method,
                 "ms": elapsedMilliseconds(since: startedAt),
             ])

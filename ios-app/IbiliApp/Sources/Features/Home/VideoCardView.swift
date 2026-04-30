@@ -1,7 +1,12 @@
 import SwiftUI
 
-/// Home feed video card. Cover treatment + bottom info area composed
-/// from reusable design-system pieces (`VideoCoverView`, `CardInfoSection`).
+/// Home feed video card. Shares its visual treatment 1:1 with
+/// `SearchResultCardView` — same cover, same info section, same
+/// paddings — so a user comparing the two surfaces sees a single,
+/// consistent card layout. The home recommendation feed only
+/// supplies a subset of the fields (no `like`, often no `pubdate`);
+/// missing values just collapse their respective slots without
+/// affecting the surrounding geometry.
 struct VideoCardView: View {
     let item: FeedItemDTO
     let cardWidth: CGFloat
@@ -28,11 +33,13 @@ struct VideoCardView: View {
                 author: item.author,
                 pubdate: item.pubdate,
                 stats: FeedCardStats(danmaku: item.danmaku),
-                config: meta
+                config: meta,
+                titleFont: .system(size: 13, weight: .medium),
+                showAuthorIcon: true
             )
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 8)
             .padding(.top, 8)
-            .padding(.bottom, 8)
+            .padding(.bottom, 10)
         }
         .frame(width: cardWidth, alignment: .topLeading)
         .background(IbiliTheme.surface)

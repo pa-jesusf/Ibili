@@ -1,11 +1,11 @@
 import SwiftUI
 
 /// Stat counts a feed card may surface in its bottom info row. Cards
-/// that don't carry a particular stat just leave it at 0; the section
-/// hides the slot when the user-selected stat is unavailable.
+/// that don't carry a particular stat just leave it at 0; if the user
+/// has explicitly opted into a stat we render `0` rather than hiding
+/// the slot, so the cards stay visually aligned across rows.
 struct FeedCardStats: Equatable {
     var danmaku: Int64 = 0
-    var favorite: Int64 = 0
     var like: Int64 = 0
 }
 
@@ -64,7 +64,9 @@ struct CardInfoSection: View {
         let dateText = (config.showPubdate && pubdate > 0) ? BiliFormat.relativeDate(pubdate) : ""
         let statValue = resolvedStatValue()
         let showDate = !dateText.isEmpty
-        let showStat = config.stat != .none && statValue > 0
+        // Show `0` instead of hiding when the user explicitly opted
+        // into a stat — keeps row heights aligned across cards.
+        let showStat = config.stat != .none
         if showDate || showStat {
             HStack(spacing: 8) {
                 if showDate {
@@ -88,7 +90,6 @@ struct CardInfoSection: View {
         switch config.stat {
         case .none: return 0
         case .danmaku: return stats.danmaku
-        case .favorite: return stats.favorite
         case .like: return stats.like
         }
     }
