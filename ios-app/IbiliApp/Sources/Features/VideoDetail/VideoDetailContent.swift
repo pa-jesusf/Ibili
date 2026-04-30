@@ -32,12 +32,11 @@ struct VideoDetailContent: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Picker("", selection: $tab) {
-                    ForEach(Tab.allCases) { t in
-                        Text(t.rawValue).tag(t)
-                    }
-                }
-                .pickerStyle(.segmented)
+                IbiliSegmentedTabs(
+                    tabs: Tab.allCases,
+                    title: { $0.rawValue },
+                    selection: $tab
+                )
                 .padding(.horizontal, 16)
 
                 Group {
@@ -53,7 +52,14 @@ struct VideoDetailContent: View {
                             isLoadingMore: vm.isLoadingMoreRelated,
                             isEnd: vm.relatedIsEnd,
                             onTap: { feedItem in
-                                router.pending = feedItem
+                                // Push onto the active player
+                                // session’s NavigationStack so
+                                // “返回” returns to the previous
+                                // video instead of replacing it
+                                // (which used to leave AVKit
+                                // fullscreen flashing the old
+                                // video on rotation).
+                                router.path.append(feedItem)
                             },
                             onReachEnd: {
                                 Task { await vm.loadMoreRelated() }
@@ -148,11 +154,10 @@ struct VideoDetailContent: View {
             if let v = vm.view {
                 if let season = v.ugcSeason, season.id > 0 {
                     VideoSeasonCard(source: .season(season, currentCid: item.cid)) { aid, bvid, cid in
-                        // Tapping any other episode in the 合集 should
-                        // *replace* the player, mirroring how related-tap
-                        // works. Hand off to the router so the cover host
-                        // re-keys onto the new video and the previous
-                        // player tears down (no 套娃 chain).
+                        // Tapping any other episode in the 合集 pushes
+                        // a new player onto the same NavigationStack
+                        // so swiping back returns to the previous
+                        // episode (uniform 从哪儿来回哪儿去 model).
                         guard cid != item.cid else { return }
                         let next = FeedItemDTO(
                             aid: aid ?? 0,
@@ -161,7 +166,7 @@ struct VideoDetailContent: View {
                             title: "", cover: "", author: "",
                             durationSec: 0, play: 0, danmaku: 0
                         )
-                        router.pending = next
+                        router.path.append(next)
                     }
                     .padding(.horizontal, 16)
                 } else if v.pages.count > 1 {

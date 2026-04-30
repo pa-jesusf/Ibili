@@ -40,7 +40,16 @@ struct UserSpaceView: View {
     /// Same story for video pushes (archive list / dynamic-as-video).
     @State private var pushVideo: FeedItemDTO?
 
-    enum Tab: Hashable { case dynamics, archives }
+    enum Tab: Hashable, Identifiable, CaseIterable {
+        case dynamics, archives
+        var id: Self { self }
+        var title: String {
+            switch self {
+            case .dynamics: return "动态"
+            case .archives: return "投稿"
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -197,28 +206,11 @@ struct UserSpaceView: View {
     // MARK: Tabs
 
     private var tabBar: some View {
-        HStack(spacing: 8) {
-            tabButton("动态", isOn: tab == .dynamics) { tab = .dynamics }
-            tabButton("投稿", isOn: tab == .archives) { tab = .archives }
-        }
-        .padding(4)
-        .modifier(GlassCapsuleModifier())
-    }
-
-    private func tabButton(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isOn ? .white : IbiliTheme.textPrimary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(
-                    // Selected pill: solid accent so it pops against
-                    // the surrounding glass capsule.
-                    Capsule().fill(isOn ? IbiliTheme.accent : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
+        IbiliSegmentedTabs(
+            tabs: Tab.allCases,
+            title: { $0.title },
+            selection: $tab
+        )
     }
 
     // MARK: Content list
@@ -342,12 +334,19 @@ struct UserSpaceView: View {
 private struct GlassCapsuleModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: Capsule())
+            // Layer a `.regularMaterial` blur *behind* the liquid
+            // glass so the effective blur radius is higher and
+            // foreground text stays legible — the bare glass effect
+            // is intentionally subtle on iOS 26 and our pink-tinted
+            // labels can read as low-contrast on bright wallpapers.
+            content
+                .background(Capsule().fill(.regularMaterial))
+                .glassEffect(.regular, in: Capsule())
         } else {
             content
                 .background(
-                    Capsule().fill(.ultraThinMaterial)
-                        .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 0.5))
+                    Capsule().fill(.regularMaterial)
+                        .overlay(Capsule().stroke(.white.opacity(0.10), lineWidth: 0.5))
                 )
         }
     }

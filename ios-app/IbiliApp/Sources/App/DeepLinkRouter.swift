@@ -11,6 +11,18 @@ import Combine
 @MainActor
 final class DeepLinkRouter: ObservableObject {
     @Published var pending: FeedItemDTO?
+    /// Navigation path inside the active player session. The root
+    /// player is rendered when `pending != nil`; subsequent pushes
+    /// (related video tap, season episode, user-space-tap-then-play)
+    /// append to this path so the user gets a real
+    /// "from where you came, back to where you came" stack.
+    ///
+    /// Anything that wants to push *another* player onto the
+    /// currently-visible session should call
+    /// `router.path.append(feedItem)` rather than reassigning
+    /// `pending` (which would replace the root and lose the back
+    /// stack entirely).
+    @Published var path: [FeedItemDTO] = []
 
     /// Returns `.handled` if the URL was an ibili scheme and we routed
     /// it; `.systemAction` otherwise so plain `https://` links still

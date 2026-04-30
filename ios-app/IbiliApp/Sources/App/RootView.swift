@@ -79,7 +79,7 @@ private struct DeepLinkPlayerHost: View {
     )
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $router.path) {
             Group {
                 if let item = router.pending {
                     PlayerView(item: item)
@@ -97,6 +97,10 @@ private struct DeepLinkPlayerHost: View {
                 } else {
                     Color.clear
                 }
+            }
+            .navigationDestination(for: FeedItemDTO.self) { next in
+                PlayerView(item: next)
+                    .id("\(next.aid):\(next.bvid)")
             }
         }
         .background(IbiliTheme.background)
@@ -192,6 +196,7 @@ private struct DeepLinkPlayerHost: View {
             offsetX = width
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) {
+            router.path.removeAll()
             router.pending = nil
         }
     }
