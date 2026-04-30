@@ -40,6 +40,8 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>需要相册权限以保存评论区图片到相册</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

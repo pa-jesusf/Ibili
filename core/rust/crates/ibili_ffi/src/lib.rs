@@ -167,6 +167,14 @@ struct HeartbeatArgs {
 }
 
 #[derive(Deserialize)]
+struct ReplyLikeArgs {
+    oid: i64,
+    #[serde(default = "default_reply_type")] kind: i32,
+    rpid: i64,
+    action: i32,
+}
+
+#[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
     #[serde(default = "default_search_page")] page: i64,
@@ -279,6 +287,11 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "interaction.watchlater_aids" => {
             let aids = c.inner.watchlater_aids()?;
             to_value(aids)
+        }
+        "interaction.reply_like" => {
+            let a: ReplyLikeArgs = serde_json::from_value(args)?;
+            c.inner.reply_like(a.oid, a.kind, a.rpid, a.action)?;
+            Ok(Value::Object(Default::default()))
         }
         "search.video" => {
             let a: SearchVideoArgs = serde_json::from_value(args)?;

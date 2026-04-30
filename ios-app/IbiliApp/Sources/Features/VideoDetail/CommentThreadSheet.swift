@@ -11,6 +11,7 @@ struct CommentThreadSheet: View {
     let root: ReplyItemDTO
 
     @State private var replies: [ReplyItemDTO] = []
+    @State private var rootState: ReplyItemDTO?
     @State private var page: Int64 = 1
     @State private var isLoading = false
     @State private var isEnd = false
@@ -20,11 +21,14 @@ struct CommentThreadSheet: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    CommentRow(item: root, upperMid: 0, isPinned: false) {}
+                    let rootItem = rootState ?? root
+                    CommentRow(item: rootItem, upperMid: 0, isPinned: false,
+                               onLike: { Task { await toggleLike(on: rootItem) } }) {}
                         .padding(.horizontal, 16)
                     Divider()
                     ForEach(replies) { r in
-                        CommentRow(item: r, upperMid: 0, isPinned: false) {}
+                        CommentRow(item: r, upperMid: 0, isPinned: false,
+                                   onLike: { Task { await toggleLike(on: r) } }) {}
                             .padding(.horizontal, 16)
                             .onAppear {
                                 if r.id == replies.last?.id, !isEnd, !isLoading {
@@ -63,6 +67,41 @@ struct CommentThreadSheet: View {
         } catch {
             isEnd = true
             AppLog.error("comments", "评论详情加载失败", error: error)
+        }
+    }
+
+    /// Optimistic toggle for the thread sheet — same shape as
+    /// `CommentListViewModel.toggleLike` but local to the sheet's state.
+    @MainActor
+    private func toggleLike(on target: ReplyItemDTO) async {
+        let next: Int32 = (target.action == 1) ? 0 : 1
+        applyLike(rpid: target.rpid, action: next)
+        do {
+            try await Task.detached(priority: .userInitiated) { [oid = root.oid, rpid = target.rpid] in
+                try CoreClient.shared.replyLike(oid: oid, kind: 1, rpid: rpid, action: next)
+            }.value
+        } catch {
+            applyLike(rpid: target.rpid, action: next == 1 ? 0 : 1)
+            AppLog.error("comments", "点赞失败", error: error, metadata: ["rpid": String(target.rpid)])
+        }
+    }
+
+    @MainActor
+    private func applyLike(rpid: Int64, action: Int32) {
+        if (rootState?.rpid ?? root.rpid) == rpid {
+            var t = rootState ?? root
+            if t.action != action {
+                t.action = action
+                t.like = max(0, t.like + (action == 1 ? 1 : -1))
+                rootState = t
+            }
+            return
+        }
+        if let i = replies.firstIndex(where: { $0.rpid == rpid }) {
+            if replies[i].action != action {
+                replies[i].action = action
+                replies[i].like = max(0, replies[i].like + (action == 1 ? 1 : -1))
+            }
         }
     }
 }

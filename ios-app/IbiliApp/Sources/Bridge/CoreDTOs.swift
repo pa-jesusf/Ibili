@@ -419,8 +419,8 @@ public struct ReplyItemDTO: Decodable, Hashable, Identifiable {
     public let vipStatus: Int32
     public let message: String
     public let ctime: Int64
-    public let like: Int64
-    public let action: Int32
+    public var like: Int64
+    public var action: Int32
     public let replyCount: Int32
     public let upActionLike: Bool
     public let upActionReply: Bool

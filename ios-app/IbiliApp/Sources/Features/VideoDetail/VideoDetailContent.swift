@@ -17,6 +17,7 @@ struct VideoDetailContent: View {
 
     @StateObject private var vm = VideoDetailViewModel()
     @StateObject private var interaction = VideoInteractionService()
+    @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
     @State private var toastWork: DispatchWorkItem?
     @State private var toast: String?
@@ -45,8 +46,18 @@ struct VideoDetailContent: View {
                         CommentListView(oid: item.aid)
                             .padding(.horizontal, 16)
                     case .related:
-                        RelatedVideoList(items: vm.related) { _ in }
-                            .padding(.horizontal, 12)
+                        RelatedVideoList(
+                            items: vm.related,
+                            isLoadingMore: vm.isLoadingMoreRelated,
+                            isEnd: vm.relatedIsEnd,
+                            onTap: { feedItem in
+                                router.pending = feedItem
+                            },
+                            onReachEnd: {
+                                Task { await vm.loadMoreRelated() }
+                            }
+                        )
+                        .padding(.horizontal, 12)
                     }
                 }
                 .padding(.bottom, 24)

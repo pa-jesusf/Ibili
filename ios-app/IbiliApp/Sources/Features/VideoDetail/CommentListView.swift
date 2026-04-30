@@ -42,12 +42,14 @@ struct CommentListView: View {
             .padding(.bottom, 12)
 
             if let top = vm.top {
-                CommentRow(item: top, upperMid: vm.upperMid, isPinned: true) { thread = top }
+                CommentRow(item: top, upperMid: vm.upperMid, isPinned: true,
+                           onLike: { Task { await vm.toggleLike(rpid: top.rpid) } }) { thread = top }
                 Divider()
             }
 
             ForEach(vm.items) { item in
-                CommentRow(item: item, upperMid: vm.upperMid, isPinned: false) { thread = item }
+                CommentRow(item: item, upperMid: vm.upperMid, isPinned: false,
+                           onLike: { Task { await vm.toggleLike(rpid: item.rpid) } }) { thread = item }
                     .onAppear {
                         if item.id == vm.items.last?.id, !vm.isEnd {
                             Task { await vm.loadMore() }
@@ -81,6 +83,7 @@ struct CommentRow: View {
     let item: ReplyItemDTO
     let upperMid: Int64
     let isPinned: Bool
+    var onLike: (() -> Void)? = nil
     let onOpenThread: () -> Void
 
     var body: some View {
@@ -131,7 +134,15 @@ struct CommentRow: View {
                         .padding(.top, 2)
                 }
                 HStack(spacing: 14) {
-                    Label(BiliFormat.compactCount(item.like), systemImage: "hand.thumbsup")
+                    Button {
+                        onLike?()
+                    } label: {
+                        Label(BiliFormat.compactCount(item.like),
+                              systemImage: item.action == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
+                            .foregroundStyle(item.action == 1 ? IbiliTheme.accent : IbiliTheme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(onLike == nil)
                     if item.replyCount > 0 {
                         Button {
                             onOpenThread()
@@ -158,28 +169,48 @@ struct CommentRow: View {
     }
 }
 
-/// Picture attachment grid for a reply. 1 → wide, 2 → side-by-side,
-/// 3+ → 3-column. Each tile uses `RemoteImage` so re-scrolling doesn't
-/// re-fetch.
+/// Picture attachment grid for a reply. Capped at 60% of screen width
+/// (per design spec) so multi-image attachments don't dominate the row.
+/// 1 → single tile, 2 → side-by-side, 3+ → 3-column. Tapping any tile
+/// opens `ImagePreviewSheet` with pinch-zoom + save-to-album.
 struct ReplyPictureGrid: View {
     let urls: [String]
 
+    @State private var preview: PreviewSelection?
+
+    private struct PreviewSelection: Identifiable {
+        let id = UUID()
+        let index: Int
+    }
+
     var body: some View {
         let cols = urls.count == 1 ? 1 : (urls.count == 2 ? 2 : 3)
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: cols)
-        LazyVGrid(columns: columns, spacing: 4) {
-            ForEach(Array(urls.enumerated()), id: \.offset) { _, u in
-                GeometryReader { geo in
-                    RemoteImage(url: u,
-                                contentMode: .fill,
-                                targetPointSize: CGSize(width: geo.size.width, height: geo.size.width),
-                                quality: 75)
-                        .frame(width: geo.size.width, height: geo.size.width)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        let target = UIScreen.main.bounds.width * 0.6
+        let tileSide = (target - CGFloat(cols - 1) * 4) / CGFloat(cols)
+        let columns = Array(
+            repeating: GridItem(.fixed(tileSide), spacing: 4),
+            count: cols
+        )
+        HStack(spacing: 0) {
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { i, u in
+                    Button { preview = .init(index: i) } label: {
+                        RemoteImage(url: u,
+                                    contentMode: .fill,
+                                    targetPointSize: CGSize(width: tileSide, height: tileSide),
+                                    quality: 75)
+                            .frame(width: tileSide, height: tileSide)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .aspectRatio(1, contentMode: .fit)
             }
+            .frame(width: target, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+        .fullScreenCover(item: $preview) { sel in
+            ImagePreviewSheet(urls: urls, initialIndex: sel.index)
         }
     }
 }

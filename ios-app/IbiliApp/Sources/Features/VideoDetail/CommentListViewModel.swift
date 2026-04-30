@@ -52,4 +52,46 @@ final class CommentListViewModel: ObservableObject {
             AppLog.error("comments", "评论加载失败", error: error, metadata: ["oid": String(oid)])
         }
     }
+
+    /// Toggle like on a reply. Optimistic — flips local `action` and
+    /// nudges `like` immediately, then calls `interaction.reply_like`.
+    /// Rolls back on failure.
+    func toggleLike(rpid: Int64) async {
+        let nextAction: Int32 = currentAction(for: rpid) == 1 ? 0 : 1
+        applyLikeDelta(rpid: rpid, action: nextAction)
+        do {
+            try await Task.detached(priority: .userInitiated) { [oid] in
+                try CoreClient.shared.replyLike(oid: oid, kind: 1, rpid: rpid, action: nextAction)
+            }.value
+        } catch {
+            // rollback
+            applyLikeDelta(rpid: rpid, action: nextAction == 1 ? 0 : 1)
+            errorText = (error as NSError).localizedDescription
+            AppLog.error("comments", "点赞失败", error: error, metadata: ["rpid": String(rpid)])
+        }
+    }
+
+    private func currentAction(for rpid: Int64) -> Int32 {
+        if top?.rpid == rpid { return top?.action ?? 0 }
+        return items.first(where: { $0.rpid == rpid })?.action ?? 0
+    }
+
+    private func applyLikeDelta(rpid: Int64, action: Int32) {
+        if top?.rpid == rpid, var t = top {
+            let prev = t.action
+            if prev != action {
+                t.action = action
+                t.like = max(0, t.like + (action == 1 ? 1 : -1))
+                top = t
+            }
+            return
+        }
+        if let idx = items.firstIndex(where: { $0.rpid == rpid }) {
+            let prev = items[idx].action
+            if prev != action {
+                items[idx].action = action
+                items[idx].like = max(0, items[idx].like + (action == 1 ? 1 : -1))
+            }
+        }
+    }
 }

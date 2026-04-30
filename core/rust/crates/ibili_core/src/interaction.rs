@@ -29,6 +29,8 @@ const URL_HEARTBEAT_WEB: &str = "https://api.bilibili.com/x/click-interface/web/
 /// detail page can render the watch-later button in its true state
 /// instead of always-off.
 const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/web";
+/// Like / un-like a single comment. Mirrors PiliPlus `ReplyHttp.likeReply`.
+const URL_REPLY_ACTION: &str = "https://api.bilibili.com/x/v2/reply/action";
 
 #[derive(Default, Deserialize)]
 struct ToastWire {
@@ -258,6 +260,22 @@ impl Core {
         }
         let raw: WatchLaterListWire = self.http.get_web(URL_WATCHLATER_LIST, &[])?;
         Ok(raw.list.into_iter().map(|item| item.aid).collect())
+    }
+
+    /// Like / un-like a comment. `action` is 1 (点赞) or 0 (取消点赞).
+    /// `kind` is the reply type (1 = video). Mirrors PiliPlus.
+    pub fn reply_like(&self, oid: i64, kind: i32, rpid: i64, action: i32) -> CoreResult<()> {
+        let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        let action = if action == 0 { 0 } else { 1 };
+        let params: Vec<(String, String)> = vec![
+            ("type".into(), kind.to_string()),
+            ("oid".into(), oid.to_string()),
+            ("rpid".into(), rpid.to_string()),
+            ("action".into(), action.to_string()),
+            ("csrf".into(), csrf),
+        ];
+        let _: Value = self.http.post_form_web(URL_REPLY_ACTION, &params)?;
+        Ok(())
     }
 }
 

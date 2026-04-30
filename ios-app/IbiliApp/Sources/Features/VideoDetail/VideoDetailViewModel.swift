@@ -10,10 +10,14 @@ final class VideoDetailViewModel: ObservableObject {
     @Published private(set) var view: VideoViewDTO?
     @Published private(set) var related: [RelatedVideoItemDTO] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isLoadingMoreRelated = false
+    @Published private(set) var relatedIsEnd = false
     @Published private(set) var errorText: String?
 
     private(set) var aid: Int64 = 0
     private(set) var bvid: String = ""
+    private var feedFreshIdx: Int64 = 1
+    private var seenAids: Set<Int64> = []
 
     /// Best-effort initial fill from the home/search list — lets us
     /// render title/cover before the network round-trip lands.
@@ -39,6 +43,10 @@ final class VideoDetailViewModel: ObservableObject {
             self.related = await Task.detached(priority: .utility) {
                 (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
             }.value
+            self.seenAids = Set(self.related.map { $0.aid })
+            self.seenAids.insert(v.aid)
+            self.relatedIsEnd = false
+            self.feedFreshIdx = 1
             AppLog.info("video", "视频详情加载成功", metadata: [
                 "aid": String(v.aid),
                 "bvid": resolvedBvid,
@@ -65,5 +73,47 @@ final class VideoDetailViewModel: ObservableObject {
             self.bvid = updated.bvid.isEmpty ? bvid : updated.bvid
             self.view = updated
         }
+    }
+
+    /// `archive/related` is one-shot (~30 items, no native pagination).
+    /// Once the user reaches the end of that list we fall back to the
+    /// home feed (`feed.home`) and keep appending fresh items so the
+    /// related rail behaves like an infinite list.
+    func loadMoreRelated() async {
+        guard !isLoadingMoreRelated, !relatedIsEnd else { return }
+        isLoadingMoreRelated = true
+        defer { isLoadingMoreRelated = false }
+        let idx = feedFreshIdx
+        let page = await Task.detached(priority: .utility) {
+            (try? CoreClient.shared.feedHome(idx: idx, ps: 12))
+        }.value
+        guard let page else {
+            relatedIsEnd = true
+            return
+        }
+        let mapped: [RelatedVideoItemDTO] = page.items.compactMap { f -> RelatedVideoItemDTO? in
+            guard !seenAids.contains(f.aid) else { return nil }
+            seenAids.insert(f.aid)
+            return RelatedVideoItemDTO(
+                aid: f.aid,
+                bvid: f.bvid,
+                cid: f.cid,
+                title: f.title,
+                cover: f.cover,
+                author: f.author,
+                face: "",
+                mid: 0,
+                durationSec: f.durationSec,
+                play: f.play,
+                danmaku: f.danmaku,
+                pubdate: 0
+            )
+        }
+        if mapped.isEmpty && page.items.isEmpty {
+            relatedIsEnd = true
+            return
+        }
+        related.append(contentsOf: mapped)
+        feedFreshIdx += 1
     }
 }

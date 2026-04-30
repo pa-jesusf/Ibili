@@ -59,6 +59,7 @@ targets:
           NSAllowsArbitraryLoads: true
         UIBackgroundModes:
           - audio
+        NSPhotoLibraryAddUsageDescription: 需要相册权限以保存评论区图片到相册
         UIRequiredDeviceCapabilities:
           - arm64
     settings:

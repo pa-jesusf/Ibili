@@ -3,14 +3,36 @@ import SwiftUI
 /// Top-level shell. Switches between login and main tab interface.
 struct RootView: View {
     @EnvironmentObject var session: AppSession
+    @StateObject private var router = DeepLinkRouter()
 
     var body: some View {
-        if session.isLoggedIn {
-            MainTabView()
-                .transition(.opacity)
-        } else {
-            LoginView()
-                .transition(.opacity)
+        Group {
+            if session.isLoggedIn {
+                MainTabView()
+                    .transition(.opacity)
+            } else {
+                LoginView()
+                    .transition(.opacity)
+            }
+        }
+        .environmentObject(router)
+        .environment(\.openURL, OpenURLAction { url in
+            router.handle(url)
+        })
+        .fullScreenCover(item: $router.pending) { item in
+            NavigationStack {
+                PlayerView(item: item)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                router.pending = nil
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                        }
+                    }
+            }
+            .tint(IbiliTheme.accent)
         }
     }
 }

@@ -354,6 +354,12 @@ public final class CoreClient: @unchecked Sendable {
     public func watchLaterAids() throws -> [Int64] {
         return try call("interaction.watchlater_aids", decoding: [Int64].self)
     }
+
+    /// Like / un-like a single comment. `action` is 1 (like) or 0 (un-like).
+    public func replyLike(oid: Int64, kind: Int32 = 1, rpid: Int64, action: Int32) throws {
+        struct A: Encodable { let oid: Int64; let kind: Int32; let rpid: Int64; let action: Int32 }
+        try callVoid("interaction.reply_like", args: A(oid: oid, kind: kind, rpid: rpid, action: action))
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {
