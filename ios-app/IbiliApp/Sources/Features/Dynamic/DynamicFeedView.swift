@@ -88,7 +88,7 @@ struct DynamicFeedView: View {
 
 // MARK: - Card
 
-private struct DynamicItemCard: View {
+struct DynamicItemCard: View {
     let item: DynamicItemDTO
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var preview: ImagePreviewState?
@@ -207,6 +207,7 @@ private struct ImagePreviewState: Identifiable {
 
 private struct DynamicHeader: View {
     let author: DynamicAuthorDTO
+    @State private var pushSpace = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -228,6 +229,17 @@ private struct DynamicHeader: View {
             }
             Spacer(minLength: 0)
         }
+        .contentShape(Rectangle())
+        // Inner gesture wins over the card-level `onTapGesture` so
+        // tapping the avatar/name navigates to the user space without
+        // also opening the dynamic detail.
+        .onTapGesture { if author.mid > 0 { pushSpace = true } }
+        .background(
+            NavigationLink(isActive: $pushSpace) {
+                UserSpaceView(mid: author.mid)
+            } label: { EmptyView() }
+            .opacity(0)
+        )
     }
 }
 
@@ -366,14 +378,19 @@ private struct DynamicImagesGrid: View {
             let layout = Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: cols)
             LazyVGrid(columns: layout, alignment: .leading, spacing: spacing) {
                 ForEach(Array(images.enumerated()), id: \.offset) { idx, img in
-                    Button { onTap(idx) } label: {
-                        RemoteImage(url: img.url, contentMode: .fill,
-                                    targetPointSize: CGSize(width: cell, height: cell), quality: 75)
-                            .frame(width: cell, height: cell)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+                    // Constrain hit-testing to exactly the rendered
+                    // square — without `.contentShape` SwiftUI hands
+                    // the grid cell's full slack region to whichever
+                    // Button it lays out first, which is why a 2-img
+                    // post used to register taps far past the visual
+                    // boundary of the left image.
+                    RemoteImage(url: img.url, contentMode: .fill,
+                                targetPointSize: CGSize(width: cell, height: cell), quality: 75)
+                        .frame(width: cell, height: cell)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture { onTap(idx) }
                 }
             }
             .frame(width: contentWidth, alignment: .leading)
@@ -391,14 +408,13 @@ private struct DynamicImagesGrid: View {
             return min(max(r, 0.5), 1.5)
         }()
         let h = contentWidth * aspect
-        Button { onTap(0) } label: {
-            RemoteImage(url: img.url, contentMode: .fill,
-                        targetPointSize: CGSize(width: contentWidth, height: h), quality: 80)
-                .frame(width: contentWidth, height: h)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .buttonStyle(.plain)
+        RemoteImage(url: img.url, contentMode: .fill,
+                    targetPointSize: CGSize(width: contentWidth, height: h), quality: 80)
+            .frame(width: contentWidth, height: h)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+            .onTapGesture { onTap(0) }
     }
 }
 

@@ -498,6 +498,31 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable { let feed_type: String; let page: Int64; let offset: String }
         return try call("dynamic.feed", args: A(feed_type: feedType, page: page, offset: offset), decoding: DynamicFeedPageDTO.self)
     }
+
+    /// Per-uploader dynamic feed used by the user space page.
+    public func spaceDynamicFeed(hostMid: Int64, offset: String = "") throws -> DynamicFeedPageDTO {
+        struct A: Encodable { let host_mid: Int64; let offset: String }
+        return try call("dynamic.space_feed", args: A(host_mid: hostMid, offset: offset), decoding: DynamicFeedPageDTO.self)
+    }
+
+    /// Like / unlike a dynamic. `action` is 1 (点赞) or 2 (取消点赞).
+    public func dynamicLike(dynamicId: String, action: Int32 = 1) throws {
+        struct A: Encodable { let dynamic_id: String; let action: Int32 }
+        try callVoid("dynamic.like", args: A(dynamic_id: dynamicId, action: action))
+    }
+
+    // MARK: - User space (per-uploader page)
+
+    /// `/x/space/wbi/arc/search`. Used by the user-space "投稿" tab.
+    /// `keyword` may be empty to list everything paginated. `order` is
+    /// "pubdate" (default) | "click" (播放) | "stow" (收藏).
+    public func spaceArcSearch(mid: Int64, keyword: String = "",
+                               order: String = "pubdate", page: Int64 = 1) throws -> SpaceArcSearchPageDTO {
+        struct A: Encodable { let mid: Int64; let keyword: String; let order: String; let page: Int64 }
+        return try call("user.space_arc_search",
+                        args: A(mid: mid, keyword: keyword, order: order, page: page),
+                        decoding: SpaceArcSearchPageDTO.self)
+    }
 }
 
 private func elapsedMilliseconds(since start: CFAbsoluteTime) -> String {

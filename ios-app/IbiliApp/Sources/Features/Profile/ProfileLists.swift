@@ -464,8 +464,12 @@ struct RelationListView: View {
             } else {
                 List {
                     ForEach(vm.items) { user in
-                        RelationRow(user: user)
-                            .listRowBackground(IbiliTheme.surface)
+                        NavigationLink {
+                            UserSpaceView(mid: user.mid)
+                        } label: {
+                            RelationRow(user: user)
+                        }
+                        .listRowBackground(IbiliTheme.surface)
                     }
                     if !vm.isEnd {
                         HStack { Spacer(); ProgressView(); Spacer() }

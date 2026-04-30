@@ -12,6 +12,7 @@ struct UploaderCardView: View {
     let owner: VideoOwnerDTO
     @ObservedObject var interaction: VideoInteractionService
     @StateObject private var loader = UploaderCardLoader()
+    @State private var pushSpace = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -51,6 +52,17 @@ struct UploaderCardView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(IbiliTheme.surface)
+        )
+        // Tapping anywhere on the card body (not the follow button)
+        // pushes the user space page. The follow button intercepts
+        // its own taps via `.buttonStyle(.plain)`.
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture { if owner.mid > 0 { pushSpace = true } }
+        .background(
+            NavigationLink(isActive: $pushSpace) {
+                UserSpaceView(mid: owner.mid)
+            } label: { EmptyView() }
+            .opacity(0)
         )
         .task(id: owner.mid) {
             await loader.load(mid: owner.mid)

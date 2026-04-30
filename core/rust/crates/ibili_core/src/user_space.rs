@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::Core;
 use crate::error::{CoreError, CoreResult};
+use crate::signer::WbiKey;
 
 const URL_USER_CARD: &str = "https://api.bilibili.com/x/web-interface/card";
 const URL_HISTORY_CURSOR: &str = "https://api.bilibili.com/x/web-interface/history/cursor";
@@ -23,6 +24,8 @@ const URL_FAV_PGC_LIST: &str = "https://api.bilibili.com/x/space/bangumi/follow/
 const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/web";
 const URL_FOLLOWINGS: &str = "https://api.bilibili.com/x/relation/followings";
 const URL_FOLLOWERS: &str = "https://api.bilibili.com/x/relation/followers";
+const URL_SPACE_ARC_SEARCH: &str = "https://api.bilibili.com/x/space/wbi/arc/search";
+const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 
 // MARK: - Public DTOs (serialised to JSON for the FFI hop)
 
@@ -139,6 +142,33 @@ pub struct RelationUser {
 pub struct RelationPage {
     pub items: Vec<RelationUser>,
     pub total: i64,
+}
+
+/// One per-user archive entry returned by `/x/space/wbi/arc/search`.
+/// Keep the shape close to `FeedItem` so the iOS layer can reuse the
+/// same video card component.
+#[derive(Debug, Serialize, Clone)]
+pub struct SpaceArcItem {
+    pub aid: i64,
+    pub bvid: String,
+    pub title: String,
+    pub cover: String,
+    pub author: String,
+    /// "01:32" / "1:23:45" — Bilibili returns this pre-formatted.
+    pub duration_label: String,
+    pub play: i64,
+    pub danmaku: i64,
+    pub comment: i64,
+    /// Unix-seconds publish timestamp.
+    pub created: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SpaceArcSearchPage {
+    pub items: Vec<SpaceArcItem>,
+    pub count: i64,
+    pub page: i64,
+    pub page_size: i64,
 }
 
 // MARK: - Implementation
@@ -345,6 +375,65 @@ impl Core {
             Err(_) => Ok(RelationPage { items: vec![], total: 0 }),
         }
     }
+
+    /// `/x/space/wbi/arc/search`. Per-uploader video archive search.
+    /// `keyword` may be empty (lists everything paginated). `order`
+    /// accepts upstream values: "pubdate" (default) | "click" (播放) |
+    /// "stow" (收藏). The endpoint requires WBI signing even when
+    /// the caller is anonymous.
+    pub fn space_arc_search(
+        &self,
+        mid: i64,
+        keyword: &str,
+        order: &str,
+        page: i64,
+    ) -> CoreResult<SpaceArcSearchPage> {
+        if mid <= 0 {
+            return Err(CoreError::InvalidArgument("mid required".into()));
+        }
+        let key = self.fetch_wbi_key_for_space()?;
+        let order_val = match order {
+            "click" | "stow" | "pubdate" => order,
+            _ => "pubdate",
+        };
+        let params: Vec<(String, String)> = vec![
+            ("mid".into(), mid.to_string()),
+            ("ps".into(), "30".into()),
+            ("tid".into(), "0".into()),
+            ("pn".into(), page.max(1).to_string()),
+            ("keyword".into(), keyword.to_string()),
+            ("order".into(), order_val.into()),
+            ("platform".into(), "web".into()),
+            ("web_location".into(), "1550101".into()),
+            ("order_avoided".into(), "true".into()),
+        ];
+        let raw: SpaceArcSearchRoot = self.http.get_signed_web(URL_SPACE_ARC_SEARCH, params, &key)?;
+        let vlist = raw.list.and_then(|l| l.vlist).unwrap_or_default();
+        let items = vlist.into_iter().map(|v| SpaceArcItem {
+            aid: v.aid.unwrap_or(0),
+            bvid: v.bvid.unwrap_or_default(),
+            title: v.title.unwrap_or_default(),
+            cover: v.pic.unwrap_or_default(),
+            author: v.author.unwrap_or_default(),
+            duration_label: v.length.unwrap_or_default(),
+            play: v.play.unwrap_or(0),
+            danmaku: v.video_review.unwrap_or(0),
+            comment: v.comment.unwrap_or(0),
+            created: v.created.unwrap_or(0),
+        }).collect();
+        let page_info = raw.page.unwrap_or_default();
+        Ok(SpaceArcSearchPage {
+            items,
+            count: page_info.count.unwrap_or(0),
+            page: page_info.pn.unwrap_or(1),
+            page_size: page_info.ps.unwrap_or(30),
+        })
+    }
+
+    fn fetch_wbi_key_for_space(&self) -> CoreResult<WbiKey> {
+        let nav: NavWire = self.http.get_web(URL_NAV, &[])?;
+        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+    }
 }
 
 // MARK: - Wire (Bilibili JSON) shapes
@@ -511,3 +600,60 @@ where
 // untyped JSON shapes.
 #[allow(dead_code)]
 fn _value_unused() -> Value { Value::Null }
+
+#[derive(Default, Deserialize)]
+struct NavWire {
+    #[serde(default)] wbi_img: NavWbiImageWire,
+}
+#[derive(Default, Deserialize)]
+struct NavWbiImageWire {
+    #[serde(default)] img_url: String,
+    #[serde(default)] sub_url: String,
+}
+
+#[derive(Default, Deserialize)]
+struct SpaceArcSearchRoot {
+    #[serde(default)] list: Option<SpaceArcListWire>,
+    #[serde(default)] page: Option<SpaceArcPageWire>,
+}
+#[derive(Default, Deserialize)]
+struct SpaceArcListWire {
+    #[serde(default)] vlist: Option<Vec<SpaceArcItemWire>>,
+}
+#[derive(Default, Deserialize)]
+struct SpaceArcItemWire {
+    #[serde(default)] aid: Option<i64>,
+    #[serde(default)] bvid: Option<String>,
+    #[serde(default)] title: Option<String>,
+    #[serde(default)] pic: Option<String>,
+    #[serde(default)] author: Option<String>,
+    #[serde(default)] length: Option<String>,
+    #[serde(default, deserialize_with = "lenient_count_opt")] play: Option<i64>,
+    #[serde(default)] video_review: Option<i64>,
+    #[serde(default)] comment: Option<i64>,
+    #[serde(default)] created: Option<i64>,
+}
+#[derive(Default, Deserialize)]
+struct SpaceArcPageWire {
+    #[serde(default)] count: Option<i64>,
+    #[serde(default)] pn: Option<i64>,
+    #[serde(default)] ps: Option<i64>,
+}
+
+/// Bilibili recently started returning `play` as either a bare number
+/// (legacy) or an object `{view, vt}` on newer responses. Coerce both
+/// shapes to `i64`.
+fn lenient_count_opt<'de, D>(de: D) -> Result<Option<i64>, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(Value::String(s)) => s.parse().ok(),
+        Some(Value::Object(map)) => {
+            map.get("view").or_else(|| map.get("vt"))
+                .and_then(|x| x.as_i64())
+        }
+        _ => None,
+    })
+}

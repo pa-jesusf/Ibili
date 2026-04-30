@@ -978,3 +978,32 @@ public struct DynamicFeedPageDTO: Decodable {
         case updateNum = "update_num"
     }
 }
+
+public struct SpaceArcItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { aid }
+    public let aid: Int64
+    public let bvid: String
+    public let title: String
+    public let cover: String
+    public let author: String
+    public let durationLabel: String
+    public let play: Int64
+    public let danmaku: Int64
+    public let comment: Int64
+    public let created: Int64
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, title, cover, author, play, danmaku, comment, created
+        case durationLabel = "duration_label"
+    }
+}
+
+public struct SpaceArcSearchPageDTO: Decodable {
+    public let items: [SpaceArcItemDTO]
+    public let count: Int64
+    public let page: Int64
+    public let pageSize: Int64
+    enum CodingKeys: String, CodingKey {
+        case items, count, page
+        case pageSize = "page_size"
+    }
+}

@@ -253,6 +253,27 @@ struct DynamicFeedArgs {
 }
 fn default_feed_type() -> String { "all".into() }
 
+#[derive(Deserialize)]
+struct SpaceDynamicArgs {
+    host_mid: i64,
+    #[serde(default)] offset: String,
+}
+
+#[derive(Deserialize)]
+struct DynamicLikeArgs {
+    dynamic_id: String,
+    #[serde(default = "default_like_action")] action: i32,
+}
+
+#[derive(Deserialize)]
+struct SpaceArcSearchArgs {
+    mid: i64,
+    #[serde(default)] keyword: String,
+    #[serde(default = "default_pubdate")] order: String,
+    #[serde(default = "default_one_i64")] page: i64,
+}
+fn default_pubdate() -> String { "pubdate".into() }
+
 fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> {
     match method {
         "session.snapshot" => to_value(c.inner.session_snapshot()),
@@ -438,6 +459,19 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "dynamic.feed" => {
             let a: DynamicFeedArgs = serde_json::from_value(args).unwrap_or(DynamicFeedArgs { feed_type: "all".into(), page: 1, offset: String::new() });
             to_value(c.inner.dynamic_feed(&a.feed_type, a.page, &a.offset)?)
+        }
+        "dynamic.space_feed" => {
+            let a: SpaceDynamicArgs = serde_json::from_value(args)?;
+            to_value(c.inner.space_dynamic_feed(a.host_mid, &a.offset)?)
+        }
+        "dynamic.like" => {
+            let a: DynamicLikeArgs = serde_json::from_value(args)?;
+            c.inner.dynamic_like(&a.dynamic_id, a.action)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "user.space_arc_search" => {
+            let a: SpaceArcSearchArgs = serde_json::from_value(args)?;
+            to_value(c.inner.space_arc_search(a.mid, &a.keyword, &a.order, a.page)?)
         }
         _ => Err(CoreError::InvalidArgument(format!("unknown method: {method}"))),
     }

@@ -6,9 +6,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Core;
-use crate::error::CoreResult;
+use crate::error::{CoreError, CoreResult};
 
 const URL_DYNAMIC_FEED: &str = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all";
+const URL_SPACE_DYN_FEED: &str = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space";
+const URL_DYNAMIC_THUMB: &str = "https://api.bilibili.com/x/dynamic/feed/dyn/thumb";
 
 // MARK: - Public DTOs
 
@@ -152,6 +154,50 @@ impl Core {
             update_baseline: raw.update_baseline.unwrap_or_default(),
             update_num: raw.update_num.unwrap_or(0),
         })
+    }
+
+    /// Per-user dynamic feed (个人空间 动态 页签). Returns the same
+    /// flattened DTOs as `dynamic_feed`. `offset` is empty on first
+    /// call and propagated from the previous response on subsequent
+    /// pages — mirrors PiliPlus.
+    pub fn space_dynamic_feed(&self, host_mid: i64, offset: &str) -> CoreResult<DynamicFeedPage> {
+        let params: Vec<(String, String)> = vec![
+            ("timezone_offset".into(), "-480".into()),
+            ("host_mid".into(), host_mid.to_string()),
+            ("offset".into(), offset.into()),
+            ("features".into(), "itemOpusStyle,opusBigCover,onlyfansVote,onlyfansAssetsV2,decorationCard".into()),
+            ("web_location".into(), "333.999".into()),
+        ];
+        let raw: DynamicFeedWire = self.http.get_web(URL_SPACE_DYN_FEED, &params)?;
+        let items = raw.items.into_iter()
+            .filter_map(|w| flatten_dynamic_item(w))
+            .collect();
+        Ok(DynamicFeedPage {
+            items,
+            offset: raw.offset.unwrap_or_default(),
+            has_more: raw.has_more.unwrap_or(false),
+            update_baseline: raw.update_baseline.unwrap_or_default(),
+            update_num: raw.update_num.unwrap_or(0),
+        })
+    }
+
+    /// Like / un-like a dynamic. `action` is 1 (点赞) or 2 (取消).
+    /// Mirrors `/x/dynamic/feed/dyn/thumb` with `up=1|2`.
+    pub fn dynamic_like(&self, dynamic_id: &str, action: i32) -> CoreResult<()> {
+        let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        let up = if action == 2 { "2" } else { "1" };
+        // Bilibili keeps `csrf` on the query string and the rest in
+        // the form body for this endpoint. Our `post_form_web`
+        // helper concatenates everything into the body — that works
+        // here too because the server tolerates a body-side csrf.
+        let params: Vec<(String, String)> = vec![
+            ("dyn_id_str".into(), dynamic_id.to_string()),
+            ("up".into(), up.into()),
+            ("spmid".into(), "333.1365.0.0".into()),
+            ("csrf".into(), csrf),
+        ];
+        let _: serde_json::Value = self.http.post_form_web(URL_DYNAMIC_THUMB, &params)?;
+        Ok(())
     }
 }
 

@@ -8,7 +8,15 @@ struct DynamicDetailView: View {
     let item: DynamicItemDTO
 
     @EnvironmentObject private var router: DeepLinkRouter
+    @EnvironmentObject private var session: AppSession
     @State private var preview: DynamicDetailPreviewState?
+    @State private var isLiked = false
+    @State private var likeCount: Int64 = 0
+    @State private var likeBusy = false
+    @State private var shareSheetURL: ShareSheetItem?
+    @State private var commentSendSheet = false
+    @State private var toast: String?
+    @State private var pushAuthorSpace = false
 
     var body: some View {
         let contentWidth = UIScreen.main.bounds.width - 32
@@ -67,6 +75,40 @@ struct DynamicDetailView: View {
         .fullScreenCover(item: $preview) { state in
             ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
         }
+        .sheet(item: $shareSheetURL) { item in
+            ActivityViewController(activityItems: [item.url])
+        }
+        .sheet(isPresented: $commentSendSheet) {
+            if item.commentId > 0 && item.commentType > 0 {
+                CommentSendSheet(
+                    oid: item.commentId,
+                    kind: item.commentType,
+                    selfMid: session.mid,
+                    selfName: ""
+                ) { _ in
+                    // The embedded `CommentListView` reloads itself
+                    // on the next bind cycle; nothing to do here.
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if let t = toast {
+                Text(t)
+                    .font(.footnote)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Capsule().fill(.black.opacity(0.7)))
+                    .padding(.top, 12)
+                    .transition(.opacity)
+            }
+        }
+        .onAppear {
+            // Initialise local like state from the item's stats. Real
+            // "is_liked" needs an extra account-scoped query that the
+            // current dynamic feed doesn't carry; for now we expose
+            // the count and let the user toggle.
+            likeCount = item.stat.like
+        }
     }
 
     private var header: some View {
@@ -87,25 +129,73 @@ struct DynamicDetailView: View {
             }
             Spacer(minLength: 0)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { if item.author.mid > 0 { pushAuthorSpace = true } }
+        .background(
+            NavigationLink(isActive: $pushAuthorSpace) {
+                UserSpaceView(mid: item.author.mid)
+            } label: { EmptyView() }
+            .opacity(0)
+        )
     }
 
     private var statBar: some View {
-        HStack(spacing: 28) {
-            stat(symbol: "arrowshape.turn.up.right", value: item.stat.forward, label: "转发")
-            stat(symbol: "bubble.left", value: item.stat.comment, label: "评论")
-            stat(symbol: "hand.thumbsup", value: item.stat.like, label: "点赞")
+        HStack(spacing: 0) {
+            statButton(symbol: "arrowshape.turn.up.right", value: item.stat.forward, label: "转发") {
+                shareSheetURL = ShareSheetItem(url: "https://t.bilibili.com/\(item.idStr)")
+            }
+            statButton(symbol: "bubble.left", value: item.stat.comment, label: "评论") {
+                commentSendSheet = true
+            }
+            statButton(symbol: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup",
+                       value: likeCount, label: "点赞",
+                       tint: isLiked ? IbiliTheme.accent : IbiliTheme.textSecondary) {
+                Task { await toggleLike() }
+            }
+            .disabled(likeBusy)
             Spacer(minLength: 0)
         }
         .padding(.top, 4)
     }
 
-    private func stat(symbol: String, value: Int64, label: String) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: symbol)
-            Text(value > 0 ? BiliFormat.compactCount(value) : label)
+    private func statButton(symbol: String, value: Int64, label: String,
+                            tint: Color = IbiliTheme.textSecondary,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                Text(value > 0 ? BiliFormat.compactCount(value) : label)
+            }
+            .font(.footnote)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
-        .font(.footnote)
-        .foregroundStyle(IbiliTheme.textSecondary)
+        .buttonStyle(.plain)
+    }
+
+    private func toggleLike() async {
+        guard !likeBusy else { return }
+        likeBusy = true
+        defer { likeBusy = false }
+        let next: Int32 = isLiked ? 2 : 1 // 1=like, 2=unlike (matches upstream)
+        let dynId = item.idStr
+        let ok: Bool = await Task.detached {
+            (try? CoreClient.shared.dynamicLike(dynamicId: dynId, action: next)) != nil
+        }.value
+        if ok {
+            isLiked.toggle()
+            likeCount += isLiked ? 1 : -1
+        } else {
+            await flash("操作失败，请稍后重试")
+        }
+    }
+
+    @MainActor
+    private func flash(_ msg: String) {
+        toast = msg
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { toast = nil }
     }
 
     private func refOf(_ x: DynamicItemDTO) -> DynamicItemRefDTO {
@@ -137,6 +227,24 @@ private struct DynamicDetailPreviewState: Identifiable {
     let id = UUID()
     let urls: [String]
     let index: Int
+}
+
+/// Sheet payload for system share. `Identifiable` so we can drive a
+/// `.sheet(item:)` directly off it.
+struct ShareSheetItem: Identifiable {
+    let id = UUID()
+    let url: String
+}
+
+/// Thin `UIActivityViewController` wrapper for system share. We
+/// pass the canonical `t.bilibili.com/<id_str>` URL so external apps
+/// (Messages, WeChat etc.) get a clean deep link.
+struct ActivityViewController: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
 // MARK: - Body / forward panel (mostly mirror feed counterparts but
@@ -212,14 +320,13 @@ private struct DetailBody: View {
                 return min(max(r, 0.5), 1.6)
             }()
             let h = contentWidth * aspect
-            Button { onTapImage(0) } label: {
-                RemoteImage(url: img.url, contentMode: .fill,
-                            targetPointSize: CGSize(width: contentWidth, height: h), quality: 85)
-                    .frame(width: contentWidth, height: h)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            .buttonStyle(.plain)
+            RemoteImage(url: img.url, contentMode: .fill,
+                        targetPointSize: CGSize(width: contentWidth, height: h), quality: 85)
+                .frame(width: contentWidth, height: h)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(Rectangle())
+                .onTapGesture { onTapImage(0) }
         } else {
             let cols = (images.count == 2 || images.count == 4) ? 2 : 3
             let spacing: CGFloat = 4
@@ -227,14 +334,13 @@ private struct DetailBody: View {
             let layout = Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: cols)
             LazyVGrid(columns: layout, alignment: .leading, spacing: spacing) {
                 ForEach(Array(images.enumerated()), id: \.offset) { idx, img in
-                    Button { onTapImage(idx) } label: {
-                        RemoteImage(url: img.url, contentMode: .fill,
-                                    targetPointSize: CGSize(width: cell, height: cell), quality: 80)
-                            .frame(width: cell, height: cell)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+                    RemoteImage(url: img.url, contentMode: .fill,
+                                targetPointSize: CGSize(width: cell, height: cell), quality: 80)
+                        .frame(width: cell, height: cell)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture { onTapImage(idx) }
                 }
             }
             .frame(width: contentWidth, alignment: .leading)

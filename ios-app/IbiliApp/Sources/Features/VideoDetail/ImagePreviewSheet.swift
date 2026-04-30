@@ -88,21 +88,31 @@ struct ImagePreviewSheet: View {
             }
         }
         .statusBarHidden(true)
+        // High-priority gesture so we win over `TabView`'s page swipe
+        // ONLY when the user is clearly dragging downward. We require
+        // the vertical translation to dominate horizontally before
+        // claiming the gesture, otherwise left/right page swipes are
+        // forwarded to the underlying `TabView`.
         .simultaneousGesture(
-            DragGesture(minimumDistance: 6)
+            DragGesture(minimumDistance: 12)
                 .onChanged { v in
-                    // Only dismiss-drag when the page isn't zoomed in
-                    // (the inner `ZoomablePreviewPage` claims the
-                    // gesture during pan-zoom). We also clamp to
-                    // downward direction; upward drag is ignored.
                     guard !pageZoomed else { return }
-                    if v.translation.height >= 0 {
-                        dismissDrag = v.translation.height
+                    let dx = abs(v.translation.width)
+                    let dy = v.translation.height
+                    // Vertical-dominant downward drag only; ignore
+                    // anything that looks remotely like a page flip.
+                    guard dy > 0, dy > dx * 1.4 else {
+                        dismissDrag = 0
+                        return
                     }
+                    dismissDrag = dy
                 }
                 .onEnded { v in
                     guard !pageZoomed else { return }
-                    if v.translation.height > 120 || v.predictedEndTranslation.height > 240 {
+                    let dx = abs(v.translation.width)
+                    let dy = v.translation.height
+                    let isVertical = dy > dx * 1.4
+                    if isVertical, dy > 120 || v.predictedEndTranslation.height > 240 {
                         // Animate back to neutral while dismissing so
                         // the close transition feels continuous with
                         // the drag.
