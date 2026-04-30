@@ -38,7 +38,7 @@ struct VideoDetailContent: View {
                             title: { $0.rawValue },
                             selection: $tab
                         )
-                        .frame(height: 32)
+                        .frame(height: 50)
                         .padding(.horizontal, 16)
                 } else {
                     IbiliSegmentedTabs(

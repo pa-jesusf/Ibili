@@ -213,7 +213,7 @@ struct UserSpaceView: View {
                 title: { $0.title },
                 selection: $tab
             )
-            .frame(height: 32)
+            .frame(height: 50)
         } else {
             IbiliSegmentedTabs(
                 tabs: Tab.allCases,
