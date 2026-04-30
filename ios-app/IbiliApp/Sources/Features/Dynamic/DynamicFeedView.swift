@@ -90,6 +90,22 @@ struct DynamicFeedView: View {
 
 struct DynamicItemCard: View {
     let item: DynamicItemDTO
+    /// When non-nil, video taps inside the card route through this
+    /// closure instead of the global player overlay (`router.pending`).
+    /// The user-space page wires this up so video taps push a
+    /// `PlayerView` onto its own NavigationStack rather than blowing
+    /// away the stack via the deep-link router.
+    var onOpenVideo: ((FeedItemDTO) -> Void)? = nil
+    /// When non-nil, taps that would open the dynamic detail view
+    /// notify the parent instead of using an internal NavigationLink.
+    /// Hoisting the navigation state out of the lazy stack avoids a
+    /// well-known SwiftUI bug: a hidden `NavigationLink(isActive:)`
+    /// living inside a `LazyVStack` cell can have its `isActive`
+    /// flicker back to `false` when the cell scrolls off-screen
+    /// (`@State` lifecycle resets on cell teardown), which collapses
+    /// every push above it — manifesting as "tap dynamic → back jumps
+    /// straight to the root tab".
+    var onOpenDetail: ((DynamicItemDTO) -> Void)? = nil
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var preview: ImagePreviewState?
 
@@ -160,32 +176,44 @@ struct DynamicItemCard: View {
     private func handleCardTap() {
         switch classify(item) {
         case .playVideo(let aid, let bvid, let title, let cover):
-            openVideo(router, aid: aid, bvid: bvid, title: title, cover: cover)
+            let dto = FeedItemDTO(
+                aid: aid, bvid: bvid, cid: 0,
+                title: title, cover: cover, author: "",
+                durationSec: 0, play: 0, danmaku: 0
+            )
+            if let onOpenVideo { onOpenVideo(dto) }
+            else { router.pending = dto }
         case .openDetail:
-            pendingDetail = item
+            if let onOpenDetail { onOpenDetail(item) }
+            else { pendingDetail = item }
         }
     }
 
     private func openCardVideo() {
         guard let v = item.video else { return }
-        openVideo(router, aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+        if let onOpenVideo {
+            onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: 0,
+                                    title: v.title, cover: v.cover, author: "",
+                                    durationSec: 0, play: 0, danmaku: 0))
+        } else {
+            openVideo(router, aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+        }
     }
 
     private func openOrigVideo() {
         guard let v = item.orig?.video else { return }
-        openVideo(router, aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+        if let onOpenVideo {
+            onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: 0,
+                                    title: v.title, cover: v.cover, author: "",
+                                    durationSec: 0, play: 0, danmaku: 0))
+        } else {
+            openVideo(router, aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+        }
     }
 
     private func openOrigDetail() {
-        // The forwarded original is only available as a "ref" type
-        // (no nested `orig`). We synthesise a full `DynamicItemDTO`
-        // for navigation. Comment id/type come from the ref's basic
-        // payload — but ref doesn't carry those, so we fall back to
-        // the parent's ids; the detail view simply renders the ref's
-        // body without comments when no oid is available.
-        // (Drafted as an inert detail; deeper drill-down isn't
-        // commonly used in practice.)
-        pendingDetail = item
+        if let onOpenDetail { onOpenDetail(item) }
+        else { pendingDetail = item }
     }
 
     private func convertToRef(_ item: DynamicItemDTO) -> DynamicItemRefDTO {
@@ -207,39 +235,41 @@ private struct ImagePreviewState: Identifiable {
 
 private struct DynamicHeader: View {
     let author: DynamicAuthorDTO
-    @State private var pushSpace = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            RemoteImage(url: author.face,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: 36, height: 36),
-                        quality: 75)
-                .frame(width: 36, height: 36)
-                .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 1) {
-                Text(author.name).font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                if !author.pubLabel.isEmpty {
-                    Text(author.pubLabel)
-                        .font(.caption2)
-                        .foregroundStyle(IbiliTheme.textSecondary)
+        // Wrap the avatar+name+pubLabel in a real `NavigationLink`
+        // so the push state lives in the parent NavigationStack,
+        // not in a per-cell `@State`. The previous `@State pushSpace`
+        // approach reset to `false` every time the lazy cell got
+        // recycled, which broke the back-stack ("tap dynamic in user
+        // space → back" jumped straight to the tab root).
+        NavigationLink {
+            UserSpaceView(mid: author.mid)
+        } label: {
+            HStack(spacing: 10) {
+                RemoteImage(url: author.face,
+                            contentMode: .fill,
+                            targetPointSize: CGSize(width: 36, height: 36),
+                            quality: 75)
+                    .frame(width: 36, height: 36)
+                    .clipShape(Circle())
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(author.name).font(.subheadline.weight(.medium))
+                        .foregroundStyle(IbiliTheme.textPrimary)
                         .lineLimit(1)
+                    if !author.pubLabel.isEmpty {
+                        Text(author.pubLabel)
+                            .font(.caption2)
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                            .lineLimit(1)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
-        // Inner gesture wins over the card-level `onTapGesture` so
-        // tapping the avatar/name navigates to the user space without
-        // also opening the dynamic detail.
-        .onTapGesture { if author.mid > 0 { pushSpace = true } }
-        .background(
-            NavigationLink(isActive: $pushSpace) {
-                UserSpaceView(mid: author.mid)
-            } label: { EmptyView() }
-            .opacity(0)
-        )
+        .buttonStyle(.plain)
+        .disabled(author.mid <= 0)
     }
 }
 

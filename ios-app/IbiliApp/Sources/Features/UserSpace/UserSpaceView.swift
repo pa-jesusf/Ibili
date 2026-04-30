@@ -1,31 +1,27 @@
 import SwiftUI
 import UIKit
 
-/// Per-uploader space page (用户空间). Layout mirrors PiliPlus / the
-/// stock Bilibili web profile:
+/// Per-uploader space page (用户空间).
 ///
-///   ┌─────────────────────────────┐
-///   │     [avatar]                │
-///   │     RanWang2778             │
-///   │     up 主签名 (sign)         │
-///   │     [+ 关注]                │
-///   │     66      596    Lv4      │
-///   │    关注    粉丝   等级       │
-///   ├─────────────────────────────┤
-///   │   [ 动态 ]   [ 投稿 ]        │ ← segmented control
-///   ├─────────────────────────────┤
-///   │   …content list…            │
-///   ├─────────────────────────────┤
-///   │  🔍 搜索该用户的内容          │ ← bottom-anchored search bar
-///   └─────────────────────────────┘
+/// Layout (top → bottom):
 ///
-/// The right-side toolbar sort button only applies to the 投稿 tab —
-/// it switches the upstream `order=` between pubdate / click / stow.
-/// Search drives the `keyword` arg on the same endpoint, so typing a
-/// term filters the archive list to matching videos. Searching inside
-/// the 动态 tab is a no-op for now (Bilibili does have
-/// `/x/polymer/web-dynamic/v1/feed/space/search`, deferred to a later
-/// pass).
+///   • Header (avatar / name / sign / follow button / 关注·粉丝·投稿)
+///   • 动态 / 投稿 segmented capsule (iOS 26 liquid glass)
+///   • [Search field — only on 投稿 tab, iOS 26 liquid glass]
+///   • Content list (scrolls under the header — header is part of
+///     the scroll content rather than a pinned section, matching the
+///     stock iOS profile pages so users can read further down without
+///     a permanent header taking up vertical real estate).
+///
+/// Top-right toolbar carries the sort menu (only when 投稿 is active).
+/// We hide the bottom tab bar via `.toolbar(.hidden, for: .tabBar)`
+/// so the floating Liquid-Glass tab bar of `MainTabView` doesn't
+/// peek through.
+///
+/// All in-page navigation pushes happen on the *enclosing* navigation
+/// stack — never via `router.pending` — so the back stack is
+/// preserved no matter how the user arrived (tab → user space, or
+/// player → user space, or relation list → user space).
 struct UserSpaceView: View {
     let mid: Int64
 
@@ -33,33 +29,42 @@ struct UserSpaceView: View {
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
     @FocusState private var searchFocused: Bool
-
-    @EnvironmentObject private var router: DeepLinkRouter
+    /// Hoisted nav state for "tap dynamic → push DynamicDetailView".
+    /// Keeping the destination state at this view (rather than inside
+    /// each lazy `DynamicItemCard`) is important: a
+    /// `NavigationLink(isActive:)` whose binding lives on a cell's
+    /// `@State` can have its `isActive` flipped back to `false` when
+    /// the cell is recycled, which collapses the entire push above
+    /// it — manifesting as "tap dynamic → back jumps to home".
+    @State private var pushDynamic: DynamicItemDTO?
+    /// Same story for video pushes (archive list / dynamic-as-video).
+    @State private var pushVideo: FeedItemDTO?
 
     enum Tab: Hashable { case dynamics, archives }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    Section {
-                        contentList
-                    } header: {
-                        VStack(spacing: 12) {
-                            header
-                            tabBar
-                        }
-                        .padding(.bottom, 8)
-                        .background(IbiliTheme.background)
-                    }
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                header
+                tabBar
+                    .padding(.top, 14)
+                    .padding(.horizontal, 16)
+                if tab == .archives {
+                    searchBar
+                        .padding(.top, 12)
+                        .padding(.horizontal, 16)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                .padding(.bottom, 80)
+                Color.clear.frame(height: 12)
+                content
             }
-            searchBar
+            .padding(.bottom, 32)
         }
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("用户空间")
         .navigationBarTitleDisplayMode(.inline)
+        // Hide the floating tab bar — UserSpaceView is full-page.
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             if tab == .archives {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -67,6 +72,7 @@ struct UserSpaceView: View {
                         Picker("排序", selection: Binding(
                             get: { vm.archiveOrder },
                             set: { newVal in
+                                guard newVal != vm.archiveOrder else { return }
                                 vm.archiveOrder = newVal
                                 Task { await vm.refreshArchives(mid: mid, keyword: keyword) }
                             }
@@ -81,10 +87,46 @@ struct UserSpaceView: View {
                 }
             }
         }
+        .animation(.easeInOut(duration: 0.18), value: tab)
+        // Hidden NavigationLinks at the page level. Driven by `pushDynamic`
+        // and `pushVideo`. Because they're declared on `UserSpaceView`
+        // itself (not inside a lazy cell), their binding is stable
+        // across cell recycling and across navigation pops.
+        .background(
+            NavigationLink(
+                isActive: Binding(
+                    get: { pushDynamic != nil },
+                    set: { if !$0 { pushDynamic = nil } }
+                ),
+                destination: {
+                    if let d = pushDynamic { DynamicDetailView(item: d) }
+                },
+                label: { EmptyView() }
+            )
+            .opacity(0)
+            .allowsHitTesting(false)
+        )
+        .background(
+            NavigationLink(
+                isActive: Binding(
+                    get: { pushVideo != nil },
+                    set: { if !$0 { pushVideo = nil } }
+                ),
+                destination: {
+                    if let v = pushVideo { PlayerView(item: v) }
+                },
+                label: { EmptyView() }
+            )
+            .opacity(0)
+            .allowsHitTesting(false)
+        )
+        // `task` runs once per view-identity. It does *not* re-run on
+        // navigation-pop (which is what we want — bouncing back from
+        // dynamic detail must not refetch and rebuild the page from
+        // scratch). The `id: mid` parameter only re-runs the work if
+        // the user-space identity itself changes.
         .task(id: mid) {
-            await vm.loadHeader(mid: mid)
-            await vm.refreshArchives(mid: mid, keyword: "")
-            await vm.refreshDynamics(mid: mid)
+            await vm.bootstrap(mid: mid)
         }
     }
 
@@ -110,20 +152,14 @@ struct UserSpaceView: View {
                     .padding(.horizontal, 28)
                     .lineLimit(3)
             }
-            followButton
-                .padding(.top, 4)
-            statsRow
-                .padding(.top, 6)
+            followButton.padding(.top, 4)
+            statsRow.padding(.top, 6)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 6)
     }
 
     private var followButton: some View {
-        // Optimistic toggle: we don't yet pre-fetch the relation
-        // status (would need `/x/relation/relations`), so the button
-        // starts in a neutral "+ 关注" state and flips to "已关注"
-        // after a successful tap.
         Button {
             Task { await vm.toggleFollow(mid: mid) }
         } label: {
@@ -161,13 +197,12 @@ struct UserSpaceView: View {
     // MARK: Tabs
 
     private var tabBar: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             tabButton("动态", isOn: tab == .dynamics) { tab = .dynamics }
             tabButton("投稿", isOn: tab == .archives) { tab = .archives }
         }
         .padding(4)
-        .background(Capsule().fill(Color.black.opacity(0.18)))
-        .padding(.horizontal, 16)
+        .modifier(GlassCapsuleModifier())
     }
 
     private func tabButton(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
@@ -178,6 +213,8 @@ struct UserSpaceView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
                 .background(
+                    // Selected pill: solid accent so it pops against
+                    // the surrounding glass capsule.
                     Capsule().fill(isOn ? IbiliTheme.accent : Color.clear)
                 )
         }
@@ -187,12 +224,10 @@ struct UserSpaceView: View {
     // MARK: Content list
 
     @ViewBuilder
-    private var contentList: some View {
+    private var content: some View {
         switch tab {
-        case .archives:
-            archivesList
-        case .dynamics:
-            dynamicsList
+        case .archives: archivesList
+        case .dynamics: dynamicsList
         }
     }
 
@@ -200,7 +235,7 @@ struct UserSpaceView: View {
         LazyVStack(spacing: 4) {
             ForEach(Array(vm.archives.enumerated()), id: \.element.id) { idx, item in
                 Button {
-                    router.pending = FeedItemDTO(
+                    pushVideo = FeedItemDTO(
                         aid: item.aid, bvid: item.bvid, cid: 0,
                         title: item.title, cover: item.cover,
                         author: item.author, durationSec: 0,
@@ -217,15 +252,6 @@ struct UserSpaceView: View {
                         durationOverride: item.durationLabel.isEmpty ? nil : item.durationLabel
                     )
                     .padding(.horizontal, 12)
-                    .overlay(alignment: .bottomLeading) {
-                        if item.created > 0 {
-                            Text(BiliFormat.relativeDate(item.created))
-                                .font(.caption2)
-                                .foregroundStyle(IbiliTheme.textSecondary)
-                                .padding(.leading, 144)
-                                .padding(.bottom, 8)
-                        }
-                    }
                 }
                 .buttonStyle(.plain)
                 .onAppear {
@@ -252,12 +278,16 @@ struct UserSpaceView: View {
     private var dynamicsList: some View {
         LazyVStack(spacing: 14) {
             ForEach(Array(vm.dynamics.enumerated()), id: \.element.id) { idx, item in
-                DynamicItemCard(item: item)
-                    .onAppear {
-                        if !vm.dynamicsEnd, idx >= vm.dynamics.count - 3 {
-                            Task { await vm.loadMoreDynamics(mid: mid) }
-                        }
+                DynamicItemCard(
+                    item: item,
+                    onOpenVideo: { feedItem in pushVideo = feedItem },
+                    onOpenDetail: { dyn in pushDynamic = dyn }
+                )
+                .onAppear {
+                    if !vm.dynamicsEnd, idx >= vm.dynamics.count - 3 {
+                        Task { await vm.loadMoreDynamics(mid: mid) }
                     }
+                }
             }
             if vm.dynamicsLoading && vm.dynamics.isEmpty {
                 ProgressView().padding(.vertical, 40)
@@ -297,12 +327,29 @@ struct UserSpaceView: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(
-            Capsule().fill(.regularMaterial)
-                .overlay(Capsule().stroke(.white.opacity(0.06), lineWidth: 0.5))
-        )
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
+        .modifier(GlassCapsuleModifier())
+    }
+}
+
+// MARK: - Liquid glass capsule
+
+/// iOS 26 introduces the native `.glassEffect(_:in:)` modifier that
+/// renders the new "Liquid Glass" material — same blur + chromatic
+/// edge highlight that the system uses for the floating tab bar and
+/// control-center tiles. On older systems we fall back to the
+/// existing `.ultraThinMaterial` capsule, which is the closest
+/// pre-iOS-26 approximation.
+private struct GlassCapsuleModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+        } else {
+            content
+                .background(
+                    Capsule().fill(.ultraThinMaterial)
+                        .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 0.5))
+                )
+        }
     }
 }
 
@@ -326,6 +373,18 @@ final class UserSpaceViewModel: ObservableObject {
     @Published var dynamicsEnd = false
     private var dynamicOffset: String = ""
 
+    /// Idempotent first-load. `task(id: mid)` would otherwise re-run
+    /// our work on `.task` re-attach — we want at most one bootstrap
+    /// per view identity.
+    private var didBootstrap = false
+    func bootstrap(mid: Int64) async {
+        guard !didBootstrap else { return }
+        didBootstrap = true
+        await loadHeader(mid: mid)
+        await refreshArchives(mid: mid, keyword: "")
+        await refreshDynamics(mid: mid)
+    }
+
     func loadHeader(mid: Int64) async {
         let result: UserCardDTO? = await Task.detached {
             try? CoreClient.shared.userCard(mid: mid)
@@ -336,7 +395,6 @@ final class UserSpaceViewModel: ObservableObject {
     func toggleFollow(mid: Int64) async {
         followBusy = true
         defer { followBusy = false }
-        // act: 1 = follow, 2 = unfollow (matches existing CoreClient).
         let act: Int32 = isFollowed ? 2 : 1
         let ok: Bool = await Task.detached {
             do {
@@ -376,8 +434,6 @@ final class UserSpaceViewModel: ObservableObject {
         let existing = Set(archives.map { $0.aid })
         let fresh = result.items.filter { !existing.contains($0.aid) }
         archives.append(contentsOf: fresh)
-        // `count` is total across pages; stop when we've consumed all
-        // or the server returns an empty incremental page.
         if fresh.isEmpty || Int64(archives.count) >= result.count {
             archivesEnd = true
         }

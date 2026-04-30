@@ -12,28 +12,38 @@ struct UploaderCardView: View {
     let owner: VideoOwnerDTO
     @ObservedObject var interaction: VideoInteractionService
     @StateObject private var loader = UploaderCardLoader()
-    @State private var pushSpace = false
 
     var body: some View {
         HStack(spacing: 12) {
-            BiliAvatar(url: owner.face, size: 44)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(owner.name.isEmpty ? "—" : owner.name)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(1)
-                // Fans subtitle replaces the old static "UP 主" line.
-                // While we're loading we show an em-dash placeholder
-                // so the row's vertical rhythm doesn't pop on hydrate.
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(IbiliTheme.textSecondary)
-                    .lineLimit(1)
-                    .contentTransition(.numericText())
+            // Avatar + name area is the "navigate to user space"
+            // affordance. We make it a real `NavigationLink` so the
+            // push state belongs to the parent NavigationStack — a
+            // hidden `NavigationLink(isActive:)` driven by per-cell
+            // @State has been observed to prematurely flip false
+            // when re-laid-out from a navigation pop, collapsing the
+            // back stack.
+            NavigationLink {
+                UserSpaceView(mid: owner.mid)
+            } label: {
+                HStack(spacing: 12) {
+                    BiliAvatar(url: owner.face, size: 44)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(owner.name.isEmpty ? "—" : owner.name)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(IbiliTheme.textPrimary)
+                            .lineLimit(1)
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                            .lineLimit(1)
+                            .contentTransition(.numericText())
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
             }
-
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
+            .disabled(owner.mid <= 0)
 
             Button {
                 interaction.toggleFollow(fid: owner.mid)
@@ -52,17 +62,6 @@ struct UploaderCardView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(IbiliTheme.surface)
-        )
-        // Tapping anywhere on the card body (not the follow button)
-        // pushes the user space page. The follow button intercepts
-        // its own taps via `.buttonStyle(.plain)`.
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture { if owner.mid > 0 { pushSpace = true } }
-        .background(
-            NavigationLink(isActive: $pushSpace) {
-                UserSpaceView(mid: owner.mid)
-            } label: { EmptyView() }
-            .opacity(0)
         )
         .task(id: owner.mid) {
             await loader.load(mid: owner.mid)

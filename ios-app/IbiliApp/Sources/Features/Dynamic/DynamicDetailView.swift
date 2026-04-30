@@ -16,7 +16,6 @@ struct DynamicDetailView: View {
     @State private var shareSheetURL: ShareSheetItem?
     @State private var commentSendSheet = false
     @State private var toast: String?
-    @State private var pushAuthorSpace = false
 
     var body: some View {
         let contentWidth = UIScreen.main.bounds.width - 32
@@ -112,31 +111,34 @@ struct DynamicDetailView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            RemoteImage(url: item.author.face,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: 44, height: 44),
-                        quality: 80)
-                .frame(width: 44, height: 44)
-                .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.author.name).font(.subheadline.weight(.semibold))
-                if !item.author.pubLabel.isEmpty {
-                    Text(item.author.pubLabel)
-                        .font(.caption2)
-                        .foregroundStyle(IbiliTheme.textSecondary)
+        // Direct NavigationLink so the push lives in the parent
+        // NavigationStack — see notes on `DynamicHeader` for why
+        // the @State+isActive pattern is brittle here.
+        NavigationLink {
+            UserSpaceView(mid: item.author.mid)
+        } label: {
+            HStack(spacing: 10) {
+                RemoteImage(url: item.author.face,
+                            contentMode: .fill,
+                            targetPointSize: CGSize(width: 44, height: 44),
+                            quality: 80)
+                    .frame(width: 44, height: 44)
+                    .clipShape(Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.author.name).font(.subheadline.weight(.semibold))
+                        .foregroundStyle(IbiliTheme.textPrimary)
+                    if !item.author.pubLabel.isEmpty {
+                        Text(item.author.pubLabel)
+                            .font(.caption2)
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
-        .onTapGesture { if item.author.mid > 0 { pushAuthorSpace = true } }
-        .background(
-            NavigationLink(isActive: $pushAuthorSpace) {
-                UserSpaceView(mid: item.author.mid)
-            } label: { EmptyView() }
-            .opacity(0)
-        )
+        .buttonStyle(.plain)
+        .disabled(item.author.mid <= 0)
     }
 
     private var statBar: some View {
