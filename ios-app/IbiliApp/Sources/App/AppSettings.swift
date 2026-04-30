@@ -8,6 +8,40 @@ enum VideoIdDisplay: String, CaseIterable, Identifiable {
     var label: String { self == .bv ? "BV 号" : "AV 号" }
 }
 
+/// Which numeric stat is shown next to the publish-date line on a feed
+/// card. Users frequently switch between 弹幕 / 收藏 / 点赞 depending
+/// on what they care about; "none" hides the column entirely.
+enum FeedCardStat: String, CaseIterable, Identifiable {
+    case none, danmaku, favorite, like
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .none: return "不显示"
+        case .danmaku: return "弹幕数"
+        case .favorite: return "收藏数"
+        case .like: return "点赞数"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .none: return ""
+        case .danmaku: return "text.bubble.fill"
+        case .favorite: return "star.fill"
+        case .like: return "heart.fill"
+        }
+    }
+}
+
+/// Per-screen visibility config for video card meta. Pure value type so
+/// it can be diffed cheaply by SwiftUI when passed into card views.
+struct FeedCardMetaConfig: Equatable {
+    var showPlay: Bool
+    var showDuration: Bool
+    var showPubdate: Bool
+    var showAuthor: Bool
+    var stat: FeedCardStat
+}
+
 /// User-tunable display preferences. Persisted via `@AppStorage`.
 @MainActor
 final class AppSettings: ObservableObject {
@@ -61,6 +95,53 @@ final class AppSettings: ObservableObject {
     var videoIdDisplay: VideoIdDisplay {
         get { VideoIdDisplay(rawValue: videoIdDisplayRaw) ?? .bv }
         set { videoIdDisplayRaw = newValue.rawValue }
+    }
+
+    // MARK: - Feed-card meta visibility (per screen)
+    //
+    // Home and Search keep separate flags so power users can show a
+    // dense layout on search results while keeping the home grid lean,
+    // or vice versa. Defaults match the freshly-redesigned
+    // "投稿时间 + 弹幕数" preset.
+    @AppStorage("ibili.card.home.showPlay") var homeShowPlay: Bool = true
+    @AppStorage("ibili.card.home.showDuration") var homeShowDuration: Bool = true
+    @AppStorage("ibili.card.home.showPubdate") var homeShowPubdate: Bool = true
+    @AppStorage("ibili.card.home.showAuthor") var homeShowAuthor: Bool = true
+    @AppStorage("ibili.card.home.stat") private var homeStatRaw: String = FeedCardStat.danmaku.rawValue
+
+    @AppStorage("ibili.card.search.showPlay") var searchShowPlay: Bool = true
+    @AppStorage("ibili.card.search.showDuration") var searchShowDuration: Bool = true
+    @AppStorage("ibili.card.search.showPubdate") var searchShowPubdate: Bool = true
+    @AppStorage("ibili.card.search.showAuthor") var searchShowAuthor: Bool = true
+    @AppStorage("ibili.card.search.stat") private var searchStatRaw: String = FeedCardStat.danmaku.rawValue
+
+    var homeCardStat: FeedCardStat {
+        get { FeedCardStat(rawValue: homeStatRaw) ?? .danmaku }
+        set { homeStatRaw = newValue.rawValue }
+    }
+    var searchCardStat: FeedCardStat {
+        get { FeedCardStat(rawValue: searchStatRaw) ?? .danmaku }
+        set { searchStatRaw = newValue.rawValue }
+    }
+
+    var homeCardMeta: FeedCardMetaConfig {
+        FeedCardMetaConfig(
+            showPlay: homeShowPlay,
+            showDuration: homeShowDuration,
+            showPubdate: homeShowPubdate,
+            showAuthor: homeShowAuthor,
+            stat: homeCardStat
+        )
+    }
+
+    var searchCardMeta: FeedCardMetaConfig {
+        FeedCardMetaConfig(
+            showPlay: searchShowPlay,
+            showDuration: searchShowDuration,
+            showPubdate: searchShowPubdate,
+            showAuthor: searchShowAuthor,
+            stat: searchCardStat
+        )
     }
 
     private let maxFeedColumns = 3

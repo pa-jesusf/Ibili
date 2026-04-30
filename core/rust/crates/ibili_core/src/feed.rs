@@ -31,6 +31,10 @@ struct FeedRawItem {
 #[derive(Deserialize, Default)]
 struct FeedArgs {
     #[serde(default)] up_name: String,
+    /// Unix seconds. Some recommendation card variants include this;
+    /// when absent we fall back to 0 and the iOS layer just hides the
+    /// "投稿时间" line.
+    #[serde(default)] pubdate: i64,
 }
 
 #[derive(Deserialize, Default)]
@@ -137,6 +141,7 @@ impl Core {
                     duration_sec: pa.duration,
                     play: parse_stat_text(&i.cover_left_text_1),
                     danmaku: parse_stat_text(&i.cover_left_text_2),
+                    pubdate: i.args.pubdate,
                 })
             })
             .collect();

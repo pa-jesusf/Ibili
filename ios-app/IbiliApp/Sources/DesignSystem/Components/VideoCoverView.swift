@@ -17,6 +17,11 @@ struct VideoCoverView: View {
     let playCount: Int64
     let durationSec: Int64
     let durationPlacement: DurationPlacement
+    /// When false the play-count chip is hidden. Defaults to true so
+    /// existing call sites keep their previous behaviour.
+    var showPlayCount: Bool = true
+    /// When false the duration chip is hidden regardless of placement.
+    var showDuration: Bool = true
 
     enum DurationPlacement {
         /// Duration sits next to the play-count chip on the bottom row.
@@ -46,7 +51,7 @@ struct VideoCoverView: View {
                 VStack {
                     HStack {
                         Spacer()
-                        if durationSec > 0 {
+                        if showDuration, durationSec > 0 {
                             OverlayChip(text: BiliFormat.duration(durationSec), isMonospaced: true)
                         }
                     }
@@ -57,9 +62,11 @@ struct VideoCoverView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                OverlayChip(systemImage: "play.fill", text: BiliFormat.compactCount(playCount))
+                if showPlayCount {
+                    OverlayChip(systemImage: "play.fill", text: BiliFormat.compactCount(playCount))
+                }
                 Spacer(minLength: 8)
-                if durationPlacement == .bottomTrailing, durationSec > 0 {
+                if showDuration, durationPlacement == .bottomTrailing, durationSec > 0 {
                     OverlayChip(text: BiliFormat.duration(durationSec), isMonospaced: true)
                 }
             }

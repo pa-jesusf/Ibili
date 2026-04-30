@@ -9,6 +9,10 @@ struct DanmakuSendSheet: View {
     let cid: Int64
     /// Current playhead in milliseconds, captured at present time.
     let progressMs: Int64
+    /// Invoked once the server has accepted the danmaku. The host
+    /// typically uses this to inject a local-echo bullet into the
+    /// renderer instead of refetching the full track.
+    var onSent: ((DanmakuItemDTO) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
 
@@ -140,6 +144,18 @@ struct DanmakuSendSheet: View {
                     progressMs: progressMs, mode: mode, color: color
                 )
             }.value
+            // Synthesize a local-echo item the host can inject into
+            // the live renderer so the user immediately sees their
+            // bullet instead of having to wait for a track refetch.
+            let echo = DanmakuItemDTO(
+                timeSec: Float(Double(progressMs) / 1000.0),
+                mode: mode,
+                color: UInt32(bitPattern: color),
+                fontSize: 25,
+                text: msg,
+                isSelf: true
+            )
+            onSent?(echo)
             dismiss()
         } catch {
             errorText = (error as NSError).localizedDescription

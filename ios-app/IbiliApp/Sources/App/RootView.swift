@@ -42,6 +42,9 @@ struct RootView: View {
 /// us the "replace, don't stack" behaviour requested by the user.
 private struct DeepLinkPlayerHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    /// Live drag offset — set while the user pans from the leading
+    /// edge so we can mirror the iOS "swipe-to-pop" parallax / fade.
+    @State private var swipeOffsetX: CGFloat = 0
 
     var body: some View {
         NavigationStack {
@@ -54,7 +57,13 @@ private struct DeepLinkPlayerHost: View {
                                 Button {
                                     router.pending = nil
                                 } label: {
-                                    Image(systemName: "xmark")
+                                    // Back-arrow rather than dismiss-X
+                                    // since this presentation supports an
+                                    // edge-swipe-to-dismiss gesture below
+                                    // and reads as a navigation pop, not
+                                    // a modal dismissal.
+                                    Image(systemName: "chevron.backward")
+                                        .fontWeight(.semibold)
                                 }
                             }
                         }
@@ -62,6 +71,49 @@ private struct DeepLinkPlayerHost: View {
                     Color.clear
                 }
             }
+        }
+        .offset(x: swipeOffsetX)
+        // Restore the iOS interactive-pop gesture by hosting an
+        // invisible DragGesture region pinned to the leading edge. We
+        // only consume drags that *start* within the first ~16pt so it
+        // never fights vertical scroll views or horizontal carousels
+        // inside the player content.
+        .overlay(alignment: .leading) {
+            Color.clear
+                .frame(width: 14)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 8)
+                        .onChanged { v in
+                            // Only follow if the gesture is dominantly
+                            // horizontal & rightward.
+                            guard v.translation.width > 0,
+                                  abs(v.translation.width) > abs(v.translation.height) else {
+                                return
+                            }
+                            swipeOffsetX = v.translation.width
+                        }
+                        .onEnded { v in
+                            let dx = v.translation.width
+                            let vx = v.predictedEndTranslation.width
+                            if dx > 80 || vx > 200 {
+                                // Commit dismiss — animate the host off
+                                // the trailing edge before clearing the
+                                // router pending so the cover unwinds.
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    swipeOffsetX = 1200
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                                    router.pending = nil
+                                    swipeOffsetX = 0
+                                }
+                            } else {
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                                    swipeOffsetX = 0
+                                }
+                            }
+                        }
+                )
         }
     }
 }

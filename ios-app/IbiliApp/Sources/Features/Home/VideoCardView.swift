@@ -7,6 +7,7 @@ struct VideoCardView: View {
     let cardWidth: CGFloat
     let imageQuality: Int?
     let showsDurationAtTopTrailing: Bool
+    let meta: FeedCardMetaConfig
 
     private let cardCornerRadius: CGFloat = 10
 
@@ -18,12 +19,20 @@ struct VideoCardView: View {
                 imageQuality: imageQuality,
                 playCount: item.play,
                 durationSec: item.durationSec,
-                durationPlacement: showsDurationAtTopTrailing ? .topTrailing : .bottomTrailing
+                durationPlacement: showsDurationAtTopTrailing ? .topTrailing : .bottomTrailing,
+                showPlayCount: meta.showPlay,
+                showDuration: meta.showDuration
             )
-            CardInfoSection(title: item.title, author: item.author)
-                .padding(.horizontal, 6)
-                .padding(.top, 8)
-                .padding(.bottom, 8)
+            CardInfoSection(
+                title: item.title,
+                author: item.author,
+                pubdate: item.pubdate,
+                stats: FeedCardStats(danmaku: item.danmaku),
+                config: meta
+            )
+            .padding(.horizontal, 6)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
         }
         .frame(width: cardWidth, alignment: .topLeading)
         .background(IbiliTheme.surface)

@@ -36,6 +36,9 @@ pub struct FeedItem {
     pub duration_sec: i64,
     pub play: i64,
     pub danmaku: i64,
+    /// Unix seconds. `0` when upstream did not provide a publish date
+    /// for this card (the recommendation feed often omits it).
+    pub pubdate: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]

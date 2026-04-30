@@ -69,7 +69,8 @@ struct SearchResultsView: View {
                                 SearchResultCardView(
                                     item: item,
                                     cardWidth: cardW,
-                                    imageQuality: settings.resolvedImageQuality()
+                                    imageQuality: settings.resolvedImageQuality(),
+                                    meta: settings.searchCardMeta
                                 )
                             }
                             .buttonStyle(.plain)
@@ -198,7 +199,8 @@ struct SearchResultsView: View {
             author: result.author,
             durationSec: result.durationSec,
             play: result.play,
-            danmaku: result.danmaku
+            danmaku: result.danmaku,
+            pubdate: result.pubdate
         )
     }
 }

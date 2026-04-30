@@ -106,6 +106,10 @@ final class DanmakuCanvasView: UIView {
         let specialDescriptor: SpecialDanmakuDescriptor?
         var cachedText: CachedText?
         var cachedSpecialText: CachedSpecialText?
+        /// Mirrors `item.isSelf` at schedule time. Used by the renderer
+        /// to draw a capsule frame around the user's own bullets so
+        /// they're visually distinct from everyone else's.
+        var isSelf: Bool { item.isSelf }
     }
 
     private enum DanmakuMode { case scroll, top, bottom, special }
@@ -145,6 +149,42 @@ final class DanmakuCanvasView: UIView {
     func setItems(_ items: [DanmakuItemDTO]) {
         sourceItems = items.sorted { $0.timeSec < $1.timeSec }
         rebuildTrack()
+    }
+
+    /// Inject a single live item at the current playhead and schedule
+    /// it for immediate display. Used by the local-echo path after the
+    /// user successfully sends their own danmaku — saves a full track
+    /// refetch round-trip.
+    func appendLive(_ item: DanmakuItemDTO) {
+        // Keep `sourceItems` sorted so a future seek+rewind still
+        // surfaces the user's bullet in chronological order. We don't
+        // bother resorting the whole list: insertion is rare and the
+        // active scheduler only cares about `cursor` advancing.
+        let insertAt = sourceItems.firstIndex(where: { $0.timeSec > item.timeSec }) ?? sourceItems.count
+        sourceItems.insert(item, at: insertAt)
+        // Mirror the `shouldInclude` filter so block-level rules still
+        // apply consistently to local echoes (self-bullets are exempt
+        // from weight-based blocking by design).
+        guard shouldInclude(item) else { return }
+        // Schedule against `currentPlaybackTime` rather than the item's
+        // own timeSec so it shows up *now*, even if the user paused or
+        // the playhead drifted.
+        schedule(item, at: currentPlaybackTime)
+        // Maintain the cursor so the time-driven feeder doesn't replay
+        // it as an upcoming item once the playhead crosses timeSec.
+        let bound = lowerBound(of: item.timeSec)
+        if bound <= cursor {
+            cursor += 1
+        }
+        // Keep the `all` filtered cache in sync so seek-resync still
+        // reproduces the bullet later.
+        let allInsert = all.firstIndex(where: { $0.timeSec > item.timeSec }) ?? all.count
+        all.insert(item, at: allInsert)
+        if allInsert <= cursor {
+            cursor += 1
+        }
+        needsRedraw = true
+        setNeedsDisplay()
     }
 
     private func rebuildTrack() {
@@ -489,19 +529,19 @@ final class DanmakuCanvasView: UIView {
                 let travel = size.width + ct.size.width
                 let x = size.width - travel * progress
                 let y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
-                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, in: ctx, viewport: size)
+                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, isSelf: dm.isSelf, in: ctx, viewport: size)
 
             case .top:
                 guard let ct = dm.cachedText else { continue }
                 let x = (size.width - ct.size.width) / 2
                 let y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
-                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, in: ctx, viewport: size)
+                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, isSelf: dm.isSelf, in: ctx, viewport: size)
 
             case .bottom:
                 guard let ct = dm.cachedText else { continue }
                 let x = (size.width - ct.size.width) / 2
                 let y = size.height - scrollLaneH * (CGFloat(dm.lane) + 1.5)
-                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, in: ctx, viewport: size)
+                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, isSelf: dm.isSelf, in: ctx, viewport: size)
 
             case .special:
                 guard let special = dm.specialDescriptor,
@@ -521,6 +561,7 @@ final class DanmakuCanvasView: UIView {
         _ cached: CachedText,
         at origin: CGPoint,
         alpha: CGFloat,
+        isSelf: Bool,
         in context: CGContext,
         viewport: CGSize
     ) {
@@ -529,6 +570,36 @@ final class DanmakuCanvasView: UIView {
               origin.x < viewport.width,
               origin.y + cached.size.height > 0,
               origin.y < viewport.height else { return }
+
+        if isSelf {
+            // Frame the user's own bullet so they can spot it in the
+            // crowd. We use the accent tint with a translucent fill so
+            // it reads as "yours" without overpowering the text.
+            let inset: CGFloat = 2
+            let frame = CGRect(
+                x: origin.x - inset,
+                y: origin.y - inset,
+                width: cached.size.width + inset * 2,
+                height: cached.size.height + inset * 2
+            )
+            let radius = min(frame.height / 2, 10)
+            let path = CGPath(
+                roundedRect: frame,
+                cornerWidth: radius,
+                cornerHeight: radius,
+                transform: nil
+            )
+            context.saveGState()
+            context.setAlpha(alpha)
+            context.addPath(path)
+            context.setFillColor(UIColor(red: 1.0, green: 0.42, blue: 0.65, alpha: 0.18).cgColor)
+            context.fillPath()
+            context.addPath(path)
+            context.setStrokeColor(UIColor(red: 1.0, green: 0.42, blue: 0.65, alpha: 0.95).cgColor)
+            context.setLineWidth(1.4)
+            context.strokePath()
+            context.restoreGState()
+        }
 
         context.saveGState()
         context.setAlpha(alpha)

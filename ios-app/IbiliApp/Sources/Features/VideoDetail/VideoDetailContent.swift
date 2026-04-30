@@ -127,7 +127,6 @@ struct VideoDetailContent: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            .animation(.easeInOut(duration: 0.18), value: floatingTabsVisible)
         }
         .task(id: "\(item.aid):\(item.bvid)") {
             interaction.reset(stat: vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0))
@@ -263,8 +262,9 @@ struct VideoDetailContent: View {
     /// picker's Y offset. We only show the floating bar when:
     ///   * the in-content picker is above the viewport (y < 0), and
     ///   * the user is scrolling *up* (delta > 0)
-    /// We hide it again on any downward scroll so it doesn't compete
-    /// with the user's reading flow.
+    /// The hysteresis keeps the bar stable: a tiny up-flick reveals it
+    /// instantly (no need to scroll all the way back to the top), and a
+    /// small wobble doesn't ping-pong the visibility.
     private func handleScroll(y: CGFloat) {
         // Skip the very first sample — `lastTabBarY` is sentinel-init.
         if lastTabBarY == .greatestFiniteMagnitude {
@@ -276,19 +276,26 @@ struct VideoDetailContent: View {
         lastTabBarY = y
         tabBarY = y
         // Only consider transitions once the static picker has actually
-        // scrolled off-screen. While it's still visible the floating bar
-        // would be redundant.
-        let pickerOffscreen = y < -8
+        // scrolled off-screen. While it's still visible the floating
+        // bar would just be redundant chrome.
+        let pickerOffscreen = y < -4
         if !pickerOffscreen {
-            if floatingTabsVisible { floatingTabsVisible = false }
+            if floatingTabsVisible {
+                withAnimation(.easeOut(duration: 0.16)) { floatingTabsVisible = false }
+            }
             return
         }
-        if delta > 1.5 {
-            // User is scrolling up.
-            if !floatingTabsVisible { floatingTabsVisible = true }
-        } else if delta < -1.5 {
-            // User is scrolling down.
-            if floatingTabsVisible { floatingTabsVisible = false }
+        // Tiny upward delta is enough — no need to scroll back to the
+        // top. Hysteresis is asymmetric so the bar is eager to appear
+        // and lazy to hide, which matches Apple's own collapsible bars.
+        if delta > 0.5 {
+            if !floatingTabsVisible {
+                withAnimation(.easeOut(duration: 0.18)) { floatingTabsVisible = true }
+            }
+        } else if delta < -2.0 {
+            if floatingTabsVisible {
+                withAnimation(.easeOut(duration: 0.16)) { floatingTabsVisible = false }
+            }
         }
     }
 }
@@ -305,10 +312,14 @@ private struct TabBarOffsetKey: PreferenceKey {
 /// We can't use `Picker(.segmented)` here because we need to detect
 /// taps on the *already selected* segment (to scroll to top). The
 /// callback is invoked for every tap, and the parent decides whether
-/// to mutate `selection` or to scroll-to-top.
+/// to mutate `selection` or to scroll-to-top. The selected indicator
+/// is animated with `matchedGeometryEffect` so it slides between
+/// segments the way the system Picker does, and the container picks
+/// up the iOS 26 liquid-glass material when available.
 struct DetailTabBar: View {
     @Binding var selection: VideoDetailContent.Tab
     let onTap: (VideoDetailContent.Tab) -> Void
+    @Namespace private var pillNamespace
 
     var body: some View {
         HStack(spacing: 0) {
@@ -316,25 +327,40 @@ struct DetailTabBar: View {
                 Button {
                     onTap(t)
                 } label: {
-                    Text(t.rawValue)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(selection == t ? .white : IbiliTheme.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                        .background(
+                    ZStack {
+                        if selection == t {
                             Capsule(style: .continuous)
-                                .fill(selection == t ? IbiliTheme.accent : Color.clear)
+                                .fill(IbiliTheme.accent)
+                                .matchedGeometryEffect(id: "selectedPill", in: pillNamespace)
                                 .padding(2)
-                        )
-                        .contentShape(Rectangle())
+                        }
+                        Text(t.rawValue)
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(selection == t ? .white : IbiliTheme.textPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
         }
-        .background(
+        .background(tabBarBackground)
+        .animation(.spring(response: 0.32, dampingFraction: 0.85), value: selection)
+    }
+
+    /// Liquid-glass capsule background. Falls back to `.regularMaterial`
+    /// on pre-26 OS where `glassEffect` is unavailable, and finally to
+    /// the surface tint on the oldest supported targets.
+    @ViewBuilder
+    private var tabBarBackground: some View {
+        if #available(iOS 26.0, *) {
             Capsule(style: .continuous)
-                .fill(IbiliTheme.surface)
-        )
-        .animation(.easeInOut(duration: 0.18), value: selection)
+                .fill(.clear)
+                .glassEffect(.regular, in: Capsule(style: .continuous))
+        } else {
+            Capsule(style: .continuous)
+                .fill(.regularMaterial)
+        }
     }
 }

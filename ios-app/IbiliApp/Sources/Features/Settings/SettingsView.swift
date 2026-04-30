@@ -142,8 +142,64 @@ struct SettingsView: View {
             } footer: {
                 Text("控制视频详情页右下角显示 BV 号或旧版 av 号。")
             }
+
+            cardMetaSection(
+                title: "首页卡片显示",
+                showPlay: $settings.homeShowPlay,
+                showDuration: $settings.homeShowDuration,
+                showPubdate: $settings.homeShowPubdate,
+                showAuthor: $settings.homeShowAuthor,
+                stat: Binding(
+                    get: { settings.homeCardStat },
+                    set: { settings.homeCardStat = $0 }
+                ),
+                footer: "首页卡片仅在推荐流提供时显示投稿时间。"
+            )
+
+            cardMetaSection(
+                title: "搜索结果卡片显示",
+                showPlay: $settings.searchShowPlay,
+                showDuration: $settings.searchShowDuration,
+                showPubdate: $settings.searchShowPubdate,
+                showAuthor: $settings.searchShowAuthor,
+                stat: Binding(
+                    get: { settings.searchCardStat },
+                    set: { settings.searchCardStat = $0 }
+                ),
+                footer: "搜索结果卡片始终包含投稿时间。"
+            )
         }
         .navigationTitle("显示设置")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// One reusable settings section per card screen — keeps Home and
+    /// Search visually identical in 设置 while still letting users tune
+    /// each independently.
+    @ViewBuilder
+    private func cardMetaSection(
+        title: String,
+        showPlay: Binding<Bool>,
+        showDuration: Binding<Bool>,
+        showPubdate: Binding<Bool>,
+        showAuthor: Binding<Bool>,
+        stat: Binding<FeedCardStat>,
+        footer: String
+    ) -> some View {
+        Section {
+            Toggle("播放数", isOn: showPlay)
+            Toggle("时长", isOn: showDuration)
+            Toggle("投稿时间", isOn: showPubdate)
+            Toggle("UP 主", isOn: showAuthor)
+            Picker("数据角标", selection: stat) {
+                ForEach(FeedCardStat.allCases) { s in
+                    Text(s.label).tag(s)
+                }
+            }
+        } header: {
+            Text(title)
+        } footer: {
+            Text(footer)
+        }
     }
 }

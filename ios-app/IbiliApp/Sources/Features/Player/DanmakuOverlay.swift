@@ -22,6 +22,14 @@ final class DanmakuController {
         prepareCanvas().setItems(items)
     }
 
+    /// Inject a single danmaku item live, *without* refetching the
+    /// track. Used by the local-echo path after a successful send so
+    /// the user immediately sees their own bullet on screen — also
+    /// flagged with `isSelf=true` so the renderer can frame it.
+    func appendLive(_ item: DanmakuItemDTO) {
+        prepareCanvas().appendLive(item)
+    }
+
     func attach(_ player: AVPlayer) {
         prepareCanvas().attach(player)
     }

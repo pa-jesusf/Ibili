@@ -81,10 +81,42 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
     public let durationSec: Int64
     public let play: Int64
     public let danmaku: Int64
+    /// Unix seconds. `0` when upstream did not provide a publish date —
+    /// the recommendation feed often omits it, search always carries it.
+    public let pubdate: Int64
 
     enum CodingKeys: String, CodingKey {
-        case aid, bvid, cid, title, cover, author, play, danmaku
+        case aid, bvid, cid, title, cover, author, play, danmaku, pubdate
         case durationSec = "duration_sec"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        aid = try c.decode(Int64.self, forKey: .aid)
+        bvid = try c.decodeIfPresent(String.self, forKey: .bvid) ?? ""
+        cid = try c.decodeIfPresent(Int64.self, forKey: .cid) ?? 0
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        cover = try c.decodeIfPresent(String.self, forKey: .cover) ?? ""
+        author = try c.decodeIfPresent(String.self, forKey: .author) ?? ""
+        durationSec = try c.decodeIfPresent(Int64.self, forKey: .durationSec) ?? 0
+        play = try c.decodeIfPresent(Int64.self, forKey: .play) ?? 0
+        danmaku = try c.decodeIfPresent(Int64.self, forKey: .danmaku) ?? 0
+        pubdate = try c.decodeIfPresent(Int64.self, forKey: .pubdate) ?? 0
+    }
+
+    /// Memberwise convenience init for synthetic feed items (related,
+    /// season episodes, deep-link routing). Mirrors the wire format
+    /// field order; `pubdate` defaults to 0 since these synthetic
+    /// origins never carry a publish date.
+    public init(
+        aid: Int64, bvid: String, cid: Int64, title: String,
+        cover: String, author: String, durationSec: Int64,
+        play: Int64, danmaku: Int64, pubdate: Int64 = 0
+    ) {
+        self.aid = aid; self.bvid = bvid; self.cid = cid
+        self.title = title; self.cover = cover; self.author = author
+        self.durationSec = durationSec; self.play = play
+        self.danmaku = danmaku; self.pubdate = pubdate
     }
 }
 
@@ -208,6 +240,37 @@ public struct DanmakuItemDTO: Decodable {
         colorful = try c.decodeIfPresent(Int32.self, forKey: .colorful) ?? 0
         count = try c.decodeIfPresent(Int32.self, forKey: .count) ?? 0
         isSelf = try c.decodeIfPresent(Bool.self, forKey: .isSelf) ?? false
+    }
+
+    /// Memberwise convenience init for synthesizing local-echo bullets
+    /// after a successful send. Defaults match the wire-format zeros so
+    /// callers only have to fill in the user-visible fields.
+    public init(
+        timeSec: Float,
+        mode: Int32,
+        color: UInt32,
+        fontSize: Int32,
+        text: String,
+        weight: Int32 = 0,
+        hasWeight: Bool = false,
+        midHash: String = "",
+        likeCount: Int64 = 0,
+        colorful: Int32 = 0,
+        count: Int32 = 0,
+        isSelf: Bool = false
+    ) {
+        self.timeSec = timeSec
+        self.mode = mode
+        self.color = color
+        self.fontSize = fontSize
+        self.text = text
+        self.weight = weight
+        self.hasWeight = hasWeight
+        self.midHash = midHash
+        self.likeCount = likeCount
+        self.colorful = colorful
+        self.count = count
+        self.isSelf = isSelf
     }
 }
 

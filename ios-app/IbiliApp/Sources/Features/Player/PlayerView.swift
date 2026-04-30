@@ -1736,7 +1736,13 @@ struct PlayerView: View {
             DanmakuSendSheet(
                 aid: vm.currentAid > 0 ? vm.currentAid : item.aid,
                 cid: vm.currentCid > 0 ? vm.currentCid : item.cid,
-                progressMs: currentPlayheadMs()
+                progressMs: currentPlayheadMs(),
+                onSent: { echo in
+                    // Local-echo into the live renderer so the user
+                    // sees their bullet immediately. Frame styling is
+                    // handled inside the canvas based on `isSelf`.
+                    danmaku.appendLive(echo)
+                }
             )
         }
     }

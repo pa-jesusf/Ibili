@@ -6,6 +6,7 @@ struct SearchResultCardView: View {
     let item: SearchVideoItemDTO
     let cardWidth: CGFloat
     let imageQuality: Int?
+    let meta: FeedCardMetaConfig
 
     private let cardCornerRadius: CGFloat = 10
 
@@ -17,13 +18,20 @@ struct SearchResultCardView: View {
                 imageQuality: imageQuality,
                 playCount: item.play,
                 durationSec: item.durationSec,
-                durationPlacement: .bottomTrailing
+                durationPlacement: .bottomTrailing,
+                showPlayCount: meta.showPlay,
+                showDuration: meta.showDuration
             )
             CardInfoSection(
                 title: item.title,
                 author: item.author,
                 pubdate: item.pubdate,
-                likeCount: item.like,
+                stats: FeedCardStats(danmaku: item.danmaku, like: item.like),
+                config: meta,
+                // Slightly smaller title than the home card so the
+                // denser search row reads as more "result-y" than
+                // "showcase-y" — matches Apple's HIG density cues.
+                titleFont: .system(size: 13, weight: .medium),
                 showAuthorIcon: true
             )
             .padding(.horizontal, 8)

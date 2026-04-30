@@ -99,28 +99,46 @@ struct UgcSeasonSheet: View {
     }
 }
 
-/// One row in the season list — same Apple-rhythm shape as the related
-/// list. Shows the episode index in a small leading badge so users
-/// playing through a long season can quickly tell which 集 is which.
+/// One row in the 合集 list. Visual mirrors the related-row layout —
+/// 120×75 cover with duration overlay, title + index meta on the right.
+/// `isCurrent` switches on a subtle accent stroke / "正在播放" pill so
+/// the user can spot where they are at a glance.
 private struct EpisodeRow: View {
     let episode: UgcSeasonEpisodeDTO
     let index: Int
     let isCurrent: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 10) {
             ZStack(alignment: .bottomTrailing) {
-                RemoteImage(url: episode.cover,
-                            contentMode: .fill,
-                            targetPointSize: CGSize(width: 240, height: 150),
-                            quality: 75)
-                    .frame(width: 120, height: 75)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(IbiliTheme.accent, lineWidth: isCurrent ? 1.5 : 0)
-                    )
+                RemoteImage(
+                    url: episode.cover,
+                    contentMode: .fill,
+                    targetPointSize: CGSize(width: 240, height: 150),
+                    quality: 75
+                )
+                .frame(width: 120, height: 75)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(IbiliTheme.accent, lineWidth: isCurrent ? 1.5 : 0)
+                )
+                .overlay(alignment: .topLeading) {
+                    if isCurrent {
+                        HStack(spacing: 3) {
+                            Image(systemName: "waveform")
+                                .imageScale(.small)
+                            Text("播放中")
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(IbiliTheme.accent))
+                        .padding(4)
+                    }
+                }
+
                 if episode.durationSec > 0 {
                     Text(BiliFormat.duration(episode.durationSec))
                         .font(.caption2.monospacedDigit())
@@ -129,40 +147,24 @@ private struct EpisodeRow: View {
                         .background(Capsule().fill(.black.opacity(0.6)))
                         .padding(6)
                 }
-                if isCurrent {
-                    HStack(spacing: 3) {
-                        Image(systemName: "waveform")
-                            .imageScale(.small)
-                        Text("播放中")
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(IbiliTheme.accent))
-                    .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(String(format: "%02d", index))
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(isCurrent ? IbiliTheme.accent : IbiliTheme.textSecondary)
-                    Text(episode.title)
-                        .font(.footnote.weight(isCurrent ? .semibold : .medium))
-                        .foregroundStyle(isCurrent ? IbiliTheme.accent : IbiliTheme.textPrimary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(String(format: "%02d", index))
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(isCurrent ? IbiliTheme.accent : IbiliTheme.textSecondary)
+                Text(episode.title.isEmpty ? "P\(index)" : episode.title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(isCurrent ? IbiliTheme.accent : IbiliTheme.textPrimary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
         }
-        .padding(.vertical, 8)
         .padding(.horizontal, 12)
-        .background(
-            isCurrent
-                ? IbiliTheme.accent.opacity(0.06)
-                : Color.clear
-        )
+        .padding(.vertical, 8)
+        .background(isCurrent ? IbiliTheme.accent.opacity(0.06) : .clear)
     }
 }
+

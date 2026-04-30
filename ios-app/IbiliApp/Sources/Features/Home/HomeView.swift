@@ -56,7 +56,8 @@ struct HomeView: View {
                                 item: item,
                                 cardWidth: cardW,
                                 imageQuality: settings.resolvedImageQuality(),
-                                showsDurationAtTopTrailing: usesTopTrailingDuration
+                                showsDurationAtTopTrailing: usesTopTrailingDuration,
+                                meta: settings.homeCardMeta
                             )
                         }
                         .buttonStyle(TouchDownReportingButtonStyle {
