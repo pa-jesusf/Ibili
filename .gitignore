@@ -37,6 +37,7 @@ dist/
 artifacts/
 *.xcframework/
 ios-app/Frameworks/IbiliCore.xcframework/
+ibili-diagnostics/
 
 # IPA / archives
 *.ipa
