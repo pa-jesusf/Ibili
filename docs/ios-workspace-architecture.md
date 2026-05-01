@@ -344,6 +344,18 @@ Player-specific rule:
 - render using native media APIs
 - keep protocol stream resolution outside this module
 
+### 6.3.1 Playback ADR Note
+
+As of 2026-05-02, the repository has a verified playback constraint for HEVC Main10 HDR variants such as qn125:
+
+- the current live `sidx -> HLS BYTERANGE` proxy path is not the long-term architecture target
+- repeated `init.mp4` patching and FFmpeg live remux experiments did not solve `CoreMediaErrorDomain -12927`
+- the strategic direction for the AVPlayer path is Apple-compatible HLS/CMAF packaging with segment semantics controlled by a real packager, not by ad-hoc local proxy patching
+
+Implication:
+
+- `FeaturePlayer` may continue to host the current engine stack for ordinary streams, but future investment for unsupported HEVC/HDR variants must go into proper packaging, not more proxy-layer hotfixes
+
 ### 6.4 FeatureDanmaku
 
 Owns:
