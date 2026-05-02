@@ -83,26 +83,32 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
     private let controlWidth = min(UIScreen.main.bounds.width * 0.5, 196)
 
     var body: some View {
-        compactControl
-            .frame(width: controlWidth)
-    }
-
-    @ViewBuilder
-    private var compactControl: some View {
-        if #available(iOS 26.0, *) {
-            NativeIsolatedPicker(
-                items: tabs,
-                title: title,
-                selection: $selection
-            )
-            .frame(height: 32)
-        } else {
-            IbiliSegmentedTabs(
-                tabs: tabs,
-                title: title,
-                selection: $selection
-            )
-            .frame(height: 36)
+        HStack(spacing: 2) {
+            ForEach(tabs) { tab in
+                let isSelected = tab == selection
+                Button {
+                    guard !isSelected else { return }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        selection = tab
+                    }
+                } label: {
+                    Text(title(tab))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isSelected ? IbiliTheme.accent : IbiliTheme.textPrimary.opacity(0.72))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
         }
+        .frame(width: controlWidth)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .background(.thinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(.white.opacity(0.1), lineWidth: 0.5)
+        )
     }
 }
