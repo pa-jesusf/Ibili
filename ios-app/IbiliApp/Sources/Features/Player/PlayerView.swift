@@ -2137,8 +2137,19 @@ struct PlayerView: View {
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
-            danmaku.detach()
+            // Only tear the danmaku pipeline down when we're truly
+            // leaving the player page. AVKit's native fullscreen
+            // presentation covers the SwiftUI host with its own
+            // window, which fires `.onDisappear` on this view even
+            // though the player (and its danmaku canvas inside
+            // `contentOverlayView`) keeps running. Detaching here
+            // would invalidate the CADisplayLink + periodic time
+            // observer and clear `active`, leaving the canvas blank
+            // for the entire duration of fullscreen — `.onAppear`
+            // doesn't fire while we're still covered, so nothing
+            // would re-attach until the user exits fullscreen.
             if !isFullscreen {
+                danmaku.detach()
                 vm.pauseForDeactivation()
                 Orientation.request(.portrait)
             }
