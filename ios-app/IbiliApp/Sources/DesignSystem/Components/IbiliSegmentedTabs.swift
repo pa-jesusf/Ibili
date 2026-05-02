@@ -154,6 +154,28 @@ struct ScrollHeaderOffsetPreferenceKey: PreferenceKey {
     }
 }
 
+/// Reliable collapse-progress driver for `FeedSegmentedHeader`.
+///
+/// On iOS 18+ this hooks into `onScrollGeometryChange`, which is the
+/// official Apple API for observing live scroll offset on a
+/// `ScrollView` and fires every frame the user drags. Older
+/// versions keep the existing `GeometryReader`/`PreferenceKey` path.
+struct ScrollOffsetCollapseDriver: ViewModifier {
+    @Binding var progress: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y
+            } action: { _, newValue in
+                progress = min(max(newValue / 16, 0), 1)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 private struct NavigationGlassCapsuleModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
@@ -191,28 +213,34 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
 
     var body: some View {
         let p = min(1, max(0, collapseProgress))
-        // Title size eases from 34pt (.largeTitle bold) to 17pt
-        // (.headline semibold) to mirror the system large-title
-        // collapse animation.
-        let titleSize = 34 - p * 17
-        let titleWeight: Font.Weight = p > 0.5 ? .semibold : .bold
-        // The system large-title bar reserves ~44pt for the inline
-        // toolbar row above the large title. We reproduce that gap so
-        // our custom header lines up vertically with sibling tabs
-        // (e.g. "我的") that still use the stock navigation bar.
-        // As the user scrolls and the title shrinks, the gap shrinks
-        // with it so the small inline title ends up vertically
-        // centred in the 44pt inline-bar slot — matching iOS.
-        let topPad: CGFloat = 44 - p * 32
-        let bottomPad: CGFloat = 12 - p * 6
+
+        // KEY DESIGN: every visual change here is expressed via
+        // `scaleEffect` / `offset` rather than padding / font-size /
+        // frame changes. The header therefore keeps a *constant
+        // layout height* even though it visibly shrinks. That breaks
+        // the feedback loop that previously caused the Dynamic feed
+        // to jitter — when `safeAreaInset` height changes mid-scroll,
+        // the ScrollView's `contentOffset` is reflowed, which in turn
+        // changes `collapseProgress`, which changes the inset again.
+        // With layout-stable transforms the loop cannot start.
+
+        // Title: 34pt → 17pt is a 0.5x scale. Anchor at .leading so
+        // it shrinks in place against the left edge.
+        let titleScale = 1 - p * 0.5
+
+        // Vertical travel: the expanded layout has the title sitting
+        // 22pt below the inline-bar slot, so we lift the whole row
+        // up by that much as it collapses, mirroring the system
+        // large-title fold-up animation.
+        let liftY: CGFloat = -p * 22
 
         HStack(alignment: .center, spacing: 12) {
             Text(title)
-                .font(.system(size: titleSize, weight: titleWeight))
+                .font(.system(size: 34, weight: .bold))
                 .foregroundStyle(IbiliTheme.textPrimary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .animation(.easeInOut(duration: 0.18), value: titleSize)
+                .fixedSize(horizontal: false, vertical: true)
+                .scaleEffect(titleScale, anchor: .leading)
             Spacer(minLength: 0)
             NavigationTrailingSegmentedControl(
                 tabs: tabs,
@@ -221,45 +249,16 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
             )
         }
         .padding(.horizontal, 16)
-        .padding(.top, topPad)
-        .padding(.bottom, bottomPad)
+        .padding(.top, 28)
+        .padding(.bottom, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(headerBackground(progress: p))
-    }
-
-    @ViewBuilder
-    private func headerBackground(progress: CGFloat) -> some View {
-        // The material fades in as the user scrolls, mimicking the
-        // system navigation bar's scroll-edge glass behaviour. We
-        // extend it under the status bar with `ignoresSafeArea` so
-        // the bar reads as part of the chrome rather than a floating
-        // pill detached from the top of the screen.
-        let alpha = min(1, max(0, (progress - 0.15) * 1.6))
-        ZStack(alignment: .bottom) {
-            Group {
-                if #available(iOS 26.0, *) {
-                    Rectangle()
-                        .fill(.regularMaterial)
-                        .glassEffect(.regular, in: Rectangle())
-                        .opacity(alpha)
-                } else {
-                    Rectangle()
-                        .fill(.regularMaterial)
-                        .opacity(alpha)
-                }
-            }
-            .ignoresSafeArea(edges: .top)
-
-            // Hairline separator + soft drop shadow that appear once
-            // the bar becomes opaque. Mirrors UINavigationBar's
-            // `scrollEdgeAppearance` → `standardAppearance` switch.
-            Rectangle()
-                .fill(Color.black.opacity(0.18))
-                .frame(height: 0.5)
-                .opacity(alpha)
-        }
-        .compositingGroup()
-        .shadow(color: Color.black.opacity(0.12 * alpha), radius: 6, y: 2)
-        .animation(.easeInOut(duration: 0.18), value: alpha)
+        .offset(y: liftY)
+        .background(
+            // Solid page-background fill so feed content does not
+            // bleed through the bar. We deliberately leave this
+            // un-shadowed and un-blurred per the latest design call.
+            IbiliTheme.background
+                .ignoresSafeArea(edges: .top)
+        )
     }
 }

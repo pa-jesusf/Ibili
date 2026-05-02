@@ -192,8 +192,9 @@ private struct DynamicFeedPage: View {
         }
         .coordinateSpace(name: "dynamic-feed-scroll")
         .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
-            collapseProgress = min(max(-minY / 52, 0), 1)
+            collapseProgress = min(max(-minY / 16, 0), 1)
         }
+        .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
         .scrollContentBackground(.hidden)
         .task(id: vm.scope) { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }

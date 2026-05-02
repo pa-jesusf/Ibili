@@ -135,8 +135,9 @@ private struct HomeFeedPage: View {
             }
             .coordinateSpace(name: "home-feed-scroll")
             .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
-                collapseProgress = min(max(-minY / 52, 0), 1)
+                collapseProgress = min(max(-minY / 16, 0), 1)
             }
+            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
             .modifier(ProMotionScrollHint())
             .onAppear {
                 prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()))
