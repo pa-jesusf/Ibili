@@ -43,14 +43,12 @@ final class DanmakuCanvasView: UIView {
             reconfigureTiming()
         }
     }
-    /// Black halo width for normal (non mode-7) danmaku. The slider
-    /// drives how many font-weight tiers we bump when laying out the
-    /// underlay glyph run; a heavier-weight black draw underneath the
-    /// foreground text yields a halo that scales with the chosen
-    /// font size *and* renders correctly on CJK glyphs (Core Text's
-    /// `kCTStrokeWidthAttribute` would otherwise paint the strokes
-    /// inside Chinese characters' interior structure). Total cost
-    /// is two `CTLineDraw` calls per bullet, both pre-cached.
+    /// Black halo width for normal (non mode-7) danmaku. We render a
+    /// black copy of the exact same glyph run with a zero-offset
+    /// shadow underneath the foreground text. Using the same font and
+    /// advances for both passes avoids the digit / latin misalignment
+    /// introduced by the previous "heavier underlay font" approach,
+    /// while keeping the steady-state cost at two `CTLineDraw` calls.
     /// Setter invalidates the text cache so the change takes effect
     /// on the next bullet, without having to tear the canvas down.
     var normalStrokeWidth: CGFloat {
@@ -120,22 +118,19 @@ final class DanmakuCanvasView: UIView {
         /// Foreground glyph run, drawn last so the user-visible text
         /// sits on top of the halo.
         let line: CTLine
-        /// Optional halo line: the same string laid out with a
-        /// significantly heavier font weight in opaque black. Drawing
-        /// it underneath the foreground line gives a uniform halo that
-        /// matches the foreground's metrics — including for CJK
-        /// glyphs, where Core Text's `kCTStrokeWidthAttribute` would
-        /// previously paint *inside* the strokes (划伤汉字内部) instead
-        /// of around them. Two `CTLineDraw` calls is the entire
-        /// per-bullet cost; both lines are cached so the work is
-        /// amortised across every frame the bullet stays on screen.
+        /// Optional halo line: the exact same glyph run in black. We
+        /// draw it once with a zero-offset shadow to form the halo,
+        /// then draw `line` on top. Matching glyph metrics exactly is
+        /// what keeps numbers / latin text aligned with the foreground.
         let haloLine: CTLine?
+        let haloBlur: CGFloat
         let size: CGSize
         let drawInset: CGFloat
 
-        init(line: CTLine, haloLine: CTLine?, size: CGSize, drawInset: CGFloat) {
+        init(line: CTLine, haloLine: CTLine?, haloBlur: CGFloat, size: CGSize, drawInset: CGFloat) {
             self.line = line
             self.haloLine = haloLine
+            self.haloBlur = haloBlur
             self.size = size
             self.drawInset = drawInset
         }
@@ -503,43 +498,34 @@ final class DanmakuCanvasView: UIView {
         let mainLine = CTLineCreateWithAttributedString(mainStr)
         let mainBounds = CTLineGetBoundsWithOptions(mainLine, .useOpticalBounds)
 
-        // Build a heavier-weight black version of the same text and
-        // draw it underneath as a halo. We bump the weight slot by
-        // one tier per `storedNormalStrokeWidth` step, capped at
-        // `.black`, so the halo grows with the user's stroke setting
-        // without adding extra draw calls. Mode-7 (advanced) bullets
-        // keep their own paint stack.
+        // Build a black copy of the *same* glyph run. At draw time we
+        // render it once with a zero-offset shadow, which produces a
+        // soft halo without perturbing glyph metrics. That avoids the
+        // numeric/latin drift caused by the prior heavier-font underlay.
         var haloLine: CTLine?
-        var haloBounds: CGRect = .zero
+        var haloBlur: CGFloat = 0
         if item.mode != 7, storedNormalStrokeWidth > 0 {
-            let bumpSlots = max(1, Int(ceil(storedNormalStrokeWidth)))
-            let haloSlot = min(9, storedNormalFontWeight + bumpSlots + 1)
-            let haloWeight = Self.fontWeight(forSlot: haloSlot)
-            let baseHalo = UIFont.systemFont(ofSize: font.pointSize, weight: haloWeight)
-            let haloFont = baseHalo.fontDescriptor.withDesign(.rounded)
-                .map { UIFont(descriptor: $0, size: font.pointSize) } ?? baseHalo
             let haloAttrs: [NSAttributedString.Key: Any] = [
-                .font: haloFont,
+                .font: font,
                 .foregroundColor: UIColor.black,
             ]
             let haloStr = NSAttributedString(string: displayText, attributes: haloAttrs)
             haloLine = CTLineCreateWithAttributedString(haloStr)
-            haloBounds = CTLineGetBoundsWithOptions(haloLine!, .useOpticalBounds)
+            haloBlur = max(0.8, storedNormalStrokeWidth * 0.95)
         }
 
-        // The halo glyphs may extend a hair beyond the foreground
-        // optical bounds (heavier weight = wider advance widths), so
-        // size the cached canvas to fit the union of both lines.
-        let unionWidth = max(mainBounds.width, haloBounds.width)
-        let unionHeight = max(mainBounds.height, haloBounds.height)
-        let drawInset: CGFloat = 2
+        // Zero-offset shadows expand symmetrically around the optical
+        // bounds. Reserve enough inset so the cached draw rect never
+        // clips the halo even at the largest slider setting.
+        let drawInset: CGFloat = max(2, ceil(haloBlur * 2.2) + 1)
         let size = CGSize(
-            width: ceil(unionWidth) + drawInset * 2,
-            height: ceil(unionHeight) + drawInset * 2
+            width: ceil(mainBounds.width) + drawInset * 2,
+            height: ceil(mainBounds.height) + drawInset * 2
         )
         return CachedText(
             line: mainLine,
             haloLine: haloLine,
+            haloBlur: haloBlur,
             size: size,
             drawInset: drawInset
         )
@@ -724,8 +710,10 @@ final class DanmakuCanvasView: UIView {
         // baseline), foreground glyphs on top — two `CTLineDraw`
         // calls total, both pre-cached.
         if let halo = cached.haloLine {
+            context.setShadow(offset: .zero, blur: cached.haloBlur, color: UIColor.black.cgColor)
             context.textPosition = .zero
             CTLineDraw(halo, context)
+            context.setShadow(offset: .zero, blur: 0, color: nil)
         }
         context.textPosition = .zero
         CTLineDraw(cached.line, context)

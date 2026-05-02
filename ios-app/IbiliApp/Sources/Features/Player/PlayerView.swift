@@ -1244,6 +1244,8 @@ final class PlayerSessionStore {
 private final class PlayerPlaybackCoordinator {
     static let shared = PlayerPlaybackCoordinator()
 
+    private static let handoffGraceSeconds: TimeInterval = 2.0
+
     private weak var active: PlayerViewModel?
 
     func activate(_ viewModel: PlayerViewModel) {
@@ -1255,9 +1257,9 @@ private final class PlayerPlaybackCoordinator {
             priorActive?.pauseForDeactivation()
             active = viewModel
             if priorActive != nil {
-                DispatchQueue.main.async {
-                    PlayerAudioSessionCoordinator.shared.endPlayerHandoff()
-                }
+                PlayerAudioSessionCoordinator.shared.schedulePlayerHandoffEnd(
+                    after: Self.handoffGraceSeconds
+                )
             }
         }
     }
@@ -1277,10 +1279,24 @@ private final class PlayerAudioSessionCoordinator {
     private var playerHandoffDepth = 0
     private var sessionIsActive = false
     private let sessionQueue = DispatchQueue(label: "ibili.player.audio-session", qos: .userInitiated)
+    private var pendingHandoffEndWorkItem: DispatchWorkItem?
 
     func beginPlayerHandoff() {
+        pendingHandoffEndWorkItem?.cancel()
+        pendingHandoffEndWorkItem = nil
         playerHandoffDepth += 1
         reconcileSessionState()
+    }
+
+    func schedulePlayerHandoffEnd(after delay: TimeInterval) {
+        pendingHandoffEndWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingHandoffEndWorkItem = nil
+            self.endPlayerHandoff()
+        }
+        pendingHandoffEndWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     func endPlayerHandoff() {
@@ -1292,6 +1308,11 @@ private final class PlayerAudioSessionCoordinator {
         let ownerID = ObjectIdentifier(owner)
         if needed {
             _ = activeOwners.insert(ownerID).inserted
+            if playerHandoffDepth > 0 {
+                pendingHandoffEndWorkItem?.cancel()
+                pendingHandoffEndWorkItem = nil
+                playerHandoffDepth = 0
+            }
         } else {
             _ = activeOwners.remove(ownerID)
         }
@@ -1883,6 +1904,12 @@ struct PlayerView: View {
                 didBootstrap = true
                 UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             }
+
+            // Claim playback focus as soon as the pushed player page
+            // starts loading so route-to-route navigation does not
+            // momentarily release the shared audio session while the
+            // new AVPlayer is still buffering.
+            vm.activatePlayback()
 
             guard loadedMediaKey != mediaLoadKey || vm.player == nil else {
                 vm.activatePlayback()
