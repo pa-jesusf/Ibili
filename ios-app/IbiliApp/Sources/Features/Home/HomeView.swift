@@ -81,7 +81,7 @@ private struct HomeFeedPage: View {
                 }
 
                 FeedTitleHeader(
-                    title: "推荐",
+                    title: "主页",
                     collapseProgress: collapseProgress,
                     showsBackground: false
                 )
