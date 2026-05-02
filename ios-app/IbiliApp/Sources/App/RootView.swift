@@ -337,7 +337,6 @@ struct MainTabView: View {
                 Tab("我的", systemImage: "person.crop.circle") {
                     NavigationStack {
                         ProfileView()
-                            .navigationTitle("我的")
                     }
                 }
                 Tab(role: .search) {
@@ -362,7 +361,6 @@ struct MainTabView: View {
 
                 NavigationStack {
                     ProfileView()
-                        .navigationTitle("我的")
                 }
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
             }

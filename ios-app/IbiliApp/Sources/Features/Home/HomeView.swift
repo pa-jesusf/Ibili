@@ -22,10 +22,9 @@ struct HomeView: View {
         )
         .background(IbiliTheme.background.ignoresSafeArea())
         .overlay(alignment: .top) {
-            FeedSegmentedHeader(
-                title: "推荐",
+            FeedFloatingSegmentedControlOverlay(
                 tabs: Array(HomeFeedSection.allCases),
-                tabTitle: { $0.title },
+                title: { $0.title },
                 selection: $section,
                 collapseProgress: headerCollapseProgress
             )
@@ -78,8 +77,11 @@ private struct HomeFeedPage: View {
                     ScrollHeaderOffsetReader(coordinateSpace: "home-feed-scroll")
                 }
 
-                Color.clear
-                    .frame(height: FeedSegmentedHeaderMetrics.expandedHeight)
+                FeedTitleHeader(
+                    title: "推荐",
+                    collapseProgress: collapseProgress,
+                    showsBackground: false
+                )
 
                 if vm.items.isEmpty && vm.isLoading {
                     ProgressView()

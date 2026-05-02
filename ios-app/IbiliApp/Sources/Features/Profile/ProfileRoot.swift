@@ -20,9 +20,19 @@ import SwiftUI
 struct ProfileRoot: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var loader = ProfileHeaderLoader()
+    @State private var headerCollapseProgress: CGFloat = 0
 
     var body: some View {
         ScrollView {
+            if #unavailable(iOS 18.0) {
+                ScrollHeaderOffsetReader(coordinateSpace: "profile-scroll")
+            }
+
+            FeedTitleHeader(
+                title: "我的",
+                collapseProgress: headerCollapseProgress
+            )
+
             LazyVStack(spacing: 16) {
                 ProfileHeaderCard(card: loader.card, mid: session.mid)
                 ProfileQuickActions(mid: session.mid)
@@ -32,6 +42,8 @@ struct ProfileRoot: View {
             .padding(.top, 4)
             .padding(.bottom, 32)
         }
+        .coordinateSpace(name: "profile-scroll")
+        .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress))
         .background(IbiliTheme.background)
         .scrollContentBackground(.hidden)
         .task(id: session.mid) {

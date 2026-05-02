@@ -277,3 +277,87 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
         }
     }
 }
+
+struct FeedFloatingSegmentedControlOverlay<Tab: Hashable & Identifiable>: View {
+    let tabs: [Tab]
+    let title: (Tab) -> String
+    @Binding var selection: Tab
+    /// 0 → fully expanded (large title), 1 → fully collapsed (inline).
+    let collapseProgress: CGFloat
+
+    var body: some View {
+        let p = min(1, max(0, collapseProgress))
+        let topPad: CGFloat = 52 - p * 35
+
+        NavigationTrailingSegmentedControl(
+            tabs: tabs,
+            title: title,
+            selection: $selection
+        )
+        .padding(.trailing, 16)
+        .padding(.top, topPad)
+        .frame(height: FeedSegmentedHeaderMetrics.expandedHeight, alignment: .topTrailing)
+        .frame(maxWidth: .infinity, alignment: .topTrailing)
+        .background(alignment: .top) {
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.30),
+                    Color.black.opacity(0.14),
+                    Color.black.opacity(0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 20)
+            .ignoresSafeArea(edges: .top)
+            .opacity(0.72 + p * 0.28)
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+struct FeedTitleHeader: View {
+    let title: String
+    /// 0 → fully expanded (large title), 1 → fully collapsed (inline).
+    let collapseProgress: CGFloat
+    var showsBackground: Bool = true
+
+    var body: some View {
+        let p = min(1, max(0, collapseProgress))
+        let titleSize = 34 - p * 17
+        let titleWeight: Font.Weight = p > 0.5 ? .semibold : .bold
+        let topPad: CGFloat = 52 - p * 35
+        let bottomPad: CGFloat = 10 - p * 6
+
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .font(.system(size: titleSize, weight: titleWeight))
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, topPad)
+        .padding(.bottom, bottomPad)
+        .frame(height: FeedSegmentedHeaderMetrics.expandedHeight, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(alignment: .top) {
+            if showsBackground {
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.30),
+                        Color.black.opacity(0.14),
+                        Color.black.opacity(0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 20)
+                .ignoresSafeArea(edges: .top)
+                .opacity(0.72 + p * 0.28)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+}

@@ -107,10 +107,9 @@ struct DynamicFeedView: View {
         )
         .background(IbiliTheme.background.ignoresSafeArea())
         .overlay(alignment: .top) {
-            FeedSegmentedHeader(
-                title: "动态",
+            FeedFloatingSegmentedControlOverlay(
                 tabs: Array(DynamicFeedScope.allCases),
-                tabTitle: { $0.title },
+                title: { $0.title },
                 selection: $scope,
                 collapseProgress: headerCollapseProgress
             )
@@ -158,8 +157,11 @@ private struct DynamicFeedPage: View {
                 ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
             }
 
-            Color.clear
-                .frame(height: FeedSegmentedHeaderMetrics.expandedHeight)
+            FeedTitleHeader(
+                title: "动态",
+                collapseProgress: collapseProgress,
+                showsBackground: false
+            )
 
             if vm.items.isEmpty && vm.isLoading {
                 ProgressView()
