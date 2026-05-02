@@ -20,6 +20,7 @@ import os
 final class LocalHLSProxy: @unchecked Sendable {
     static let shared = LocalHLSProxy()
     private static let maxDiagnosticsExports = 5
+    private static let listenerHealthcheckTimeout: TimeInterval = 0.2
 
     struct Source {
         let videoCandidates: [URL]
@@ -55,6 +56,7 @@ final class LocalHLSProxy: @unchecked Sendable {
     }
 
     private let queue = DispatchQueue(label: "ibili.hls.proxy", qos: .userInitiated)
+    private let healthCheckQueue = DispatchQueue(label: "ibili.hls.proxy.healthcheck", qos: .userInitiated)
     private var listener: NWListener?
     /// All mutable state lives behind this lock. `OSAllocatedUnfairLock` is
     /// async-safe (unlike `NSLock`), which matters because the connection
@@ -75,7 +77,7 @@ final class LocalHLSProxy: @unchecked Sendable {
     /// Whether the local proxy is still serving requests. The Player
     /// view checks this when it returns to foreground so it can rebuild
     /// the AVPlayer item against a freshly-bound port.
-    var isHealthy: Bool { state.withLock { $0.listenerHealthy && $0.port != 0 } }
+    var isHealthy: Bool { validateExistingListener() }
 
     var currentPort: UInt16 { state.withLock { $0.port } }
 
@@ -110,8 +112,10 @@ final class LocalHLSProxy: @unchecked Sendable {
         }
         guard wasHealthy else { return }
         AppLog.info("player", "主动封闭 HLS 代理监听", metadata: ["reason": reason])
-        listener?.cancel()
-        listener = nil
+        if let stale = listener {
+            listener = nil
+            stale.cancel()
+        }
     }
 
     // MARK: - Public API
@@ -398,21 +402,96 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
+    @discardableResult
+    private func validateExistingListener() -> Bool {
+        let maybePort = state.withLock { state -> UInt16? in
+            guard state.listenerHealthy, state.port != 0 else { return nil }
+            return state.port
+        }
+
+        guard let port = maybePort else { return false }
+        guard listener != nil else {
+            state.withLock { $0.listenerHealthy = false; $0.port = 0 }
+            return false
+        }
+        guard canReachListener(on: port) else {
+            state.withLock { $0.listenerHealthy = false; $0.port = 0 }
+            AppLog.warning("player", "HLS 代理监听探活失败，准备重绑", metadata: [
+                "port": String(port),
+            ])
+            if let stale = listener {
+                listener = nil
+                stale.cancel()
+            }
+            return false
+        }
+        return true
+    }
+
+    private func canReachListener(on port: UInt16) -> Bool {
+        guard let endpointPort = NWEndpoint.Port(rawValue: port) else { return false }
+
+        struct HealthCheckState {
+            var finished = false
+            var ready = false
+        }
+
+        let connection = NWConnection(host: "127.0.0.1", port: endpointPort, using: .tcp)
+        let semaphore = DispatchSemaphore(value: 0)
+        let state = OSAllocatedUnfairLock<HealthCheckState>(initialState: HealthCheckState())
+
+        let finish: (Bool) -> Void = { didBecomeReady in
+            let shouldSignal = state.withLock { state -> Bool in
+                guard !state.finished else { return false }
+                state.finished = true
+                state.ready = didBecomeReady
+                return true
+            }
+            if shouldSignal {
+                semaphore.signal()
+            }
+        }
+
+        connection.stateUpdateHandler = { netState in
+            switch netState {
+            case .ready:
+                finish(true)
+                connection.cancel()
+            case .waiting(_), .failed(_), .cancelled:
+                finish(false)
+            default:
+                break
+            }
+        }
+
+        connection.start(queue: healthCheckQueue)
+        let waitResult = semaphore.wait(timeout: .now() + Self.listenerHealthcheckTimeout)
+        if waitResult == .timedOut {
+            state.withLock {
+                if !$0.finished { $0.finished = true }
+            }
+            connection.cancel()
+            return false
+        }
+        return state.withLock { $0.ready }
+    }
+
     private func ensureRunning() throws {
-        if let listener, state.withLock({ $0.listenerHealthy && $0.port != 0 }) {
-            _ = listener
+        if validateExistingListener() {
             return
         }
         // Drop any zombie listener — iOS may have cancelled it under us
         // while the app was suspended.
         if let stale = listener {
-            stale.cancel()
             self.listener = nil
+            stale.cancel()
         }
         state.withLock { $0.port = 0; $0.listenerHealthy = false }
         let listener = try NWListener(using: .tcp, on: .any)
+        self.listener = listener
         listener.stateUpdateHandler = { [weak self] netState in
             guard let self else { return }
+            guard self.listener === listener else { return }
             switch netState {
             case .ready:
                 if let port = listener.port {
@@ -445,10 +524,10 @@ final class LocalHLSProxy: @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.01)
         }
         guard resolvedPort != 0 else {
+            self.listener = nil
             listener.cancel()
             throw ProxyServerError.startupTimedOut
         }
-        self.listener = listener
     }
 
     // MARK: - Connection handling
