@@ -201,6 +201,30 @@ private struct NavigationGlassCapsuleModifier: ViewModifier {
     }
 }
 
+struct FeedNavigationBackgroundOverlay: View {
+    /// 0 → fully expanded (large title), 1 → fully collapsed (inline).
+    let collapseProgress: CGFloat
+
+    var body: some View {
+        let p = min(1, max(0, collapseProgress))
+
+        LinearGradient(
+            colors: [
+                Color.black.opacity(0.30),
+                Color.black.opacity(0.14),
+                Color.black.opacity(0)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(maxWidth: .infinity)
+        .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 20, alignment: .top)
+        .ignoresSafeArea(edges: .top)
+        .opacity(0.72 + p * 0.28)
+        .allowsHitTesting(false)
+    }
+}
+
 /// Custom large-title header used by feed-style tabs (Home, Dynamic).
 ///
 /// SwiftUI's stock navigation bar renders the trailing toolbar items
@@ -298,21 +322,6 @@ struct FeedFloatingSegmentedControlOverlay<Tab: Hashable & Identifiable>: View {
         .padding(.top, topPad)
         .frame(height: FeedSegmentedHeaderMetrics.expandedHeight, alignment: .topTrailing)
         .frame(maxWidth: .infinity, alignment: .topTrailing)
-        .background(alignment: .top) {
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.30),
-                    Color.black.opacity(0.14),
-                    Color.black.opacity(0)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 20)
-            .ignoresSafeArea(edges: .top)
-            .opacity(0.72 + p * 0.28)
-            .allowsHitTesting(false)
-        }
     }
 }
 
@@ -344,19 +353,7 @@ struct FeedTitleHeader: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(alignment: .top) {
             if showsBackground {
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.30),
-                        Color.black.opacity(0.14),
-                        Color.black.opacity(0)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 20)
-                .ignoresSafeArea(edges: .top)
-                .opacity(0.72 + p * 0.28)
-                .allowsHitTesting(false)
+                FeedNavigationBackgroundOverlay(collapseProgress: collapseProgress)
             }
         }
     }

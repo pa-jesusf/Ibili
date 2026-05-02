@@ -22,6 +22,9 @@ struct HomeView: View {
         )
         .background(IbiliTheme.background.ignoresSafeArea())
         .overlay(alignment: .top) {
+            FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
+        }
+        .overlay(alignment: .top) {
             FeedFloatingSegmentedControlOverlay(
                 tabs: Array(HomeFeedSection.allCases),
                 title: { $0.title },

@@ -30,7 +30,8 @@ struct ProfileRoot: View {
 
             FeedTitleHeader(
                 title: "我的",
-                collapseProgress: headerCollapseProgress
+                collapseProgress: headerCollapseProgress,
+                showsBackground: false
             )
 
             LazyVStack(spacing: 16) {
@@ -46,6 +47,9 @@ struct ProfileRoot: View {
         .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress))
         .background(IbiliTheme.background)
         .scrollContentBackground(.hidden)
+        .overlay(alignment: .top) {
+            FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
+        }
         .task(id: session.mid) {
             await loader.load(mid: session.mid)
         }
