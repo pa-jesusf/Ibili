@@ -234,8 +234,8 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
         // As the user scrolls and the title shrinks, the gap shrinks
         // with it so the small inline title ends up vertically
         // centred in the 44pt inline-bar slot — matching iOS.
-        let topPad: CGFloat = 49 - p * 35
-        let bottomPad: CGFloat = 12 - p * 6
+        let topPad: CGFloat = 52 - p * 35
+        let bottomPad: CGFloat = 10 - p * 6
 
         HStack(alignment: .center, spacing: 12) {
             Text(title)
@@ -255,24 +255,24 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
         .padding(.bottom, bottomPad)
         .frame(height: FeedSegmentedHeaderMetrics.expandedHeight, alignment: .top)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .bottom) {
-            // Below-bar shadow gradient. Identical visual recipe to
-            // UINavigationBar's stock scroll-edge → standard
-            // transition: a tiny ~6pt vertical band of black that
-            // fades from ~12% to 0%, sitting just below the bar.
-            // It reads as a soft drop-shadow on the content rather
-            // than a glass material, matching the system look.
+        .background(alignment: .top) {
+            // Top navigation cover: a black transparent gradient that
+            // sits behind the custom header, extending through the
+            // status-bar area so content can continue underneath while
+            // the chrome stays readable. This replaces the previous
+            // bottom shadow strip.
             LinearGradient(
                 colors: [
-                    Color.black.opacity(0.16),
+                    Color.black.opacity(0.30),
+                    Color.black.opacity(0.14),
                     Color.black.opacity(0)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 6)
-            .offset(y: 6)
-            .opacity(p)
+            .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 20)
+            .ignoresSafeArea(edges: .top)
+            .opacity(0.72 + p * 0.28)
             .allowsHitTesting(false)
         }
     }
