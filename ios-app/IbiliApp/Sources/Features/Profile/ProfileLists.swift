@@ -482,6 +482,7 @@ struct RelationListView: View {
         .background(IbiliTheme.background)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .playerHostAuxiliaryPage()
         .task { await vm.loadInitial(vmid: vmid, scope: scope) }
     }
 }

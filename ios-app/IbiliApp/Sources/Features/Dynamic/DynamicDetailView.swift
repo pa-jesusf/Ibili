@@ -71,6 +71,7 @@ struct DynamicDetailView: View {
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("动态")
         .navigationBarTitleDisplayMode(.inline)
+        .playerHostAuxiliaryPage()
         .fullScreenCover(item: $preview) { state in
             ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
         }

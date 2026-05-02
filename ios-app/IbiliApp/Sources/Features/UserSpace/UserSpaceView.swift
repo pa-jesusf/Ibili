@@ -71,6 +71,7 @@ struct UserSpaceView: View {
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("用户空间")
         .navigationBarTitleDisplayMode(.inline)
+        .playerHostAuxiliaryPage()
         // Hide the floating tab bar — UserSpaceView is full-page.
         .toolbar(.hidden, for: .tabBar)
         .toolbar {

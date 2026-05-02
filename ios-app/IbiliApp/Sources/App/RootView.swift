@@ -1,5 +1,54 @@
 import SwiftUI
 
+@MainActor
+final class PlayerHostNavigationCoordinator: ObservableObject {
+    @Published private(set) var auxiliaryPageCount = 0
+
+    private var auxiliaryPageIDs: Set<UUID> = []
+
+    func enterAuxiliaryPage(_ id: UUID) {
+        guard auxiliaryPageIDs.insert(id).inserted else { return }
+        auxiliaryPageCount = auxiliaryPageIDs.count
+    }
+
+    func leaveAuxiliaryPage(_ id: UUID) {
+        guard auxiliaryPageIDs.remove(id) != nil else { return }
+        auxiliaryPageCount = auxiliaryPageIDs.count
+    }
+}
+
+private struct PlayerHostNavigationCoordinatorKey: EnvironmentKey {
+    static let defaultValue: PlayerHostNavigationCoordinator? = nil
+}
+
+extension EnvironmentValues {
+    var playerHostNavigationCoordinator: PlayerHostNavigationCoordinator? {
+        get { self[PlayerHostNavigationCoordinatorKey.self] }
+        set { self[PlayerHostNavigationCoordinatorKey.self] = newValue }
+    }
+}
+
+private struct PlayerHostAuxiliaryPageModifier: ViewModifier {
+    @Environment(\.playerHostNavigationCoordinator) private var coordinator
+    @State private var auxiliaryPageID = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                coordinator?.enterAuxiliaryPage(auxiliaryPageID)
+            }
+            .onDisappear {
+                coordinator?.leaveAuxiliaryPage(auxiliaryPageID)
+            }
+    }
+}
+
+extension View {
+    func playerHostAuxiliaryPage() -> some View {
+        modifier(PlayerHostAuxiliaryPageModifier())
+    }
+}
+
 /// Top-level shell. Switches between login and main tab interface.
 struct RootView: View {
     @EnvironmentObject var session: AppSession
@@ -47,6 +96,7 @@ struct RootView: View {
 /// new layer, or replaces the current layer.
 private struct DeepLinkPlayerHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    @StateObject private var navigationCoordinator = PlayerHostNavigationCoordinator()
     /// Single source of truth for the host's horizontal position.
     /// Driven by:
     ///   - `onAppear`: animates from `screenWidth` → 0 (slide-in).
@@ -122,6 +172,7 @@ private struct DeepLinkPlayerHost: View {
                     .id(route.id)
             }
         }
+        .environment(\.playerHostNavigationCoordinator, navigationCoordinator)
         .background(IbiliTheme.background)
         .offset(x: offsetX)
         .onAppear {
@@ -150,9 +201,11 @@ private struct DeepLinkPlayerHost: View {
         // Restore the iOS interactive-pop gesture by hosting an
         // invisible DragGesture region pinned to the leading edge.
         //
-        // IMPORTANT: this overlay only operates at the root layer
-        // (`router.path.isEmpty`). When the user has pushed deeper
-        // (related-video tap / season episode), the inner
+        // IMPORTANT: this overlay only operates at the true player
+        // root layer (`router.path.isEmpty` *and* no auxiliary
+        // non-player page such as UserSpace / DynamicDetail /
+        // RelationList is currently on top). When the user has
+        // pushed deeper, the inner
         // `NavigationStack` provides its own
         // `UIScreenEdgePanGestureRecognizer`-driven interactive
         // pop, which would otherwise be shadowed by this overlay
@@ -174,7 +227,7 @@ private struct DeepLinkPlayerHost: View {
         //   3. Once locked, never revisit the decision — prevents
         //      mid-drag jitter from re-capturing scroll input.
         .overlay(alignment: .leading) {
-            if router.path.isEmpty {
+            if router.path.isEmpty, navigationCoordinator.auxiliaryPageCount == 0 {
                 Color.clear
                     .frame(width: 20)
                     .contentShape(Rectangle())
