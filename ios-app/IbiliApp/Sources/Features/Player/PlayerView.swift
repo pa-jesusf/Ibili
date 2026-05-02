@@ -164,12 +164,24 @@ final class PlayerViewModel: ObservableObject {
         if !isSameVideo {
             blockedQns.removeAll()
             sourceByQn.removeAll()
+            stopHeartbeat()
+            cancelPendingUpgrade()
+            // Replacing the media inside the same player route (分 P /
+            // 合集切换 uses `replaceCurrent`) must tear the outgoing
+            // source down immediately. Otherwise the old AVPlayerItem
+            // keeps its audio/render pipeline alive while we fetch and
+            // prepare the next source, producing overlapping audio.
+            // Keep the logical playback intent as `.play` so the audio
+            // session stays claimed throughout the hand-off.
+            resetCurrentPlaybackForMediaSwitch()
         }
         if preferredAudioQn > 0 { currentAudioQn = preferredAudioQn }
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
-        stopHeartbeat()
-        cancelPendingUpgrade()
+        if isSameVideo {
+            stopHeartbeat()
+            cancelPendingUpgrade()
+        }
         AppLog.info("player", "开始加载播放器", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
@@ -563,6 +575,20 @@ final class PlayerViewModel: ObservableObject {
 
     private var shouldHoldAudioSession: Bool {
         playbackIntent == .play && hasPlaybackFocus && (interfaceIsActive || pictureInPictureIsActive)
+    }
+
+    private func resetCurrentPlaybackForMediaSwitch() {
+        itemStatusObservation = nil
+        guard let player else { return }
+        suppressNextObservedPlaybackIntent(.pause)
+        player.pause()
+        // Match the proven-safe quality-switch ordering: detach the
+        // old AVPlayerItem before releasing the proxy/source behind
+        // it, otherwise the still-bound item can observe a torn-down
+        // backing stream during same-route media replacement.
+        player.replaceCurrentItem(with: nil)
+        activePreparation?.release()
+        activePreparation = nil
     }
 
     private func setPlayer(_ newPlayer: AVPlayer?) {
@@ -1785,6 +1811,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
 // MARK: - Player view
 
 struct PlayerView: View {
+    private static let deferredDetailMountDelay: TimeInterval = 0.24
+
     let item: FeedItemDTO
     @StateObject private var vm: PlayerViewModel
     private let onPictureInPictureActiveChange: ((Bool) -> Void)?
@@ -1804,6 +1832,8 @@ struct PlayerView: View {
     /// Suppressible via `AppSettings.showDanmakuSendHint`.
     @State private var danmakuHint: String?
     @State private var danmakuHintWork: DispatchWorkItem?
+    @State private var deferredDetailMountWork: DispatchWorkItem?
+    @State private var shouldMountDetailContent = false
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -1872,7 +1902,19 @@ struct PlayerView: View {
             }
             .aspectRatio(16.0/9.0, contentMode: .fit)
 
-            VideoDetailContent(item: item)
+            if shouldMountDetailContent {
+                VideoDetailContent(item: item)
+                    .transition(.opacity)
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView().tint(IbiliTheme.accent)
+                    Text("正在准备详情")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 160)
+                .background(IbiliTheme.background)
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1903,6 +1945,12 @@ struct PlayerView: View {
             if !didBootstrap {
                 didBootstrap = true
                 UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            }
+
+            if loadedMediaKey != mediaLoadKey {
+                scheduleDeferredDetailMount(for: mediaLoadKey)
+            } else if !shouldMountDetailContent {
+                shouldMountDetailContent = true
             }
 
             // Claim playback focus as soon as the pushed player page
@@ -2001,6 +2049,8 @@ struct PlayerView: View {
             }
         }
         .onDisappear {
+            deferredDetailMountWork?.cancel()
+            deferredDetailMountWork = nil
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
             if !isFullscreen {
                 vm.pauseForDeactivation()
@@ -2148,6 +2198,21 @@ struct PlayerView: View {
                 "cid": String(item.cid),
             ])
         }
+    }
+
+    private func scheduleDeferredDetailMount(for key: String) {
+        deferredDetailMountWork?.cancel()
+        shouldMountDetailContent = false
+        let work = DispatchWorkItem { [key] in
+            guard key == mediaLoadKey else { return }
+            shouldMountDetailContent = true
+            deferredDetailMountWork = nil
+        }
+        deferredDetailMountWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.deferredDetailMountDelay,
+            execute: work
+        )
     }
 
     // MARK: - Fullscreen / orientation
