@@ -10,6 +10,7 @@ struct RootView: View {
             Group {
                 if session.isLoggedIn {
                     MainTabView()
+                        .allowsHitTesting(router.pending == nil)
                         .transition(.opacity)
                 } else {
                     LoginView()

@@ -166,6 +166,16 @@ final class PlayerViewModel: ObservableObject {
             sourceByQn.removeAll()
             stopHeartbeat()
             cancelPendingUpgrade()
+            // Switching to a different video/part inside the same
+            // route should always auto-play the replacement source.
+            // Do this before we tear the old player down so the audio
+            // session stays claimed across the hand-off and stale
+            // `.paused` callbacks from the outgoing player cannot
+            // permanently flip the new source into a non-playing
+            // intent.
+            playbackIntent = .play
+            pendingObservedPlaybackIntent = nil
+            PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
             // Replacing the media inside the same player route (分 P /
             // 合集切换 uses `replaceCurrent`) must tear the outgoing
             // source down immediately. Otherwise the old AVPlayerItem
@@ -580,6 +590,8 @@ final class PlayerViewModel: ObservableObject {
     private func resetCurrentPlaybackForMediaSwitch() {
         itemStatusObservation = nil
         guard let player else { return }
+        playerTimeControlObservation?.invalidate()
+        playerTimeControlObservation = nil
         suppressNextObservedPlaybackIntent(.pause)
         player.pause()
         // Match the proven-safe quality-switch ordering: detach the

@@ -51,6 +51,7 @@ private func openVideo(_ router: DeepLinkRouter, aid: Int64, bvid: String, title
 struct DynamicFeedView: View {
     @StateObject private var vm = DynamicFeedViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
+    @State private var pendingDetail: DynamicItemDTO?
 
     var body: some View {
         Group {
@@ -63,7 +64,10 @@ struct DynamicFeedView: View {
                 ScrollView {
                     LazyVStack(spacing: 14) {
                         ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                            DynamicItemCard(item: item)
+                            DynamicItemCard(
+                                item: item,
+                                onOpenDetail: { dyn in pendingDetail = dyn }
+                            )
                                 .onAppear {
                                     if !vm.isEnd, index >= max(0, vm.items.count - 3) {
                                         Task { await vm.loadMore() }
@@ -80,6 +84,20 @@ struct DynamicFeedView: View {
             }
         }
         .background(IbiliTheme.background)
+        .background(
+            NavigationLink(
+                isActive: Binding(
+                    get: { pendingDetail != nil },
+                    set: { if !$0 { pendingDetail = nil } }
+                ),
+                destination: {
+                    if let detail = pendingDetail { DynamicDetailView(item: detail) }
+                },
+                label: { EmptyView() }
+            )
+            .opacity(0)
+            .allowsHitTesting(false)
+        )
         .scrollContentBackground(.hidden)
         .task { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }
@@ -150,28 +168,10 @@ struct DynamicItemCard: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onTapGesture { handleCardTap() }
-        .background(
-            // Hidden NavigationLink driven by `pendingDetail`. Going
-            // through this rather than `NavigationLink(value:)` keeps
-            // tap routing centralized in `handleCardTap`.
-            NavigationLink(
-                isActive: Binding(
-                    get: { pendingDetail != nil },
-                    set: { if !$0 { pendingDetail = nil } }
-                ),
-                destination: {
-                    if let d = pendingDetail { DynamicDetailView(item: d) }
-                },
-                label: { EmptyView() }
-            )
-            .opacity(0)
-        )
         .fullScreenCover(item: $preview) { state in
             ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
         }
     }
-
-    @State private var pendingDetail: DynamicItemDTO?
 
     private func handleCardTap() {
         switch classify(item) {
@@ -184,8 +184,7 @@ struct DynamicItemCard: View {
             if let onOpenVideo { onOpenVideo(dto) }
             else { router.open(dto) }
         case .openDetail:
-            if let onOpenDetail { onOpenDetail(item) }
-            else { pendingDetail = item }
+            onOpenDetail?(item)
         }
     }
 
@@ -212,8 +211,7 @@ struct DynamicItemCard: View {
     }
 
     private func openOrigDetail() {
-        if let onOpenDetail { onOpenDetail(item) }
-        else { pendingDetail = item }
+        onOpenDetail?(item)
     }
 
     private func convertToRef(_ item: DynamicItemDTO) -> DynamicItemRefDTO {
