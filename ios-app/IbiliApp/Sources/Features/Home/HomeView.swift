@@ -21,15 +21,16 @@ struct HomeView: View {
             prefetch: prefetch
         )
         .background(IbiliTheme.background.ignoresSafeArea())
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                NavigationTrailingSegmentedControl(
-                    tabs: Array(HomeFeedSection.allCases),
-                    title: { $0.title },
-                    selection: $section
-                )
-            }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            FeedSegmentedHeader(
+                title: "推荐",
+                tabs: Array(HomeFeedSection.allCases),
+                tabTitle: { $0.title },
+                selection: $section,
+                collapseProgress: headerCollapseProgress
+            )
         }
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     private var activeViewModel: HomeViewModel {

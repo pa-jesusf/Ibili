@@ -169,3 +169,77 @@ private struct NavigationGlassCapsuleModifier: ViewModifier {
         }
     }
 }
+
+/// Custom large-title header used by feed-style tabs (Home, Dynamic).
+///
+/// SwiftUI's stock navigation bar renders the trailing toolbar items
+/// in the inline row at the very top, while the large title lives in
+/// a separate row underneath. That layout makes it impossible to have
+/// the segmented control sit *on the same row* as the large title,
+/// and once the title collapses the inline label is forced to the
+/// horizontal centre. Drawing the header ourselves with
+/// `safeAreaInset(.top)` solves both: the title and the capsule live
+/// in a single `HStack`, and the title text simply shrinks in place
+/// (staying left-aligned) as the user scrolls.
+struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
+    let title: String
+    let tabs: [Tab]
+    let tabTitle: (Tab) -> String
+    @Binding var selection: Tab
+    /// 0 → fully expanded (large title), 1 → fully collapsed (inline).
+    let collapseProgress: CGFloat
+
+    var body: some View {
+        let p = min(1, max(0, collapseProgress))
+        // Title size eases from 34pt (.largeTitle bold) to 17pt
+        // (.headline semibold) to mirror the system large-title
+        // collapse animation.
+        let titleSize = 34 - p * 17
+        let titleWeight: Font.Weight = p > 0.5 ? .semibold : .bold
+        let bottomPad: CGFloat = 12 - p * 6
+
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .font(.system(size: titleSize, weight: titleWeight))
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .animation(.easeInOut(duration: 0.18), value: titleSize)
+            Spacer(minLength: 0)
+            NavigationTrailingSegmentedControl(
+                tabs: tabs,
+                title: tabTitle,
+                selection: $selection
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, bottomPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(headerBackground(progress: p))
+    }
+
+    @ViewBuilder
+    private func headerBackground(progress: CGFloat) -> some View {
+        // The material fades in as the user scrolls, mimicking the
+        // system navigation bar's scroll-edge glass behaviour. We
+        // extend it under the status bar with `ignoresSafeArea` so
+        // the bar reads as part of the chrome rather than a floating
+        // pill detached from the top of the screen.
+        let alpha = min(1, max(0, (progress - 0.15) * 1.6))
+        Group {
+            if #available(iOS 26.0, *) {
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .glassEffect(.regular, in: Rectangle())
+                    .opacity(alpha)
+            } else {
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .opacity(alpha)
+            }
+        }
+        .ignoresSafeArea(edges: .top)
+        .animation(.easeInOut(duration: 0.18), value: alpha)
+    }
+}

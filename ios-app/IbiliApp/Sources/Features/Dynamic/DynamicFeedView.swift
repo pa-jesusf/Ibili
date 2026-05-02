@@ -106,15 +106,16 @@ struct DynamicFeedView: View {
             }
         )
         .background(IbiliTheme.background.ignoresSafeArea())
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                NavigationTrailingSegmentedControl(
-                    tabs: Array(DynamicFeedScope.allCases),
-                    title: { $0.title },
-                    selection: $scope
-                )
-            }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            FeedSegmentedHeader(
+                title: "动态",
+                tabs: Array(DynamicFeedScope.allCases),
+                tabTitle: { $0.title },
+                selection: $scope,
+                collapseProgress: headerCollapseProgress
+            )
         }
+        .toolbar(.hidden, for: .navigationBar)
         .background {
             if !isInPlayerHostNavigation {
                 NavigationLink(
