@@ -53,10 +53,14 @@ enum HLSPlaylistBuilder {
         }
         // CODECS combines video + (separate) audio per RFC8216 §4.3.4.2.
         var codecsList: [String] = []
-        if !videoCodec.isEmpty { codecsList.append(videoCodec) }
+        let authoredVideoCodec = normalizedCodecString(videoProbe.videoMetadata?.codecString) ?? normalizedCodecString(videoCodec)
+        if let authoredVideoCodec { codecsList.append(authoredVideoCodec) }
         if hasSeparateAudio, !audioCodec.isEmpty { codecsList.append(audioCodec) }
         if !codecsList.isEmpty {
             streamAttrs += #",CODECS="\#(codecsList.joined(separator: ","))""#
+        }
+        if let supplementalVideoCodec = normalizedCodecString(videoProbe.videoMetadata?.supplementalCodecString) {
+            streamAttrs += #",SUPPLEMENTAL-CODECS="\#(supplementalVideoCodec)""#
         }
         if let resolution = videoProbe.videoMetadata.map({ ($0.width, $0.height) }) ?? videoResolutionHint {
             streamAttrs += ",RESOLUTION=\(resolution.0)x\(resolution.1)"
@@ -130,11 +134,21 @@ enum HLSPlaylistBuilder {
             .nilIfEmpty
     }
 
+    private static func normalizedCodecString(_ raw: String?) -> String? {
+        raw?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+    }
+
     /// Media playlist describing one fMP4 source by byte ranges.
     /// `segmentPath` is the proxy URL (relative or absolute) used both for
     /// `EXT-X-MAP` and for each fragment line.
-    static func makeMedia(probe: ISOBMFF.Probe, segmentPath: String) -> String {
-        let target = max(1, Int(probe.index.targetDurationSec.rounded(.up)))
+    static func makeMedia(probe: ISOBMFF.Probe, segmentPath: String, targetDurationOverride: Int? = nil) -> String {
+        let target = max(
+            1,
+            Int(probe.index.targetDurationSec.rounded(.up)),
+            targetDurationOverride ?? 0
+        )
         var lines: [String] = [
             "#EXTM3U",
             "#EXT-X-VERSION:7",

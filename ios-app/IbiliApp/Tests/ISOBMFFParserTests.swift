@@ -51,6 +51,18 @@ final class ISOBMFFParserTests: XCTestCase {
         XCTAssertEqual(probe.index.targetDurationSec, 6.0, accuracy: 0.001)
     }
 
+    func testParsesDolbyVisionSupplementalCodecAndRangeFromRealDiagnosticsInit() throws {
+        let fixtureURL = URL(fileURLWithPath: "/Users/lxy/Downloads/code/Ibili/ibili-diagnostics/hls-2026-05-02T08-27-31.803Z-C17913B3/video-init.mp4")
+        let data = try Data(contentsOf: fixtureURL)
+
+        let metadata = try XCTUnwrap(ISOBMFF.parseInitVideoMetadata(data))
+        XCTAssertEqual(metadata.width, 4096)
+        XCTAssertEqual(metadata.height, 2160)
+        XCTAssertEqual(metadata.videoRange, .hlg)
+        XCTAssertEqual(metadata.codecString, "hvc1.2.20000000.L153.90")
+        XCTAssertEqual(metadata.supplementalCodecString, "dvh1.08.09/db4h")
+    }
+
     func testThrowsWhenSidxBoxMissing() {
         let ftyp = makeBox(type: "ftyp", body: Data(count: 16))
         let moov = makeBox(type: "moov", body: Data(count: 24))

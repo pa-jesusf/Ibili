@@ -38,6 +38,20 @@ final class LocalHLSProxy: @unchecked Sendable {
             guard let videoWidthHint, let videoHeightHint else { return nil }
             return (videoWidthHint, videoHeightHint)
         }
+
+        var authoringVideoCodec: String? {
+            videoProbe.videoMetadata?.codecString?.trimmedNilIfEmpty
+                ?? videoCodec.trimmedNilIfEmpty
+        }
+
+        var authoringSupplementalVideoCodec: String? {
+            videoProbe.videoMetadata?.supplementalCodecString?.trimmedNilIfEmpty
+        }
+
+        var authoringVideoRange: String? {
+            videoProbe.videoMetadata?.videoRange?.rawValue
+                ?? videoRangeHint?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().trimmedNilIfEmpty
+        }
     }
 
     private let queue = DispatchQueue(label: "ibili.hls.proxy", qos: .userInitiated)
@@ -211,10 +225,11 @@ final class LocalHLSProxy: @unchecked Sendable {
                 frameRateHint: source.videoFrameRateHint
             )
             try write(master, to: dir.appendingPathComponent("master.m3u8"))
-            try write(HLSPlaylistBuilder.makeMedia(probe: source.videoProbe, segmentPath: "v.seg"),
+            let mediaTargetDuration = sharedTargetDuration(videoProbe: source.videoProbe, audioProbe: source.audioProbe)
+            try write(HLSPlaylistBuilder.makeMedia(probe: source.videoProbe, segmentPath: "v.seg", targetDurationOverride: mediaTargetDuration),
                       to: dir.appendingPathComponent("video.m3u8"))
             if let audioProbe = source.audioProbe {
-                try write(HLSPlaylistBuilder.makeMedia(probe: audioProbe, segmentPath: "a.seg"),
+                try write(HLSPlaylistBuilder.makeMedia(probe: audioProbe, segmentPath: "a.seg", targetDurationOverride: mediaTargetDuration),
                           to: dir.appendingPathComponent("audio.m3u8"))
             }
 
@@ -238,7 +253,6 @@ final class LocalHLSProxy: @unchecked Sendable {
             var metadata: [String: Any] = [
                 "reason": reason,
                 "token": token,
-                "videoCodec": source.videoCodec,
                 "audioCodec": source.audioCodec,
                 "videoCandidates": source.videoCandidates.map(\.absoluteString),
                 "audioCandidates": source.audioCandidates.map(\.absoluteString),
@@ -250,13 +264,19 @@ final class LocalHLSProxy: @unchecked Sendable {
                 "audioFragmentCount": source.audioProbe?.index.entries.count ?? 0,
                 "exported": exported,
             ]
+            if let videoCodec = source.authoringVideoCodec {
+                metadata["videoCodec"] = videoCodec
+            }
+            if let supplementalVideoCodec = source.authoringSupplementalVideoCodec {
+                metadata["videoSupplementalCodec"] = supplementalVideoCodec
+            }
             if let width = source.videoWidthHint ?? source.videoProbe.videoMetadata?.width {
                 metadata["videoWidth"] = width
             }
             if let height = source.videoHeightHint ?? source.videoProbe.videoMetadata?.height {
                 metadata["videoHeight"] = height
             }
-            if let videoRange = source.videoRangeHint ?? source.videoProbe.videoMetadata?.videoRange?.rawValue {
+            if let videoRange = source.authoringVideoRange {
                 metadata["videoRange"] = videoRange
             }
             if let frameRate = source.videoFrameRateHint, !frameRate.isEmpty {
@@ -554,10 +574,20 @@ final class LocalHLSProxy: @unchecked Sendable {
         case "master.m3u8":
             serveMasterPlaylist(source: source, conn: conn)
         case "video.m3u8":
-            serveMediaPlaylist(probe: source.videoProbe, segmentPath: "v.seg", conn: conn)
+            serveMediaPlaylist(
+                probe: source.videoProbe,
+                segmentPath: "v.seg",
+                targetDurationOverride: sharedTargetDuration(videoProbe: source.videoProbe, audioProbe: source.audioProbe),
+                conn: conn
+            )
         case "audio.m3u8":
             if let probe = source.audioProbe {
-                serveMediaPlaylist(probe: probe, segmentPath: "a.seg", conn: conn)
+                serveMediaPlaylist(
+                    probe: probe,
+                    segmentPath: "a.seg",
+                    targetDurationOverride: sharedTargetDuration(videoProbe: source.videoProbe, audioProbe: source.audioProbe),
+                    conn: conn
+                )
             } else {
                 respondError(conn: conn, status: 404, body: "No audio track")
             }
@@ -613,9 +643,22 @@ final class LocalHLSProxy: @unchecked Sendable {
         respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
     }
 
-    private func serveMediaPlaylist(probe: ISOBMFF.Probe, segmentPath: String, conn: NWConnection) {
-        let body = HLSPlaylistBuilder.makeMedia(probe: probe, segmentPath: segmentPath)
+    private func serveMediaPlaylist(probe: ISOBMFF.Probe,
+                                    segmentPath: String,
+                                    targetDurationOverride: Int? = nil,
+                                    conn: NWConnection) {
+        let body = HLSPlaylistBuilder.makeMedia(
+            probe: probe,
+            segmentPath: segmentPath,
+            targetDurationOverride: targetDurationOverride
+        )
         respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
+    }
+
+    private func sharedTargetDuration(videoProbe: ISOBMFF.Probe, audioProbe: ISOBMFF.Probe?) -> Int {
+        let videoTarget = Int(videoProbe.index.targetDurationSec.rounded(.up))
+        let audioTarget = Int(audioProbe?.index.targetDurationSec.rounded(.up) ?? 0)
+        return max(1, videoTarget, audioTarget)
     }
 
     // MARK: - Streaming remux routes
@@ -881,6 +924,13 @@ final class LocalHLSProxy: @unchecked Sendable {
         case 502: return "Bad Gateway"
         default:  return "OK"
         }
+    }
+}
+
+private extension String {
+    var trimmedNilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

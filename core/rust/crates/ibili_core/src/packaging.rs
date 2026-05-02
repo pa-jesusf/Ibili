@@ -98,6 +98,7 @@ struct PreparedWorkspace {
 #[derive(Debug, Default)]
 struct MetadataHints {
     video_codec: Option<String>,
+    video_supplemental_codec: Option<String>,
     audio_codec: Option<String>,
     video_width: Option<u64>,
     video_height: Option<u64>,
@@ -548,10 +549,19 @@ fn prepare_remux_workspace(
 }
 
 fn author_local_hls_workspace(prepared: &PreparedWorkspace) -> CoreResult<AuthoredWorkspace> {
+    let shared_target_duration = prepared
+        .audio_template
+        .map(|template| prepared.video_template.target_duration.max(template.target_duration))
+        .unwrap_or(prepared.video_template.target_duration);
     let video_playlist_path = prepared.workspace_root.join("video.m3u8");
     write_text(
         &video_playlist_path,
-        &build_media_playlist("init-video.mp4", "v-seg-00000.m4s", prepared.video_template),
+        &build_media_playlist(
+            "init-video.mp4",
+            "v-seg-00000.m4s",
+            prepared.video_template,
+            shared_target_duration,
+        ),
     )?;
 
     let mut generated_files = vec![video_playlist_path.display().to_string()];
@@ -562,7 +572,12 @@ fn author_local_hls_workspace(prepared: &PreparedWorkspace) -> CoreResult<Author
         let path = prepared.workspace_root.join("audio.m3u8");
         write_text(
             &path,
-            &build_media_playlist("init-audio.mp4", "a-seg-00000.m4s", template),
+            &build_media_playlist(
+                "init-audio.mp4",
+                "a-seg-00000.m4s",
+                template,
+                shared_target_duration,
+            ),
         )?;
         generated_files.push(path.display().to_string());
         Some(path)
@@ -590,6 +605,7 @@ fn author_local_hls_workspace(prepared: &PreparedWorkspace) -> CoreResult<Author
             prepared.has_audio,
             master_bandwidth,
             master_codec_string.as_deref(),
+            prepared.metadata_hints.video_supplemental_codec.as_deref(),
             prepared
                 .metadata_hints
                 .video_width
@@ -768,6 +784,7 @@ fn read_metadata_hints(path: &Path) -> CoreResult<MetadataHints> {
         .map_err(|error| CoreError::Internal(format!("parse {}: {error}", path.display())))?;
     Ok(MetadataHints {
         video_codec: read_json_string(&value, "videoCodec"),
+        video_supplemental_codec: read_json_string(&value, "videoSupplementalCodec"),
         audio_codec: read_json_string(&value, "audioCodec"),
         video_width: read_json_u64(&value, "videoWidth"),
         video_height: read_json_u64(&value, "videoHeight"),
@@ -928,6 +945,7 @@ fn build_master_playlist(
     has_audio: bool,
     bandwidth: u64,
     codec_string: Option<&str>,
+    supplemental_codec_string: Option<&str>,
     resolution: Option<(u64, u64)>,
     frame_rate: Option<&str>,
     video_range: Option<&str>,
@@ -942,6 +960,9 @@ fn build_master_playlist(
     output.push_str(&format!(",AVERAGE-BANDWIDTH={}", bandwidth.max(1)));
     if let Some(codec_string) = codec_string {
         output.push_str(&format!(",CODECS=\"{}\"", codec_string));
+    }
+    if let Some(supplemental_codec_string) = supplemental_codec_string.filter(|value| !value.trim().is_empty()) {
+        output.push_str(&format!(",SUPPLEMENTAL-CODECS=\"{}\"", supplemental_codec_string.trim()));
     }
     if let Some((width, height)) = resolution {
         output.push_str(&format!(",RESOLUTION={}x{}", width, height));
@@ -959,9 +980,14 @@ fn build_master_playlist(
     output
 }
 
-fn build_media_playlist(init_uri: &str, segment_uri: &str, template: MediaPlaylistTemplate) -> String {
-    let target_duration = template
-        .target_duration
+fn build_media_playlist(
+    init_uri: &str,
+    segment_uri: &str,
+    template: MediaPlaylistTemplate,
+    target_duration_override: u64,
+) -> String {
+    let target_duration = target_duration_override
+        .max(template.target_duration)
         .max(template.first_segment_duration_sec.ceil() as u64)
         .max(1);
     format!(
@@ -1081,6 +1107,37 @@ mod tests {
         assert!(master_text.contains("RESOLUTION=3840x2160"));
         assert!(master_text.contains("FRAME-RATE=59.940"));
         assert!(master_text.contains("VIDEO-RANGE=PQ"));
+
+        cleanup_dir(Path::new(&build.workspace_root_dir));
+        cleanup_dir(&diagnostics_dir);
+    }
+
+    #[test]
+    fn offline_build_authors_supplemental_codecs_for_dolby_vision_hlg() {
+        let diagnostics_dir = make_temp_dir("proxy-build-dv-hlg");
+        write_file(
+            &diagnostics_dir.join("metadata.json"),
+            br#"{"videoCodec":"hvc1.2.20000000.L153.90","videoSupplementalCodec":"dvh1.08.09/db4h","audioCodec":"mp4a.40.2","videoWidth":4096,"videoHeight":2160,"videoFrameRate":"50.000","videoRange":"HLG"}"#,
+        );
+        write_file(&diagnostics_dir.join("video-init.mp4"), b"video-init");
+        write_file(&diagnostics_dir.join("video-fragment-000.m4s"), b"video-seg");
+        write_file(&diagnostics_dir.join("audio-init.mp4"), b"audio-init");
+        write_file(&diagnostics_dir.join("audio-fragment-000.m4s"), b"audio-seg");
+        write_file(&diagnostics_dir.join("master.m3u8"), b"#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"default\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS=\"hvc1.2.20000000.L153.90,mp4a.40.2\",AUDIO=\"aud\"\nvideo.m3u8\n");
+        write_file(&diagnostics_dir.join("video.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5.000000,\nv.seg\n");
+        write_file(&diagnostics_dir.join("audio.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.992000,\na.seg\n");
+
+        let build = offline_build(OfflinePackagingRequest {
+            diagnostics_dir: diagnostics_dir.display().to_string(),
+            output_root_dir: String::new(),
+        })
+        .expect("offline build should succeed");
+
+        let master_text = read_text(Path::new(&build.master_playlist_path));
+        assert!(master_text.contains("CODECS=\"hvc1.2.20000000.L153.90,mp4a.40.2\""));
+        assert!(master_text.contains("SUPPLEMENTAL-CODECS=\"dvh1.08.09/db4h\""));
+        assert!(master_text.contains("VIDEO-RANGE=HLG"));
+        assert!(read_text(Path::new(&build.video_playlist_path)).contains("#EXT-X-TARGETDURATION:6"));
 
         cleanup_dir(Path::new(&build.workspace_root_dir));
         cleanup_dir(&diagnostics_dir);

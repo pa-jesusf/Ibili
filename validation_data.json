@@ -1,40 +1,107 @@
 {
-  "independentSegments" : true,
-  "playlistKind" : "multivariant",
-  "mimeType" : "application\/vnd.apple.mpegurl",
+  "mimeType" : "audio\/mpegurl",
   "dataID" : 0,
-  "messages" : [
-    {
-      "errorParserCode" : -16237,
-      "errorComment" : "HDR alternate is missing FRAME-RATE",
-      "errorDomain" : "CoreMediaErrorDomain",
-      "errorStatusCode" : -12642,
-      "errorRequirementLevel" : 4,
-      "errorParserLine" : "video.m3u8"
-    },
-    {
-      "errorParserCode" : -12311,
-      "errorComment" : "Stream type unrecognized",
-      "errorDomain" : "CoreMediaErrorDomain",
-      "errorStatusCode" : -12646,
-      "errorRequirementLevel" : 4
-    }
-  ],
-  "gzipEncoded" : false,
-  "validatorTimestamp" : "2026-05-02T15:43:32.145+08:00",
-  "validatorVersion" : "1.25.36 (1.25.36.18b-250603)",
-  "sslContentDeliveredSecurely" : false,
-  "url" : "http:\/\/127.0.0.1:8766\/master.m3u8",
-  "validatorName" : "mediastreamvalidator",
+  "url" : "\/var\/folders\/31\/5y3km2qn34q1snsvy0bqx5g80000gn\/T\/tmp.XVyFoqYILZ\/master.m3u8",
   "variants" : [
     {
       "playlistType" : "VOD",
+      "maxFrameRate" : 50,
+      "mimeType" : "audio\/mpegurl",
+      "processedSegmentsCount" : 1,
+      "url" : "video.m3u8",
+      "hasDiscSequenceTag" : false,
+      "measuredMeanBitrate" : 14661424,
+      "playlistSupplementalCodecs" : "dvh1.08.09\/db4h",
+      "parsedSegmentsCount" : 1,
+      "fetchCount" : 1,
+      "playlistMeanBitrate" : 14832624,
+      "hasEndTag" : true,
+      "playlistCodecs" : "hvc1.2.20000000.L153.90,mp4a.40.2",
+      "playlistResolutionHeight" : 2160,
+      "measuredMaxBitrate" : 14661424,
+      "independentSegments" : true,
+      "iframeOnly" : false,
+      "audioGroup" : {
+        "playlistGroupIndex" : 1,
+        "playlistGroupID" : "aud",
+        "renditions" : [
+          {
+            "url" : "audio.m3u8",
+            "persistentID" : 0,
+            "dataID" : 1
+          }
+        ]
+      },
+      "closedCaptionGroup" : {
+        "playlistGroupIndex" : 2,
+        "playlistGroupID" : "CC",
+        "renditions" : [
+          {
+            "dataID" : 2,
+            "persistentID" : 1
+          }
+        ]
+      },
+      "playlistKind" : "media",
+      "playlistMaxBitrate" : 14832624,
+      "playlistResolutionWidth" : 4096,
+      "discontinuities" : [
+        {
+          "segments" : [
+            {
+              "segmentDurationTag" : 5,
+              "mediaSequence" : 0,
+              "mimeType" : "application\/octet-stream",
+              "dataID" : 6,
+              "url" : "v-seg-00000.m4s",
+              "segmentByteRangeLength" : 9163390,
+              "videoStartsWithIDR" : true,
+              "segmentByteRangeOffset" : 0,
+              "format" : "fragmentedMP4",
+              "videoFrameRate" : 50,
+              "startTime" : 0,
+              "discontinuityDomain" : 0
+            }
+          ],
+          "measurements" : {
+            "measuredMaxBitrate" : 14661424,
+            "measuredMeanBitrate" : 14661424,
+            "measuredSegments" : 1
+          },
+          "tracks" : [
+            {
+              "trackSupplementalInfo" : {
+                "compatabilityID" : 4,
+                "level" : 9,
+                "subtype" : "dvh1",
+                "profile" : 8
+              },
+              "trackId" : 1,
+              "trackVideoWidth" : 4096,
+              "trackVideoLevel" : 153,
+              "trackVideoTransferFunction" : "ITU_R_2100_HLG",
+              "trackVideoHeight" : 2160,
+              "trackMediaType" : "vide",
+              "trackVideoIsInterlaced" : false,
+              "trackVideoProfile" : 2,
+              "trackMediaSubType" : "hvc1"
+            }
+          ]
+        }
+      ],
+      "playlistTargetDuration" : 6,
+      "videoRangeKey" : "HLG",
+      "gzipEncoded" : false,
+      "dataID" : 3
+    },
+    {
+      "playlistType" : "VOD",
       "playlistDefault" : true,
-      "mimeType" : "application\/vnd.apple.mpegurl",
+      "mimeType" : "audio\/mpegurl",
       "processedSegmentsCount" : 1,
       "url" : "audio.m3u8",
       "hasDiscSequenceTag" : false,
-      "measuredMeanBitrate" : 6166,
+      "measuredMeanBitrate" : 171480,
       "playlistName" : "default",
       "parsedSegmentsCount" : 1,
       "playlistGroupIndex" : 1,
@@ -43,32 +110,31 @@
       "playlistAutoselect" : true,
       "hasEndTag" : true,
       "playlistMediaType" : "soun",
-      "playlistGroupID" : "aud",
       "isRendition" : true,
-      "measuredMaxBitrate" : 6166,
+      "playlistGroupID" : "aud",
+      "measuredMaxBitrate" : 171480,
       "independentSegments" : true,
       "playlistKind" : "media",
-      "sslContentDeliveredSecurely" : false,
+      "playlistTargetDuration" : 6,
       "discontinuities" : [
         {
           "segments" : [
             {
               "discontinuityDomain" : 0,
-              "segmentByteRangeLength" : 0,
+              "segmentByteRangeLength" : 107000,
               "format" : "fragmentedMP4",
               "url" : "a-seg-00000.m4s",
-              "mimeType" : "video\/iso.segment",
-              "dataID" : 2,
-              "segmentDurationTag" : 4.9924999999999997,
+              "mimeType" : "application\/octet-stream",
+              "dataID" : 4,
+              "segmentDurationTag" : 4.9918329999999997,
               "mediaSequence" : 0,
               "startTime" : 0,
-              "sslContentDeliveredSecurely" : false,
               "segmentByteRangeOffset" : 0
             }
           ],
           "measurements" : {
-            "measuredMaxBitrate" : 6166,
-            "measuredMeanBitrate" : 6166,
+            "measuredMaxBitrate" : 171480,
+            "measuredMeanBitrate" : 171480,
             "measuredSegments" : 1
           },
           "tracks" : [
@@ -83,10 +149,15 @@
           ]
         }
       ],
-      "playlistTargetDuration" : 6,
       "gzipEncoded" : false,
       "dataID" : 1
     }
   ],
-  "dataVersion" : 1.2
+  "dataVersion" : 1.2,
+  "gzipEncoded" : false,
+  "independentSegments" : true,
+  "validatorVersion" : "1.25.36 (1.25.36.18b-250603)",
+  "validatorTimestamp" : "2026-05-02T16:41:02.803+08:00",
+  "validatorName" : "mediastreamvalidator",
+  "playlistKind" : "multivariant"
 }

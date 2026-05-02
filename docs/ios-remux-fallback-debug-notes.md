@@ -33,6 +33,19 @@
 
 这些尝试的共同问题是：它们都不能从根上提供一个真正由我们控制、且满足 Apple 预期的 segment 打包结果。
 
+## 2026-05-02 新增踩坑记录：Dolby Vision 8.4 / HLG
+
+在 qn125 之外，后续又定位到一类单独的 Dolby Vision 样本坑点，必须单独记住：
+
+- 不能把 `qn=125/126` 当作 `PQ` 的可靠信号。至少有一类 `dvh1.08.xx` 样本真实是 HLG，而不是 PQ。
+- 不能把 backward-compatible Dolby Vision 8.x 流直接 author 成 `CODECS="dvh1..."`。Apple 推荐的写法是：
+	- `CODECS` 写 base layer，例如 `hvc1...`
+	- `SUPPLEMENTAL-CODECS` 写 Dolby Vision 增强信息，例如 `dvh1.08.09/db4h`
+- 不能让 `playurl` 的粗粒度 hint 覆盖 init sample entry 的真实解析结果。`hvcC` / `dvvC` / color metadata 才是更高优先级的 authoring 依据。
+- audio/video media playlist 的 `TARGETDURATION` 不能各写各的；Apple validator 会把这种差异判成 must-fix。
+
+这类问题的本质已经不是“AVPlayer 会不会解 Dolby Vision”，而是“我们有没有把 backward-compatible Dolby Vision author 成 Apple 期望的 HLS 形式”。
+
 ## 根因边界
 
 当前最合理的边界判断是：

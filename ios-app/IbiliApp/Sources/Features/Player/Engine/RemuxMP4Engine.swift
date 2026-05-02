@@ -260,6 +260,12 @@ final class RemuxMP4Engine: PlaybackEngine {
             ]
             let metadataURL = exportDir.appendingPathComponent("metadata.json")
             var mutableMetadata = metadata
+            if !source.videoCodec.isEmpty {
+                mutableMetadata["videoCodec"] = source.videoCodec
+            }
+            if !source.audioCodec.isEmpty {
+                mutableMetadata["audioCodec"] = source.audioCodec
+            }
             if let width = source.videoWidth {
                 mutableMetadata["videoWidth"] = width
             }
@@ -274,10 +280,16 @@ final class RemuxMP4Engine: PlaybackEngine {
             }
             if let initData = try? Data(contentsOf: exportDir.appendingPathComponent("init.mp4")),
                let videoMetadata = ISOBMFF.parseInitVideoMetadata(initData) {
-                mutableMetadata["videoWidth"] = mutableMetadata["videoWidth"] ?? videoMetadata.width
-                mutableMetadata["videoHeight"] = mutableMetadata["videoHeight"] ?? videoMetadata.height
-                if mutableMetadata["videoRange"] == nil, let videoRange = videoMetadata.videoRange {
+                mutableMetadata["videoWidth"] = videoMetadata.width
+                mutableMetadata["videoHeight"] = videoMetadata.height
+                if let videoRange = videoMetadata.videoRange {
                     mutableMetadata["videoRange"] = videoRange.rawValue
+                }
+                if let videoCodec = videoMetadata.codecString {
+                    mutableMetadata["videoCodec"] = videoCodec
+                }
+                if let supplementalVideoCodec = videoMetadata.supplementalCodecString {
+                    mutableMetadata["videoSupplementalCodec"] = supplementalVideoCodec
                 }
             }
             try writeJSONObject(mutableMetadata, to: metadataURL)

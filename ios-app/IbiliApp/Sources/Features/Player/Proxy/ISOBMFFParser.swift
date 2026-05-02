@@ -23,6 +23,8 @@ enum ISOBMFF {
         let width: Int
         let height: Int
         let videoRange: VideoRange?
+        let codecString: String?
+        let supplementalCodecString: String?
     }
 
     struct InitSegment: Equatable {
@@ -197,8 +199,20 @@ enum ISOBMFF {
             if let width = uint16(in: stsdPayload, at: header.payloadStart + 24),
                let height = uint16(in: stsdPayload, at: header.payloadStart + 26),
                width > 0, height > 0 {
-                let videoRange = parseVideoRange(fromSampleEntryPayload: sampleEntryPayload)
-                return VideoMetadata(width: Int(width), height: Int(height), videoRange: videoRange)
+                let dolbyVisionConfiguration = parseDolbyVisionConfiguration(fromSampleEntryPayload: sampleEntryPayload)
+                let videoRange = dolbyVisionConfiguration?.derivedVideoRange
+                    ?? parseVideoRange(fromSampleEntryPayload: sampleEntryPayload)
+                let codecString = parseHEVCCodecString(
+                    fromSampleEntryPayload: sampleEntryPayload,
+                    sampleEntryType: header.type
+                )
+                return VideoMetadata(
+                    width: Int(width),
+                    height: Int(height),
+                    videoRange: videoRange,
+                    codecString: codecString,
+                    supplementalCodecString: dolbyVisionConfiguration?.supplementalCodecString
+                )
             }
             offset = header.boxEnd
         }
@@ -227,6 +241,108 @@ enum ISOBMFF {
             offset = header.boxEnd
         }
         return nil
+    }
+
+    private struct DolbyVisionConfiguration: Equatable {
+        let profile: Int
+        let level: Int
+        let compatibilityID: Int
+
+        var derivedVideoRange: VideoRange? {
+            switch compatibilityID {
+            case 1:
+                return .pq
+            case 4:
+                return .hlg
+            default:
+                return nil
+            }
+        }
+
+        var supplementalCodecString: String? {
+            let compatibilityBrand: String
+            switch compatibilityID {
+            case 1:
+                compatibilityBrand = "db1p"
+            case 4:
+                compatibilityBrand = "db4h"
+            default:
+                return nil
+            }
+            return String(format: "dvh1.%02d.%02d/%@", profile, level, compatibilityBrand)
+        }
+    }
+
+    private static func parseDolbyVisionConfiguration(fromSampleEntryPayload payload: Data) -> DolbyVisionConfiguration? {
+        let childStart = 78
+        guard childStart < payload.count else { return nil }
+        var offset = childStart
+        while let header = boxHeader(in: payload, at: offset, end: payload.count) {
+            defer { offset = header.boxEnd }
+            guard header.type == "dvcC" || header.type == "dvvC" else { continue }
+            guard header.payloadStart + 5 <= payload.count else { return nil }
+            let profileByte = payload[header.payloadStart + 2]
+            let levelByte = payload[header.payloadStart + 3]
+            let compatibilityByte = payload[header.payloadStart + 4]
+            let profile = Int(profileByte >> 1)
+            let level = Int(((profileByte & 0x01) << 5) | (levelByte >> 3))
+            let compatibilityID = Int(compatibilityByte >> 4)
+            return DolbyVisionConfiguration(
+                profile: profile,
+                level: level,
+                compatibilityID: compatibilityID
+            )
+        }
+        return nil
+    }
+
+    private static func parseHEVCCodecString(fromSampleEntryPayload payload: Data, sampleEntryType: String) -> String? {
+        guard sampleEntryType == "hvc1" || sampleEntryType == "hev1" else { return nil }
+        let childStart = 78
+        guard childStart < payload.count else { return nil }
+        var offset = childStart
+        while let header = boxHeader(in: payload, at: offset, end: payload.count) {
+            defer { offset = header.boxEnd }
+            guard header.type == "hvcC" else { continue }
+            guard header.payloadStart + 13 <= payload.count else { return nil }
+
+            let profileByte = payload[header.payloadStart + 1]
+            let profileSpace = Int((profileByte & 0b1100_0000) >> 6)
+            let tierFlag = (profileByte & 0b0010_0000) != 0
+            let profileIDC = Int(profileByte & 0b0001_1111)
+            let compatibilityFlags = uint32(in: payload, at: header.payloadStart + 2) ?? 0
+            let constraintBytes = (0..<6).map { payload[header.payloadStart + 6 + $0] }
+            let levelIDC = Int(payload[header.payloadStart + 12])
+
+            let profilePrefix: String
+            switch profileSpace {
+            case 1:
+                profilePrefix = "A"
+            case 2:
+                profilePrefix = "B"
+            case 3:
+                profilePrefix = "C"
+            default:
+                profilePrefix = ""
+            }
+
+            let compatibilityPart = String(compatibilityFlags, radix: 16, uppercase: true)
+            let constraintPart = trimmedConstraintBytes(constraintBytes)
+            let tierLevelPart = "\(tierFlag ? "H" : "L")\(levelIDC)"
+            if constraintPart.isEmpty {
+                return "\(sampleEntryType).\(profilePrefix)\(profileIDC).\(compatibilityPart).\(tierLevelPart)"
+            }
+            return "\(sampleEntryType).\(profilePrefix)\(profileIDC).\(compatibilityPart).\(tierLevelPart).\(constraintPart)"
+        }
+        return nil
+    }
+
+    private static func trimmedConstraintBytes(_ bytes: [UInt8]) -> String {
+        var trimmed = bytes
+        while trimmed.last == 0 {
+            trimmed.removeLast()
+        }
+        return trimmed.map { String(format: "%02X", $0) }.joined()
     }
 
     private static func firstBoxPayload(named type: String, in data: Data) -> Data? {

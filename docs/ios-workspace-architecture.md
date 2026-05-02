@@ -352,6 +352,13 @@ As of 2026-05-02, the repository has a verified playback constraint for HEVC Mai
 - repeated `init.mp4` patching and FFmpeg live remux experiments did not solve `CoreMediaErrorDomain -12927`
 - the strategic direction for the AVPlayer path is Apple-compatible HLS/CMAF packaging with segment semantics controlled by a real packager, not by ad-hoc local proxy patching
 
+As of the same date, one remaining Dolby Vision class was also root-caused more precisely:
+
+- some `dvh1.08.xx` samples are Dolby Vision 8.4 with HLG-compatible base layer, not PQ
+- these streams must be authored with base `hvc1` in `CODECS`, Dolby Vision in `SUPPLEMENTAL-CODECS`, and `VIDEO-RANGE=HLG`
+- inferring HDR range from qn alone is not reliable and must not override parsed init metadata
+- diagnostics-browser workspace smoke tests now use a direct file URL so packaged-HLS validation is isolated from localhost delivery behavior
+
 Implication:
 
 - `FeaturePlayer` may continue to host the current engine stack for ordinary streams, but future investment for unsupported HEVC/HDR variants must go into proper packaging, not more proxy-layer hotfixes

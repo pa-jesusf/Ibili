@@ -23,6 +23,37 @@
 - 当前失败边界已经收敛到“现有 live 分片交付路径不满足 AVPlayer 对 Apple 风格 HLS/fMP4 segment 的预期”。
 - 后续不应继续在 localhost proxy、init patch、FFmpeg HLS muxer 参数上做追加式小修小补。
 
+## 2026-05-02 补充：Dolby Vision 8.4 / HLG 样本的真实修复点
+
+后续对 `aid=785674172 / cid=1192193741 / qn=126` 的 diagnostics 样本又给出了一条更细的结论。
+
+这个样本不是前面的 HEVC PQ 失败重演，而是一条 Dolby Vision 8.4 / HLG 兼容流：
+
+- `playurl` 返回的 video codec 是 `dvh1.08.09`。
+- 但 `video-init.mp4` 的 sample entry 实际是 `hvc1`，同时带 `dvvC`。
+- Apple `mediastreamvalidator` 对旧 authoring 的明确报错是：
+  - playlist codec type 写成了 `dvh1`，但内容 codec type 是 `hvc1`
+  - `VIDEO-RANGE` 被写成了 `PQ`，但片段真实 transfer function 是 `HLG`
+  - audio/video media playlist 的 `TARGETDURATION` 不一致
+
+这条样本最后验证下来的正确 authoring 规则是：
+
+- `CODECS` 必须写 base layer codec，而不是直接写 `dvh1.08.09`
+- `SUPPLEMENTAL-CODECS` 必须写 Dolby Vision codec，例如 `dvh1.08.09/db4h`
+- `VIDEO-RANGE` 必须和 Dolby Vision compatibility id 以及真实 transfer function 一致；这条样本应是 `HLG`，不是 `PQ`
+- audio/video media playlist 必须共享同一个最大 `TARGETDURATION`
+
+换句话说，这类 backward-compatible Dolby Vision 8.x 样本不能只看 `playurl` 的 codec 名，也不能只看 qn，就把 master playlist 写出来。必须从 init 里的 `hvcC` / `dvvC` 和颜色信息反推出真正的 Apple-compatible authoring。
+
+## 已落地的修复要点
+
+当前仓库已经把下面这些点固化进实现：
+
+- diagnostics browser 对 `packaging-workspace/master.m3u8` 的 smoke test 现在直接走本地文件 URL，不再经 localhost proxy 二次转发
+- HLS authoring 会优先使用 init probe 解析出的 video metadata，而不是盲信 `playurl` hint
+- 对 Dolby Vision 8.4 / HLG 样本，master playlist 会写 base `hvc1` codec + `SUPPLEMENTAL-CODECS="dvh1.../db4h"` + `VIDEO-RANGE=HLG`
+- offline packaging 输出的 audio/video playlist target duration 会对齐到同一个值
+
 ## 为什么这个实验比继续 patch localhost 更有价值
 
 Apple 官方和成熟打包平台给出的路线是统一的：

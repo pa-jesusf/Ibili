@@ -300,7 +300,7 @@ diagnostics/
 至少完成：
 
 1. 拉取 video/audio 头部窗口。
-2. 解析 `ftyp`、`moov`、`sidx`、sample entry、color/HDR 信息。
+2. 解析 `ftyp`、`moov`、`sidx`、sample entry、color/HDR 信息，以及 `hvcC` / `dvvC` 这类 codec configuration box。
 3. 识别是否存在独立 audio track。
 4. 收集 `sidx` 的 SAP 信息。
 
@@ -347,10 +347,17 @@ diagnostics/
 必须准确输出：
 
 - `CODECS`
+- `SUPPLEMENTAL-CODECS`（backward-compatible Dolby Vision 8.1 / 8.4 等场景）
 - `RESOLUTION`
 - `FRAME-RATE`
 - `VIDEO-RANGE`（HDR / DV 相关场景）
 - 独立 audio group（如存在）
+
+额外规则：
+
+- 对 backward-compatible Dolby Vision 8.x 流，`CODECS` 必须写 base layer codec，`SUPPLEMENTAL-CODECS` 才写 Dolby Vision codec。
+- `VIDEO-RANGE` 不能由 qn 或 codec 前缀直接猜测，必须优先来自 init 的 sample entry / codec configuration 解析结果。
+- 同一 asset 的 audio/video media playlist 必须共享一致的 `TARGETDURATION`。
 
 ### 9.2 media playlist
 
