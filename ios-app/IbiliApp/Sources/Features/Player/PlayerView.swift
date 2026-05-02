@@ -44,6 +44,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentAudioQn: Int64 = 0
     @Published private(set) var prefersLandscapeFullscreen = true
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
+    private let holdSpeedRate: Float = 2.0
+    private var temporaryPlaybackRateOverride: Float?
     /// Lightweight handle the SwiftUI player container hands us so we
     /// can drive a snapshot crossfade across an AVPlayer identity swap
     /// without forcing the view-model to know about UIKit views.
@@ -456,6 +458,9 @@ final class PlayerViewModel: ObservableObject {
     func setPictureInPictureActive(_ isActive: Bool) {
         pictureInPictureIsActive = isActive
         if isActive {
+            endTemporarySpeedBoost()
+        }
+        if isActive {
             PlayerPlaybackCoordinator.shared.activate(self)
             hasPlaybackFocus = true
         } else if !interfaceIsActive {
@@ -469,6 +474,30 @@ final class PlayerViewModel: ObservableObject {
     /// the foreground should auto-collapse the PiP floating window
     /// (only the originating session has this set).
     var isPictureInPictureActive: Bool { pictureInPictureIsActive }
+
+    var canBeginTemporarySpeedBoost: Bool {
+        guard let player else { return false }
+        return player.timeControlStatus == .playing || player.rate > 0
+    }
+
+    var isTemporarySpeedBoostActive: Bool {
+        temporaryPlaybackRateOverride != nil
+    }
+
+    @discardableResult
+    func beginTemporarySpeedBoost() -> Bool {
+        guard canBeginTemporarySpeedBoost else { return false }
+        guard temporaryPlaybackRateOverride != holdSpeedRate else { return true }
+        temporaryPlaybackRateOverride = holdSpeedRate
+        applyRate()
+        return true
+    }
+
+    func endTemporarySpeedBoost(on targetPlayer: AVPlayer? = nil) {
+        guard temporaryPlaybackRateOverride != nil else { return }
+        temporaryPlaybackRateOverride = nil
+        applyRate(to: targetPlayer)
+    }
 
     func switchQuality(to qn: Int64) async {
         guard let player else { return }
@@ -494,6 +523,7 @@ final class PlayerViewModel: ObservableObject {
             itemStatusObservation = nil
             suppressNextObservedPlaybackIntent(.pause)
             player.pause()
+            endTemporarySpeedBoost(on: player)
             player.replaceCurrentItem(with: nil)
             activePreparation?.release()
             activePreparation = nil
@@ -596,6 +626,7 @@ final class PlayerViewModel: ObservableObject {
         playerTimeControlObservation = nil
         suppressNextObservedPlaybackIntent(.pause)
         player.pause()
+        endTemporarySpeedBoost(on: player)
         // Match the proven-safe quality-switch ordering: detach the
         // old AVPlayerItem before releasing the proxy/source behind
         // it, otherwise the still-bound item can observe a torn-down
@@ -608,6 +639,9 @@ final class PlayerViewModel: ObservableObject {
     private func setPlayer(_ newPlayer: AVPlayer?) {
         playerTimeControlObservation?.invalidate()
         playerTimeControlObservation = nil
+        if newPlayer == nil {
+            temporaryPlaybackRateOverride = nil
+        }
         player = newPlayer
         if let newPlayer {
             observePlayerTimeControl(newPlayer)
@@ -626,6 +660,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func handleObservedPlaybackState(_ status: AVPlayer.TimeControlStatus) {
+        if status == .paused {
+            endTemporarySpeedBoost()
+        }
         guard let observedIntent = Self.playbackIntent(for: status) else { return }
         if let pendingObservedPlaybackIntent, pendingObservedPlaybackIntent == observedIntent {
             self.pendingObservedPlaybackIntent = nil
@@ -646,6 +683,7 @@ final class PlayerViewModel: ObservableObject {
             targetPlayer.playImmediately(atRate: desiredPlaybackRate)
         case .pause:
             targetPlayer.pause()
+            endTemporarySpeedBoost(on: targetPlayer)
         }
     }
 
@@ -653,8 +691,12 @@ final class PlayerViewModel: ObservableObject {
         pendingObservedPlaybackIntent = intent
     }
 
-    private var desiredPlaybackRate: Float {
+    private var basePlaybackRate: Float {
         rate > 0 ? rate : 1.0
+    }
+
+    private var desiredPlaybackRate: Float {
+        temporaryPlaybackRateOverride ?? basePlaybackRate
     }
 
     private static func playbackIntent(for status: AVPlayer.TimeControlStatus) -> PlaybackIntent? {
@@ -1141,6 +1183,7 @@ final class PlayerViewModel: ObservableObject {
             itemStatusObservation = nil
             suppressNextObservedPlaybackIntent(.pause)
             player.pause()
+            endTemporarySpeedBoost(on: player)
             player.replaceCurrentItem(with: nil)
             activePreparation?.release()
             activePreparation = nil
@@ -1177,9 +1220,9 @@ final class PlayerViewModel: ObservableObject {
 
     private func applyRate(to targetPlayer: AVPlayer? = nil) {
         guard let player = targetPlayer ?? player else { return }
-        if rate != 0 { player.defaultRate = rate }
+        player.defaultRate = desiredPlaybackRate
         guard player.timeControlStatus == .playing || player.rate > 0 else { return }
-        player.rate = rate
+        player.rate = desiredPlaybackRate
     }
 
     private func applyPresentationMetadata(to playerItem: AVPlayerItem, for item: FeedItemDTO) {
@@ -1643,6 +1686,15 @@ enum Orientation {
 
 // MARK: - Player container (UIKit) hosting AVPlayerViewController + danmaku overlay
 
+private final class PlayerHoldSpeedGestureMaskView: UIView {
+    var hitTestingEnabledProvider: () -> Bool = { true }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard hitTestingEnabledProvider() else { return false }
+        return super.point(inside: point, with: event)
+    }
+}
+
 /// Wraps `AVPlayerViewController`. Critically, the danmaku overlay is mounted
 /// inside `contentOverlayView`, which travels with the player into native
 /// fullscreen — so danmaku stays visible there.
@@ -1658,6 +1710,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let danmakuStrokeWidth: Double
     let danmakuFontWeight: Int
     let danmakuFontScale: Double
+    let isTemporarySpeedBoostActive: () -> Bool
+    let canBeginTemporarySpeedBoost: () -> Bool
+    let beginTemporarySpeedBoost: () -> Bool
+    let endTemporarySpeedBoost: () -> Void
     /// Called once, with the just-created AVPlayerViewController. Lets the
     /// SwiftUI parent drive native fullscreen entry/exit.
     let onCreated: (AVPlayerViewController) -> Void
@@ -1715,11 +1771,42 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 canvas.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
             ])
             context.coordinator.danmakuCanvas = canvas
+
+            // Keep the gesture inside `contentOverlayView` so it
+            // survives AVKit's native fullscreen hand-off. When the
+            // player is paused the mask removes itself from hit-
+            // testing entirely, letting iOS long-press features on
+            // the paused frame keep working.
+            let gestureMask = PlayerHoldSpeedGestureMaskView()
+            gestureMask.translatesAutoresizingMaskIntoConstraints = false
+            gestureMask.backgroundColor = .clear
+            gestureMask.hitTestingEnabledProvider = { [weak coordinator = context.coordinator] in
+                coordinator?.shouldAllowHoldSpeedGestureHitTesting ?? false
+            }
+            overlay.addSubview(gestureMask)
+            NSLayoutConstraint.activate([
+                gestureMask.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
+                gestureMask.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
+                gestureMask.topAnchor.constraint(equalTo: overlay.topAnchor),
+                gestureMask.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
+            ])
+            let holdGesture = UILongPressGestureRecognizer(
+                target: context.coordinator,
+                action: #selector(Coordinator.handleHoldSpeedGesture(_:))
+            )
+            holdGesture.minimumPressDuration = 0.32
+            holdGesture.allowableMovement = 26
+            holdGesture.cancelsTouchesInView = false
+            holdGesture.delaysTouchesBegan = false
+            holdGesture.delaysTouchesEnded = false
+            holdGesture.delegate = context.coordinator
+            gestureMask.addGestureRecognizer(holdGesture)
         }
         return vc
     }
 
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
+        context.coordinator.parent = self
         let incomingPlayerID = ObjectIdentifier(player)
         if vc.title != title {
             vc.title = title
@@ -1742,7 +1829,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
     }
 
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay {
+    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay, UIGestureRecognizerDelegate {
         var parent: PlayerContainer
         weak var danmakuCanvas: DanmakuCanvasView?
         var assignedPlayerID: ObjectIdentifier?
@@ -1754,6 +1841,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
         private var preTransitionRate: Float?
         private var preTransitionWasPlaying: Bool?
         init(parent: PlayerContainer) { self.parent = parent }
+
+        var shouldAllowHoldSpeedGestureHitTesting: Bool {
+            parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost()
+        }
 
         func prepareForFullscreenTransition(player: AVPlayer?) {
             guard let player else { return }
@@ -1794,6 +1885,26 @@ struct PlayerContainer: UIViewControllerRepresentable {
                                animations: { snapshot.alpha = 0 },
                                completion: { _ in snapshot.removeFromSuperview() })
             }
+        }
+
+        @objc func handleHoldSpeedGesture(_ gesture: UILongPressGestureRecognizer) {
+            switch gesture.state {
+            case .began:
+                _ = parent.beginTemporarySpeedBoost()
+            case .ended, .cancelled, .failed:
+                parent.endTemporarySpeedBoost()
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            parent.canBeginTemporarySpeedBoost()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
         }
 
         // MARK: AVPlayerViewControllerDelegate
@@ -1956,6 +2067,10 @@ struct PlayerView: View {
                         danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
                         danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
                         danmakuFontScale: settings.resolvedDanmakuFontScale(),
+                        isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
+                        canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
+                        beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
+                        endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
                         onCreated: { vc in playerVCRef.vc = vc },
                         onFullscreenChange: { fs in isFullscreen = fs },
                         onPictureInPictureActiveChange: { isActive in
@@ -2079,6 +2194,7 @@ struct PlayerView: View {
             // unlocking the screen sees the same frame they left.
             if phase == .background, didBootstrap, !vm.isPictureInPictureActive,
                let vc = playerVCRef.vc, let p = vc.player, playerVCRef.detachedPlayer == nil {
+                vm.endTemporarySpeedBoost(on: p)
                 playerVCRef.detachedPlayer = p
                 playerVCRef.detachedRate = p.rate > 0 ? p.rate : 1.0
                 vc.player = nil
