@@ -207,20 +207,46 @@ struct FeedNavigationBackgroundOverlay: View {
 
     var body: some View {
         let p = min(1, max(0, collapseProgress))
+        let overlayOpacity = 0.84 + p * 0.16
 
-        LinearGradient(
-            colors: [
-                Color.black.opacity(0.30),
-                Color.black.opacity(0.14),
-                Color.black.opacity(0)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        ZStack(alignment: .top) {
+            // Use the system compositor-backed Material blur instead
+            // of an explicit `.blur(radius:)` pass. This is the
+            // smoothest option during live scrolling because UIKit /
+            // SwiftUI already optimise it as nav-bar style chrome.
+            Rectangle()
+                .fill(.thinMaterial)
+                .mask(
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0.98),
+                            Color.black.opacity(0.70),
+                            Color.black.opacity(0.26),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            // A dark tint gradient keeps text legible and gives the
+            // bar more presence over bright content without requiring
+            // another expensive blur layer.
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.42),
+                    Color.black.opacity(0.22),
+                    Color.black.opacity(0.06),
+                    Color.black.opacity(0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
         .frame(maxWidth: .infinity)
-        .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 20, alignment: .top)
+        .frame(height: FeedSegmentedHeaderMetrics.expandedHeight + 24, alignment: .top)
         .ignoresSafeArea(edges: .top)
-        .opacity(0.72 + p * 0.28)
+        .opacity(overlayOpacity)
         .allowsHitTesting(false)
     }
 }
