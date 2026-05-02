@@ -57,6 +57,7 @@ private struct DeepLinkPlayerHost: View {
     ///     `.interactiveSpring`, which automatically opts into the
     ///     ProMotion 120 Hz path.
     @State private var offsetX: CGFloat = UIScreen.main.bounds.width
+    @State private var pendingDismissWork: DispatchWorkItem?
     /// Tri-state lock for the leading-edge drag. `undecided` while
     /// we're still reading the slope of the user's motion; once we
     /// commit to either `.horizontal` (swipe-back) or `.vertical`
@@ -124,12 +125,15 @@ private struct DeepLinkPlayerHost: View {
         .background(IbiliTheme.background)
         .offset(x: offsetX)
         .onAppear {
+            cancelPendingDismiss()
             syncPlayerSessions()
         }
         .onChange(of: router.pending?.id) { _ in
+            cancelPendingDismiss()
             syncPlayerSessions()
         }
         .onChange(of: router.path.map(\.id)) { _ in
+            cancelPendingDismiss()
             syncPlayerSessions()
         }
         .onAppear {
@@ -177,6 +181,9 @@ private struct DeepLinkPlayerHost: View {
                     .gesture(rootSwipeBackGesture)
             }
         }
+        .onDisappear {
+            cancelPendingDismiss()
+        }
     }
 
     /// Pop one navigation layer. If the player session has pushed
@@ -201,14 +208,25 @@ private struct DeepLinkPlayerHost: View {
         withAnimation(Self.slideSpring) {
             offsetX = width
         }
+        cancelPendingDismiss()
+        let dismissingRouteID = router.pending?.id
+        let work = DispatchWorkItem {
+            guard router.pending?.id == dismissingRouteID,
+                  router.path.isEmpty else { return }
+            router.closeSession()
+        }
+        pendingDismissWork = work
         // Defer the heavy session teardown to a later runloop tick so
         // SwiftUI commits the slide animation before AVPlayer /
         // local-HLS / danmaku-displaylink deinit work seizes the main
         // thread. By the time the teardown runs, the host is already
         // off-screen, so the user never sees the freeze.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) {
-            router.closeSession()
-        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.34, execute: work)
+    }
+
+    private func cancelPendingDismiss() {
+        pendingDismissWork?.cancel()
+        pendingDismissWork = nil
     }
 
     private func syncPlayerSessions() {

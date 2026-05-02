@@ -70,6 +70,8 @@ final class PlayerViewModel: ObservableObject {
     private var bvid: String = ""
     /// Periodic time observer token driving heartbeat reports.
     private var heartbeatObserverToken: Any?
+    /// End-of-item observer token that sends the terminal heartbeat.
+    private var playbackEndObserverToken: NSObjectProtocol?
     /// Last reported playhead second — heartbeat skips repeats so we
     /// don't spam the API when paused.
     private var lastHeartbeatSec: Int64 = -1
@@ -695,8 +697,12 @@ final class PlayerViewModel: ObservableObject {
         // Also send a final heartbeat when the item finishes naturally
         // — keeps the cloud history in sync with "watched to end" so
         // the user doesn't get re-prompted to resume next time.
+        if let token = playbackEndObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            playbackEndObserverToken = nil
+        }
         if let item = player.currentItem {
-            NotificationCenter.default.addObserver(
+            playbackEndObserverToken = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: item,
                 queue: .main
@@ -719,6 +725,10 @@ final class PlayerViewModel: ObservableObject {
         if let token = heartbeatObserverToken {
             player?.removeTimeObserver(token)
             heartbeatObserverToken = nil
+        }
+        if let token = playbackEndObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            playbackEndObserverToken = nil
         }
         // Best-effort terminal beat for the *just-stopped* video so the
         // cloud history matches the actual stop position even if the
@@ -831,46 +841,42 @@ final class PlayerViewModel: ObservableObject {
     /// Wait until a hidden player has genuinely started playback.
     private static func waitUntilActuallyPlaying(player: AVPlayer,
                                                  item: AVPlayerItem) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            let state = OSAllocatedUnfairLock<ObservationState>(initialState: .pending)
-            var itemObservation: NSKeyValueObservation?
-            var playerObservation: NSKeyValueObservation?
-
-            let finish: (Result<Void, Error>) -> Void = { result in
-                let shouldResume = state.withLock { current -> Bool in
-                    guard case .pending = current else { return false }
-                    current = .resolved
-                    return true
+        let box = WarmPlayerObservationBox()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard box.installContinuation(continuation) else {
+                    continuation.resume(throwing: CancellationError())
+                    return
                 }
-                guard shouldResume else { return }
-                itemObservation?.invalidate()
-                playerObservation?.invalidate()
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
 
-            itemObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
-                switch item.status {
-                case .failed:
-                    finish(.failure(item.error ?? WarmPlayerError.unexpectedFailure))
-                case .readyToPlay:
-                    if player.timeControlStatus == .playing {
-                        finish(.success(()))
+                let itemObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
+                    switch item.status {
+                    case .failed:
+                        box.finish(.failure(item.error ?? WarmPlayerError.unexpectedFailure))
+                    case .readyToPlay:
+                        if player.timeControlStatus == .playing {
+                            box.finish(.success(()))
+                        }
+                    default:
+                        break
                     }
-                default:
-                    break
+                }
+                box.installItemObservation(itemObservation)
+
+                let playerObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { player, _ in
+                    if player.timeControlStatus == .playing {
+                        box.finish(.success(()))
+                    }
+                }
+                box.installPlayerObservation(playerObservation)
+
+                if Task.isCancelled {
+                    box.finish(.failure(CancellationError()))
                 }
             }
-            playerObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { player, _ in
-                if player.timeControlStatus == .playing {
-                    finish(.success(()))
-                }
-            }
-        }
+        }, onCancel: {
+            box.finish(.failure(CancellationError()))
+        })
     }
 
     /// Make a warmed hidden player visible as the initial winner.
@@ -1455,6 +1461,73 @@ fileprivate enum RaceState {
 fileprivate enum ObservationState {
     case pending
     case resolved
+}
+
+fileprivate struct WarmPlayerObservationStorage {
+    var state: ObservationState = .pending
+    var continuation: CheckedContinuation<Void, Error>?
+    var itemObservation: NSKeyValueObservation?
+    var playerObservation: NSKeyValueObservation?
+}
+
+fileprivate final class WarmPlayerObservationBox: @unchecked Sendable {
+    private let storage = OSAllocatedUnfairLock<WarmPlayerObservationStorage>(
+        initialState: WarmPlayerObservationStorage()
+    )
+
+    func installContinuation(_ continuation: CheckedContinuation<Void, Error>) -> Bool {
+        storage.withLock { storage in
+            guard case .pending = storage.state else { return false }
+            storage.continuation = continuation
+            return true
+        }
+    }
+
+    func installItemObservation(_ observation: NSKeyValueObservation) {
+        let shouldInvalidate = storage.withLock { storage in
+            guard case .pending = storage.state else { return true }
+            storage.itemObservation = observation
+            return false
+        }
+        if shouldInvalidate {
+            observation.invalidate()
+        }
+    }
+
+    func installPlayerObservation(_ observation: NSKeyValueObservation) {
+        let shouldInvalidate = storage.withLock { storage in
+            guard case .pending = storage.state else { return true }
+            storage.playerObservation = observation
+            return false
+        }
+        if shouldInvalidate {
+            observation.invalidate()
+        }
+    }
+
+    func finish(_ result: Result<Void, Error>) {
+        let payload = storage.withLock { storage -> (CheckedContinuation<Void, Error>?, NSKeyValueObservation?, NSKeyValueObservation?)? in
+            guard case .pending = storage.state else { return nil }
+            storage.state = .resolved
+            let continuation = storage.continuation
+            let itemObservation = storage.itemObservation
+            let playerObservation = storage.playerObservation
+            storage.continuation = nil
+            storage.itemObservation = nil
+            storage.playerObservation = nil
+            return (continuation, itemObservation, playerObservation)
+        }
+        guard let (continuation, itemObservation, playerObservation) = payload else { return }
+        itemObservation?.invalidate()
+        playerObservation?.invalidate()
+        guard let continuation else { return }
+        switch result {
+        case .success:
+            continuation.resume()
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
 }
 
 fileprivate enum WarmPlayerError: Error {
@@ -2064,6 +2137,7 @@ struct PlayerView: View {
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
+            danmaku.detach()
             if !isFullscreen {
                 vm.pauseForDeactivation()
                 Orientation.request(.portrait)

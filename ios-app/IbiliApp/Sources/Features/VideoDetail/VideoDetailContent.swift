@@ -199,18 +199,5 @@ struct VideoDetailContent: View {
             }
         }
     }
-
-    @ViewBuilder
-    private var introTabBody: some View {
-        if vm.isLoading, vm.view == nil {
-            HStack { Spacer(); ProgressView(); Spacer() }
-                .padding(.vertical, 30)
-        } else if let err = vm.errorText, vm.view == nil {
-            emptyState(title: "详情加载失败", symbol: "exclamationmark.triangle", message: err)
-                .padding(.vertical, 20)
-        } else {
-            EmptyView()
-        }
-    }
 }
 
