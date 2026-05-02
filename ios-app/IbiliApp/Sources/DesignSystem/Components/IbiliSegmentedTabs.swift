@@ -74,3 +74,48 @@ struct IbiliSegmentedTabs<Tab: Hashable & Identifiable>: View {
         }
     }
 }
+
+struct InlineTitleSegmentedHeader<Tab: Hashable & Identifiable>: View {
+    let headline: String
+    let tabs: [Tab]
+    let title: (Tab) -> String
+    @Binding var selection: Tab
+
+    private let controlWidth = min(UIScreen.main.bounds.width * 0.54, 212)
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Text(headline)
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            compactControl
+                .frame(width: controlWidth)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+
+    @ViewBuilder
+    private var compactControl: some View {
+        if #available(iOS 26.0, *) {
+            NativeIsolatedPicker(
+                items: tabs,
+                title: title,
+                selection: $selection
+            )
+            .frame(height: 34)
+        } else {
+            IbiliSegmentedTabs(
+                tabs: tabs,
+                title: title,
+                selection: $selection
+            )
+            .frame(height: 38)
+        }
+    }
+}

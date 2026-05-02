@@ -90,26 +90,21 @@ struct DynamicFeedView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            scopePicker
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 6)
-
-            DynamicFeedPage(
-                vm: activeViewModel,
-                emptyTitle: scope.emptyTitle,
-                emptyMessage: scope.emptyMessage,
-                onOpenDetail: { dyn in
-                    if isInPlayerHostNavigation {
-                        router.openDynamicDetail(dyn)
-                    } else {
-                        pendingDetail = dyn
-                    }
+        DynamicFeedPage(
+            scope: $scope,
+            vm: activeViewModel,
+            emptyTitle: scope.emptyTitle,
+            emptyMessage: scope.emptyMessage,
+            onOpenDetail: { dyn in
+                if isInPlayerHostNavigation {
+                    router.openDynamicDetail(dyn)
+                } else {
+                    pendingDetail = dyn
                 }
-            )
-        }
+            }
+        )
         .background(IbiliTheme.background.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
         .background {
             if !isInPlayerHostNavigation {
                 NavigationLink(
@@ -136,40 +131,33 @@ struct DynamicFeedView: View {
             return videoVM
         }
     }
-
-    @ViewBuilder
-    private var scopePicker: some View {
-        if #available(iOS 26.0, *) {
-            NativeIsolatedPicker(
-                items: Array(DynamicFeedScope.allCases),
-                title: { $0.title },
-                selection: $scope
-            )
-            .frame(height: 50)
-        } else {
-            IbiliSegmentedTabs(
-                tabs: Array(DynamicFeedScope.allCases),
-                title: { $0.title },
-                selection: $scope
-            )
-        }
-    }
 }
 
 private struct DynamicFeedPage: View {
+    @Binding var scope: DynamicFeedScope
     @ObservedObject var vm: DynamicFeedViewModel
     let emptyTitle: String
     let emptyMessage: String
     let onOpenDetail: (DynamicItemDTO) -> Void
 
     var body: some View {
-        Group {
-            if vm.items.isEmpty && vm.isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.items.isEmpty {
-                emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
-            } else {
-                ScrollView {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                InlineTitleSegmentedHeader(
+                    headline: "动态",
+                    tabs: Array(DynamicFeedScope.allCases),
+                    title: { $0.title },
+                    selection: $scope
+                )
+
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 28)
+                } else if vm.items.isEmpty {
+                    emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
+                        .padding(.top, 18)
+                } else {
                     LazyVStack(spacing: 14) {
                         ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
                             DynamicItemCard(
@@ -192,13 +180,13 @@ private struct DynamicFeedPage: View {
                         }
                     }
                     .padding(.horizontal, DynamicLayout.outerPad)
-                    .padding(.top, 8)
+                    .padding(.top, 4)
                     .padding(.bottom, 32)
                 }
             }
         }
         .scrollContentBackground(.hidden)
-        .task { await vm.loadInitial() }
+        .task(id: vm.scope) { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }
 }
 

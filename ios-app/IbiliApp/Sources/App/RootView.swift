@@ -327,13 +327,11 @@ struct MainTabView: View {
                 Tab("首页", systemImage: "house.fill") {
                     NavigationStack {
                         HomeView()
-                            .navigationTitle("推荐")
                     }
                 }
                 Tab("动态", systemImage: "sparkles") {
                     NavigationStack {
                         DynamicFeedView()
-                            .navigationTitle("动态")
                     }
                 }
                 Tab("我的", systemImage: "person.crop.circle") {
@@ -351,13 +349,11 @@ struct MainTabView: View {
             TabView {
                 NavigationStack {
                     HomeView()
-                        .navigationTitle("推荐")
                 }
                 .tabItem { Label("首页", systemImage: "house.fill") }
 
                 NavigationStack {
                     DynamicFeedView()
-                        .navigationTitle("动态")
                 }
                 .tabItem { Label("动态", systemImage: "sparkles") }
 
