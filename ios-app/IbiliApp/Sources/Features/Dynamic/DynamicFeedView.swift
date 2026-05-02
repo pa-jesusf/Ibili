@@ -106,16 +106,22 @@ struct DynamicFeedView: View {
             }
         )
         .background(IbiliTheme.background.ignoresSafeArea())
-        .safeAreaInset(edge: .top, spacing: 0) {
-            FeedSegmentedHeader(
-                title: "动态",
+        .overlay(alignment: .topTrailing) {
+            FloatingNavSegmentedControl(
                 tabs: Array(DynamicFeedScope.allCases),
-                tabTitle: { $0.title },
+                title: { $0.title },
                 selection: $scope,
                 collapseProgress: headerCollapseProgress
             )
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Color.clear
+                    .frame(width: 280, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .background {
             if !isInPlayerHostNavigation {
                 NavigationLink(

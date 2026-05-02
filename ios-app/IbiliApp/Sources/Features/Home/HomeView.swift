@@ -21,16 +21,22 @@ struct HomeView: View {
             prefetch: prefetch
         )
         .background(IbiliTheme.background.ignoresSafeArea())
-        .safeAreaInset(edge: .top, spacing: 0) {
-            FeedSegmentedHeader(
-                title: "推荐",
+        .overlay(alignment: .topTrailing) {
+            FloatingNavSegmentedControl(
                 tabs: Array(HomeFeedSection.allCases),
-                tabTitle: { $0.title },
+                title: { $0.title },
                 selection: $section,
                 collapseProgress: headerCollapseProgress
             )
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Color.clear
+                    .frame(width: 280, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     private var activeViewModel: HomeViewModel {
