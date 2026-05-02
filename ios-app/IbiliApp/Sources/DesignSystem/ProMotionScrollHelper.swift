@@ -3,8 +3,8 @@ import UIKit
 
 /// Requests a higher CADisplayLink preferred frame rate while the
 /// user is actively scrolling. On ProMotion devices (iPhone 13 Pro+)
-/// this nudges the display toward 120 Hz during scroll tracking while
-/// the system naturally drops back to lower rates when idle.
+/// this requests 120 Hz during scroll tracking while the system
+/// naturally drops back to lower rates when idle.
 ///
 /// The display link is attached to `.tracking` run-loop mode only, so
 /// it doesn't fire during idle and has zero battery cost when the user
@@ -34,7 +34,7 @@ private final class DisplayLinkBox {
         let link = CADisplayLink(target: self, selector: #selector(tick))
         if #available(iOS 15.0, *) {
             link.preferredFrameRateRange = CAFrameRateRange(
-                minimum: 80, maximum: 120, preferred: 120
+                minimum: 120, maximum: 120, preferred: 120
             )
         }
         link.add(to: .main, forMode: .tracking)

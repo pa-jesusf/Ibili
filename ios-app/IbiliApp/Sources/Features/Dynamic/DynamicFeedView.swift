@@ -202,6 +202,7 @@ private struct DynamicFeedPage: View {
         }
         .coordinateSpace(name: "dynamic-feed-scroll")
         .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
+        .modifier(ProMotionScrollHint())
         .scrollContentBackground(.hidden)
         .task(id: vm.scope) { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }
