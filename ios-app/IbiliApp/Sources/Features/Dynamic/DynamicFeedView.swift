@@ -78,6 +78,7 @@ private func openVideo(_ router: DeepLinkRouter, aid: Int64, bvid: String, title
 
 struct DynamicFeedView: View {
     @State private var scope: DynamicFeedScope = .all
+    @State private var headerCollapseProgress: CGFloat = 0
     @StateObject private var allVM: DynamicFeedViewModel
     @StateObject private var videoVM: DynamicFeedViewModel
     @EnvironmentObject private var router: DeepLinkRouter
@@ -92,6 +93,7 @@ struct DynamicFeedView: View {
     var body: some View {
         DynamicFeedPage(
             scope: $scope,
+            collapseProgress: $headerCollapseProgress,
             vm: activeViewModel,
             emptyTitle: scope.emptyTitle,
             emptyMessage: scope.emptyMessage,
@@ -105,7 +107,7 @@ struct DynamicFeedView: View {
         )
         .background(IbiliTheme.background.ignoresSafeArea())
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 NavigationTrailingSegmentedControl(
                     tabs: Array(DynamicFeedScope.allCases),
                     title: { $0.title },
@@ -143,6 +145,7 @@ struct DynamicFeedView: View {
 
 private struct DynamicFeedPage: View {
     @Binding var scope: DynamicFeedScope
+    @Binding var collapseProgress: CGFloat
     @ObservedObject var vm: DynamicFeedViewModel
     let emptyTitle: String
     let emptyMessage: String
@@ -150,6 +153,8 @@ private struct DynamicFeedPage: View {
 
     var body: some View {
         ScrollView {
+            ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
+
             if vm.items.isEmpty && vm.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity)
@@ -183,6 +188,10 @@ private struct DynamicFeedPage: View {
                 .padding(.top, 8)
                 .padding(.bottom, 32)
             }
+        }
+        .coordinateSpace(name: "dynamic-feed-scroll")
+        .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
+            collapseProgress = min(max(-minY / 52, 0), 1)
         }
         .scrollContentBackground(.hidden)
         .task(id: vm.scope) { await vm.loadInitial() }

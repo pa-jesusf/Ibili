@@ -79,8 +79,13 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
     let tabs: [Tab]
     let title: (Tab) -> String
     @Binding var selection: Tab
+    /// Retained for source compatibility with existing call sites.
+    /// The control now lives inside the navigation bar's trailing
+    /// toolbar slot, so it no longer needs to react to scroll
+    /// collapse — the system bar already handles all of that.
+    var collapseProgress: CGFloat = 0
 
-    private let controlWidth = min(UIScreen.main.bounds.width * 0.5, 196)
+    private let controlWidth: CGFloat = 150
 
     var body: some View {
         HStack(spacing: 2) {
@@ -94,21 +99,73 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
                 } label: {
                     Text(title(tab))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isSelected ? IbiliTheme.accent : IbiliTheme.textPrimary.opacity(0.72))
+                        .foregroundStyle(isSelected ? IbiliTheme.accent : IbiliTheme.textPrimary.opacity(0.78))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 6)
                         .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(NavSegmentPressButtonStyle())
             }
         }
         .frame(width: controlWidth)
         .padding(.horizontal, 4)
-        .padding(.vertical, 3)
-        .background(.thinMaterial, in: Capsule())
+        .padding(.vertical, 2)
+        .modifier(NavigationGlassCapsuleModifier())
         .overlay(
             Capsule()
-                .stroke(.white.opacity(0.1), lineWidth: 0.5)
+                .stroke(.white.opacity(0.08), lineWidth: 0.5)
         )
+    }
+}
+
+/// Per-segment press feedback. Using a `ButtonStyle` keeps the tap
+/// gesture wired through `Button` (so the control stays clickable)
+/// and gives us a localised press animation that feels close to the
+/// system navigation-bar long-press pop without consuming taps the
+/// way a top-level `simultaneousGesture` does.
+private struct NavSegmentPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 1.06 : 1, anchor: .center)
+            .animation(.spring(response: 0.22, dampingFraction: 0.78), value: configuration.isPressed)
+    }
+}
+
+struct ScrollHeaderOffsetReader: View {
+    let coordinateSpace: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .preference(
+                    key: ScrollHeaderOffsetPreferenceKey.self,
+                    value: proxy.frame(in: .named(coordinateSpace)).minY
+                )
+        }
+        .frame(height: 0)
+    }
+}
+
+struct ScrollHeaderOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct NavigationGlassCapsuleModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .background(Capsule().fill(.regularMaterial))
+                .glassEffect(.regular, in: Capsule())
+        } else {
+            content
+                .background(
+                    Capsule().fill(.regularMaterial)
+                        .overlay(Capsule().stroke(.white.opacity(0.10), lineWidth: 0.5))
+                )
+        }
     }
 }

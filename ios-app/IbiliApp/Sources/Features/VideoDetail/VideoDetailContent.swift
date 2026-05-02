@@ -19,8 +19,11 @@ struct VideoDetailContent: View {
     @StateObject private var interaction = VideoInteractionService()
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
+    @State private var detailScrollOffset: CGFloat = 0
     @State private var toastWork: DispatchWorkItem?
     @State private var toast: String?
+
+    private let topAnchorID = "videoDetailTop"
 
     enum Tab: String, CaseIterable, Identifiable {
         case intro = "简介"
@@ -30,53 +33,28 @@ struct VideoDetailContent: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if #available(iOS 26.0, *) {
-                        NativeIsolatedPicker(
-                            items: Array(Tab.allCases),
-                            title: { $0.rawValue },
-                            selection: $tab
-                        )
-                        .frame(height: 50)
-                        .padding(.horizontal, 16)
-                } else {
-                    IbiliSegmentedTabs(
-                        tabs: Tab.allCases,
-                        title: { $0.rawValue },
-                        selection: $tab
-                    )
-                    .padding(.horizontal, 16)
-                }
-
-                Group {
-                    switch tab {
-                    case .intro:
-                        introBody
-                    case .replies:
-                        CommentListView(oid: item.aid)
-                            .padding(.horizontal, 16)
-                    case .related:
-                        RelatedVideoList(
-                            items: vm.related,
-                            isLoadingMore: vm.isLoadingMoreRelated,
-                            isEnd: vm.relatedIsEnd,
-                            onTap: { feedItem in
-                                router.open(feedItem)
-                            },
-                            onReachEnd: {
-                                Task { await vm.loadMoreRelated() }
-                            }
-                        )
-                        .padding(.horizontal, 12)
+        ScrollViewReader { proxy in
+            scrollContent
+                .background(IbiliTheme.background)
+                .overlay(alignment: .bottomTrailing) {
+                    // Always rendered, but fades/scales out when not
+                    // applicable. This sidesteps SwiftUI's tendency to
+                    // skip layout for an `if` branch inside `.overlay`
+                    // when transitions and animations are stacked.
+                    ScrollToTopFloatingButton {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                            proxy.scrollTo(topAnchorID, anchor: .top)
+                        }
                     }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 20)
+                    .opacity(showsScrollToTopButton ? 1 : 0)
+                    .scaleEffect(showsScrollToTopButton ? 1 : 0.6, anchor: .bottomTrailing)
+                    .allowsHitTesting(showsScrollToTopButton)
+                    .animation(.spring(response: 0.28, dampingFraction: 0.86), value: showsScrollToTopButton)
+                    .zIndex(10)
                 }
-                .padding(.bottom, 24)
-            }
-            .padding(.top, 12)
         }
-        .scrollIndicators(.hidden)
-        .background(IbiliTheme.background)
         .task(id: "\(item.aid):\(item.bvid)") {
             interaction.reset(stat: vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0))
             // Run detail (view info) and relation hydrate concurrently.
@@ -112,6 +90,103 @@ struct VideoDetailContent: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: toast)
+        .animation(.easeInOut(duration: 0.2), value: showsScrollToTopButton)
+    }
+
+    private var showsScrollToTopButton: Bool {
+        switch tab {
+        case .replies, .related:
+            return detailScrollOffset > 40
+        case .intro:
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private var scrollContent: some View {
+        if #available(iOS 18.0, *) {
+            ScrollView {
+                Color.clear.frame(height: 0).id(topAnchorID)
+                contentColumn
+            }
+            .scrollIndicators(.hidden)
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y
+            } action: { _, newValue in
+                detailScrollOffset = newValue
+            }
+        } else {
+            ScrollView {
+                // Top sentinel that reports its position in the named
+                // coordinate space. As the user scrolls down, `minY`
+                // becomes negative; we feed `-minY` into
+                // `detailScrollOffset` so callers can treat it as a
+                // positive "distance scrolled from top" value, matching
+                // the iOS 18 `contentOffset.y` semantics.
+                GeometryReader { geo in
+                    Color.clear
+                        .preference(
+                            key: DetailScrollOffsetPreferenceKey.self,
+                            value: -geo.frame(in: .named("video-detail-scroll")).minY
+                        )
+                }
+                .frame(height: 1)
+                .id(topAnchorID)
+                contentColumn
+            }
+            .coordinateSpace(name: "video-detail-scroll")
+            .scrollIndicators(.hidden)
+            .onPreferenceChange(DetailScrollOffsetPreferenceKey.self) { value in
+                detailScrollOffset = value
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contentColumn: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if #available(iOS 26.0, *) {
+                NativeIsolatedPicker(
+                    items: Array(Tab.allCases),
+                    title: { $0.rawValue },
+                    selection: $tab
+                )
+                .frame(height: 50)
+                .padding(.horizontal, 16)
+            } else {
+                IbiliSegmentedTabs(
+                    tabs: Tab.allCases,
+                    title: { $0.rawValue },
+                    selection: $tab
+                )
+                .padding(.horizontal, 16)
+            }
+
+            Group {
+                switch tab {
+                case .intro:
+                    introBody
+                case .replies:
+                    CommentListView(oid: item.aid)
+                        .padding(.horizontal, 16)
+                case .related:
+                    RelatedVideoList(
+                        items: vm.related,
+                        isLoadingMore: vm.isLoadingMoreRelated,
+                        isEnd: vm.relatedIsEnd,
+                        onTap: { feedItem in
+                            router.open(feedItem)
+                        },
+                        onReachEnd: {
+                            Task { await vm.loadMoreRelated() }
+                        }
+                    )
+                    .padding(.horizontal, 12)
+                }
+            }
+            .padding(.bottom, 24)
+        }
+        .padding(.top, 12)
     }
 
     @ViewBuilder
@@ -197,6 +272,49 @@ struct VideoDetailContent: View {
                 emptyState(title: "详情加载失败", symbol: "exclamationmark.triangle", message: err)
                     .padding(.vertical, 20)
             }
+        }
+    }
+}
+
+private struct DetailScrollOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ScrollToTopFloatingButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(IbiliTheme.accent)
+                .frame(width: 46, height: 46)
+        }
+        .buttonStyle(.plain)
+        .background(ScrollToTopGlassBackground())
+        .clipShape(Circle())
+        .shadow(color: .black.opacity(0.12), radius: 14, y: 6)
+        .contentShape(Circle())
+        .accessibilityLabel("回到顶部")
+    }
+}
+
+private struct ScrollToTopGlassBackground: View {
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            Circle()
+                .fill(.regularMaterial)
+                .glassEffect(.regular, in: Circle())
+        } else {
+            Circle()
+                .fill(.regularMaterial)
+                .overlay(
+                    Circle().stroke(.white.opacity(0.10), lineWidth: 0.5)
+                )
         }
     }
 }

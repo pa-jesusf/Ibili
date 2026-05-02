@@ -3,6 +3,7 @@ import UIKit
 
 struct HomeView: View {
     @State private var section: HomeFeedSection = .recommend
+    @State private var headerCollapseProgress: CGFloat = 0
     @StateObject private var recommendVM: HomeViewModel
     @StateObject private var hotVM: HomeViewModel
     @StateObject private var prefetch = FeedPrefetchCoordinator()
@@ -13,17 +14,22 @@ struct HomeView: View {
     }
 
     var body: some View {
-        HomeFeedPage(section: $section, vm: activeViewModel, prefetch: prefetch)
+        HomeFeedPage(
+            section: $section,
+            collapseProgress: $headerCollapseProgress,
+            vm: activeViewModel,
+            prefetch: prefetch
+        )
         .background(IbiliTheme.background.ignoresSafeArea())
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationTrailingSegmentedControl(
-                        tabs: Array(HomeFeedSection.allCases),
-                        title: { $0.title },
-                        selection: $section
-                    )
-                }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationTrailingSegmentedControl(
+                    tabs: Array(HomeFeedSection.allCases),
+                    title: { $0.title },
+                    selection: $section
+                )
             }
+        }
     }
 
     private var activeViewModel: HomeViewModel {
@@ -38,6 +44,7 @@ struct HomeView: View {
 
 private struct HomeFeedPage: View {
     @Binding var section: HomeFeedSection
+    @Binding var collapseProgress: CGFloat
     @ObservedObject var vm: HomeViewModel
     let prefetch: FeedPrefetchCoordinator
 
@@ -66,6 +73,8 @@ private struct HomeFeedPage: View {
             )
 
             ScrollView {
+                ScrollHeaderOffsetReader(coordinateSpace: "home-feed-scroll")
+
                 if vm.items.isEmpty && vm.isLoading {
                     ProgressView()
                         .tint(IbiliTheme.accent)
@@ -122,6 +131,10 @@ private struct HomeFeedPage: View {
                             .padding(.bottom, 18)
                     }
                 }
+            }
+            .coordinateSpace(name: "home-feed-scroll")
+            .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
+                collapseProgress = min(max(-minY / 52, 0), 1)
             }
             .modifier(ProMotionScrollHint())
             .onAppear {
