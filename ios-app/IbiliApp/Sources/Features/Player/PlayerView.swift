@@ -67,8 +67,6 @@ final class PlayerViewModel: ObservableObject {
     /// Last reported playhead second — heartbeat skips repeats so we
     /// don't spam the API when paused.
     private var lastHeartbeatSec: Int64 = -1
-    private var remuxFallbackAttemptedQns: Set<Int64> = []
-    private var isUsingRemuxFallback = false
     private var itemStatusObservation: NSKeyValueObservation?
     /// Snapshot of the most recent `load(...)` arguments, used by
     /// `reload()` to recover after the local proxy has been killed by
@@ -147,10 +145,8 @@ final class PlayerViewModel: ObservableObject {
         autoReloadAttempts = 0
         if !isSameVideo {
             blockedQns.removeAll()
-            remuxFallbackAttemptedQns.removeAll()
             sourceByQn.removeAll()
         }
-        isUsingRemuxFallback = false
         if preferredAudioQn > 0 { currentAudioQn = preferredAudioQn }
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
@@ -384,7 +380,6 @@ final class PlayerViewModel: ObservableObject {
         activePreparation?.release()
         activePreparation = nil
         cancelPendingUpgrade()
-        isUsingRemuxFallback = false
         aid = 0; cid = 0
         await load(item: item, preferredQn: lastPreferredQn, fastLoad: lastFastLoad)
         // `load(...)` zeroes the counter; preserve our caller's tally
@@ -436,7 +431,6 @@ final class PlayerViewModel: ObservableObject {
             // Releasing the previous source before allocating the new
             // one keeps the proxy token table from growing across
             // switches without tearing down other tab's retained players.
-            isUsingRemuxFallback = false
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             self.sourceByQn[info.quality] = info
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
@@ -493,7 +487,6 @@ final class PlayerViewModel: ObservableObject {
         activePreparation = nil
         cancelPendingUpgrade()
         isVideoReady = false
-        isUsingRemuxFallback = false
     }
 
     /// Cancel any in-flight fast-load upgrade. Safe to call when no
@@ -829,30 +822,7 @@ final class PlayerViewModel: ObservableObject {
                         "detail": detail,
                     ])
                     await self.exportActiveDiagnostics(reason: "AVPlayerItem failed: \(detail)", generation: generation)
-                    // Recovery order:
-                    //   * CoreMedia -12927 usually means AVPlayer rejected
-                    //     this fMP4/HLS packaging. Try one remux fallback
-                    //     for the same qn before sacrificing quality.
-                    //   * If remux is unavailable or also fails, block the
-                    //     qn and reload at the next playable quality.
-                    //   * For non-codec/proxy failures, keep the existing
-                    //     one-shot proxy reload behavior.
                     let failingQn = self.currentQn
-                    if self.shouldTryRemuxFallback(for: item, qn: failingQn),
-                       let source = self.sourceByQn[failingQn] {
-                        self.remuxFallbackAttemptedQns.insert(failingQn)
-                        Task { await self.fallbackToRemux(source: source, generation: generation, detail: detail) }
-                        return
-                    }
-                    if self.isUsingRemuxFallback, failingQn > 0 {
-                        self.blockedQns.insert(failingQn)
-                        AppLog.warning("player", "remux fallback 失败，自动降档", metadata: [
-                            "detail": detail,
-                            "blockedQn": String(failingQn),
-                        ])
-                        Task { await self.reload() }
-                        return
-                    }
                     let alreadyBlocked = failingQn > 0 && self.blockedQns.contains(failingQn)
                     if failingQn > 0, !alreadyBlocked {
                         self.blockedQns.insert(failingQn)
@@ -875,92 +845,6 @@ final class PlayerViewModel: ObservableObject {
                     break
                 }
             }
-        }
-    }
-
-    private func shouldTryRemuxFallback(for item: AVPlayerItem, qn: Int64) -> Bool {
-        guard qn > 0, !isUsingRemuxFallback, !remuxFallbackAttemptedQns.contains(qn) else { return false }
-        guard FFmpegRemuxer.shared.isAvailable else { return false }
-        guard sourceByQn[qn] != nil else { return false }
-        return Self.containsCoreMedia12927(item.error) || Self.errorLogMentions12927(item.errorLog())
-    }
-
-    private func fallbackToRemux(source: PlayUrlDTO, generation: UInt64, detail: String) async {
-        guard loadGeneration == generation else { return }
-        let resumeAt = player?.currentTime() ?? .zero
-        AppLog.warning("player", "尝试 FFmpeg remux fallback", metadata: [
-            "detail": detail,
-            "qn": String(source.quality),
-            "resumeSec": String(format: "%.3f", resumeAt.seconds),
-        ])
-        isLoading = true
-        isVideoReady = false
-        itemStatusObservation = nil
-        cancelPendingUpgrade()
-        player?.pause()
-        player?.replaceCurrentItem(with: nil)
-        activePreparation?.release()
-        activePreparation = nil
-
-        do {
-            let prep = try await RemuxMP4Engine.shared.makeItem(for: source)
-            guard loadGeneration == generation else {
-                prep.release()
-                return
-            }
-            if let item = lastLoadedItem {
-                applyPresentationMetadata(to: prep.item, for: item)
-            }
-            let remuxPlayer = AVPlayer(playerItem: prep.item)
-            activePreparation = prep
-            isUsingRemuxFallback = true
-            currentQn = source.quality
-            observeItemStatus(prep.item, generation: generation)
-            player = remuxPlayer
-            if resumeAt.isValid && resumeAt.seconds.isFinite && resumeAt.seconds > 0 {
-                await remuxPlayer.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
-            }
-            remuxPlayer.play()
-            applyRate(to: remuxPlayer)
-            isLoading = false
-            var meta = prep.logSummary
-            meta["quality"] = String(source.quality)
-            meta["resumeSec"] = String(format: "%.3f", resumeAt.seconds)
-            AppLog.info("player", "FFmpeg remux fallback 已启动", metadata: meta)
-        } catch {
-            guard loadGeneration == generation else { return }
-            isUsingRemuxFallback = false
-            AppLog.error("player", "FFmpeg remux fallback 失败", error: error, metadata: [
-                "qn": String(source.quality),
-            ])
-            if source.quality > 0 {
-                blockedQns.insert(source.quality)
-                await reload()
-            } else {
-                isLoading = false
-                errorText = error.localizedDescription
-            }
-        }
-    }
-
-    private static func containsCoreMedia12927(_ error: Error?) -> Bool {
-        guard let error else { return false }
-        let ns = error as NSError
-        if ns.domain == "CoreMediaErrorDomain", ns.code == -12927 { return true }
-        if ns.localizedDescription.contains("-12927") { return true }
-        for value in ns.userInfo.values {
-            if let nested = value as? Error, containsCoreMedia12927(nested) { return true }
-            if String(describing: value).contains("-12927") { return true }
-        }
-        return false
-    }
-
-    private static func errorLogMentions12927(_ log: AVPlayerItemErrorLog?) -> Bool {
-        guard let log else { return false }
-        return log.events.contains { event in
-            event.errorStatusCode == -12927
-                || event.errorComment?.contains("-12927") == true
-                || event.errorDomain == "CoreMediaErrorDomain"
         }
     }
 
@@ -1089,7 +973,6 @@ final class PlayerViewModel: ObservableObject {
             player.replaceCurrentItem(with: nil)
             activePreparation?.release()
             activePreparation = nil
-            isUsingRemuxFallback = false
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: currentQn, audioQn: audioQn)
             self.sourceByQn[info.quality] = info
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }

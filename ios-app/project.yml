@@ -79,8 +79,6 @@ targets:
     dependencies:
       - framework: Frameworks/IbiliCore.xcframework
         embed: false
-      - framework: Frameworks/FFmpegRemux.xcframework
-        embed: false
       - sdk: Security.framework
       - sdk: CoreFoundation.framework
       - sdk: AudioToolbox.framework

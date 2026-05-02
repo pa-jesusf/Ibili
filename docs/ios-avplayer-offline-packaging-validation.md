@@ -15,13 +15,13 @@
 这份验证链路已经给出两个足够硬的结论：
 
 - 同一份 qn125 样本离线重打包成 Apple 风格 HLS 后，可以在最小 AVPlayer harness 中起播。
-- 但 app 内当前的 live `sidx -> HLS BYTERANGE` 代理路径，以及 streaming FFmpeg remux fallback，仍然会在 qn125 上报 `CoreMediaErrorDomain -12927`。
+- 后续修复已经让 app 内当前的 live HLS 代理路径也能起播这类样本；streaming FFmpeg remux fallback 则已被彻底移除。
 
 这意味着：
 
 - qn125 并不是“天生不能被 AVPlayer 播放”。
-- 当前失败边界已经收敛到“现有 live 分片交付路径不满足 AVPlayer 对 Apple 风格 HLS/fMP4 segment 的预期”。
-- 后续不应继续在 localhost proxy、init patch、FFmpeg HLS muxer 参数上做追加式小修小补。
+- 先前的失败边界确实收敛在 authoring / segment 交付语义，而不是素材本身不可播。
+- 修复方向应该集中在 HLS authoring 正确性，而不是继续扩张备用引擎、remux fallback 或额外调试回放路径。
 
 ## 2026-05-02 补充：Dolby Vision 8.4 / HLG 样本的真实修复点
 
@@ -49,10 +49,12 @@
 
 当前仓库已经把下面这些点固化进实现：
 
-- diagnostics browser 对 `packaging-workspace/master.m3u8` 的 smoke test 现在直接走本地文件 URL，不再经 localhost proxy 二次转发
+- 运行时只保留 live HLS proxy 一条播放路径；播放失败时会自动导出 diagnostics 并生成 `packaging-workspace/`
+- diagnostics 导出目录现在只保留最近 5 份，避免失败样本无限堆积
 - HLS authoring 会优先使用 init probe 解析出的 video metadata，而不是盲信 `playurl` hint
 - 对 Dolby Vision 8.4 / HLG 样本，master playlist 会写 base `hvc1` codec + `SUPPLEMENTAL-CODECS="dvh1.../db4h"` + `VIDEO-RANGE=HLG`
 - offline packaging 输出的 audio/video playlist target duration 会对齐到同一个值
+- FFmpeg remux fallback 和 in-app diagnostics browser 都已从当前代码路径移除
 
 ## 为什么这个实验比继续 patch localhost 更有价值
 

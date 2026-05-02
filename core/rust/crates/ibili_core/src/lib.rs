@@ -61,13 +61,6 @@ impl Core {
         // so on next launch the jar starts empty again.
     }
 
-    pub fn packaging_offline_plan(
-        &self,
-        request: packaging::OfflinePackagingRequest,
-    ) -> CoreResult<packaging::OfflinePackagingPlan> {
-        packaging::offline_plan(request)
-    }
-
     pub fn packaging_offline_build(
         &self,
         request: packaging::OfflinePackagingRequest,

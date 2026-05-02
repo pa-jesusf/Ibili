@@ -14,19 +14,6 @@ pub struct OfflinePackagingRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct OfflinePackagingPlan {
-    pub diagnostics_dir: String,
-    pub workspace_root_dir: String,
-    pub stream_manifest_path: String,
-    pub authoring_summary_path: String,
-    pub source_kind: String,
-    pub has_audio: bool,
-    pub startup_ready: bool,
-    pub staged_files: Vec<String>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct OfflinePackagingBuild {
     pub diagnostics_dir: String,
     pub workspace_root_dir: String,
@@ -58,27 +45,8 @@ impl SourceKind {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum PackagingMode {
-    Plan,
-    Build,
-}
-
-impl PackagingMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            PackagingMode::Plan => "offline_plan",
-            PackagingMode::Build => "offline_build",
-        }
-    }
-
-    fn output_suffix(self) -> &'static str {
-        match self {
-            PackagingMode::Plan => "offline-plan",
-            PackagingMode::Build => "offline-build",
-        }
-    }
-}
+const OFFLINE_BUILD_MODE: &str = "offline_build";
+const OFFLINE_BUILD_OUTPUT_SUFFIX: &str = "offline-build";
 
 #[derive(Debug)]
 struct PreparedWorkspace {
@@ -200,68 +168,8 @@ struct AuthoredWorkspace {
     warnings: Vec<String>,
 }
 
-pub fn offline_plan(request: OfflinePackagingRequest) -> CoreResult<OfflinePackagingPlan> {
-    let prepared = prepare_workspace(&request, PackagingMode::Plan)?;
-    let mut warnings = prepared.warnings.clone();
-    warnings.push(
-        "planning-only workspace: authored playlists are deferred until packaging.offline_build"
-            .to_string(),
-    );
-
-    let stream_manifest_path = prepared.workspace_root.join("stream-manifest.json");
-    let authoring_summary_path = prepared.workspace_root.join("authoring-summary.json");
-    let workspace_outputs = workspace_outputs_for(&prepared.workspace_root, prepared.has_audio, "pending_authoring");
-    let playlist_summary = playlist_summary_for(
-        &prepared,
-        None,
-        prepared.master_template.bandwidth.unwrap_or(2_000_000),
-    );
-    let manifest = StreamManifest {
-        schema_version: 1,
-        mode: PackagingMode::Plan.as_str(),
-        request_summary: RequestSummary {
-            diagnostics_dir: prepared.diagnostics_dir.display().to_string(),
-            workspace_root_dir: prepared.workspace_root.display().to_string(),
-        },
-        source_kind: prepared.source_kind.as_str().to_string(),
-        has_audio: prepared.has_audio,
-        startup_ready: false,
-        staged_inputs: prepared.staged_inputs,
-        workspace_outputs,
-        playlist_summary,
-        validation_status: ValidationStatus {
-            status: "planning_only".to_string(),
-            startup_ready: false,
-            notes: warnings.clone(),
-        },
-        warnings: warnings.clone(),
-    };
-    let authoring_summary = AuthoringSummary {
-        mode: PackagingMode::Plan.as_str(),
-        status: "not_started",
-        startup_ready: false,
-        master_playlist_path: prepared.workspace_root.join("master.m3u8").display().to_string(),
-        notes: warnings.clone(),
-    };
-
-    write_json(&stream_manifest_path, &manifest)?;
-    write_json(&authoring_summary_path, &authoring_summary)?;
-
-    Ok(OfflinePackagingPlan {
-        diagnostics_dir: prepared.diagnostics_dir.display().to_string(),
-        workspace_root_dir: prepared.workspace_root.display().to_string(),
-        stream_manifest_path: stream_manifest_path.display().to_string(),
-        authoring_summary_path: authoring_summary_path.display().to_string(),
-        source_kind: prepared.source_kind.as_str().to_string(),
-        has_audio: prepared.has_audio,
-        startup_ready: false,
-        staged_files: prepared.staged_files,
-        warnings,
-    })
-}
-
 pub fn offline_build(request: OfflinePackagingRequest) -> CoreResult<OfflinePackagingBuild> {
-    let prepared = prepare_workspace(&request, PackagingMode::Build)?;
+    let prepared = prepare_workspace(&request)?;
     let authored = author_local_hls_workspace(&prepared)?;
 
     let mut warnings = prepared.warnings.clone();
@@ -289,7 +197,7 @@ pub fn offline_build(request: OfflinePackagingRequest) -> CoreResult<OfflinePack
     );
     let manifest = StreamManifest {
         schema_version: 1,
-        mode: PackagingMode::Build.as_str(),
+        mode: OFFLINE_BUILD_MODE,
         request_summary: RequestSummary {
             diagnostics_dir: prepared.diagnostics_dir.display().to_string(),
             workspace_root_dir: prepared.workspace_root.display().to_string(),
@@ -304,7 +212,7 @@ pub fn offline_build(request: OfflinePackagingRequest) -> CoreResult<OfflinePack
         warnings: warnings.clone(),
     };
     let authoring_summary = AuthoringSummary {
-        mode: PackagingMode::Build.as_str(),
+        mode: OFFLINE_BUILD_MODE,
         status: if authored.startup_ready {
             "ready_for_avplayer_smoke_test"
         } else {
@@ -344,7 +252,6 @@ pub fn offline_build(request: OfflinePackagingRequest) -> CoreResult<OfflinePack
 
 fn prepare_workspace(
     request: &OfflinePackagingRequest,
-    mode: PackagingMode,
 ) -> CoreResult<PreparedWorkspace> {
     let diagnostics_dir = PathBuf::from(&request.diagnostics_dir);
     if !diagnostics_dir.is_dir() {
@@ -355,7 +262,7 @@ fn prepare_workspace(
     }
 
     let source_kind = detect_source_kind(&diagnostics_dir)?;
-    let workspace_root = resolve_workspace_root(&diagnostics_dir, &request.output_root_dir, mode)?;
+    let workspace_root = resolve_workspace_root(&diagnostics_dir, &request.output_root_dir)?;
     if workspace_root.exists() {
         fs::remove_dir_all(&workspace_root).map_err(|error| {
             CoreError::Internal(format!(
@@ -649,7 +556,6 @@ fn detect_source_kind(diagnostics_dir: &Path) -> CoreResult<SourceKind> {
 fn resolve_workspace_root(
     diagnostics_dir: &Path,
     output_root_dir: &str,
-    mode: PackagingMode,
 ) -> CoreResult<PathBuf> {
     if output_root_dir.trim().is_empty() {
         return Ok(diagnostics_dir.join("packaging-workspace"));
@@ -659,8 +565,7 @@ fn resolve_workspace_root(
         .and_then(|value| value.to_str())
         .unwrap_or("diagnostics");
     Ok(PathBuf::from(output_root_dir).join(format!(
-        "{diagnostics_name}-{}",
-        mode.output_suffix()
+        "{diagnostics_name}-{OFFLINE_BUILD_OUTPUT_SUFFIX}",
     )))
 }
 
@@ -1012,62 +917,6 @@ fn write_text(path: &Path, value: &str) -> CoreResult<()> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn offline_plan_stages_proxy_diagnostics_inputs() {
-        let diagnostics_dir = make_temp_dir("proxy");
-        write_file(&diagnostics_dir.join("metadata.json"), b"{}");
-        write_file(&diagnostics_dir.join("video-init.mp4"), b"video-init");
-        write_file(&diagnostics_dir.join("video-fragment-000.m4s"), b"video-seg");
-        write_file(&diagnostics_dir.join("audio-init.mp4"), b"audio-init");
-        write_file(&diagnostics_dir.join("audio-fragment-000.m4s"), b"audio-seg");
-        write_file(&diagnostics_dir.join("master.m3u8"), b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS=\"hvc1.2.4.L153.90,mp4a.40.2\",AUDIO=\"aud\"\nvideo.m3u8\n");
-        write_file(&diagnostics_dir.join("video.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:5.005000,\nv.seg\n");
-        write_file(&diagnostics_dir.join("audio.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.992000,\na.seg\n");
-
-        let plan = offline_plan(OfflinePackagingRequest {
-            diagnostics_dir: diagnostics_dir.display().to_string(),
-            output_root_dir: String::new(),
-        })
-        .expect("offline plan should succeed");
-
-        assert_eq!(plan.source_kind, "proxy_diagnostics");
-        assert!(plan.has_audio);
-        assert!(!plan.startup_ready);
-        assert!(Path::new(&plan.stream_manifest_path).is_file());
-        assert!(Path::new(&plan.authoring_summary_path).is_file());
-        assert!(Path::new(&plan.workspace_root_dir).join("init-video.mp4").is_file());
-        assert!(Path::new(&plan.workspace_root_dir).join("v-seg-00000.m4s").is_file());
-        assert!(Path::new(&plan.workspace_root_dir).join("init-audio.mp4").is_file());
-        assert!(Path::new(&plan.workspace_root_dir).join("a-seg-00000.m4s").is_file());
-
-        cleanup_dir(Path::new(&plan.workspace_root_dir));
-        cleanup_dir(&diagnostics_dir);
-    }
-
-    #[test]
-    fn offline_plan_stages_remux_diagnostics_inputs() {
-        let diagnostics_dir = make_temp_dir("remux");
-        write_file(&diagnostics_dir.join("metadata.json"), b"{}");
-        write_file(&diagnostics_dir.join("init.mp4"), b"video-init");
-        write_file(&diagnostics_dir.join("seg-0.m4s"), b"video-seg");
-        write_file(&diagnostics_dir.join("local.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.010000,\nseg-0.m4s\n");
-
-        let plan = offline_plan(OfflinePackagingRequest {
-            diagnostics_dir: diagnostics_dir.display().to_string(),
-            output_root_dir: String::new(),
-        })
-        .expect("offline plan should succeed");
-
-        assert_eq!(plan.source_kind, "remux_diagnostics");
-        assert!(!plan.has_audio);
-        assert!(Path::new(&plan.workspace_root_dir).join("init-video.mp4").is_file());
-        assert!(Path::new(&plan.workspace_root_dir).join("v-seg-00000.m4s").is_file());
-        assert!(Path::new(&plan.workspace_root_dir).join("diagnostics/original-local.m3u8").is_file());
-
-        cleanup_dir(Path::new(&plan.workspace_root_dir));
-        cleanup_dir(&diagnostics_dir);
-    }
 
     #[test]
     fn offline_build_authors_local_hls_workspace_for_proxy_diagnostics() {

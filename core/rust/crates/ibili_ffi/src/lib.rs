@@ -275,7 +275,7 @@ struct SpaceArcSearchArgs {
 fn default_pubdate() -> String { "pubdate".into() }
 
 #[derive(Deserialize)]
-struct PackagingOfflinePlanArgs {
+struct PackagingOfflineBuildArgs {
     diagnostics_dir: String,
     #[serde(default)] output_root_dir: String,
 }
@@ -475,15 +475,8 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             c.inner.dynamic_like(&a.dynamic_id, a.action)?;
             Ok(Value::Object(Default::default()))
         }
-        "packaging.offline_plan" => {
-            let a: PackagingOfflinePlanArgs = serde_json::from_value(args)?;
-            to_value(c.inner.packaging_offline_plan(ibili_core::packaging::OfflinePackagingRequest {
-                diagnostics_dir: a.diagnostics_dir,
-                output_root_dir: a.output_root_dir,
-            })?)
-        }
         "packaging.offline_build" => {
-            let a: PackagingOfflinePlanArgs = serde_json::from_value(args)?;
+            let a: PackagingOfflineBuildArgs = serde_json::from_value(args)?;
             to_value(c.inner.packaging_offline_build(ibili_core::packaging::OfflinePackagingRequest {
                 diagnostics_dir: a.diagnostics_dir,
                 output_root_dir: a.output_root_dir,

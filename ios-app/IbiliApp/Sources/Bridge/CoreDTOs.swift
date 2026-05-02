@@ -226,30 +226,6 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
-public struct PackagingOfflinePlanDTO: Decodable {
-    public let diagnosticsDirectory: String
-    public let workspaceRootDirectory: String
-    public let streamManifestPath: String
-    public let authoringSummaryPath: String
-    public let sourceKind: String
-    public let hasAudio: Bool
-    public let startupReady: Bool
-    public let stagedFiles: [String]
-    public let warnings: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case diagnosticsDirectory = "diagnostics_dir"
-        case workspaceRootDirectory = "workspace_root_dir"
-        case streamManifestPath = "stream_manifest_path"
-        case authoringSummaryPath = "authoring_summary_path"
-        case sourceKind = "source_kind"
-        case hasAudio = "has_audio"
-        case startupReady = "startup_ready"
-        case stagedFiles = "staged_files"
-        case warnings
-    }
-}
-
 public struct PackagingOfflineBuildDTO: Decodable {
     public let diagnosticsDirectory: String
     public let workspaceRootDirectory: String

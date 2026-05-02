@@ -122,17 +122,7 @@ struct SettingsView: View {
             } header: {
                 Text("播放")
             } footer: {
-                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换。失败诊断会自动导出 startup window 样本并生成 packaging-workspace。")
-            }
-
-            Section {
-                NavigationLink {
-                    DiagnosticsBrowserView()
-                } label: {
-                    Label("播放失败诊断", systemImage: "waveform.and.magnifyingglass")
-                }
-            } footer: {
-                Text("浏览自动导出的 diagnostics 目录，并直接用本地文件 URL 播放 packaging-workspace/master.m3u8 做真机 smoke test。")
+                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换。播放失败时会自动导出 diagnostics，并只保留最近 5 份记录。")
             }
 
             Section {

@@ -9,7 +9,7 @@ import SwiftUI
 ///      upstream PiliPlus's "我的" surface but render as a grid of large
 ///      iconic cards rather than a list of system rows — closer in feel
 ///      to Apple's own Music / TV "Library" hubs.
-///   3. Settings & diagnostics list.
+///   3. Settings & logs list.
 ///
 /// Aesthetic notes (per the user's standing brief):
 ///   • No decorative gradients beyond the avatar ring; surfaces are
@@ -222,12 +222,6 @@ private struct ProfileSystemSection: View {
                 LogsView()
             } label: {
                 systemRow(symbol: "doc.text.magnifyingglass", title: "应用日志")
-            }
-            Divider().padding(.leading, 56)
-            NavigationLink {
-                DiagnosticsBrowserView()
-            } label: {
-                systemRow(symbol: "waveform.and.magnifyingglass", title: "播放失败诊断")
             }
             Divider().padding(.leading, 56)
             Button(role: .destructive) {

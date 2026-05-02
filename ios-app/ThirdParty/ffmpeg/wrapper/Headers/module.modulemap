@@ -1,5 +1,0 @@
-framework module FFmpegRemux {
-  umbrella header "FFmpegRemux.h"
-  export *
-  module * { export * }
-}
