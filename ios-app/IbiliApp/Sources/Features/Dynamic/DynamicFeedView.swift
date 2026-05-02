@@ -106,7 +106,7 @@ struct DynamicFeedView: View {
             }
         )
         .background(IbiliTheme.background.ignoresSafeArea())
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .overlay(alignment: .top) {
             FeedSegmentedHeader(
                 title: "动态",
                 tabs: Array(DynamicFeedScope.allCases),
@@ -154,7 +154,12 @@ private struct DynamicFeedPage: View {
 
     var body: some View {
         ScrollView {
-            ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
+            if #unavailable(iOS 18.0) {
+                ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
+            }
+
+            Color.clear
+                .frame(height: FeedSegmentedHeaderMetrics.expandedHeight)
 
             if vm.items.isEmpty && vm.isLoading {
                 ProgressView()
@@ -191,9 +196,6 @@ private struct DynamicFeedPage: View {
             }
         }
         .coordinateSpace(name: "dynamic-feed-scroll")
-        .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
-            collapseProgress = min(max(-minY / 16, 0), 1)
-        }
         .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
         .scrollContentBackground(.hidden)
         .task(id: vm.scope) { await vm.loadInitial() }

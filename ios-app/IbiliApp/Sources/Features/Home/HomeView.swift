@@ -21,7 +21,7 @@ struct HomeView: View {
             prefetch: prefetch
         )
         .background(IbiliTheme.background.ignoresSafeArea())
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .overlay(alignment: .top) {
             FeedSegmentedHeader(
                 title: "推荐",
                 tabs: Array(HomeFeedSection.allCases),
@@ -74,7 +74,12 @@ private struct HomeFeedPage: View {
             )
 
             ScrollView {
-                ScrollHeaderOffsetReader(coordinateSpace: "home-feed-scroll")
+                if #unavailable(iOS 18.0) {
+                    ScrollHeaderOffsetReader(coordinateSpace: "home-feed-scroll")
+                }
+
+                Color.clear
+                    .frame(height: FeedSegmentedHeaderMetrics.expandedHeight)
 
                 if vm.items.isEmpty && vm.isLoading {
                     ProgressView()
@@ -134,9 +139,6 @@ private struct HomeFeedPage: View {
                 }
             }
             .coordinateSpace(name: "home-feed-scroll")
-            .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
-                collapseProgress = min(max(-minY / 16, 0), 1)
-            }
             .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
             .modifier(ProMotionScrollHint())
             .onAppear {

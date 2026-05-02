@@ -154,6 +154,12 @@ struct ScrollHeaderOffsetPreferenceKey: PreferenceKey {
     }
 }
 
+enum FeedSegmentedHeaderMetrics {
+    // Matches the current custom large-title layout: ~49pt top gap,
+    // ~41pt title line height, ~12pt bottom pad.
+    static let expandedHeight: CGFloat = 102
+}
+
 /// Reliable collapse-progress driver for `FeedSegmentedHeader`.
 ///
 /// On iOS 18+ this hooks into `onScrollGeometryChange`, which is the
@@ -172,6 +178,9 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
             }
         } else {
             content
+                .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
+                    progress = min(max(-minY / 16, 0), 1)
+                }
         }
     }
 }
@@ -244,16 +253,8 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
         .padding(.horizontal, 16)
         .padding(.top, topPad)
         .padding(.bottom, bottomPad)
+        .frame(height: FeedSegmentedHeaderMetrics.expandedHeight, alignment: .top)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            // Match the page background so the header reads as part
-            // of the chrome at all times. We avoid a translucent
-            // material here because the user explicitly asked for the
-            // iOS-native "no blur, just a subtle dark gradient under
-            // the bar" treatment.
-            IbiliTheme.background
-                .ignoresSafeArea(edges: .top)
-        )
         .overlay(alignment: .bottom) {
             // Below-bar shadow gradient. Identical visual recipe to
             // UINavigationBar's stock scroll-edge → standard
