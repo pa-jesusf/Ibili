@@ -16,6 +16,34 @@ enum DynamicLayout {
     }
 }
 
+enum DynamicFeedScope: String, CaseIterable, Identifiable {
+    case all
+    case video
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .all: return "综合"
+        case .video: return "视频"
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .all: return "暂无动态"
+        case .video: return "暂无视频动态"
+        }
+    }
+
+    var emptyMessage: String {
+        switch self {
+        case .all: return "关注一些 UP 主之后再回来看看"
+        case .video: return "暂时没有可显示的视频动态"
+        }
+    }
+}
+
 // MARK: - Tap routing
 
 /// Centralised classification of a dynamic into a navigation action.
@@ -49,33 +77,119 @@ private func openVideo(_ router: DeepLinkRouter, aid: Int64, bvid: String, title
 // MARK: - Feed root
 
 struct DynamicFeedView: View {
-    @StateObject private var vm = DynamicFeedViewModel()
+    @State private var scope: DynamicFeedScope = .all
+    @StateObject private var allVM: DynamicFeedViewModel
+    @StateObject private var videoVM: DynamicFeedViewModel
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @State private var pendingDetail: DynamicItemDTO?
+
+    init() {
+        _allVM = StateObject(wrappedValue: DynamicFeedViewModel(scope: .all))
+        _videoVM = StateObject(wrappedValue: DynamicFeedViewModel(scope: .video))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            scopePicker
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+
+            DynamicFeedPage(
+                vm: activeViewModel,
+                emptyTitle: scope.emptyTitle,
+                emptyMessage: scope.emptyMessage,
+                onOpenDetail: { dyn in
+                    if isInPlayerHostNavigation {
+                        router.openDynamicDetail(dyn)
+                    } else {
+                        pendingDetail = dyn
+                    }
+                }
+            )
+        }
+        .background(IbiliTheme.background.ignoresSafeArea())
+        .background {
+            if !isInPlayerHostNavigation {
+                NavigationLink(
+                    isActive: Binding(
+                        get: { pendingDetail != nil },
+                        set: { if !$0 { pendingDetail = nil } }
+                    ),
+                    destination: {
+                        if let detail = pendingDetail { DynamicDetailView(item: detail) }
+                    },
+                    label: { EmptyView() }
+                )
+                .opacity(0)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var activeViewModel: DynamicFeedViewModel {
+        switch scope {
+        case .all:
+            return allVM
+        case .video:
+            return videoVM
+        }
+    }
+
+    @ViewBuilder
+    private var scopePicker: some View {
+        if #available(iOS 26.0, *) {
+            NativeIsolatedPicker(
+                items: Array(DynamicFeedScope.allCases),
+                title: { $0.title },
+                selection: $scope
+            )
+            .frame(height: 50)
+        } else {
+            IbiliSegmentedTabs(
+                tabs: Array(DynamicFeedScope.allCases),
+                title: { $0.title },
+                selection: $scope
+            )
+        }
+    }
+}
+
+private struct DynamicFeedPage: View {
+    @ObservedObject var vm: DynamicFeedViewModel
+    let emptyTitle: String
+    let emptyMessage: String
+    let onOpenDetail: (DynamicItemDTO) -> Void
 
     var body: some View {
         Group {
             if vm.items.isEmpty && vm.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if vm.items.isEmpty {
-                emptyState(title: "暂无动态", symbol: "sparkles",
-                           message: "关注一些 UP 主之后再回来看看")
+                emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 14) {
                         ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
                             DynamicItemCard(
                                 item: item,
-                                onOpenDetail: { dyn in pendingDetail = dyn }
+                                onOpenDetail: onOpenDetail
                             )
-                                .onAppear {
-                                    if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                        Task { await vm.loadMore() }
-                                    }
+                            .onAppear {
+                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                    Task { await vm.loadMore() }
                                 }
+                            }
                         }
-                        if vm.isLoading { ProgressView().padding() }
-                        else if vm.isEnd { Text("已经到底了").font(.caption).foregroundStyle(.secondary).padding() }
+                        if vm.isLoading {
+                            ProgressView().padding()
+                        } else if vm.isEnd {
+                            Text("已经到底了")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding()
+                        }
                     }
                     .padding(.horizontal, DynamicLayout.outerPad)
                     .padding(.top, 8)
@@ -83,26 +197,12 @@ struct DynamicFeedView: View {
                 }
             }
         }
-        .background(IbiliTheme.background)
-        .background(
-            NavigationLink(
-                isActive: Binding(
-                    get: { pendingDetail != nil },
-                    set: { if !$0 { pendingDetail = nil } }
-                ),
-                destination: {
-                    if let detail = pendingDetail { DynamicDetailView(item: detail) }
-                },
-                label: { EmptyView() }
-            )
-            .opacity(0)
-            .allowsHitTesting(false)
-        )
         .scrollContentBackground(.hidden)
         .task { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }
-    }
 }
+
+    }
 
 // MARK: - Card
 
@@ -536,11 +636,16 @@ private struct DynamicStatBar: View {
 
 @MainActor
 final class DynamicFeedViewModel: ObservableObject {
+    let scope: DynamicFeedScope
     @Published var items: [DynamicItemDTO] = []
     @Published var isLoading = false
     @Published var isEnd = false
     private var offset: String = ""
     private var page: Int64 = 1
+
+    init(scope: DynamicFeedScope) {
+        self.scope = scope
+    }
 
     func loadInitial(force: Bool = false) async {
         if !force && !items.isEmpty { return }
@@ -559,8 +664,9 @@ final class DynamicFeedViewModel: ObservableObject {
     private func fetch() async {
         isLoading = true
         let p = page, off = offset
+        let feedType = scope.rawValue
         let result: DynamicFeedPageDTO? = await Task.detached {
-            try? CoreClient.shared.dynamicFeed(feedType: "all", page: p, offset: off)
+            try? CoreClient.shared.dynamicFeed(feedType: feedType, page: p, offset: off)
         }.value
         isLoading = false
         guard let result else { isEnd = true; return }

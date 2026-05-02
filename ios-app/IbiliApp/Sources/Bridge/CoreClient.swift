@@ -166,6 +166,11 @@ public final class CoreClient: @unchecked Sendable {
         return try call("feed.home", args: A(idx: idx, ps: ps), decoding: FeedPageDTO.self)
     }
 
+    public func feedPopular(pn: Int64 = 1, ps: Int64 = 20) throws -> FeedPageDTO {
+        struct A: Encodable { let pn: Int64; let ps: Int64 }
+        return try call("feed.popular", args: A(pn: pn, ps: ps), decoding: FeedPageDTO.self)
+    }
+
     public func playUrl(aid: Int64, cid: Int64, qn: Int64 = 0, audioQn: Int64 = 0) throws -> PlayUrlDTO {
         struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64; let audio_qn: Int64 }
         return try call("video.playurl", args: A(aid: aid, cid: cid, qn: qn, audio_qn: audioQn), decoding: PlayUrlDTO.self)

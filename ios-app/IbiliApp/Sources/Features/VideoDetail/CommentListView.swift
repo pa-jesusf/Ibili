@@ -244,6 +244,8 @@ struct ReplyPictureGrid: View {
                             .clipped()
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
+                    .frame(width: tileSide, height: tileSide)
+                    .contentShape(ReplyPictureHitShape(inset: 3, cornerRadius: 6))
                     .buttonStyle(.plain)
                 }
             }
@@ -253,5 +255,17 @@ struct ReplyPictureGrid: View {
         .fullScreenCover(item: $preview) { sel in
             ImagePreviewSheet(urls: urls, initialIndex: sel.index)
         }
+    }
+}
+
+private struct ReplyPictureHitShape: Shape {
+    let inset: CGFloat
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let insetRect = rect.insetBy(dx: inset, dy: inset)
+        let adjustedRadius = max(0, cornerRadius - inset)
+        return RoundedRectangle(cornerRadius: adjustedRadius, style: .continuous)
+            .path(in: insetRect)
     }
 }

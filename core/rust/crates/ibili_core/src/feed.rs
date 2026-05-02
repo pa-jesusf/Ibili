@@ -4,6 +4,7 @@ use crate::error::{CoreError, CoreResult};
 use serde::Deserialize;
 
 const URL_FEED_INDEX: &str = "https://app.bilibili.com/x/v2/feed/index";
+const URL_FEED_POPULAR: &str = "https://api.bilibili.com/x/web-interface/popular";
 /// `Constants.statistics` from upstream PiliPlus.
 const STATISTICS: &str = r#"{"appId":5,"platform":3,"version":"2.0.1","abtest":""}"#;
 
@@ -49,6 +50,39 @@ struct PlayerArgs {
     #[serde(default)] aid: i64,
     #[serde(default)] cid: i64,
     #[serde(default)] duration: i64,
+}
+
+#[derive(Deserialize)]
+struct PopularRoot {
+    #[serde(default)]
+    list: Vec<PopularRawItem>,
+}
+
+#[derive(Deserialize)]
+struct PopularRawItem {
+    #[serde(default)] aid: i64,
+    #[serde(default)] cid: i64,
+    #[serde(default)] bvid: String,
+    #[serde(default)] title: String,
+    #[serde(default)] pic: String,
+    #[serde(default)] duration: i64,
+    #[serde(default)] pubdate: i64,
+    #[serde(default)] owner: PopularOwner,
+    #[serde(default)] stat: PopularStat,
+}
+
+#[derive(Deserialize, Default)]
+struct PopularOwner {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize, Default)]
+struct PopularStat {
+    #[serde(default)]
+    view: i64,
+    #[serde(default)]
+    danmaku: i64,
 }
 
 fn parse_stat_text(raw: &str) -> i64 {
@@ -143,6 +177,32 @@ impl Core {
                     danmaku: parse_stat_text(&i.cover_left_text_2),
                     pubdate: i.args.pubdate,
                 })
+            })
+            .collect();
+        Ok(FeedPage { items })
+    }
+
+    /// Mirrors PiliPlus `VideoHttp.hotVideoList`
+    /// (`lib/http/video.dart`) against `/x/web-interface/popular`.
+    pub fn feed_popular(&self, pn: i64, ps: i64) -> CoreResult<FeedPage> {
+        let params = vec![
+            ("pn".into(), pn.max(1).to_string()),
+            ("ps".into(), ps.max(1).to_string()),
+        ];
+        let raw: PopularRoot = self.http.get_web(URL_FEED_POPULAR, &params)?;
+        let items = raw.list.into_iter()
+            .filter(|item| item.aid != 0)
+            .map(|item| FeedItem {
+                aid: item.aid,
+                bvid: item.bvid,
+                cid: item.cid,
+                title: item.title,
+                cover: item.pic,
+                author: item.owner.name,
+                duration_sec: item.duration,
+                play: item.stat.view,
+                danmaku: item.stat.danmaku,
+                pubdate: item.pubdate,
             })
             .collect();
         Ok(FeedPage { items })
