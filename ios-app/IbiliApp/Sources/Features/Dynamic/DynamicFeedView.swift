@@ -104,7 +104,15 @@ struct DynamicFeedView: View {
             }
         )
         .background(IbiliTheme.background.ignoresSafeArea())
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationTrailingSegmentedControl(
+                    tabs: Array(DynamicFeedScope.allCases),
+                    title: { $0.title },
+                    selection: $scope
+                )
+            }
+        }
         .background {
             if !isInPlayerHostNavigation {
                 NavigationLink(
@@ -142,47 +150,38 @@ private struct DynamicFeedPage: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                InlineTitleSegmentedHeader(
-                    headline: "动态",
-                    tabs: Array(DynamicFeedScope.allCases),
-                    title: { $0.title },
-                    selection: $scope
-                )
-
-                if vm.items.isEmpty && vm.isLoading {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 28)
-                } else if vm.items.isEmpty {
-                    emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
-                        .padding(.top, 18)
-                } else {
-                    LazyVStack(spacing: 14) {
-                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                            DynamicItemCard(
-                                item: item,
-                                onOpenDetail: onOpenDetail
-                            )
-                            .onAppear {
-                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                    Task { await vm.loadMore() }
-                                }
+            if vm.items.isEmpty && vm.isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 28)
+            } else if vm.items.isEmpty {
+                emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
+                    .padding(.top, 18)
+            } else {
+                LazyVStack(spacing: 14) {
+                    ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                        DynamicItemCard(
+                            item: item,
+                            onOpenDetail: onOpenDetail
+                        )
+                        .onAppear {
+                            if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                Task { await vm.loadMore() }
                             }
                         }
-                        if vm.isLoading {
-                            ProgressView().padding()
-                        } else if vm.isEnd {
-                            Text("已经到底了")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding()
-                        }
                     }
-                    .padding(.horizontal, DynamicLayout.outerPad)
-                    .padding(.top, 4)
-                    .padding(.bottom, 32)
+                    if vm.isLoading {
+                        ProgressView().padding()
+                    } else if vm.isEnd {
+                        Text("已经到底了")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding()
+                    }
                 }
+                .padding(.horizontal, DynamicLayout.outerPad)
+                .padding(.top, 8)
+                .padding(.bottom, 32)
             }
         }
         .scrollContentBackground(.hidden)

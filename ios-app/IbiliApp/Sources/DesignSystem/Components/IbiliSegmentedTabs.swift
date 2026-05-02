@@ -75,29 +75,16 @@ struct IbiliSegmentedTabs<Tab: Hashable & Identifiable>: View {
     }
 }
 
-struct InlineTitleSegmentedHeader<Tab: Hashable & Identifiable>: View {
-    let headline: String
+struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
     let tabs: [Tab]
     let title: (Tab) -> String
     @Binding var selection: Tab
 
-    private let controlWidth = min(UIScreen.main.bounds.width * 0.54, 212)
+    private let controlWidth = min(UIScreen.main.bounds.width * 0.5, 196)
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(headline)
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .foregroundStyle(IbiliTheme.textPrimary)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            compactControl
-                .frame(width: controlWidth)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        compactControl
+            .frame(width: controlWidth)
     }
 
     @ViewBuilder
@@ -108,14 +95,14 @@ struct InlineTitleSegmentedHeader<Tab: Hashable & Identifiable>: View {
                 title: title,
                 selection: $selection
             )
-            .frame(height: 34)
+            .frame(height: 32)
         } else {
             IbiliSegmentedTabs(
                 tabs: tabs,
                 title: title,
                 selection: $selection
             )
-            .frame(height: 38)
+            .frame(height: 36)
         }
     }
 }
