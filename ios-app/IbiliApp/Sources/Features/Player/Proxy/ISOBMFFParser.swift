@@ -13,6 +13,18 @@ import Foundation
 /// §8.16.3 (Segment Index Box).
 enum ISOBMFF {
 
+    enum VideoRange: String, Equatable {
+        case sdr = "SDR"
+        case pq = "PQ"
+        case hlg = "HLG"
+    }
+
+    struct VideoMetadata: Equatable {
+        let width: Int
+        let height: Int
+        let videoRange: VideoRange?
+    }
+
     struct InitSegment: Equatable {
         /// Byte offset (inclusive) where the init blob starts in the source.
         let offset: UInt64
@@ -59,6 +71,7 @@ enum ISOBMFF {
     struct Probe: Equatable {
         let initSegment: InitSegment
         let index: SegmentIndex
+        let videoMetadata: VideoMetadata?
     }
 
     enum ProbeError: Error, LocalizedError, Equatable {
@@ -93,6 +106,7 @@ enum ISOBMFF {
         var initEnd: UInt64?
         var sidxBoxOffset: UInt64?
         var sidxPayload: Data?
+        var videoMetadata: VideoMetadata?
 
         while reader.hasMore {
             let header = try reader.readBoxHeader()
@@ -102,7 +116,8 @@ enum ISOBMFF {
                 try reader.skipBody(of: header)
             case "moov":
                 guard sawFtyp else { throw ProbeError.missingFtyp }
-                try reader.skipBody(of: header)
+                let moovPayload = try reader.readBody(of: header)
+                videoMetadata = parseVideoMetadata(moovPayload)
                 initEnd = header.endOffset
             case "sidx":
                 sidxBoxOffset = header.startOffset
@@ -113,7 +128,8 @@ enum ISOBMFF {
                 // probe window did not cover sidx.
                 if sidxPayload != nil { return try finish(initEnd: initEnd,
                                                           sidxBoxOffset: sidxBoxOffset,
-                                                          sidxPayload: sidxPayload) }
+                                                          sidxPayload: sidxPayload,
+                                                          videoMetadata: videoMetadata) }
                 throw ProbeError.missingSidx
             default:
                 try reader.skipBody(of: header)
@@ -123,12 +139,19 @@ enum ISOBMFF {
 
         return try finish(initEnd: initEnd,
                           sidxBoxOffset: sidxBoxOffset,
-                          sidxPayload: sidxPayload)
+                          sidxPayload: sidxPayload,
+                          videoMetadata: videoMetadata)
+    }
+
+    static func parseInitVideoMetadata(_ data: Data) -> VideoMetadata? {
+        guard let moovPayload = firstBoxPayload(named: "moov", in: data) else { return nil }
+        return parseVideoMetadata(moovPayload)
     }
 
     private static func finish(initEnd: UInt64?,
                                sidxBoxOffset: UInt64?,
-                               sidxPayload: Data?) throws -> Probe {
+                               sidxPayload: Data?,
+                               videoMetadata: VideoMetadata?) throws -> Probe {
         guard let initEnd else { throw ProbeError.missingMoov }
         guard let sidxBoxOffset, let sidxPayload else { throw ProbeError.missingSidx }
         let initSegment = InitSegment(offset: 0, length: initEnd)
@@ -137,7 +160,130 @@ enum ISOBMFF {
         // unless `first_offset` overrides it.
         let sidxBoxEnd = sidxBoxOffset + UInt64(sidxPayload.count) + 8 // header is 8 bytes
         let index = try parseSidx(payload: sidxPayload, anchor: sidxBoxEnd)
-        return Probe(initSegment: initSegment, index: index)
+        return Probe(initSegment: initSegment, index: index, videoMetadata: videoMetadata)
+    }
+
+    private static func parseVideoMetadata(_ moovPayload: Data) -> VideoMetadata? {
+        for trakPayload in childBoxPayloads(named: "trak", in: moovPayload) {
+            guard isVideoTrack(trakPayload) else { continue }
+            if let metadata = parseVisualSampleEntryMetadata(trakPayload) {
+                return metadata
+            }
+        }
+        return nil
+    }
+
+    private static func isVideoTrack(_ trakPayload: Data) -> Bool {
+        guard let mdiaPayload = firstBoxPayload(named: "mdia", in: trakPayload),
+              let hdlrPayload = firstBoxPayload(named: "hdlr", in: mdiaPayload),
+              hdlrPayload.count >= 12 else {
+            return false
+        }
+        return fourCC(in: hdlrPayload, at: 8) == "vide"
+    }
+
+    private static func parseVisualSampleEntryMetadata(_ trakPayload: Data) -> VideoMetadata? {
+        guard let mdiaPayload = firstBoxPayload(named: "mdia", in: trakPayload),
+              let minfPayload = firstBoxPayload(named: "minf", in: mdiaPayload),
+              let stblPayload = firstBoxPayload(named: "stbl", in: minfPayload),
+              let stsdPayload = firstBoxPayload(named: "stsd", in: stblPayload),
+              stsdPayload.count >= 8 else {
+            return nil
+        }
+
+        var offset = 8
+        while let header = boxHeader(in: stsdPayload, at: offset, end: stsdPayload.count) {
+            let sampleEntryPayload = stsdPayload.subdata(in: header.payloadStart..<header.boxEnd)
+            if let width = uint16(in: stsdPayload, at: header.payloadStart + 24),
+               let height = uint16(in: stsdPayload, at: header.payloadStart + 26),
+               width > 0, height > 0 {
+                let videoRange = parseVideoRange(fromSampleEntryPayload: sampleEntryPayload)
+                return VideoMetadata(width: Int(width), height: Int(height), videoRange: videoRange)
+            }
+            offset = header.boxEnd
+        }
+
+        return nil
+    }
+
+    private static func parseVideoRange(fromSampleEntryPayload payload: Data) -> VideoRange? {
+        let childStart = 78
+        guard childStart < payload.count else { return nil }
+        var offset = childStart
+        while let header = boxHeader(in: payload, at: offset, end: payload.count) {
+            if header.type == "colr",
+               let colorType = fourCC(in: payload, at: header.payloadStart),
+               colorType == "nclx",
+               let transfer = uint16(in: payload, at: header.payloadStart + 6) {
+                switch transfer {
+                case 16:
+                    return .pq
+                case 18:
+                    return .hlg
+                default:
+                    return .sdr
+                }
+            }
+            offset = header.boxEnd
+        }
+        return nil
+    }
+
+    private static func firstBoxPayload(named type: String, in data: Data) -> Data? {
+        childBoxPayloads(named: type, in: data).first
+    }
+
+    private static func childBoxPayloads(named type: String, in data: Data) -> [Data] {
+        var results: [Data] = []
+        var offset = 0
+        while let header = boxHeader(in: data, at: offset, end: data.count) {
+            if header.type == type {
+                results.append(data.subdata(in: header.payloadStart..<header.boxEnd))
+            }
+            offset = header.boxEnd
+        }
+        return results
+    }
+
+    private static func boxHeader(in data: Data, at offset: Int, end: Int) -> (type: String, payloadStart: Int, boxEnd: Int)? {
+        guard offset + 8 <= end,
+              let rawSize = uint32(in: data, at: offset),
+              let type = fourCC(in: data, at: offset + 4) else { return nil }
+        var headerSize = 8
+        var boxSize = rawSize
+        if rawSize == 1 {
+            guard let largeSize = uint64(in: data, at: offset + 8) else { return nil }
+            headerSize = 16
+            boxSize = largeSize
+        } else if rawSize == 0 {
+            boxSize = UInt64(end - offset)
+        }
+        guard boxSize >= UInt64(headerSize) else { return nil }
+        let boxEnd64 = UInt64(offset) + boxSize
+        guard boxEnd64 <= UInt64(end) else { return nil }
+        return (type, offset + headerSize, Int(boxEnd64))
+    }
+
+    private static func fourCC(in data: Data, at offset: Int) -> String? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        let bytes = data[offset..<(offset + 4)]
+        guard bytes.allSatisfy({ $0 >= 32 && $0 <= 126 }) else { return nil }
+        return String(bytes: bytes, encoding: .ascii)
+    }
+
+    private static func uint16(in data: Data, at offset: Int) -> UInt16? {
+        guard offset >= 0, offset + 2 <= data.count else { return nil }
+        return data[offset..<(offset + 2)].reduce(UInt16(0)) { ($0 << 8) | UInt16($1) }
+    }
+
+    private static func uint32(in data: Data, at offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        return data[offset..<(offset + 4)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+    }
+
+    private static func uint64(in data: Data, at offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 8 <= data.count else { return nil }
+        return data[offset..<(offset + 8)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     }
 
     private static func parseSidx(payload: Data, anchor anchorAfterBox: UInt64) throws -> SegmentIndex {

@@ -141,6 +141,10 @@ public struct PlayUrlDTO: Decodable {
     /// `"ec-3"`). Empty when there is no separate audio track or the
     /// upstream omitted it.
     public let audioCodec: String
+    public let videoWidth: Int?
+    public let videoHeight: Int?
+    public let videoFrameRate: String?
+    public let videoRange: String?
     public let debugMessage: String?
     public let audioQuality: Int64
     public let audioQualityLabel: String
@@ -165,6 +169,10 @@ public struct PlayUrlDTO: Decodable {
         case acceptDescription = "accept_description"
         case videoCodec = "video_codec"
         case audioCodec = "audio_codec"
+        case videoWidth = "video_width"
+        case videoHeight = "video_height"
+        case videoFrameRate = "video_frame_rate"
+        case videoRange = "video_range"
         case debugMessage = "debug_message"
         case audioQuality = "audio_quality"
         case audioQualityLabel = "audio_quality_label"
@@ -188,6 +196,22 @@ public struct PlayUrlDTO: Decodable {
         acceptDescription = try c.decodeIfPresent([String].self, forKey: .acceptDescription) ?? []
         videoCodec = try c.decodeIfPresent(String.self, forKey: .videoCodec) ?? ""
         audioCodec = try c.decodeIfPresent(String.self, forKey: .audioCodec) ?? ""
+        if let width = try c.decodeIfPresent(Int.self, forKey: .videoWidth), width > 0 {
+            videoWidth = width
+        } else {
+            videoWidth = nil
+        }
+        if let height = try c.decodeIfPresent(Int.self, forKey: .videoHeight), height > 0 {
+            videoHeight = height
+        } else {
+            videoHeight = nil
+        }
+        videoFrameRate = try c.decodeIfPresent(String.self, forKey: .videoFrameRate)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        videoRange = try c.decodeIfPresent(String.self, forKey: .videoRange)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
         debugMessage = try c.decodeIfPresent(String.self, forKey: .debugMessage)
         audioQuality = try c.decodeIfPresent(Int64.self, forKey: .audioQuality) ?? 0
         audioQualityLabel = try c.decodeIfPresent(String.self, forKey: .audioQualityLabel) ?? ""
@@ -195,6 +219,66 @@ public struct PlayUrlDTO: Decodable {
         acceptAudioDescription = try c.decodeIfPresent([String].self, forKey: .acceptAudioDescription) ?? []
         lastPlayTimeMs = try c.decodeIfPresent(Int64.self, forKey: .lastPlayTimeMs) ?? 0
         lastPlayCid = try c.decodeIfPresent(Int64.self, forKey: .lastPlayCid) ?? 0
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+public struct PackagingOfflinePlanDTO: Decodable {
+    public let diagnosticsDirectory: String
+    public let workspaceRootDirectory: String
+    public let streamManifestPath: String
+    public let authoringSummaryPath: String
+    public let sourceKind: String
+    public let hasAudio: Bool
+    public let startupReady: Bool
+    public let stagedFiles: [String]
+    public let warnings: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case diagnosticsDirectory = "diagnostics_dir"
+        case workspaceRootDirectory = "workspace_root_dir"
+        case streamManifestPath = "stream_manifest_path"
+        case authoringSummaryPath = "authoring_summary_path"
+        case sourceKind = "source_kind"
+        case hasAudio = "has_audio"
+        case startupReady = "startup_ready"
+        case stagedFiles = "staged_files"
+        case warnings
+    }
+}
+
+public struct PackagingOfflineBuildDTO: Decodable {
+    public let diagnosticsDirectory: String
+    public let workspaceRootDirectory: String
+    public let masterPlaylistPath: String
+    public let videoPlaylistPath: String
+    public let audioPlaylistPath: String?
+    public let streamManifestPath: String
+    public let authoringSummaryPath: String
+    public let sourceKind: String
+    public let hasAudio: Bool
+    public let startupReady: Bool
+    public let stagedFiles: [String]
+    public let generatedFiles: [String]
+    public let warnings: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case diagnosticsDirectory = "diagnostics_dir"
+        case workspaceRootDirectory = "workspace_root_dir"
+        case masterPlaylistPath = "master_playlist_path"
+        case videoPlaylistPath = "video_playlist_path"
+        case audioPlaylistPath = "audio_playlist_path"
+        case streamManifestPath = "stream_manifest_path"
+        case authoringSummaryPath = "authoring_summary_path"
+        case sourceKind = "source_kind"
+        case hasAudio = "has_audio"
+        case startupReady = "startup_ready"
+        case stagedFiles = "staged_files"
+        case generatedFiles = "generated_files"
+        case warnings
     }
 }
 

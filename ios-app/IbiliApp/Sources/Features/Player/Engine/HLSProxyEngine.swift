@@ -60,7 +60,11 @@ final class HLSProxyEngine: PlaybackEngine {
             audioProbe: audio?.probe,
             videoBandwidthHint: nil,
             videoCodec: source.videoCodec,
-            audioCodec: audio == nil ? "" : source.audioCodec
+            audioCodec: audio == nil ? "" : source.audioCodec,
+            videoWidthHint: source.videoWidth,
+            videoHeightHint: source.videoHeight,
+            videoFrameRateHint: source.videoFrameRate,
+            videoRangeHint: source.videoRange
         )
         let masterURL = try LocalHLSProxy.shared.register(token: token, source: registered)
         liveTokens.insert(token)

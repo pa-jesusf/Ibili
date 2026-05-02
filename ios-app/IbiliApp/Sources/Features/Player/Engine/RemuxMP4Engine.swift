@@ -90,7 +90,7 @@ final class RemuxMP4Engine: PlaybackEngine {
                 self?.releaseSession(token: token)
             },
             exportDiagnostics: { reason in
-                await Self.exportDiagnostics(directory: workspace, reason: reason)
+                await Self.exportDiagnostics(directory: workspace, source: source, reason: reason)
             }
         )
     }
@@ -217,7 +217,7 @@ final class RemuxMP4Engine: PlaybackEngine {
         return rest
     }
 
-    private static func exportDiagnostics(directory: URL, reason: String) async -> URL? {
+    private static func exportDiagnostics(directory: URL, source: PlayUrlDTO, reason: String) async -> URL? {
         do {
             let exportDir = try makeDiagnosticsDirectory(sourceDirectory: directory)
             let fm = FileManager.default
@@ -258,8 +258,37 @@ final class RemuxMP4Engine: PlaybackEngine {
                 "exported": exported,
                 "note": "Copy this whole directory to macOS. Run ./debug-on-macos.sh, then open local.m3u8 with QuickTime/AVPlayer or run swift AVFoundationProbe.swift local.m3u8.",
             ]
-            let data = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: exportDir.appendingPathComponent("metadata.json"), options: [.atomic])
+            let metadataURL = exportDir.appendingPathComponent("metadata.json")
+            var mutableMetadata = metadata
+            if let width = source.videoWidth {
+                mutableMetadata["videoWidth"] = width
+            }
+            if let height = source.videoHeight {
+                mutableMetadata["videoHeight"] = height
+            }
+            if let frameRate = source.videoFrameRate {
+                mutableMetadata["videoFrameRate"] = frameRate
+            }
+            if let videoRange = source.videoRange {
+                mutableMetadata["videoRange"] = videoRange
+            }
+            if let initData = try? Data(contentsOf: exportDir.appendingPathComponent("init.mp4")),
+               let videoMetadata = ISOBMFF.parseInitVideoMetadata(initData) {
+                mutableMetadata["videoWidth"] = mutableMetadata["videoWidth"] ?? videoMetadata.width
+                mutableMetadata["videoHeight"] = mutableMetadata["videoHeight"] ?? videoMetadata.height
+                if mutableMetadata["videoRange"] == nil, let videoRange = videoMetadata.videoRange {
+                    mutableMetadata["videoRange"] = videoRange.rawValue
+                }
+            }
+            try writeJSONObject(mutableMetadata, to: metadataURL)
+
+            let offlinePackagingBuild = await buildOfflinePackagingWorkspace(diagnosticsDirectory: exportDir)
+            if let workspaceRootDirectory = offlinePackagingBuild["workspaceRootDirectory"] as? String {
+                exported["packaging-workspace"] = workspaceRootDirectory
+            }
+            mutableMetadata["offlinePackagingBuild"] = offlinePackagingBuild
+            mutableMetadata["exported"] = exported
+            try writeJSONObject(mutableMetadata, to: metadataURL)
             AppLog.info("player", "remux 失败诊断导出完成", metadata: [
                 "path": exportDir.path,
                 "reason": reason,
@@ -291,6 +320,62 @@ final class RemuxMP4Engine: PlaybackEngine {
             .appendingPathComponent("remux-\(safeTimestamp)-\(shortWorkspace)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    private static func buildOfflinePackagingWorkspace(diagnosticsDirectory: URL) async -> [String: Any] {
+        AppLog.info("player", "开始生成 remux diagnostics offline packaging workspace", metadata: [
+            "diagnostics": diagnosticsDirectory.path,
+        ])
+
+        do {
+            let result = try await Task.detached(priority: .utility) {
+                try CoreClient.shared.packagingOfflineBuild(
+                    diagnosticsDirectory: diagnosticsDirectory.path
+                )
+            }.value
+
+            AppLog.info("player", "remux diagnostics offline packaging workspace 已生成", metadata: [
+                "diagnostics": result.diagnosticsDirectory,
+                "workspace": result.workspaceRootDirectory,
+                "sourceKind": result.sourceKind,
+                "hasAudio": String(result.hasAudio),
+                "startupReady": String(result.startupReady),
+                "generatedFiles": String(result.generatedFiles.count),
+                "warnings": String(result.warnings.count),
+            ])
+
+            var summary: [String: Any] = [
+                "status": "built",
+                "diagnosticsDirectory": result.diagnosticsDirectory,
+                "workspaceRootDirectory": result.workspaceRootDirectory,
+                "masterPlaylistPath": result.masterPlaylistPath,
+                "videoPlaylistPath": result.videoPlaylistPath,
+                "streamManifestPath": result.streamManifestPath,
+                "authoringSummaryPath": result.authoringSummaryPath,
+                "sourceKind": result.sourceKind,
+                "hasAudio": result.hasAudio,
+                "startupReady": result.startupReady,
+                "stagedFiles": result.stagedFiles,
+                "generatedFiles": result.generatedFiles,
+                "warnings": result.warnings,
+            ]
+            if let audioPlaylistPath = result.audioPlaylistPath {
+                summary["audioPlaylistPath"] = audioPlaylistPath
+            }
+            return summary
+        } catch {
+            let nsError = error as NSError
+            AppLog.error("player", "remux diagnostics offline packaging workspace 生成失败", error: error, metadata: [
+                "diagnostics": diagnosticsDirectory.path,
+            ])
+            return [
+                "status": "failed",
+                "diagnosticsDirectory": diagnosticsDirectory.path,
+                "errorDomain": nsError.domain,
+                "errorCode": nsError.code,
+                "errorDescription": nsError.localizedDescription,
+            ]
+        }
     }
 
     private static func rewritePlaylistForLocalDebug(sourceDirectory: URL, exportDirectory: URL) throws -> URL? {
@@ -396,5 +481,10 @@ final class RemuxMP4Engine: PlaybackEngine {
     private static func fileDescription(url: URL) -> String {
         let size = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.intValue ?? -1
         return "\(size) bytes"
+    }
+
+    private static func writeJSONObject(_ object: [String: Any], to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: [.atomic])
     }
 }

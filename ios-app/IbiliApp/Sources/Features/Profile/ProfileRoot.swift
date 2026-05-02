@@ -224,6 +224,12 @@ private struct ProfileSystemSection: View {
                 systemRow(symbol: "doc.text.magnifyingglass", title: "应用日志")
             }
             Divider().padding(.leading, 56)
+            NavigationLink {
+                DiagnosticsBrowserView()
+            } label: {
+                systemRow(symbol: "waveform.and.magnifyingglass", title: "播放失败诊断")
+            }
+            Divider().padding(.leading, 56)
             Button(role: .destructive) {
                 session.logout()
             } label: {

@@ -60,6 +60,9 @@ struct DashVideo {
     backup_url: Vec<String>,
     codecs: String,
     bandwidth: i64,
+    width: i64,
+    height: i64,
+    frame_rate: String,
 }
 
 #[derive(Clone)]
@@ -81,6 +84,10 @@ struct DashVideoWire {
     #[serde(default)] codecs: String,
     #[serde(default)] bandwidth: i64,
     #[serde(default, rename = "bandWidth")] bandwidth_camel: i64,
+    #[serde(default)] width: i64,
+    #[serde(default)] height: i64,
+    #[serde(default)] frame_rate: String,
+    #[serde(default, rename = "frameRate")] frame_rate_camel: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -134,6 +141,9 @@ impl From<DashVideoWire> for DashVideo {
             backup_url: prefer_non_empty_vec(wire.backup_url, wire.backup_url_camel),
             codecs: wire.codecs,
             bandwidth: prefer_non_zero(wire.bandwidth, wire.bandwidth_camel),
+            width: wire.width,
+            height: wire.height,
+            frame_rate: prefer_non_empty(wire.frame_rate, wire.frame_rate_camel),
         }
     }
 }
@@ -285,6 +295,10 @@ impl Core {
             accept_description,
             video_codec: String::new(),
             audio_codec: String::new(),
+            video_width: None,
+            video_height: None,
+            video_frame_rate: None,
+            video_range: None,
             debug_message: None,
             audio_quality: 0,
             audio_quality_label: String::new(),
@@ -362,6 +376,10 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
             if let Some(video_url) = video_ranked.first().cloned() {
                 let video_backups = video_ranked.into_iter().skip(1).collect::<Vec<_>>();
                 let video_codec = video.codecs.clone();
+                let video_width = positive_i64(video.width);
+                let video_height = positive_i64(video.height);
+                let video_frame_rate = normalize_frame_rate(&video.frame_rate);
+                let video_range = playurl_video_range_hint(video.id, &video.codecs);
                 let (audio_url, audio_backups, audio_codec, picked_audio_qn) = match audio {
                     Some(a) => {
                         let candidates = collect_candidates(&a.base_url, &a.backup_url);
@@ -385,6 +403,10 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
                     accept_description,
                     video_codec,
                     audio_codec,
+                    video_width,
+                    video_height,
+                    video_frame_rate,
+                    video_range,
                     debug_message: None,
                     audio_quality: picked_audio_qn,
                     audio_quality_label: audio_quality_label(picked_audio_qn),
@@ -412,6 +434,10 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
         accept_description,
         video_codec: String::new(),
         audio_codec: String::new(),
+        video_width: None,
+        video_height: None,
+        video_frame_rate: None,
+        video_range: None,
         debug_message: None,
         audio_quality: 0,
         audio_quality_label: String::new(),
@@ -434,6 +460,43 @@ fn collect_candidates(primary: &str, backups: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+fn positive_i64(value: i64) -> Option<i64> {
+    (value > 0).then_some(value)
+}
+
+fn normalize_frame_rate(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some((numerator, denominator)) = trimmed.split_once('/') {
+        let numerator = numerator.trim().parse::<f64>().ok()?;
+        let denominator = denominator.trim().parse::<f64>().ok()?;
+        if denominator <= 0.0 {
+            return None;
+        }
+        return Some(format!("{:.3}", numerator / denominator));
+    }
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|value| *value > 0.0)
+        .map(|value| format!("{value:.3}"))
+}
+
+fn playurl_video_range_hint(quality: i64, codec: &str) -> Option<String> {
+    let codec = codec.to_ascii_lowercase();
+    let is_hdr_capable_codec = codec.starts_with("hvc1")
+        || codec.starts_with("hev1")
+        || codec.starts_with("dvh1")
+        || codec.starts_with("dvhe");
+    if is_hdr_capable_codec && matches!(quality, 125 | 126) {
+        Some("PQ".to_string())
+    } else {
+        None
+    }
 }
 
 fn collect_dash_qualities(videos: &[DashVideo]) -> Vec<i64> {

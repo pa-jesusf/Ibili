@@ -77,6 +77,18 @@ pub struct PlayUrl {
     /// audio track or the upstream omitted it.
     #[serde(default)]
     pub audio_codec: String,
+    /// Upstream-advertised width of the picked video stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_width: Option<i64>,
+    /// Upstream-advertised height of the picked video stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_height: Option<i64>,
+    /// HLS-ready decimal frame rate string for the picked video stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_frame_rate: Option<String>,
+    /// Best-effort dynamic range hint for the picked video stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_range: Option<String>,
     /// Diagnostic message for non-fatal degradations (e.g. wbi/playurl
     /// failed and we silently fell back to tv_durl). Surfaced by the iOS
     /// layer into the in-app log viewer so the cause is visible.

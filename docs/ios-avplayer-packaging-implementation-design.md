@@ -439,6 +439,13 @@ packager 的失败必须是确定性的。
 
 输出：本地 HLS/CMAF workspace。
 
+当前实现状态：
+
+- 已落地 `packaging.offline_build`（Rust core / FFI / Swift bridge）。
+- 当前会把 proxy diagnostics 或 remux diagnostics 规范化到本地 `packaging-workspace/`。
+- 当前会实际写出 `master.m3u8`、`video.m3u8`、`audio.m3u8`（若有音频）、`stream-manifest.json`、`authoring-summary.json`。
+- 当前是“startup window diagnostics build”，目标是 AVPlayer 本地 smoke test，不是完整长视频 authoring。
+
 目标：
 
 - 完全脱离 live proxy。

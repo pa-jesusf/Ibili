@@ -13,14 +13,13 @@ import os
 /// * `GET /play/<token>/audio.m3u8`   → audio media playlist (when present)
 /// * `GET /play/<token>/v.seg`        → byte-range pass-through to video CDN
 /// * `GET /play/<token>/a.seg`        → byte-range pass-through to audio CDN
+/// * `GET /workspace/<token>/<file>`  → local offline packaging workspace file
 ///
 /// All upstream requests carry the right UA + Referer; failed segment
 /// requests automatically retry the next CDN candidate, so playback
 /// self-heals across host outages mid-stream.
 final class LocalHLSProxy: @unchecked Sendable {
     static let shared = LocalHLSProxy()
-
-    private static let remuxSampleFragmentCount = 2
 
     struct Source {
         let videoCandidates: [URL]
@@ -30,6 +29,15 @@ final class LocalHLSProxy: @unchecked Sendable {
         let videoBandwidthHint: Int?
         let videoCodec: String
         let audioCodec: String
+        let videoWidthHint: Int?
+        let videoHeightHint: Int?
+        let videoFrameRateHint: String?
+        let videoRangeHint: String?
+
+        var videoResolutionHint: (Int, Int)? {
+            guard let videoWidthHint, let videoHeightHint else { return nil }
+            return (videoWidthHint, videoHeightHint)
+        }
     }
 
     private let queue = DispatchQueue(label: "ibili.hls.proxy", qos: .userInitiated)
@@ -43,6 +51,7 @@ final class LocalHLSProxy: @unchecked Sendable {
         var port: UInt16 = 0
         var sources: [String: Source] = [:]
         var localFiles: [String: URL] = [:]
+        var workspaces: [String: URL] = [:]
         var remuxSessions: [String: RemuxRegistration] = [:]
         /// `true` between the listener's `.ready` event and the next
         /// `.failed` / `.cancelled` event. iOS will tear the listener
@@ -64,12 +73,33 @@ final class LocalHLSProxy: @unchecked Sendable {
         state.withLock { $0.localFiles[token] = fileURL }
     }
 
+    func registerWorkspace(token: String, directory: URL) throws -> URL {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw ProxyServerError.invalidWorkspaceDirectory
+        }
+        try ensureRunning()
+        let port = state.withLock { state -> UInt16 in
+            state.workspaces[token] = directory
+            return state.port
+        }
+        guard let url = URL(string: "http://127.0.0.1:\(port)/workspace/\(token)/master.m3u8") else {
+            throw ProxyServerError.invalidServerURL
+        }
+        return url
+    }
+
     func updateLocalFile(token: String, fileURL: URL) {
         state.withLock { $0.localFiles[token] = fileURL }
     }
 
     func unregisterLocalFile(token: String) {
         state.withLock { _ = $0.localFiles.removeValue(forKey: token) }
+    }
+
+    func unregisterWorkspace(token: String) {
+        state.withLock { _ = $0.workspaces.removeValue(forKey: token) }
     }
 
     struct RemuxRegistration {
@@ -170,11 +200,15 @@ final class LocalHLSProxy: @unchecked Sendable {
             let dir = try makeDiagnosticsDirectory(token: token)
             let master = HLSPlaylistBuilder.makeMaster(
                 videoBandwidthHint: source.videoBandwidthHint,
-                hasSeparateAudio: source.audioProbe != nil,
+                videoProbe: source.videoProbe,
+                audioProbe: source.audioProbe,
                 videoMediaPath: "video.m3u8",
                 audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8",
                 videoCodec: source.videoCodec,
-                audioCodec: source.audioCodec
+                audioCodec: source.audioCodec,
+                videoResolutionHint: source.videoResolutionHint,
+                videoRangeHint: source.videoRangeHint,
+                frameRateHint: source.videoFrameRateHint
             )
             try write(master, to: dir.appendingPathComponent("master.m3u8"))
             try write(HLSPlaylistBuilder.makeMedia(probe: source.videoProbe, segmentPath: "v.seg"),
@@ -200,14 +234,8 @@ final class LocalHLSProxy: @unchecked Sendable {
                 )) { _, new in new }
             }
 
-            let shouldExportRemuxSample = UserDefaults.standard.bool(forKey: "ibili.debug.exportRemuxSample")
-            if shouldExportRemuxSample {
-                exported.merge(try await exportRemuxSamples(source: source, directory: dir)) { _, new in new }
-                try writeRemuxPOCScript(to: dir)
-                exported["ffmpeg-remux-poc.sh"] = "generated"
-            }
-
-            let metadata: [String: Any] = [
+            let metadataURL = dir.appendingPathComponent("metadata.json")
+            var metadata: [String: Any] = [
                 "reason": reason,
                 "token": token,
                 "videoCodec": source.videoCodec,
@@ -220,12 +248,30 @@ final class LocalHLSProxy: @unchecked Sendable {
                 "audioFirstFragmentRange": source.audioProbe?.index.entries.first.map { rangeDescription($0.range) } ?? "-",
                 "videoFragmentCount": source.videoProbe.index.entries.count,
                 "audioFragmentCount": source.audioProbe?.index.entries.count ?? 0,
-                "exportRemuxSample": shouldExportRemuxSample,
-                "remuxSampleFragmentCount": Self.remuxSampleFragmentCount,
                 "exported": exported,
             ]
-            let metadataData = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys])
-            try metadataData.write(to: dir.appendingPathComponent("metadata.json"), options: [.atomic])
+            if let width = source.videoWidthHint ?? source.videoProbe.videoMetadata?.width {
+                metadata["videoWidth"] = width
+            }
+            if let height = source.videoHeightHint ?? source.videoProbe.videoMetadata?.height {
+                metadata["videoHeight"] = height
+            }
+            if let videoRange = source.videoRangeHint ?? source.videoProbe.videoMetadata?.videoRange?.rawValue {
+                metadata["videoRange"] = videoRange
+            }
+            if let frameRate = source.videoFrameRateHint, !frameRate.isEmpty {
+                metadata["videoFrameRate"] = frameRate
+            }
+            try writeJSONObject(metadata, to: metadataURL)
+
+            let offlinePackagingBuild = await buildOfflinePackagingWorkspace(diagnosticsDirectory: dir)
+            if let workspaceRootDirectory = offlinePackagingBuild["workspaceRootDirectory"] as? String {
+                exported["packaging-workspace"] = workspaceRootDirectory
+            }
+
+            metadata["offlinePackagingBuild"] = offlinePackagingBuild
+            metadata["exported"] = exported
+            try writeJSONObject(metadata, to: metadataURL)
             AppLog.info("player", "HLS 诊断导出完成", metadata: [
                 "path": dir.path,
                 "reason": reason,
@@ -281,79 +327,69 @@ final class LocalHLSProxy: @unchecked Sendable {
         return exported
     }
 
-    private func exportRemuxSamples(source: Source, directory: URL) async throws -> [String: String] {
-        var exported: [String: String] = [:]
-        if let videoURL = source.videoCandidates.first {
-            let videoOut = directory.appendingPathComponent("video-remux-sample.m4s")
-            let rangeText = try await exportRemuxSample(
-                url: videoURL,
-                probe: source.videoProbe,
-                output: videoOut
-            )
-            exported["video-remux-sample.m4s"] = rangeText
-        }
-        if let audioURL = source.audioCandidates.first, let audioProbe = source.audioProbe {
-            let audioOut = directory.appendingPathComponent("audio-remux-sample.m4s")
-            let rangeText = try await exportRemuxSample(
-                url: audioURL,
-                probe: audioProbe,
-                output: audioOut
-            )
-            exported["audio-remux-sample.m4s"] = rangeText
-        }
-        return exported
-    }
+    private func buildOfflinePackagingWorkspace(diagnosticsDirectory: URL) async -> [String: Any] {
+        AppLog.info("player", "开始生成 offline packaging workspace", metadata: [
+            "diagnostics": diagnosticsDirectory.path,
+        ])
 
-    private func exportRemuxSample(url: URL, probe: ISOBMFF.Probe, output: URL) async throws -> String {
-        let selectedFragments = Array(probe.index.entries.prefix(Self.remuxSampleFragmentCount))
-        var sample = Data()
-        let initRange = probe.initSegment.range
-        sample.append(try await ProxyURLLoader.shared.fetch(url: url, range: initRange).data)
-        var ranges = [rangeDescription(initRange)]
-        for entry in selectedFragments {
-            sample.append(try await ProxyURLLoader.shared.fetch(url: url, range: entry.range).data)
-            ranges.append(rangeDescription(entry.range))
-        }
-        try sample.write(to: output, options: [.atomic])
-        return "\(sample.count) bytes; ranges=\(ranges.joined(separator: ","))"
-    }
+        do {
+            let result = try await Task.detached(priority: .utility) {
+                try CoreClient.shared.packagingOfflineBuild(
+                    diagnosticsDirectory: diagnosticsDirectory.path
+                )
+            }.value
 
-    private func writeRemuxPOCScript(to directory: URL) throws {
-        let script = """
-        #!/bin/sh
-        set -eu
-        cd "$(dirname "$0")"
-        if ! command -v ffmpeg >/dev/null 2>&1; then
-          echo "ffmpeg not found. Install with: brew install ffmpeg" >&2
-          exit 1
-        fi
-        if [ ! -f video-remux-sample.m4s ]; then
-          echo "video-remux-sample.m4s not found. Enable remux sample export and reproduce the failure." >&2
-          exit 1
-        fi
-        mkdir -p remux-out
-        if [ -f audio-remux-sample.m4s ]; then
-          ffmpeg -hide_banner -y -i video-remux-sample.m4s -i audio-remux-sample.m4s \\
-            -map 0:v:0 -map 1:a:0 -c copy -tag:v hvc1 remux-out/remux.mp4
-        else
-          ffmpeg -hide_banner -y -i video-remux-sample.m4s \\
-            -map 0:v:0 -c copy -tag:v hvc1 remux-out/remux.mp4
-        fi
-        ffmpeg -hide_banner -y -i remux-out/remux.mp4 \\
-          -c copy -hls_segment_type fmp4 -hls_time 5 -hls_playlist_type vod \\
-          -hls_fmp4_init_filename init.mp4 \\
-          -hls_segment_filename 'remux-out/seg-%03d.m4s' \\
-          remux-out/remux.m3u8
-        ffprobe -hide_banner -show_streams -show_format remux-out/remux.mp4 > remux-out/ffprobe-remux.txt 2>&1 || true
-        echo "Generated remux-out/remux.m3u8 and remux-out/remux.mp4"
-        """
-        let url = directory.appendingPathComponent("ffmpeg-remux-poc.sh")
-        try Data(script.utf8).write(to: url, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+            AppLog.info("player", "offline packaging workspace 已生成", metadata: [
+                "diagnostics": result.diagnosticsDirectory,
+                "workspace": result.workspaceRootDirectory,
+                "sourceKind": result.sourceKind,
+                "hasAudio": String(result.hasAudio),
+                "startupReady": String(result.startupReady),
+                "generatedFiles": String(result.generatedFiles.count),
+                "warnings": String(result.warnings.count),
+            ])
+
+            var summary: [String: Any] = [
+                "status": "built",
+                "diagnosticsDirectory": result.diagnosticsDirectory,
+                "workspaceRootDirectory": result.workspaceRootDirectory,
+                "masterPlaylistPath": result.masterPlaylistPath,
+                "videoPlaylistPath": result.videoPlaylistPath,
+                "streamManifestPath": result.streamManifestPath,
+                "authoringSummaryPath": result.authoringSummaryPath,
+                "sourceKind": result.sourceKind,
+                "hasAudio": result.hasAudio,
+                "startupReady": result.startupReady,
+                "stagedFiles": result.stagedFiles,
+                "generatedFiles": result.generatedFiles,
+                "warnings": result.warnings,
+            ]
+            if let audioPlaylistPath = result.audioPlaylistPath {
+                summary["audioPlaylistPath"] = audioPlaylistPath
+            }
+            return summary
+        } catch {
+            let nsError = error as NSError
+            AppLog.error("player", "offline packaging workspace 生成失败", error: error, metadata: [
+                "diagnostics": diagnosticsDirectory.path,
+            ])
+            return [
+                "status": "failed",
+                "diagnosticsDirectory": diagnosticsDirectory.path,
+                "errorDomain": nsError.domain,
+                "errorCode": nsError.code,
+                "errorDescription": nsError.localizedDescription,
+            ]
+        }
     }
 
     private func write(_ string: String, to url: URL) throws {
         try Data(string.utf8).write(to: url, options: [.atomic])
+    }
+
+    private func writeJSONObject(_ object: [String: Any], to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: [.atomic])
     }
 
     private func rangeDescription(_ range: ClosedRange<UInt64>) -> String {
@@ -462,6 +498,35 @@ final class LocalHLSProxy: @unchecked Sendable {
             return
         }
 
+        if parts.count >= 3, parts[0] == "workspace" {
+            let token = parts[1]
+            let resource = parts.dropFirst(2).joined(separator: "/")
+            AppLog.info("player", "workspace 代理请求", metadata: [
+                "token": token,
+                "resource": resource,
+                "range": request.range.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "-",
+            ])
+            guard let directory = state.withLock({ $0.workspaces[token] }) else {
+                AppLog.warning("player", "workspace 代理 token 已过期", metadata: [
+                    "token": token,
+                    "resource": resource,
+                ])
+                respondError(conn: conn, status: 410, body: "Token expired")
+                return
+            }
+            guard let fileURL = workspaceFileURL(directory: directory, resource: resource) else {
+                AppLog.warning("player", "workspace 代理请求非法路径", metadata: [
+                    "token": token,
+                    "resource": resource,
+                    "directory": directory.path,
+                ])
+                respondError(conn: conn, status: 400, body: "Invalid workspace resource path")
+                return
+            }
+            await serveLocalFile(fileURL: fileURL, request: request, conn: conn)
+            return
+        }
+
         if parts.count == 3, parts[0] == "remux" {
             let token = parts[1]
             let resource = parts[2]
@@ -515,16 +580,35 @@ final class LocalHLSProxy: @unchecked Sendable {
         }
     }
 
+    private func workspaceFileURL(directory: URL, resource: String) -> URL? {
+        let decodedResource = resource.removingPercentEncoding ?? resource
+        guard !decodedResource.isEmpty, !decodedResource.hasPrefix("/") else { return nil }
+
+        let components = decodedResource.split(separator: "/", omittingEmptySubsequences: true)
+        guard !components.isEmpty, !components.contains("..") else { return nil }
+
+        let fileURL = components.reduce(directory.standardizedFileURL) { partialURL, component in
+            partialURL.appendingPathComponent(String(component), isDirectory: false)
+        }.standardizedFileURL
+        let basePath = directory.standardizedFileURL.path
+        guard fileURL.path == basePath || fileURL.path.hasPrefix(basePath + "/") else { return nil }
+        return fileURL
+    }
+
     // MARK: - Playlist routes
 
     private func serveMasterPlaylist(source: Source, conn: NWConnection) {
         let body = HLSPlaylistBuilder.makeMaster(
             videoBandwidthHint: source.videoBandwidthHint,
-            hasSeparateAudio: source.audioProbe != nil,
+            videoProbe: source.videoProbe,
+            audioProbe: source.audioProbe,
             videoMediaPath: "video.m3u8",
             audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8",
             videoCodec: source.videoCodec,
-            audioCodec: source.audioCodec
+            audioCodec: source.audioCodec,
+            videoResolutionHint: source.videoResolutionHint,
+            videoRangeHint: source.videoRangeHint,
+            frameRateHint: source.videoFrameRateHint
         )
         respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
     }
@@ -694,6 +778,7 @@ final class LocalHLSProxy: @unchecked Sendable {
         defer { try? handle.close() }
 
         let totalSize = fileSize
+        let contentType = contentType(for: fileURL)
 
         if let range = request.range {
             let start = range.lowerBound
@@ -707,7 +792,7 @@ final class LocalHLSProxy: @unchecked Sendable {
             let data = handle.readData(ofLength: Int(length))
 
             var head = "HTTP/1.1 206 Partial Content\r\n"
-            head += "Content-Type: video/mp4\r\n"
+            head += "Content-Type: \(contentType)\r\n"
             head += "Content-Length: \(data.count)\r\n"
             head += "Content-Range: bytes \(start)-\(end)/\(totalSize)\r\n"
             head += "Accept-Ranges: bytes\r\n"
@@ -719,7 +804,7 @@ final class LocalHLSProxy: @unchecked Sendable {
         } else {
             let data = handle.readDataToEndOfFile()
             var head = "HTTP/1.1 200 OK\r\n"
-            head += "Content-Type: video/mp4\r\n"
+            head += "Content-Type: \(contentType)\r\n"
             head += "Content-Length: \(data.count)\r\n"
             head += "Accept-Ranges: bytes\r\n"
             head += "Connection: close\r\n"
@@ -727,6 +812,25 @@ final class LocalHLSProxy: @unchecked Sendable {
             var packet = Data(head.utf8)
             packet.append(data)
             conn.send(content: packet, completion: .contentProcessed { _ in conn.cancel() })
+        }
+    }
+
+    private func contentType(for fileURL: URL) -> String {
+        switch fileURL.pathExtension.lowercased() {
+        case "m3u8":
+            return "application/vnd.apple.mpegurl"
+        case "m4s", "mp4":
+            return "video/mp4"
+        case "json":
+            return "application/json"
+        case "txt", "log":
+            return "text/plain; charset=utf-8"
+        case "sh":
+            return "text/x-shellscript; charset=utf-8"
+        case "swift":
+            return "text/x-swift; charset=utf-8"
+        default:
+            return "application/octet-stream"
         }
     }
 
@@ -947,11 +1051,13 @@ private struct HTTPRequestHead {
 enum ProxyServerError: Error, LocalizedError {
     case startupTimedOut
     case invalidServerURL
+    case invalidWorkspaceDirectory
 
     var errorDescription: String? {
         switch self {
         case .startupTimedOut:  return "本地 HLS 代理启动超时"
         case .invalidServerURL: return "本地 HLS 代理 URL 构造失败"
+        case .invalidWorkspaceDirectory: return "离线 workspace 目录不存在"
         }
     }
 }

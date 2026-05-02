@@ -1,0 +1,92 @@
+{
+  "independentSegments" : true,
+  "playlistKind" : "multivariant",
+  "mimeType" : "application\/vnd.apple.mpegurl",
+  "dataID" : 0,
+  "messages" : [
+    {
+      "errorParserCode" : -16237,
+      "errorComment" : "HDR alternate is missing FRAME-RATE",
+      "errorDomain" : "CoreMediaErrorDomain",
+      "errorStatusCode" : -12642,
+      "errorRequirementLevel" : 4,
+      "errorParserLine" : "video.m3u8"
+    },
+    {
+      "errorParserCode" : -12311,
+      "errorComment" : "Stream type unrecognized",
+      "errorDomain" : "CoreMediaErrorDomain",
+      "errorStatusCode" : -12646,
+      "errorRequirementLevel" : 4
+    }
+  ],
+  "gzipEncoded" : false,
+  "validatorTimestamp" : "2026-05-02T15:43:32.145+08:00",
+  "validatorVersion" : "1.25.36 (1.25.36.18b-250603)",
+  "sslContentDeliveredSecurely" : false,
+  "url" : "http:\/\/127.0.0.1:8766\/master.m3u8",
+  "validatorName" : "mediastreamvalidator",
+  "variants" : [
+    {
+      "playlistType" : "VOD",
+      "playlistDefault" : true,
+      "mimeType" : "application\/vnd.apple.mpegurl",
+      "processedSegmentsCount" : 1,
+      "url" : "audio.m3u8",
+      "hasDiscSequenceTag" : false,
+      "measuredMeanBitrate" : 6166,
+      "playlistName" : "default",
+      "parsedSegmentsCount" : 1,
+      "playlistGroupIndex" : 1,
+      "persistentID" : 0,
+      "fetchCount" : 1,
+      "playlistAutoselect" : true,
+      "hasEndTag" : true,
+      "playlistMediaType" : "soun",
+      "playlistGroupID" : "aud",
+      "isRendition" : true,
+      "measuredMaxBitrate" : 6166,
+      "independentSegments" : true,
+      "playlistKind" : "media",
+      "sslContentDeliveredSecurely" : false,
+      "discontinuities" : [
+        {
+          "segments" : [
+            {
+              "discontinuityDomain" : 0,
+              "segmentByteRangeLength" : 0,
+              "format" : "fragmentedMP4",
+              "url" : "a-seg-00000.m4s",
+              "mimeType" : "video\/iso.segment",
+              "dataID" : 2,
+              "segmentDurationTag" : 4.9924999999999997,
+              "mediaSequence" : 0,
+              "startTime" : 0,
+              "sslContentDeliveredSecurely" : false,
+              "segmentByteRangeOffset" : 0
+            }
+          ],
+          "measurements" : {
+            "measuredMaxBitrate" : 6166,
+            "measuredMeanBitrate" : 6166,
+            "measuredSegments" : 1
+          },
+          "tracks" : [
+            {
+              "trackMediaType" : "soun",
+              "trackAudioChannelCount" : 2,
+              "trackId" : 2,
+              "trackAudioSampleRate" : 48000,
+              "trackMediaSubType" : "aac ",
+              "trackAudioChannelLayout" : "Stereo (L R)"
+            }
+          ]
+        }
+      ],
+      "playlistTargetDuration" : 6,
+      "gzipEncoded" : false,
+      "dataID" : 1
+    }
+  ],
+  "dataVersion" : 1.2
+}

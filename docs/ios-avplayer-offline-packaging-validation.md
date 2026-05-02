@@ -36,19 +36,15 @@ Apple 官方和成熟打包平台给出的路线是统一的：
 
 ## 输入要求
 
-先在 app 里打开设置项：
+复现一次 qn125 失败并触发 app 内 diagnostics 导出后，导出目录里应至少包含：
 
-```text
-失败时导出 remux 样本（调试）
-```
-
-对应持久化开关在 `AppSettings` 里是 `ibili.debug.exportRemuxSample`。
-
-然后复现一次 qn125 失败，导出目录里应至少包含：
-
-- `video-remux-sample.m4s`
+- `video-init.mp4`
+- `video-fragment-000.m4s`
 - `metadata.json`
-- `audio-remux-sample.m4s`（若有独立音频）
+- `audio-init.mp4`（若有独立音频）
+- `audio-fragment-000.m4s`（若有独立音频）
+
+当前 app 会在同一个 diagnostics 目录里自动继续执行一次 `packaging.offline_build`，生成 `packaging-workspace/` 作为后续 AVPlayer smoke test 输入。
 
 典型目录：
 
@@ -57,37 +53,41 @@ ibili-diagnostics/hls-2026-.../
 ibili-diagnostics/baseline-2026-.../
 ```
 
-## 用法
+## 当前仓库状态
 
-在仓库根目录运行：
+当前 checkout 已经不再包含 `tools/validate_apple_hls_offline.sh`。
 
-```bash
-bash tools/validate_apple_hls_offline.sh /absolute/path/to/ibili-diagnostics/hls-2026-...
+历史 `apple-hls-offline/` 目录仍可作为“离线 Apple 风格 HLS 曾被验证通过”的证据保留，但当前仓库里的正式实现入口已经改成：
+
+- Rust core / FFI 方法：`packaging.offline_build`
+- Swift bridge：`CoreClient.packagingOfflineBuild(diagnosticsDirectory:outputRootDirectory:)`
+
+这个入口会在 diagnostics 目录下生成 `packaging-workspace/`，其中包含：
+
+```text
+packaging-workspace/
+  master.m3u8
+  video.m3u8
+  audio.m3u8            # 若样本含独立音频
+  init-video.mp4
+  v-seg-00000.m4s
+  init-audio.mp4        # 若样本含独立音频
+  a-seg-00000.m4s       # 若样本含独立音频
+  stream-manifest.json
+  authoring-summary.json
+  diagnostics/
 ```
 
-如果要让真机直接访问这份离线 HLS，需要让脚本在验证完成后继续保活 HTTP 服务，例如：
+这份 workspace 的定位是：
 
-```bash
-PORT=8123 \
-BIND_HOST=0.0.0.0 \
-PUBLIC_HOST=<你的Mac局域网IP> \
-AUDIO_LANGUAGE=zh \
-KEEP_SERVER=1 \
-bash tools/validate_apple_hls_offline.sh /absolute/path/to/ibili-diagnostics/hls-2026-...
-```
+- 让 AVPlayer 对同一份 diagnostics 样本做本地 smoke test。
+- 验证 packager 输出语义，而不是继续依赖历史脚本或 live proxy。
+- 当前只覆盖 startup window diagnostics，不代表完整长视频 packaging 已完成。
 
-停止方式：
-
-- 当前终端里直接按 `Ctrl-C`
-- 或在另一个终端执行 `kill $(cat <diagnostics-dir>/apple-hls-offline/http-server.pid)`
-
-如果不加 `KEEP_SERVER=1`，脚本结束时会自动关闭临时 HTTP 服务，此时打印出来的 URL 不能再给手机使用。
-
-脚本会在该 diagnostics 目录下生成：
+## 历史脚本产物（仅供参考）
 
 ```text
 apple-hls-offline/
-  master.m3u8
   video.m3u8
   video-iframe.m3u8
   audio.m3u8                # 如果存在音频样本
@@ -104,15 +104,12 @@ apple-hls-offline/
   README.txt
 ```
 
-## 脚本具体做了什么
+## 历史脚本具体做了什么
 
-1. 把导出的 `video-remux-sample.m4s` / `audio-remux-sample.m4s` 先 remux 成独立 MP4。
-2. 再把独立 MP4 打成 video-only / audio-only 的 fMP4 HLS Media Playlist。
-3. 同时生成一个 I-frame-only 的 `video-iframe.m3u8`，满足 Apple 对 trick-play authoring 的检查。
-4. 用 `metadata.json` + `ffprobe` + 实测 segment bitrate 结果合成一个更接近 Apple Authoring Spec 的 `master.m3u8`。
-5. 启一个本地 HTTP 服务，用正确的 `.m3u8` / `.m4s` MIME type 暴露输出。
-6. 如果机器上装了 `mediastreamvalidator`，直接跑 Apple 官方验证，并落 `validation_data.json`。
-7. 如果机器上还有 `hlsreport`，继续产出针对 iOS rule set 的 authoring-spec 报告。
+1. 读取一次失败播放导出的 diagnostics 样本。
+2. 重新组织成更接近 Apple 风格 fMP4 HLS 的本地工作区。
+3. 生成 `master.m3u8`、video/audio media playlist 与配套 manifest。
+4. 用这份工作区继续做 AVPlayer 与 authoring 侧验证。
 
 注意：这一步故意不依赖 app 内的 localhost proxy。它要验证的是“样本本身经过更标准的打包后，AVPlayer 还拒不拒绝”。
 

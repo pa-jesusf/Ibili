@@ -274,6 +274,12 @@ struct SpaceArcSearchArgs {
 }
 fn default_pubdate() -> String { "pubdate".into() }
 
+#[derive(Deserialize)]
+struct PackagingOfflinePlanArgs {
+    diagnostics_dir: String,
+    #[serde(default)] output_root_dir: String,
+}
+
 fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> {
     match method {
         "session.snapshot" => to_value(c.inner.session_snapshot()),
@@ -468,6 +474,20 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: DynamicLikeArgs = serde_json::from_value(args)?;
             c.inner.dynamic_like(&a.dynamic_id, a.action)?;
             Ok(Value::Object(Default::default()))
+        }
+        "packaging.offline_plan" => {
+            let a: PackagingOfflinePlanArgs = serde_json::from_value(args)?;
+            to_value(c.inner.packaging_offline_plan(ibili_core::packaging::OfflinePackagingRequest {
+                diagnostics_dir: a.diagnostics_dir,
+                output_root_dir: a.output_root_dir,
+            })?)
+        }
+        "packaging.offline_build" => {
+            let a: PackagingOfflinePlanArgs = serde_json::from_value(args)?;
+            to_value(c.inner.packaging_offline_build(ibili_core::packaging::OfflinePackagingRequest {
+                diagnostics_dir: a.diagnostics_dir,
+                output_root_dir: a.output_root_dir,
+            })?)
         }
         "user.space_arc_search" => {
             let a: SpaceArcSearchArgs = serde_json::from_value(args)?;

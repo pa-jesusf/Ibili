@@ -176,6 +176,42 @@ public final class CoreClient: @unchecked Sendable {
         return try call("video.playurl.tv", args: A(aid: aid, cid: cid, qn: qn), decoding: PlayUrlDTO.self)
     }
 
+    public func packagingOfflinePlan(
+        diagnosticsDirectory: String,
+        outputRootDirectory: String = ""
+    ) throws -> PackagingOfflinePlanDTO {
+        struct A: Encodable {
+            let diagnostics_dir: String
+            let output_root_dir: String
+        }
+        return try call(
+            "packaging.offline_plan",
+            args: A(
+                diagnostics_dir: diagnosticsDirectory,
+                output_root_dir: outputRootDirectory
+            ),
+            decoding: PackagingOfflinePlanDTO.self
+        )
+    }
+
+    public func packagingOfflineBuild(
+        diagnosticsDirectory: String,
+        outputRootDirectory: String = ""
+    ) throws -> PackagingOfflineBuildDTO {
+        struct A: Encodable {
+            let diagnostics_dir: String
+            let output_root_dir: String
+        }
+        return try call(
+            "packaging.offline_build",
+            args: A(
+                diagnostics_dir: diagnosticsDirectory,
+                output_root_dir: outputRootDirectory
+            ),
+            decoding: PackagingOfflineBuildDTO.self
+        )
+    }
+
     public func danmakuList(cid: Int64, durationSec: Int64) throws -> DanmakuTrackDTO {
         struct A: Encodable { let cid: Int64; let duration_sec: Int64 }
         return try call("danmaku.list", args: A(cid: cid, duration_sec: durationSec), decoding: DanmakuTrackDTO.self)

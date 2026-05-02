@@ -17,6 +17,7 @@ pub mod cdn;
 pub mod search;
 pub mod reply;
 pub mod interaction;
+pub mod packaging;
 pub mod user_space;
 pub mod dynamic;
 
@@ -58,5 +59,19 @@ impl Core {
         // Cookies remain in the in-memory jar until process restart; the iOS
         // layer drops persisted cookies via SessionStore.clear() on logout,
         // so on next launch the jar starts empty again.
+    }
+
+    pub fn packaging_offline_plan(
+        &self,
+        request: packaging::OfflinePackagingRequest,
+    ) -> CoreResult<packaging::OfflinePackagingPlan> {
+        packaging::offline_plan(request)
+    }
+
+    pub fn packaging_offline_build(
+        &self,
+        request: packaging::OfflinePackagingRequest,
+    ) -> CoreResult<packaging::OfflinePackagingBuild> {
+        packaging::offline_build(request)
     }
 }

@@ -119,11 +119,20 @@ struct SettingsView: View {
                 }
                 Toggle("手机横屏自动进入/退出全屏", isOn: $settings.autoRotateFullscreen)
                 Toggle("快速加载", isOn: $settings.fastLoad)
-                Toggle("失败时导出 remux 样本（调试）", isOn: $settings.exportRemuxSample)
             } header: {
                 Text("播放")
             } footer: {
-                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换。remux 样本导出 m4s fragment，用于debug。")
+                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换。失败诊断会自动导出 startup window 样本并生成 packaging-workspace。")
+            }
+
+            Section {
+                NavigationLink {
+                    DiagnosticsBrowserView()
+                } label: {
+                    Label("播放失败诊断", systemImage: "waveform.and.magnifyingglass")
+                }
+            } footer: {
+                Text("浏览自动导出的 diagnostics 目录，并直接用本地文件 URL 播放 packaging-workspace/master.m3u8 做真机 smoke test。")
             }
 
             Section {
@@ -260,12 +269,11 @@ final class ImageCacheViewModel: ObservableObject {
     }()
 
     func refresh() {
-        Task.detached(priority: .utility) { [weak self] in
-            let bytes = ImageDiskCache.shared.currentBytes()
-            await MainActor.run {
-                guard let self else { return }
-                self.usageText = self.formatter.string(fromByteCount: bytes)
-            }
+        Task {
+            let bytes = await Task.detached(priority: .utility) {
+                ImageDiskCache.shared.currentBytes()
+            }.value
+            usageText = formatter.string(fromByteCount: bytes)
         }
     }
 

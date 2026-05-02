@@ -104,15 +104,15 @@ final class VideoInteractionService: ObservableObject {
         state.liked = willLike
         state.likeCount = max(0, state.likeCount + (willLike ? 1 : -1))
         let action: Int32 = willLike ? 1 : 2
-        Task.detached { [weak self] in
+        Task {
             do {
-                _ = try CoreClient.shared.archiveLike(aid: aid, action: action)
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.archiveLike(aid: aid, action: action)
+                }.value
             } catch {
-                await MainActor.run {
-                    self?.state = old
-                    self?.lastToast = "操作失败"
-                    AppLog.error("interaction", "点赞失败", error: error, metadata: ["aid": String(aid)])
-                }
+                state = old
+                lastToast = "操作失败"
+                AppLog.error("interaction", "点赞失败", error: error, metadata: ["aid": String(aid)])
             }
         }
     }
@@ -127,16 +127,16 @@ final class VideoInteractionService: ObservableObject {
             state.liked = true
             state.likeCount += 1
         }
-        Task.detached { [weak self] in
+        Task {
             do {
-                let r = try CoreClient.shared.archiveCoin(aid: aid, multiply: multiply, alsoLike: alsoLike)
-                await MainActor.run { if !r.toast.isEmpty { self?.lastToast = r.toast } }
+                let toast = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.archiveCoin(aid: aid, multiply: multiply, alsoLike: alsoLike).toast
+                }.value
+                if !toast.isEmpty { lastToast = toast }
             } catch {
-                await MainActor.run {
-                    self?.state = old
-                    self?.lastToast = "投币失败"
-                    AppLog.error("interaction", "投币失败", error: error, metadata: ["aid": String(aid)])
-                }
+                state = old
+                lastToast = "投币失败"
+                AppLog.error("interaction", "投币失败", error: error, metadata: ["aid": String(aid)])
             }
         }
     }
@@ -155,16 +155,16 @@ final class VideoInteractionService: ObservableObject {
         let addIds: [Int64] = willFav ? [defaultFolderId] : []
         let delIds: [Int64] = willFav ? [] : Array(oldFolderIds)
         if willFav { favoritedFolderIds = [defaultFolderId] } else { favoritedFolderIds.removeAll() }
-        Task.detached { [weak self] in
+        Task {
             do {
-                _ = try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
+                }.value
             } catch {
-                await MainActor.run {
-                    self?.state = old
-                    self?.favoritedFolderIds = oldFolderIds
-                    self?.lastToast = "收藏失败"
-                    AppLog.error("interaction", "收藏失败", error: error, metadata: ["aid": String(aid)])
-                }
+                state = old
+                favoritedFolderIds = oldFolderIds
+                lastToast = "收藏失败"
+                AppLog.error("interaction", "收藏失败", error: error, metadata: ["aid": String(aid)])
             }
         }
     }
@@ -181,17 +181,17 @@ final class VideoInteractionService: ObservableObject {
         state.favorited = !selected.isEmpty
         // Don't try to back-compute count — will be re-hydrated from
         // server toast or the next detail view refresh.
-        Task.detached { [weak self] in
+        Task {
             do {
-                _ = try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
-                await MainActor.run { self?.lastToast = "收藏已更新" }
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
+                }.value
+                lastToast = "收藏已更新"
             } catch {
-                await MainActor.run {
-                    self?.state = old
-                    self?.favoritedFolderIds = oldFolderIds
-                    self?.lastToast = "收藏失败"
-                    AppLog.error("interaction", "收藏失败", error: error, metadata: ["aid": String(aid)])
-                }
+                state = old
+                favoritedFolderIds = oldFolderIds
+                lastToast = "收藏失败"
+                AppLog.error("interaction", "收藏失败", error: error, metadata: ["aid": String(aid)])
             }
         }
     }
@@ -212,29 +212,28 @@ final class VideoInteractionService: ObservableObject {
         state.coined = true
         state.favorited = true
         tripleAnimating = true
-        Task.detached { [weak self] in
+        Task {
             // Floor the in-flight window at ~0.7s so the ring sweep
             // is always visible — instant successes otherwise flash
             // off before the eye registers the animation.
             async let minDelay: () = Task.sleep(nanoseconds: 700_000_000)
             do {
-                let r = try CoreClient.shared.archiveTriple(aid: aid)
+                let result = try await Task.detached(priority: .userInitiated) {
+                    let response = try CoreClient.shared.archiveTriple(aid: aid)
+                    return (response.like, response.coin, response.fav, response.prompt)
+                }.value
                 try? await minDelay
-                await MainActor.run {
-                    self?.state.liked = r.like || (self?.state.liked ?? false)
-                    self?.state.coined = r.coin || (self?.state.coined ?? false)
-                    self?.state.favorited = r.fav || (self?.state.favorited ?? false)
-                    if r.prompt { self?.lastToast = "三连成功" }
-                    self?.tripleAnimating = false
-                }
+                state.liked = result.0 || state.liked
+                state.coined = result.1 || state.coined
+                state.favorited = result.2 || state.favorited
+                if result.3 { lastToast = "三连成功" }
+                tripleAnimating = false
             } catch {
                 try? await minDelay
-                await MainActor.run {
-                    self?.state = old
-                    self?.lastToast = "三连失败"
-                    self?.tripleAnimating = false
-                    AppLog.error("interaction", "三连失败", error: error, metadata: ["aid": String(aid)])
-                }
+                state = old
+                lastToast = "三连失败"
+                tripleAnimating = false
+                AppLog.error("interaction", "三连失败", error: error, metadata: ["aid": String(aid)])
             }
         }
     }
@@ -253,15 +252,15 @@ final class VideoInteractionService: ObservableObject {
         let willFollow = !state.followed
         state.followed = willFollow
         let act: Int32 = willFollow ? 1 : 2
-        Task.detached { [weak self] in
+        Task {
             do {
-                try CoreClient.shared.relationModify(fid: fid, act: act)
+                try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.relationModify(fid: fid, act: act)
+                }.value
             } catch {
-                await MainActor.run {
-                    self?.state = old
-                    self?.lastToast = "关注操作失败"
-                    AppLog.error("interaction", "关注失败", error: error, metadata: ["fid": String(fid)])
-                }
+                state = old
+                lastToast = "关注操作失败"
+                AppLog.error("interaction", "关注失败", error: error, metadata: ["fid": String(fid)])
             }
         }
     }
@@ -272,21 +271,23 @@ final class VideoInteractionService: ObservableObject {
         let old = state
         let willAdd = !state.inWatchLater
         state.inWatchLater = willAdd
-        Task.detached { [weak self] in
+        Task {
             do {
                 if willAdd {
-                    try CoreClient.shared.watchLaterAdd(aid: aid)
-                    await MainActor.run { self?.lastToast = "已添加稍后再看" }
+                    try await Task.detached(priority: .userInitiated) {
+                        try CoreClient.shared.watchLaterAdd(aid: aid)
+                    }.value
+                    lastToast = "已添加稍后再看"
                 } else {
-                    try CoreClient.shared.watchLaterDel(aid: aid)
-                    await MainActor.run { self?.lastToast = "已移除" }
+                    try await Task.detached(priority: .userInitiated) {
+                        try CoreClient.shared.watchLaterDel(aid: aid)
+                    }.value
+                    lastToast = "已移除"
                 }
             } catch {
-                await MainActor.run {
-                    self?.state = old
-                    self?.lastToast = "稍后再看操作失败"
-                    AppLog.error("interaction", "稍后再看失败", error: error, metadata: ["aid": String(aid)])
-                }
+                state = old
+                lastToast = "稍后再看操作失败"
+                AppLog.error("interaction", "稍后再看失败", error: error, metadata: ["aid": String(aid)])
             }
         }
     }
