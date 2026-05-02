@@ -213,34 +213,27 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
 
     var body: some View {
         let p = min(1, max(0, collapseProgress))
-
-        // KEY DESIGN: every visual change here is expressed via
-        // `scaleEffect` / `offset` rather than padding / font-size /
-        // frame changes. The header therefore keeps a *constant
-        // layout height* even though it visibly shrinks. That breaks
-        // the feedback loop that previously caused the Dynamic feed
-        // to jitter — when `safeAreaInset` height changes mid-scroll,
-        // the ScrollView's `contentOffset` is reflowed, which in turn
-        // changes `collapseProgress`, which changes the inset again.
-        // With layout-stable transforms the loop cannot start.
-
-        // Title: 34pt → 17pt is a 0.5x scale. Anchor at .leading so
-        // it shrinks in place against the left edge.
-        let titleScale = 1 - p * 0.5
-
-        // Vertical travel: the expanded layout has the title sitting
-        // 22pt below the inline-bar slot, so we lift the whole row
-        // up by that much as it collapses, mirroring the system
-        // large-title fold-up animation.
-        let liftY: CGFloat = -p * 22
+        // Title size eases from 34pt (.largeTitle bold) to 17pt
+        // (.headline semibold) to mirror the system large-title
+        // collapse animation.
+        let titleSize = 34 - p * 17
+        let titleWeight: Font.Weight = p > 0.5 ? .semibold : .bold
+        // The system large-title bar reserves ~44pt for the inline
+        // toolbar row above the large title. We reproduce that gap so
+        // our custom header lines up vertically with sibling tabs
+        // (e.g. "我的") that still use the stock navigation bar.
+        // As the user scrolls and the title shrinks, the gap shrinks
+        // with it so the small inline title ends up vertically
+        // centred in the 44pt inline-bar slot — matching iOS.
+        let topPad: CGFloat = 49 - p * 35
+        let bottomPad: CGFloat = 12 - p * 6
 
         HStack(alignment: .center, spacing: 12) {
             Text(title)
-                .font(.system(size: 34, weight: .bold))
+                .font(.system(size: titleSize, weight: titleWeight))
                 .foregroundStyle(IbiliTheme.textPrimary)
                 .lineLimit(1)
-                .fixedSize(horizontal: false, vertical: true)
-                .scaleEffect(titleScale, anchor: .leading)
+                .minimumScaleFactor(0.6)
             Spacer(minLength: 0)
             NavigationTrailingSegmentedControl(
                 tabs: tabs,
@@ -249,16 +242,37 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
             )
         }
         .padding(.horizontal, 16)
-        .padding(.top, 28)
-        .padding(.bottom, 18)
+        .padding(.top, topPad)
+        .padding(.bottom, bottomPad)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .offset(y: liftY)
         .background(
-            // Solid page-background fill so feed content does not
-            // bleed through the bar. We deliberately leave this
-            // un-shadowed and un-blurred per the latest design call.
+            // Match the page background so the header reads as part
+            // of the chrome at all times. We avoid a translucent
+            // material here because the user explicitly asked for the
+            // iOS-native "no blur, just a subtle dark gradient under
+            // the bar" treatment.
             IbiliTheme.background
                 .ignoresSafeArea(edges: .top)
         )
+        .overlay(alignment: .bottom) {
+            // Below-bar shadow gradient. Identical visual recipe to
+            // UINavigationBar's stock scroll-edge → standard
+            // transition: a tiny ~6pt vertical band of black that
+            // fades from ~12% to 0%, sitting just below the bar.
+            // It reads as a soft drop-shadow on the content rather
+            // than a glass material, matching the system look.
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.16),
+                    Color.black.opacity(0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 6)
+            .offset(y: 6)
+            .opacity(p)
+            .allowsHitTesting(false)
+        }
     }
 }
