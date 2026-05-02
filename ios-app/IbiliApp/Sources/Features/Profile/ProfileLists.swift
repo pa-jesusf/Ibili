@@ -450,6 +450,8 @@ struct RelationListView: View {
     let scope: Scope
     let title: String
     @StateObject private var vm = RelationListViewModel()
+    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
 
     var body: some View {
         Group {
@@ -462,10 +464,20 @@ struct RelationListView: View {
             } else {
                 List {
                     ForEach(vm.items) { user in
-                        NavigationLink {
-                            UserSpaceView(mid: user.mid)
-                        } label: {
-                            RelationRow(user: user)
+                        Group {
+                            if isInPlayerHostNavigation {
+                                Button {
+                                    router.openUserSpace(mid: user.mid)
+                                } label: {
+                                    RelationRow(user: user)
+                                }
+                            } else {
+                                NavigationLink {
+                                    UserSpaceView(mid: user.mid)
+                                } label: {
+                                    RelationRow(user: user)
+                                }
+                            }
                         }
                         .listRowBackground(IbiliTheme.surface)
                     }
@@ -482,7 +494,6 @@ struct RelationListView: View {
         .background(IbiliTheme.background)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .playerHostAuxiliaryPage()
         .task { await vm.loadInitial(vmid: vmid, scope: scope) }
     }
 }

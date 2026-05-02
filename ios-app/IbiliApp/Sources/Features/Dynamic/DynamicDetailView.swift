@@ -9,6 +9,7 @@ struct DynamicDetailView: View {
 
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var session: AppSession
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @State private var preview: DynamicDetailPreviewState?
     @State private var isLiked = false
     @State private var likeCount: Int64 = 0
@@ -71,7 +72,6 @@ struct DynamicDetailView: View {
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("动态")
         .navigationBarTitleDisplayMode(.inline)
-        .playerHostAuxiliaryPage()
         .fullScreenCover(item: $preview) { state in
             ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
         }
@@ -112,34 +112,45 @@ struct DynamicDetailView: View {
     }
 
     private var header: some View {
-        // Direct NavigationLink so the push lives in the parent
-        // NavigationStack — see notes on `DynamicHeader` for why
-        // the @State+isActive pattern is brittle here.
-        NavigationLink {
-            UserSpaceView(mid: item.author.mid)
-        } label: {
-            HStack(spacing: 10) {
-                RemoteImage(url: item.author.face,
-                            contentMode: .fill,
-                            targetPointSize: CGSize(width: 44, height: 44),
-                            quality: 80)
-                    .frame(width: 44, height: 44)
-                    .clipShape(Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.author.name).font(.subheadline.weight(.semibold))
-                        .foregroundStyle(IbiliTheme.textPrimary)
-                    if !item.author.pubLabel.isEmpty {
-                        Text(item.author.pubLabel)
-                            .font(.caption2)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                    }
+        Group {
+            if isInPlayerHostNavigation {
+                Button {
+                    router.openUserSpace(mid: item.author.mid)
+                } label: {
+                    headerLabel
                 }
-                Spacer(minLength: 0)
+            } else {
+                NavigationLink {
+                    UserSpaceView(mid: item.author.mid)
+                } label: {
+                    headerLabel
+                }
             }
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(item.author.mid <= 0)
+    }
+
+    private var headerLabel: some View {
+        HStack(spacing: 10) {
+            RemoteImage(url: item.author.face,
+                        contentMode: .fill,
+                        targetPointSize: CGSize(width: 44, height: 44),
+                        quality: 80)
+                .frame(width: 44, height: 44)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.author.name).font(.subheadline.weight(.semibold))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                if !item.author.pubLabel.isEmpty {
+                    Text(item.author.pubLabel)
+                        .font(.caption2)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
     }
 
     private var statBar: some View {

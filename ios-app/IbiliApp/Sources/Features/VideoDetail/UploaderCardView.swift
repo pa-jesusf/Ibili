@@ -12,6 +12,8 @@ struct UploaderCardView: View {
     let owner: VideoOwnerDTO
     @ObservedObject var interaction: VideoInteractionService
     @StateObject private var loader = UploaderCardLoader()
+    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
 
     var body: some View {
         HStack(spacing: 12) {
@@ -22,25 +24,20 @@ struct UploaderCardView: View {
             // @State has been observed to prematurely flip false
             // when re-laid-out from a navigation pop, collapsing the
             // back stack.
-            NavigationLink {
-                UserSpaceView(mid: owner.mid)
-            } label: {
-                HStack(spacing: 12) {
-                    BiliAvatar(url: owner.face, size: 44)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(owner.name.isEmpty ? "—" : owner.name)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(IbiliTheme.textPrimary)
-                            .lineLimit(1)
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                            .lineLimit(1)
-                            .contentTransition(.numericText())
+            Group {
+                if isInPlayerHostNavigation {
+                    Button {
+                        router.openUserSpace(mid: owner.mid)
+                    } label: {
+                        headerLabel
                     }
-                    Spacer(minLength: 0)
+                } else {
+                    NavigationLink {
+                        UserSpaceView(mid: owner.mid)
+                    } label: {
+                        headerLabel
+                    }
                 }
-                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(owner.mid <= 0)
@@ -66,6 +63,25 @@ struct UploaderCardView: View {
         .task(id: owner.mid) {
             await loader.load(mid: owner.mid)
         }
+    }
+
+    private var headerLabel: some View {
+        HStack(spacing: 12) {
+            BiliAvatar(url: owner.face, size: 44)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(owner.name.isEmpty ? "—" : owner.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .lineLimit(1)
+                    .contentTransition(.numericText())
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
     }
 
     private var subtitle: String {

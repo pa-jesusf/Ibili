@@ -233,41 +233,51 @@ private struct ImagePreviewState: Identifiable {
 
 private struct DynamicHeader: View {
     let author: DynamicAuthorDTO
+    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
 
     var body: some View {
-        // Wrap the avatar+name+pubLabel in a real `NavigationLink`
-        // so the push state lives in the parent NavigationStack,
-        // not in a per-cell `@State`. The previous `@State pushSpace`
-        // approach reset to `false` every time the lazy cell got
-        // recycled, which broke the back-stack ("tap dynamic in user
-        // space → back" jumped straight to the tab root).
-        NavigationLink {
-            UserSpaceView(mid: author.mid)
-        } label: {
-            HStack(spacing: 10) {
-                RemoteImage(url: author.face,
-                            contentMode: .fill,
-                            targetPointSize: CGSize(width: 36, height: 36),
-                            quality: 75)
-                    .frame(width: 36, height: 36)
-                    .clipShape(Circle())
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(author.name).font(.subheadline.weight(.medium))
-                        .foregroundStyle(IbiliTheme.textPrimary)
-                        .lineLimit(1)
-                    if !author.pubLabel.isEmpty {
-                        Text(author.pubLabel)
-                            .font(.caption2)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                            .lineLimit(1)
-                    }
+        Group {
+            if isInPlayerHostNavigation {
+                Button {
+                    router.openUserSpace(mid: author.mid)
+                } label: {
+                    headerLabel
                 }
-                Spacer(minLength: 0)
+            } else {
+                NavigationLink {
+                    UserSpaceView(mid: author.mid)
+                } label: {
+                    headerLabel
+                }
             }
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(author.mid <= 0)
+    }
+
+    private var headerLabel: some View {
+        HStack(spacing: 10) {
+            RemoteImage(url: author.face,
+                        contentMode: .fill,
+                        targetPointSize: CGSize(width: 36, height: 36),
+                        quality: 75)
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(author.name).font(.subheadline.weight(.medium))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(1)
+                if !author.pubLabel.isEmpty {
+                    Text(author.pubLabel)
+                        .font(.caption2)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
     }
 }
 

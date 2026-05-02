@@ -32,9 +32,51 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
+    struct UserSpaceRoute: Hashable, Identifiable {
+        let id: UUID
+        let mid: Int64
+
+        init(id: UUID = UUID(), mid: Int64) {
+            self.id = id
+            self.mid = mid
+        }
+    }
+
+    struct DynamicDetailRoute: Hashable, Identifiable {
+        let id: UUID
+        let item: DynamicItemDTO
+
+        init(id: UUID = UUID(), item: DynamicItemDTO) {
+            self.id = id
+            self.item = item
+        }
+    }
+
+    enum SessionRoute: Hashable, Identifiable {
+        case player(PlayerRoute)
+        case userSpace(UserSpaceRoute)
+        case dynamicDetail(DynamicDetailRoute)
+
+        var id: UUID {
+            switch self {
+            case .player(let route):
+                return route.id
+            case .userSpace(let route):
+                return route.id
+            case .dynamicDetail(let route):
+                return route.id
+            }
+        }
+
+        var playerRoute: PlayerRoute? {
+            guard case .player(let route) = self else { return nil }
+            return route
+        }
+    }
+
     struct SessionSnapshot {
         var pending: PlayerRoute?
-        var path: [PlayerRoute]
+        var path: [SessionRoute]
     }
 
     @Published var pending: PlayerRoute?
@@ -47,7 +89,7 @@ final class DeepLinkRouter: ObservableObject {
     /// Anything that wants to route to another player should go
     /// through `open(_:mode:)` so the navigation semantics stay
     /// uniform across every entry point.
-    @Published var path: [PlayerRoute] = []
+    @Published var path: [SessionRoute] = []
 
     enum OpenMode {
         case push
@@ -55,11 +97,15 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     var currentRoute: PlayerRoute? {
-        path.last ?? pending
+        path.reversed().compactMap(\.playerRoute).first ?? pending
     }
 
     var currentItem: FeedItemDTO? {
         currentRoute?.item
+    }
+
+    var playerPath: [PlayerRoute] {
+        path.compactMap(\.playerRoute)
     }
 
     var snapshot: SessionSnapshot {
@@ -67,8 +113,6 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     func open(_ item: FeedItemDTO, mode: OpenMode = .push) {
-        guard !isCurrent(item) else { return }
-
         guard pending != nil else {
             path.removeAll()
             pending = PlayerRoute(item: item)
@@ -77,15 +121,23 @@ final class DeepLinkRouter: ObservableObject {
 
         switch mode {
         case .push:
-            path.append(PlayerRoute(item: item))
-        case .replaceCurrent:
-            if path.isEmpty {
-                pending = pending?.replacingItem(item) ?? PlayerRoute(item: item)
-            } else {
-                let index = path.index(before: path.endIndex)
-                path[index] = path[index].replacingItem(item)
+            if revealCurrentPlayerIfNeeded(matching: item) {
+                return
             }
+            path.append(.player(PlayerRoute(item: item)))
+        case .replaceCurrent:
+            replaceCurrentPlayer(with: item)
         }
+    }
+
+    func openUserSpace(mid: Int64) {
+        guard pending != nil, mid > 0 else { return }
+        path.append(.userSpace(UserSpaceRoute(mid: mid)))
+    }
+
+    func openDynamicDetail(_ item: DynamicItemDTO) {
+        guard pending != nil else { return }
+        path.append(.dynamicDetail(DynamicDetailRoute(item: item)))
     }
 
     func closeSession() {
@@ -99,7 +151,7 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     func containsRoute(id: UUID) -> Bool {
-        pending?.id == id || path.contains { $0.id == id }
+        pending?.id == id || playerPath.contains { $0.id == id }
     }
 
     /// Returns `.handled` if the URL was an ibili scheme and we routed
@@ -143,5 +195,32 @@ final class DeepLinkRouter: ObservableObject {
         return currentItem.aid == item.aid
             && currentItem.bvid == item.bvid
             && currentItem.cid == item.cid
+    }
+
+    private func revealCurrentPlayerIfNeeded(matching item: FeedItemDTO) -> Bool {
+        guard isCurrent(item) else { return false }
+
+        if let lastPlayerIndex = path.lastIndex(where: { $0.playerRoute != nil }) {
+            let trailingIndex = path.index(after: lastPlayerIndex)
+            if trailingIndex < path.endIndex {
+                path.removeSubrange(trailingIndex..<path.endIndex)
+            }
+            return true
+        }
+
+        if !path.isEmpty {
+            path.removeAll()
+        }
+        return true
+    }
+
+    private func replaceCurrentPlayer(with item: FeedItemDTO) {
+        if let lastPlayerIndex = path.lastIndex(where: { $0.playerRoute != nil }),
+           case .player(let route) = path[lastPlayerIndex] {
+            path[lastPlayerIndex] = .player(route.replacingItem(item))
+            return
+        }
+
+        pending = pending?.replacingItem(item) ?? PlayerRoute(item: item)
     }
 }

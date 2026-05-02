@@ -27,6 +27,7 @@ struct UserSpaceView: View {
 
     @StateObject private var vm = UserSpaceViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
     @FocusState private var searchFocused: Bool
@@ -71,7 +72,6 @@ struct UserSpaceView: View {
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("用户空间")
         .navigationBarTitleDisplayMode(.inline)
-        .playerHostAuxiliaryPage()
         // Hide the floating tab bar — UserSpaceView is full-page.
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
@@ -101,20 +101,22 @@ struct UserSpaceView: View {
         // it's declared on `UserSpaceView` itself (not inside a lazy
         // cell), its binding is stable across cell recycling and across
         // navigation pops.
-        .background(
-            NavigationLink(
-                isActive: Binding(
-                    get: { pushDynamic != nil },
-                    set: { if !$0 { pushDynamic = nil } }
-                ),
-                destination: {
-                    if let d = pushDynamic { DynamicDetailView(item: d) }
-                },
-                label: { EmptyView() }
-            )
-            .opacity(0)
-            .allowsHitTesting(false)
-        )
+        .background {
+            if !isInPlayerHostNavigation {
+                NavigationLink(
+                    isActive: Binding(
+                        get: { pushDynamic != nil },
+                        set: { if !$0 { pushDynamic = nil } }
+                    ),
+                    destination: {
+                        if let d = pushDynamic { DynamicDetailView(item: d) }
+                    },
+                    label: { EmptyView() }
+                )
+                .opacity(0)
+                .allowsHitTesting(false)
+            }
+        }
         // `task` runs once per view-identity. It does *not* re-run on
         // navigation-pop (which is what we want — bouncing back from
         // dynamic detail must not refetch and rebuild the page from
@@ -269,7 +271,13 @@ struct UserSpaceView: View {
                 DynamicItemCard(
                     item: item,
                     onOpenVideo: { feedItem in router.open(feedItem) },
-                    onOpenDetail: { dyn in pushDynamic = dyn }
+                    onOpenDetail: { dyn in
+                        if isInPlayerHostNavigation {
+                            router.openDynamicDetail(dyn)
+                        } else {
+                            pushDynamic = dyn
+                        }
+                    }
                 )
                 .onAppear {
                     if !vm.dynamicsEnd, idx >= vm.dynamics.count - 3 {
