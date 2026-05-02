@@ -43,6 +43,48 @@ final class DanmakuCanvasView: UIView {
             reconfigureTiming()
         }
     }
+    /// Black halo width for normal (non mode-7) danmaku. The slider
+    /// drives how many font-weight tiers we bump when laying out the
+    /// underlay glyph run; a heavier-weight black draw underneath the
+    /// foreground text yields a halo that scales with the chosen
+    /// font size *and* renders correctly on CJK glyphs (Core Text's
+    /// `kCTStrokeWidthAttribute` would otherwise paint the strokes
+    /// inside Chinese characters' interior structure). Total cost
+    /// is two `CTLineDraw` calls per bullet, both pre-cached.
+    /// Setter invalidates the text cache so the change takes effect
+    /// on the next bullet, without having to tear the canvas down.
+    var normalStrokeWidth: CGFloat {
+        get { storedNormalStrokeWidth }
+        set {
+            let clamped = max(0, min(newValue, 6))
+            guard storedNormalStrokeWidth != clamped else { return }
+            storedNormalStrokeWidth = clamped
+            textCache.removeAllObjects()
+            needsRedraw = true
+        }
+    }
+    /// 1...9, mirrors the SettingsView slider; 6 ≈ semibold.
+    var normalFontWeight: Int {
+        get { storedNormalFontWeight }
+        set {
+            let clamped = max(1, min(newValue, 9))
+            guard storedNormalFontWeight != clamped else { return }
+            storedNormalFontWeight = clamped
+            textCache.removeAllObjects()
+            needsRedraw = true
+        }
+    }
+    /// Multiplier applied on top of the per-bullet `fontSize`.
+    var normalFontScale: CGFloat {
+        get { storedNormalFontScale }
+        set {
+            let clamped = max(0.6, min(newValue, 1.6))
+            guard storedNormalFontScale != clamped else { return }
+            storedNormalFontScale = clamped
+            textCache.removeAllObjects()
+            needsRedraw = true
+        }
+    }
     private let seekResyncThreshold: Double = 0.5
     private let perTickCap = 12
 
@@ -63,6 +105,9 @@ final class DanmakuCanvasView: UIView {
     private var displayLink: CADisplayLink?
     private var storedBlockLevel: Int = 0
     private var storedFrameRate: Int = 60
+    private var storedNormalStrokeWidth: CGFloat = 3.0
+    private var storedNormalFontWeight: Int = 6
+    private var storedNormalFontScale: CGFloat = 1.0
     private var currentPlaybackTime: Double = 0
     private var needsRedraw = false
 
@@ -72,12 +117,25 @@ final class DanmakuCanvasView: UIView {
     private var specialTextCache = NSCache<NSString, CachedSpecialText>()
 
     private final class CachedText {
+        /// Foreground glyph run, drawn last so the user-visible text
+        /// sits on top of the halo.
         let line: CTLine
+        /// Optional halo line: the same string laid out with a
+        /// significantly heavier font weight in opaque black. Drawing
+        /// it underneath the foreground line gives a uniform halo that
+        /// matches the foreground's metrics — including for CJK
+        /// glyphs, where Core Text's `kCTStrokeWidthAttribute` would
+        /// previously paint *inside* the strokes (划伤汉字内部) instead
+        /// of around them. Two `CTLineDraw` calls is the entire
+        /// per-bullet cost; both lines are cached so the work is
+        /// amortised across every frame the bullet stays on screen.
+        let haloLine: CTLine?
         let size: CGSize
         let drawInset: CGFloat
 
-        init(line: CTLine, size: CGSize, drawInset: CGFloat) {
+        init(line: CTLine, haloLine: CTLine?, size: CGSize, drawInset: CGFloat) {
             self.line = line
+            self.haloLine = haloLine
             self.size = size
             self.drawInset = drawInset
         }
@@ -147,7 +205,10 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Public API
 
     func setItems(_ items: [DanmakuItemDTO]) {
-        sourceItems = items.sorted { $0.timeSec < $1.timeSec }
+        // Callers hand us a pre-sorted track so route transitions
+        // don't spend their first few frames doing an O(n log n)
+        // sort on the main actor.
+        sourceItems = items
         rebuildTrack()
     }
 
@@ -394,14 +455,33 @@ final class DanmakuCanvasView: UIView {
     private let maxSpecialRasterSize: CGFloat = 4096
 
     private func resolvedFontSize(for item: DanmakuItemDTO) -> CGFloat {
-        baseFontSize * (item.fontSize > 0 ? CGFloat(item.fontSize) / 25.0 : 1.0)
+        let perItem = item.fontSize > 0 ? CGFloat(item.fontSize) / 25.0 : 1.0
+        // Mode-7 (advanced) bullets handle their own typography; the
+        // user-tunable scale only affects normal bullets.
+        let userScale = item.mode == 7 ? CGFloat(1.0) : storedNormalFontScale
+        return baseFontSize * perItem * userScale
     }
 
     private func resolvedFont(for item: DanmakuItemDTO) -> UIFont {
         let fontSize = resolvedFontSize(for: item)
-        let baseFont = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+        let weight = item.mode == 7 ? UIFont.Weight.semibold : Self.fontWeight(forSlot: storedNormalFontWeight)
+        let baseFont = UIFont.systemFont(ofSize: fontSize, weight: weight)
         return baseFont.fontDescriptor.withDesign(.rounded)
             .map { UIFont(descriptor: $0, size: fontSize) } ?? baseFont
+    }
+
+    private static func fontWeight(forSlot slot: Int) -> UIFont.Weight {
+        switch min(max(slot, 1), 9) {
+        case 1: return .ultraLight
+        case 2: return .thin
+        case 3: return .light
+        case 4: return .regular
+        case 5: return .medium
+        case 6: return .semibold
+        case 7: return .bold
+        case 8: return .heavy
+        default: return .black
+        }
     }
 
     private func resolvedTextColor(for item: DanmakuItemDTO) -> UIColor {
@@ -415,20 +495,51 @@ final class DanmakuCanvasView: UIView {
         let font = resolvedFont(for: item)
         let fillColor = resolvedTextColor(for: item)
 
-        let attrs: [NSAttributedString.Key: Any] = [
+        let mainAttrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: fillColor,
         ]
-        let str = NSAttributedString(string: displayText, attributes: attrs)
-        let line = CTLineCreateWithAttributedString(str)
-        let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
+        let mainStr = NSAttributedString(string: displayText, attributes: mainAttrs)
+        let mainLine = CTLineCreateWithAttributedString(mainStr)
+        let mainBounds = CTLineGetBoundsWithOptions(mainLine, .useOpticalBounds)
+
+        // Build a heavier-weight black version of the same text and
+        // draw it underneath as a halo. We bump the weight slot by
+        // one tier per `storedNormalStrokeWidth` step, capped at
+        // `.black`, so the halo grows with the user's stroke setting
+        // without adding extra draw calls. Mode-7 (advanced) bullets
+        // keep their own paint stack.
+        var haloLine: CTLine?
+        var haloBounds: CGRect = .zero
+        if item.mode != 7, storedNormalStrokeWidth > 0 {
+            let bumpSlots = max(1, Int(ceil(storedNormalStrokeWidth)))
+            let haloSlot = min(9, storedNormalFontWeight + bumpSlots + 1)
+            let haloWeight = Self.fontWeight(forSlot: haloSlot)
+            let baseHalo = UIFont.systemFont(ofSize: font.pointSize, weight: haloWeight)
+            let haloFont = baseHalo.fontDescriptor.withDesign(.rounded)
+                .map { UIFont(descriptor: $0, size: font.pointSize) } ?? baseHalo
+            let haloAttrs: [NSAttributedString.Key: Any] = [
+                .font: haloFont,
+                .foregroundColor: UIColor.black,
+            ]
+            let haloStr = NSAttributedString(string: displayText, attributes: haloAttrs)
+            haloLine = CTLineCreateWithAttributedString(haloStr)
+            haloBounds = CTLineGetBoundsWithOptions(haloLine!, .useOpticalBounds)
+        }
+
+        // The halo glyphs may extend a hair beyond the foreground
+        // optical bounds (heavier weight = wider advance widths), so
+        // size the cached canvas to fit the union of both lines.
+        let unionWidth = max(mainBounds.width, haloBounds.width)
+        let unionHeight = max(mainBounds.height, haloBounds.height)
         let drawInset: CGFloat = 2
         let size = CGSize(
-            width: ceil(bounds.width) + drawInset * 2,
-            height: ceil(bounds.height) + drawInset * 2
+            width: ceil(unionWidth) + drawInset * 2,
+            height: ceil(unionHeight) + drawInset * 2
         )
         return CachedText(
-            line: line,
+            line: mainLine,
+            haloLine: haloLine,
             size: size,
             drawInset: drawInset
         )
@@ -609,6 +720,14 @@ final class DanmakuCanvasView: UIView {
             y: origin.y + cached.size.height - cached.drawInset
         )
         context.scaleBy(x: 1, y: -1)
+        // Halo first (heavier-weight black laid out at the same
+        // baseline), foreground glyphs on top — two `CTLineDraw`
+        // calls total, both pre-cached.
+        if let halo = cached.haloLine {
+            context.textPosition = .zero
+            CTLineDraw(halo, context)
+        }
+        context.textPosition = .zero
         CTLineDraw(cached.line, context)
         context.restoreGState()
     }

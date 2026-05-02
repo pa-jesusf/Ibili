@@ -62,14 +62,7 @@ struct VideoDetailContent: View {
                             isLoadingMore: vm.isLoadingMoreRelated,
                             isEnd: vm.relatedIsEnd,
                             onTap: { feedItem in
-                                // Push onto the active player
-                                // session’s NavigationStack so
-                                // “返回” returns to the previous
-                                // video instead of replacing it
-                                // (which used to leave AVKit
-                                // fullscreen flashing the old
-                                // video on rotation).
-                                router.path.append(feedItem)
+                                router.open(feedItem)
                             },
                             onReachEnd: {
                                 Task { await vm.loadMoreRelated() }
@@ -162,13 +155,10 @@ struct VideoDetailContent: View {
             }
 
             if let v = vm.view {
+                let currentCid = v.cid
                 if let season = v.ugcSeason, season.id > 0 {
-                    VideoSeasonCard(source: .season(season, currentCid: item.cid)) { aid, bvid, cid in
-                        // Tapping any other episode in the 合集 pushes
-                        // a new player onto the same NavigationStack
-                        // so swiping back returns to the previous
-                        // episode (uniform 从哪儿来回哪儿去 model).
-                        guard cid != item.cid else { return }
+                    VideoSeasonCard(source: .season(season, currentCid: currentCid)) { aid, bvid, cid in
+                        guard cid != currentCid else { return }
                         let next = FeedItemDTO(
                             aid: aid ?? 0,
                             bvid: bvid ?? "",
@@ -176,11 +166,21 @@ struct VideoDetailContent: View {
                             title: "", cover: "", author: "",
                             durationSec: 0, play: 0, danmaku: 0
                         )
-                        router.path.append(next)
+                        router.open(next, mode: .replaceCurrent)
                     }
                     .padding(.horizontal, 16)
                 } else if v.pages.count > 1 {
-                    VideoSeasonCard(source: .pages(v.pages, currentCid: item.cid)) { _, _, _ in }
+                    VideoSeasonCard(source: .pages(aid: v.aid, bvid: v.bvid, pages: v.pages, currentCid: currentCid)) { aid, bvid, cid in
+                        guard cid != currentCid else { return }
+                        let next = FeedItemDTO(
+                            aid: aid ?? v.aid,
+                            bvid: (bvid?.isEmpty == false ? bvid : v.bvid) ?? "",
+                            cid: cid,
+                            title: "", cover: "", author: "",
+                            durationSec: 0, play: 0, danmaku: 0
+                        )
+                        router.open(next, mode: .replaceCurrent)
+                    }
                         .padding(.horizontal, 16)
                 }
             }

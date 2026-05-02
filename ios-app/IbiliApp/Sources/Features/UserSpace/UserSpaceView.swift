@@ -18,14 +18,15 @@ import UIKit
 /// so the floating Liquid-Glass tab bar of `MainTabView` doesn't
 /// peek through.
 ///
-/// All in-page navigation pushes happen on the *enclosing* navigation
-/// stack — never via `router.pending` — so the back stack is
-/// preserved no matter how the user arrived (tab → user space, or
-/// player → user space, or relation list → user space).
+/// Dynamic-detail pushes stay on the enclosing navigation stack so the
+/// user-space page itself keeps its local back stack, while video opens
+/// go through the global player router to reuse the app-wide player
+/// session lifecycle and PiP restore path.
 struct UserSpaceView: View {
     let mid: Int64
 
     @StateObject private var vm = UserSpaceViewModel()
+    @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
     @FocusState private var searchFocused: Bool
@@ -37,8 +38,6 @@ struct UserSpaceView: View {
     /// the cell is recycled, which collapses the entire push above
     /// it — manifesting as "tap dynamic → back jumps to home".
     @State private var pushDynamic: DynamicItemDTO?
-    /// Same story for video pushes (archive list / dynamic-as-video).
-    @State private var pushVideo: FeedItemDTO?
 
     enum Tab: Hashable, Identifiable, CaseIterable {
         case dynamics, archives
@@ -97,10 +96,10 @@ struct UserSpaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: tab)
-        // Hidden NavigationLinks at the page level. Driven by `pushDynamic`
-        // and `pushVideo`. Because they're declared on `UserSpaceView`
-        // itself (not inside a lazy cell), their binding is stable
-        // across cell recycling and across navigation pops.
+        // Hidden NavigationLink at the page level for dynamics. Because
+        // it's declared on `UserSpaceView` itself (not inside a lazy
+        // cell), its binding is stable across cell recycling and across
+        // navigation pops.
         .background(
             NavigationLink(
                 isActive: Binding(
@@ -109,20 +108,6 @@ struct UserSpaceView: View {
                 ),
                 destination: {
                     if let d = pushDynamic { DynamicDetailView(item: d) }
-                },
-                label: { EmptyView() }
-            )
-            .opacity(0)
-            .allowsHitTesting(false)
-        )
-        .background(
-            NavigationLink(
-                isActive: Binding(
-                    get: { pushVideo != nil },
-                    set: { if !$0 { pushVideo = nil } }
-                ),
-                destination: {
-                    if let v = pushVideo { PlayerView(item: v) }
                 },
                 label: { EmptyView() }
             )
@@ -237,12 +222,12 @@ struct UserSpaceView: View {
         LazyVStack(spacing: 4) {
             ForEach(Array(vm.archives.enumerated()), id: \.element.id) { idx, item in
                 Button {
-                    pushVideo = FeedItemDTO(
+                    router.open(FeedItemDTO(
                         aid: item.aid, bvid: item.bvid, cid: 0,
                         title: item.title, cover: item.cover,
                         author: item.author, durationSec: 0,
                         play: item.play, danmaku: item.danmaku
-                    )
+                    ))
                 } label: {
                     CompactVideoRow(
                         cover: item.cover,
@@ -282,7 +267,7 @@ struct UserSpaceView: View {
             ForEach(Array(vm.dynamics.enumerated()), id: \.element.id) { idx, item in
                 DynamicItemCard(
                     item: item,
-                    onOpenVideo: { feedItem in pushVideo = feedItem },
+                    onOpenVideo: { feedItem in router.open(feedItem) },
                     onOpenDetail: { dyn in pushDynamic = dyn }
                 )
                 .onAppear {

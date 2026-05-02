@@ -41,10 +41,9 @@ struct RootView: View {
     }
 }
 
-/// Wrapper that hosts the active `PlayerView` and listens to the
-/// router so taps on related videos *replace* the current player
-/// rather than stacking. Re-keying via `.id(...)` is what gives us
-/// the "replace, don't stack" behaviour requested by the user.
+/// Wrapper that hosts the active player session. The router owns the
+/// decision of whether a navigation creates the root layer, pushes a
+/// new layer, or replaces the current layer.
 private struct DeepLinkPlayerHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
     /// Single source of truth for the host's horizontal position.
@@ -81,9 +80,18 @@ private struct DeepLinkPlayerHost: View {
     var body: some View {
         NavigationStack(path: $router.path) {
             Group {
-                if let item = router.pending {
-                    PlayerView(item: item)
-                        .id("\(item.aid):\(item.bvid)")
+                if let route = router.pending {
+                    PlayerView(
+                        item: route.item,
+                        viewModel: PlayerSessionStore.shared.viewModel(for: route.id),
+                        onPictureInPictureActiveChange: { isActive in
+                            handlePictureInPictureChange(isActive, routeID: route.id)
+                        },
+                        onPictureInPictureRestore: { completion in
+                            restorePictureInPicture(routeID: route.id, completion: completion)
+                        }
+                    )
+                        .id(route.id)
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
                                 Button {
@@ -98,13 +106,31 @@ private struct DeepLinkPlayerHost: View {
                     Color.clear
                 }
             }
-            .navigationDestination(for: FeedItemDTO.self) { next in
-                PlayerView(item: next)
-                    .id("\(next.aid):\(next.bvid)")
+            .navigationDestination(for: DeepLinkRouter.PlayerRoute.self) { route in
+                PlayerView(
+                    item: route.item,
+                    viewModel: PlayerSessionStore.shared.viewModel(for: route.id),
+                    onPictureInPictureActiveChange: { isActive in
+                        handlePictureInPictureChange(isActive, routeID: route.id)
+                    },
+                    onPictureInPictureRestore: { completion in
+                        restorePictureInPicture(routeID: route.id, completion: completion)
+                    }
+                )
+                    .id(route.id)
             }
         }
         .background(IbiliTheme.background)
         .offset(x: offsetX)
+        .onAppear {
+            syncPlayerSessions()
+        }
+        .onChange(of: router.pending?.id) { _ in
+            syncPlayerSessions()
+        }
+        .onChange(of: router.path.map(\.id)) { _ in
+            syncPlayerSessions()
+        }
         .onAppear {
             // Start off-screen, then animate in. Doing it in
             // `onAppear` (rather than via a parent `.transition`)
@@ -118,6 +144,15 @@ private struct DeepLinkPlayerHost: View {
         }
         // Restore the iOS interactive-pop gesture by hosting an
         // invisible DragGesture region pinned to the leading edge.
+        //
+        // IMPORTANT: this overlay only operates at the root layer
+        // (`router.path.isEmpty`). When the user has pushed deeper
+        // (related-video tap / season episode), the inner
+        // `NavigationStack` provides its own
+        // `UIScreenEdgePanGestureRecognizer`-driven interactive
+        // pop, which would otherwise be shadowed by this overlay
+        // and cause the swipe to incorrectly tear the whole
+        // session down.
         //
         // Industry consensus for "swipe-back vs vertical scroll":
         //   1. Generous edge zone (~20pt) so the gesture is easy to
@@ -134,71 +169,107 @@ private struct DeepLinkPlayerHost: View {
         //   3. Once locked, never revisit the decision — prevents
         //      mid-drag jitter from re-capturing scroll input.
         .overlay(alignment: .leading) {
-            Color.clear
-                .frame(width: 20)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { v in
-                            let dx = v.translation.width
-                            let dy = v.translation.height
-                            switch dragDecision {
-                            case .vertical:
-                                return
-                            case .horizontal:
-                                if dx > 0 { offsetX = dx }
-                            case .undecided:
-                                let ax = abs(dx), ay = abs(dy)
-                                // Wait until the user has moved
-                                // at least 8pt before deciding,
-                                // otherwise fingertip noise alone
-                                // can flip the slope.
-                                guard max(ax, ay) > 8 else { return }
-                                if ay > ax {
-                                    dragDecision = .vertical
-                                } else if dx > 0 && ax > ay * 1.5 {
-                                    dragDecision = .horizontal
-                                    offsetX = dx
-                                } else {
-                                    // Ambiguous slope (close to 45°):
-                                    // treat as vertical so scroll
-                                    // wins ties, mirroring iOS's
-                                    // own bias.
-                                    dragDecision = .vertical
-                                }
-                            }
-                        }
-                        .onEnded { v in
-                            defer { dragDecision = .undecided }
-                            guard dragDecision == .horizontal else { return }
-                            let dx = v.translation.width
-                            let vx = v.predictedEndTranslation.width
-                            if dx > 80 || vx > 200 {
-                                dismiss()
-                            } else {
-                                withAnimation(Self.slideSpring) {
-                                    offsetX = 0
-                                }
-                            }
-                        }
-                )
+            if router.path.isEmpty {
+                Color.clear
+                    .frame(width: 20)
+                    .contentShape(Rectangle())
+                    .gesture(rootSwipeBackGesture)
+            }
         }
     }
 
-    /// Slide off-screen, then drop the routed item. Splitting the
-    /// "animate offset out" from the "clear pending" steps means
-    /// the host's removal isn't tied to a SwiftUI insertion/removal
-    /// transition — there's only ever a single offset animation in
-    /// flight, which keeps the path on ProMotion's 120 Hz cadence.
+    /// Pop one navigation layer. If the player session has pushed
+    /// child routes (related video / season episode), pop the top
+    /// of `router.path` and let `NavigationStack` animate the pop
+    /// natively — the slide host stays put. Only when we're already
+    /// at the root pending route do we slide the host off-screen
+    /// and then clear the session.
+    ///
+    /// Order matters: we kick off the slide spring FIRST so the
+    /// animation has a frame budget, and only AFTER the spring's
+    /// settle time do we tear the AVPlayer / HLS proxy / danmaku
+    /// canvas down. Tearing them on the same runloop tick would
+    /// stall the spring's first frame and re-introduce the visible
+    /// "frozen" lag the user complained about.
     private func dismiss() {
+        if !router.path.isEmpty {
+            router.path.removeLast()
+            return
+        }
         let width = UIScreen.main.bounds.width
         withAnimation(Self.slideSpring) {
             offsetX = width
         }
+        // Defer the heavy session teardown to a later runloop tick so
+        // SwiftUI commits the slide animation before AVPlayer /
+        // local-HLS / danmaku-displaylink deinit work seizes the main
+        // thread. By the time the teardown runs, the host is already
+        // off-screen, so the user never sees the freeze.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) {
-            router.path.removeAll()
-            router.pending = nil
+            router.closeSession()
         }
+    }
+
+    private func syncPlayerSessions() {
+        PlayerSessionStore.shared.retainSessions(root: router.pending, stack: router.path)
+    }
+
+    private var rootSwipeBackGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { v in
+                let dx = v.translation.width
+                let dy = v.translation.height
+                switch dragDecision {
+                case .vertical:
+                    return
+                case .horizontal:
+                    if dx > 0 { offsetX = dx }
+                case .undecided:
+                    let ax = abs(dx), ay = abs(dy)
+                    guard max(ax, ay) > 8 else { return }
+                    if ay > ax {
+                        dragDecision = .vertical
+                    } else if dx > 0 && ax > ay * 1.5 {
+                        dragDecision = .horizontal
+                        offsetX = dx
+                    } else {
+                        dragDecision = .vertical
+                    }
+                }
+            }
+            .onEnded { v in
+                defer { dragDecision = .undecided }
+                guard dragDecision == .horizontal else { return }
+                let dx = v.translation.width
+                let vx = v.predictedEndTranslation.width
+                if dx > 80 || vx > 200 {
+                    dismiss()
+                } else {
+                    withAnimation(Self.slideSpring) {
+                        offsetX = 0
+                    }
+                }
+            }
+    }
+
+    private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
+        PlayerSessionStore.shared.setPictureInPictureActive(
+            isActive,
+            for: routeID,
+            snapshot: isActive ? router.snapshot : nil
+        )
+        syncPlayerSessions()
+    }
+
+    private func restorePictureInPicture(routeID: UUID,
+                                         completion: @escaping (Bool) -> Void) {
+        if let snapshot = PlayerSessionStore.shared.pictureInPictureSnapshot(for: routeID) {
+            router.restore(snapshot)
+            syncPlayerSessions()
+            completion(true)
+            return
+        }
+        completion(router.containsRoute(id: routeID))
     }
 }
 

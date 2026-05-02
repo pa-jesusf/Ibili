@@ -10,19 +10,97 @@ import Combine
 /// active, so jumps work uniformly from comments / descriptions / etc.
 @MainActor
 final class DeepLinkRouter: ObservableObject {
-    @Published var pending: FeedItemDTO?
+    struct PlayerRoute: Hashable, Identifiable {
+        let id: UUID
+        var item: FeedItemDTO
+
+        init(id: UUID = UUID(), item: FeedItemDTO) {
+            self.id = id
+            self.item = item
+        }
+
+        func replacingItem(_ item: FeedItemDTO) -> Self {
+            Self(id: id, item: item)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(id)
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id
+        }
+    }
+
+    struct SessionSnapshot {
+        var pending: PlayerRoute?
+        var path: [PlayerRoute]
+    }
+
+    @Published var pending: PlayerRoute?
     /// Navigation path inside the active player session. The root
     /// player is rendered when `pending != nil`; subsequent pushes
     /// (related video tap, season episode, user-space-tap-then-play)
     /// append to this path so the user gets a real
     /// "from where you came, back to where you came" stack.
     ///
-    /// Anything that wants to push *another* player onto the
-    /// currently-visible session should call
-    /// `router.path.append(feedItem)` rather than reassigning
-    /// `pending` (which would replace the root and lose the back
-    /// stack entirely).
-    @Published var path: [FeedItemDTO] = []
+    /// Anything that wants to route to another player should go
+    /// through `open(_:mode:)` so the navigation semantics stay
+    /// uniform across every entry point.
+    @Published var path: [PlayerRoute] = []
+
+    enum OpenMode {
+        case push
+        case replaceCurrent
+    }
+
+    var currentRoute: PlayerRoute? {
+        path.last ?? pending
+    }
+
+    var currentItem: FeedItemDTO? {
+        currentRoute?.item
+    }
+
+    var snapshot: SessionSnapshot {
+        SessionSnapshot(pending: pending, path: path)
+    }
+
+    func open(_ item: FeedItemDTO, mode: OpenMode = .push) {
+        guard !isCurrent(item) else { return }
+
+        guard pending != nil else {
+            path.removeAll()
+            pending = PlayerRoute(item: item)
+            return
+        }
+
+        switch mode {
+        case .push:
+            path.append(PlayerRoute(item: item))
+        case .replaceCurrent:
+            if path.isEmpty {
+                pending = pending?.replacingItem(item) ?? PlayerRoute(item: item)
+            } else {
+                let index = path.index(before: path.endIndex)
+                path[index] = path[index].replacingItem(item)
+            }
+        }
+    }
+
+    func closeSession() {
+        path.removeAll()
+        pending = nil
+    }
+
+    func restore(_ snapshot: SessionSnapshot) {
+        pending = snapshot.pending
+        path = snapshot.path
+    }
+
+    func containsRoute(id: UUID) -> Bool {
+        pending?.id == id || path.contains { $0.id == id }
+    }
 
     /// Returns `.handled` if the URL was an ibili scheme and we routed
     /// it; `.systemAction` otherwise so plain `https://` links still
@@ -34,11 +112,11 @@ final class DeepLinkRouter: ObservableObject {
         switch host {
         case "bv":
             guard !path.isEmpty else { return .handled }
-            pending = makeShell(bvid: path)
+            open(makeShell(bvid: path))
             return .handled
         case "av":
             if let aid = Int64(path) {
-                pending = makeShell(aid: aid)
+                open(makeShell(aid: aid))
             }
             return .handled
         default:
@@ -58,5 +136,12 @@ final class DeepLinkRouter: ObservableObject {
             play: 0,
             danmaku: 0
         )
+    }
+
+    private func isCurrent(_ item: FeedItemDTO) -> Bool {
+        guard let currentItem else { return false }
+        return currentItem.aid == item.aid
+            && currentItem.bvid == item.bvid
+            && currentItem.cid == item.cid
     }
 }

@@ -74,6 +74,21 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.player.danmakuBlockLevel") var danmakuBlockLevel: Int = 0
     /// Preferred danmaku render/update frame rate.
     @AppStorage("ibili.player.danmakuFrameRate") var danmakuFrameRate: Int = 60
+    /// Black outline width applied to *normal* danmaku (modes 1/4/5)
+    /// for readability over busy backgrounds. Stored as a percentage
+    /// of the font's point size (CoreText `kCTStrokeWidthAttributeName`
+    /// is interpreted in those units), 0 disables the outline. Does
+    /// not touch advanced (mode 7) bullets — those carry their own
+    /// styling already and the user explicitly does not want them
+    /// touched. Range 0...6, default 3.
+    @AppStorage("ibili.player.danmakuStrokeWidth") var danmakuStrokeWidth: Double = 3.0
+    /// Font weight for *normal* danmaku, 1...9 mapping to
+    /// UIFont.Weight (1=ultraLight ... 5=medium 6=semibold 9=black).
+    /// Default 6 (semibold) matches the previous hard-coded weight.
+    @AppStorage("ibili.player.danmakuFontWeight") var danmakuFontWeight: Int = 6
+    /// Font-size multiplier for *normal* danmaku, applied on top of
+    /// the per-bullet `fontSize` field. Range 0.6...1.6, default 1.0.
+    @AppStorage("ibili.player.danmakuFontScale") var danmakuFontScale: Double = 1.0
     /// When enabled, rotating to landscape automatically enters fullscreen,
     /// rotating back to portrait exits fullscreen. Tap of the fullscreen
     /// button always rotates regardless of this setting.
@@ -207,6 +222,30 @@ final class AppSettings: ObservableObject {
         let resolved = supportedDanmakuFrameRates.contains(danmakuFrameRate) ? danmakuFrameRate : 60
         if danmakuFrameRate != resolved {
             danmakuFrameRate = resolved
+        }
+        return resolved
+    }
+
+    func resolvedDanmakuStrokeWidth() -> Double {
+        let resolved = min(max(danmakuStrokeWidth, 0), 6)
+        if danmakuStrokeWidth != resolved {
+            danmakuStrokeWidth = resolved
+        }
+        return resolved
+    }
+
+    func resolvedDanmakuFontWeight() -> Int {
+        let resolved = min(max(danmakuFontWeight, 1), 9)
+        if danmakuFontWeight != resolved {
+            danmakuFontWeight = resolved
+        }
+        return resolved
+    }
+
+    func resolvedDanmakuFontScale() -> Double {
+        let resolved = min(max(danmakuFontScale, 0.6), 1.6)
+        if danmakuFontScale != resolved {
+            danmakuFontScale = resolved
         }
         return resolved
     }

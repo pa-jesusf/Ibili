@@ -2,10 +2,8 @@ import SwiftUI
 
 // MARK: - Shared video-tap helper
 //
-// Each list pushes a `FeedItemDTO` shell into the deep-link router so
-// the player overlay slides in over the current screen — same idiom
-// the home / search / related lists already use. Keeping the
-// adaptation logic in one place avoids drift between surfaces.
+// Each list routes a `FeedItemDTO` through the shared player router so
+// player-layer behaviour stays consistent across every surface.
 @MainActor
 private func pushVideo(
     _ router: DeepLinkRouter,
@@ -13,11 +11,11 @@ private func pushVideo(
     title: String, cover: String, author: String,
     durationSec: Int64, play: Int64 = 0, danmaku: Int64 = 0
 ) {
-    router.pending = FeedItemDTO(
+    router.open(FeedItemDTO(
         aid: aid, bvid: bvid, cid: cid,
         title: title, cover: cover, author: author,
         durationSec: durationSec, play: play, danmaku: danmaku
-    )
+    ))
 }
 
 // MARK: - History

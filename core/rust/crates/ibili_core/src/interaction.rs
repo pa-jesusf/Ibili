@@ -179,8 +179,14 @@ impl Core {
     /// Remove a video from the 稍后再看 list.
     pub fn watchlater_del(&self, aid: i64) -> CoreResult<()> {
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        // The /v2/dels endpoint takes the avid list under the
+        // `resources` key (mirroring upstream PiliPlus
+        // `UserHttp.toViewDel`). We previously sent it as `aids`,
+        // which the server silently accepts with code != 0 instead
+        // of failing loudly, so the cancel toast looked fine while
+        // the bookmark stayed on the server.
         let params: Vec<(String, String)> = vec![
-            ("aids".into(), aid.to_string()),
+            ("resources".into(), aid.to_string()),
             ("csrf".into(), csrf),
         ];
         let _: Value = self.http.post_form_web(URL_WATCHLATER_DEL, &params)?;

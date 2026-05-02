@@ -45,12 +45,7 @@ struct HomeView: View {
                 LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                     ForEach(vm.items) { item in
                         Button {
-                            // Route every video tap through the router so
-                            // the player always lives in the global cover
-                            // host. This keeps the back-stack flat: tap
-                            // related → re-key player → back goes to home,
-                            // never to a previous video. (See `RootView`.)
-                            router.pending = item
+                            router.open(item)
                         } label: {
                             VideoCardView(
                                 item: item,

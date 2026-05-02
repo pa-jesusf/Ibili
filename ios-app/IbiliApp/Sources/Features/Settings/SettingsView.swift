@@ -40,6 +40,23 @@ struct SettingsView: View {
         ("30 帧", 30),
         ("60 帧", 60),
     ]
+    /// 1...9 mapping to UIFont.Weight slots, mirrors
+    /// `AppSettings.resolvedDanmakuFontWeight()`. Only the
+    /// commonly-useful weights are surfaced — the user does not need
+    /// access to ultraLight or thin for danmaku.
+    private let danmakuFontWeightOptions: [(label: String, value: Int)] = [
+        ("常规", 4),
+        ("中等", 5),
+        ("半粗", 6),
+        ("加粗", 7),
+        ("特粗", 8),
+        ("最粗", 9),
+    ]
+
+    private var strokeWidthLabel: String {
+        let v = settings.resolvedDanmakuStrokeWidth()
+        return v == 0 ? "关闭" : String(format: "%.1f", v)
+    }
 
     var body: some View {
         Form {
@@ -113,6 +130,46 @@ struct SettingsView: View {
                         set: { settings.danmakuFrameRate = $0 }
                     )) {
                         ForEach(danmakuFrameRateOptions, id: \.value) { opt in
+                            Text(opt.label).tag(opt.value)
+                        }
+                    }
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("弹幕黑色描边")
+                            Spacer()
+                            Text(strokeWidthLabel)
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { settings.resolvedDanmakuStrokeWidth() },
+                                set: { settings.danmakuStrokeWidth = $0 }
+                            ),
+                            in: 0...6,
+                            step: 0.5
+                        )
+                    }
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("弹幕字号")
+                            Spacer()
+                            Text(String(format: "×%.2f", settings.resolvedDanmakuFontScale()))
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { settings.resolvedDanmakuFontScale() },
+                                set: { settings.danmakuFontScale = $0 }
+                            ),
+                            in: 0.6...1.6,
+                            step: 0.05
+                        )
+                    }
+                    Picker("弹幕字重", selection: Binding(
+                        get: { settings.resolvedDanmakuFontWeight() },
+                        set: { settings.danmakuFontWeight = $0 }
+                    )) {
+                        ForEach(danmakuFontWeightOptions, id: \.value) { opt in
                             Text(opt.label).tag(opt.value)
                         }
                     }

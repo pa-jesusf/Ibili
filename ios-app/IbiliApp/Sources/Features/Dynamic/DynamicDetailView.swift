@@ -208,20 +208,20 @@ struct DynamicDetailView: View {
 
     private func openVideo() {
         guard let v = item.video else { return }
-        router.pending = FeedItemDTO(
+        router.open(FeedItemDTO(
             aid: v.aid, bvid: v.bvid, cid: 0,
             title: v.title, cover: v.cover, author: item.author.name,
             durationSec: 0, play: 0, danmaku: 0
-        )
+        ))
     }
 
     private func openOrigVideo() {
         guard let v = item.orig?.video else { return }
-        router.pending = FeedItemDTO(
+        router.open(FeedItemDTO(
             aid: v.aid, bvid: v.bvid, cid: 0,
             title: v.title, cover: v.cover, author: item.orig?.author.name ?? "",
             durationSec: 0, play: 0, danmaku: 0
-        )
+        ))
     }
 }
 

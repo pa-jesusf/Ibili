@@ -80,21 +80,23 @@ final class LocalHLSProxy: @unchecked Sendable {
     var currentPort: UInt16 { state.withLock { $0.port } }
 
     private init() {
-        // iOS will close our `NWListener` socket once the app has been
-        // suspended in the background; the `.cancelled` callback often
-        // arrives only AFTER the app is foregrounded again, which means
-        // a naive health check still sees the listener as alive while
-        // 127.0.0.1:<port> is already dead. Hooking
-        // `didEnterBackgroundNotification` lets us flip the health flag
-        // synchronously the moment the user locks the screen, so the
-        // very first `register(...)` after resume rebinds a fresh port.
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.invalidate(reason: "didEnterBackground")
-        }
+        // We deliberately do NOT proactively invalidate the listener
+        // on `didEnterBackgroundNotification`. iOS keeps apps running
+        // in the background as long as an `AVAudioSession` with
+        // category `.playback` is active, which means our `NWListener`
+        // socket also stays alive — the user expects playback (and
+        // therefore segment fetches against `127.0.0.1:<port>`) to
+        // continue when the screen is locked.
+        //
+        // For the case where iOS *does* eventually suspend us (the
+        // user navigates away from the player and stays away long
+        // enough for the audio session to deactivate), the listener
+        // emits `.failed` / `.cancelled` on resume, which flips
+        // `listenerHealthy` to `false`; the next `register(...)` call
+        // then rebinds a fresh port via `ensureRunning()`. The
+        // `PlayerViewModel.isEngineAlive` check + scene-phase recovery
+        // path in `PlayerView` handles that without any preemptive
+        // teardown here.
     }
 
     /// Force the next `register(...)` to bind a fresh listener. Safe to

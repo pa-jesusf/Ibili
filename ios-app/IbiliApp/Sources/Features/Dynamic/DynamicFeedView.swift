@@ -39,11 +39,11 @@ private func classify(_ item: DynamicItemDTO) -> DynamicTapAction {
 
 @MainActor
 private func openVideo(_ router: DeepLinkRouter, aid: Int64, bvid: String, title: String, cover: String) {
-    router.pending = FeedItemDTO(
+    router.open(FeedItemDTO(
         aid: aid, bvid: bvid, cid: 0,
         title: title, cover: cover, author: "",
         durationSec: 0, play: 0, danmaku: 0
-    )
+    ))
 }
 
 // MARK: - Feed root
@@ -182,7 +182,7 @@ struct DynamicItemCard: View {
                 durationSec: 0, play: 0, danmaku: 0
             )
             if let onOpenVideo { onOpenVideo(dto) }
-            else { router.pending = dto }
+            else { router.open(dto) }
         case .openDetail:
             if let onOpenDetail { onOpenDetail(item) }
             else { pendingDetail = item }

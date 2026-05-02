@@ -64,24 +64,89 @@ struct PlayerToolbarVideoQuality: View {
     }
 
     /// Toolbar glyph for the current quality. SF Symbols ships
-    /// dedicated `8k.tv` / `4k.tv` icons that read instantly. For
-    /// 1080P / 720P / 480P / 360P the resolution-bearing symbols
-    /// either don't exist or look identical at toolbar size, so we
-    /// hand-draw a tiny rounded rectangle with the canonical Bilibili
-    /// shorthand (FHD/HD/SD/LD) inside — fixed-width, won't stretch
-    /// the toolbar item, and tells the user the picked tier at a
-    /// glance without expanding the menu.
+    /// dedicated `8k.tv` / `4k.tv` icons that read instantly. The
+    /// premium tiers (HDR / Dolby Vision) share their pixel count
+    /// with 4K but mean very different things to the user, so each
+    /// gets its own visual:
+    /// * 8K     → `8k.tv`
+    /// * 4K     → `4k.tv`
+    /// * 4K HDR → 4k.tv with a small "HDR" pill stacked on top, so
+    ///            the resolution glyph reads first and the HDR-ness
+    ///            is unambiguous.
+    /// * 杜比视界 → the iconic Dolby double-D mark, hand-drawn so we
+    ///            don't ship an asset.
+    /// 1080P / 720P / 480P / 360P fall back to the FHD/HD/SD/LD
+    /// rounded-rect badge (resolution SF Symbols don't exist below
+    /// 4k.tv).
     @ViewBuilder
     private func qualityIconView(for qn: Int64) -> some View {
         switch qn {
-        case 127: Image(systemName: "8k.tv")
-        case 120, 125, 126: Image(systemName: "4k.tv")
+        case 127: QualityBadge(text: "8K")
+        case 120: Image(systemName: "4k.tv")
+        case 125: QualityBadge(text: "HDR")
+        case 126: DolbyVisionIcon()
         case 116, 112, 80: QualityBadge(text: "FHD")
         case 64, 74:        QualityBadge(text: "HD")
         case 32:            QualityBadge(text: "SD")
         case 16, 6:         QualityBadge(text: "LD")
         default:            Image(systemName: "tv")
         }
+    }
+}
+
+/// Hand-drawn Dolby Vision mark — two opposing capital "D" silhouettes
+/// forming the iconic double-D logo. Drawn from `Path` so we don't
+/// have to ship a bitmap asset and the mark scales with the toolbar
+/// font weight automatically. Uses the toolbar tint (accent color) so
+/// it visually matches the other quality glyphs instead of rendering
+/// as plain white.
+private struct DolbyVisionIcon: View {
+    var body: some View {
+        DolbyLogoMark()
+            .stroke(style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
+            .foregroundStyle(.tint)
+            .frame(width: 26, height: 18)
+            .accessibilityLabel("杜比视界")
+    }
+}
+
+private struct DolbyLogoMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        // The mark is two mirrored "D" half-shapes inscribed in a
+        // rounded rectangle, with their flat backs meeting in the
+        // middle. We draw them as two closed sub-paths so callers can
+        // either stroke or fill the result and get a recognizable
+        // double-D silhouette either way.
+        var path = Path()
+        let r = min(rect.height / 2, rect.width / 4)
+
+        // Left D — flat side on the right, curve on the left.
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.midY),
+            radius: r,
+            startAngle: .degrees(-90),
+            endAngle: .degrees(90),
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.closeSubpath()
+
+        // Right D — mirrored: flat side on the left, curve on the right.
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.midY),
+            radius: r,
+            startAngle: .degrees(-90),
+            endAngle: .degrees(90),
+            clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.closeSubpath()
+
+        return path
     }
 }
 

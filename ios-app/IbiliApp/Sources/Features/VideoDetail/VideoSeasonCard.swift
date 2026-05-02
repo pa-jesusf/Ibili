@@ -5,7 +5,7 @@ import SwiftUI
 struct VideoSeasonCard: View {
     enum Source {
         case season(UgcSeasonDTO, currentCid: Int64)
-        case pages([VideoPageDTO], currentCid: Int64)
+        case pages(aid: Int64, bvid: String, pages: [VideoPageDTO], currentCid: Int64)
     }
 
     let source: Source
@@ -56,7 +56,7 @@ struct VideoSeasonCard: View {
     private var subtitle: String {
         switch source {
         case .season(let s, _): return "共 \(s.epCount > 0 ? s.epCount : Int32(s.sections.flatMap(\.episodes).count)) 集"
-        case .pages(let pages, _): return "共 \(pages.count) P"
+        case .pages(_, _, let pages, _): return "共 \(pages.count) P"
         }
     }
 
@@ -69,10 +69,10 @@ struct VideoSeasonCard: View {
                 onPick(aid, bvid, cid)
             }
             .presentationDetents([.medium, .large])
-        case .pages(let pages, let currentCid):
+        case .pages(let aid, let bvid, let pages, let currentCid):
             VideoPagesPicker(pages: pages, currentCid: currentCid) { cid in
                 presented = false
-                onPick(nil, nil, cid)
+                onPick(aid, bvid, cid)
             }
             .presentationDetents([.medium])
         }

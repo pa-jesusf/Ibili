@@ -64,7 +64,7 @@ struct SearchResultsView: View {
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                         ForEach(vm.results) { item in
                             Button {
-                                router.pending = feedItem(from: item)
+                                router.open(feedItem(from: item))
                             } label: {
                                 SearchResultCardView(
                                     item: item,
