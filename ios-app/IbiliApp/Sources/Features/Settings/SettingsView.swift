@@ -58,6 +58,11 @@ struct SettingsView: View {
         return v == 0 ? "关闭" : String(format: "%.1f", v)
     }
 
+    private var audioGainLabel: String {
+        let v = settings.resolvedAudioGainDb()
+        return v == 0 ? "0 dB（不衰减）" : String(format: "%+.0f dB", v)
+    }
+
     var body: some View {
         Form {
             Section {
@@ -176,10 +181,26 @@ struct SettingsView: View {
                 }
                 Toggle("手机横屏自动进入/退出全屏", isOn: $settings.autoRotateFullscreen)
                 Toggle("快速加载", isOn: $settings.fastLoad)
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text("音量增益")
+                        Spacer()
+                        Text(audioGainLabel)
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { settings.resolvedAudioGainDb() },
+                            set: { settings.audioGainDb = $0 }
+                        ),
+                        in: -20...0,
+                        step: 1
+                    )
+                }
             } header: {
                 Text("播放")
             } footer: {
-                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换。播放失败时会自动导出 diagnostics，并只保留最近 5 份记录。")
+                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换；音量增益按分贝衰减整体播放音量，可让视频与系统其他 app 在同一系统音量下听感一致")
             }
 
             Section {
@@ -203,8 +224,6 @@ struct SettingsView: View {
                 Toggle("UP 主", isOn: $settings.homeShowAuthor)
             } header: {
                 Text("首页卡片显示")
-            } footer: {
-                Text("首页推荐流仅下发有限信息，为保持视觉一致不提供投稿时间与数据角标选项。")
             }
 
             cardMetaSection(
@@ -216,8 +235,7 @@ struct SettingsView: View {
                 stat: Binding(
                     get: { settings.searchCardStat },
                     set: { settings.searchCardStat = $0 }
-                ),
-                footer: "调整搜索结果卡片显示的各项信息。"
+                )
             )
 
             Section {
@@ -251,7 +269,7 @@ struct SettingsView: View {
             } header: {
                 Text("缓存")
             } footer: {
-                Text("封面图磁盘缓存。命中后无需再次请求 CDN，适配上游 cached_network_image 的体验；超出上限会按最久未使用淘汰。")
+                Text("封面图磁盘缓存。超出上限会按最久未使用淘汰。")
             }
         }
         .navigationTitle("设置")

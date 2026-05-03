@@ -89,6 +89,14 @@ final class AppSettings: ObservableObject {
     /// Font-size multiplier for *normal* danmaku, applied on top of
     /// the per-bullet `fontSize` field. Range 0.6...1.6, default 1.0.
     @AppStorage("ibili.player.danmakuFontScale") var danmakuFontScale: Double = 1.0
+    /// Global playback gain in decibels, applied to every AVPlayer via
+    /// its `volume` property (relative to the system volume slider).
+    /// Range -20 ... 0 dB — only attenuation is supported because
+    /// AVPlayer's volume caps at 1.0. Default -15 dB brings B 站
+    /// content roughly in line with system loudness of 标准 apps
+    /// (≈ 40 dB SPL at min system volume), which the user reported
+    /// is otherwise ~15 dB louder than peers.
+    @AppStorage("ibili.player.audioGainDb") var audioGainDb: Double = -15
     /// When enabled, rotating to landscape automatically enters fullscreen,
     /// rotating back to portrait exits fullscreen. Tap of the fullscreen
     /// button always rotates regardless of this setting.
@@ -248,5 +256,22 @@ final class AppSettings: ObservableObject {
             danmakuFontScale = resolved
         }
         return resolved
+    }
+
+    /// Clamps `audioGainDb` to the supported attenuation range and
+    /// returns it. AVPlayer's `volume` cannot boost above unity, so
+    /// we cap the maximum at 0 dB.
+    func resolvedAudioGainDb() -> Double {
+        let resolved = min(max(audioGainDb, -20), 0)
+        if audioGainDb != resolved {
+            audioGainDb = resolved
+        }
+        return resolved
+    }
+
+    /// Linear `AVPlayer.volume` value derived from `audioGainDb`.
+    /// `1.0` means unattenuated, `0.316` is roughly -10 dB.
+    func resolvedAudioVolumeLinear() -> Float {
+        Float(pow(10.0, resolvedAudioGainDb() / 20.0))
     }
 }

@@ -47,6 +47,11 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var isTemporarySpeedBoostActive = false
     private let holdSpeedRate: Float = 2.0
     private var temporaryPlaybackRateOverride: Float?
+    /// Linear `AVPlayer.volume` value derived from the user's
+    /// `audioGainDb` setting. Updated from SwiftUI via
+    /// ``setAudioVolumeLinear(_:)`` and applied to the active
+    /// AVPlayer (and any subsequently-attached one).
+    private var audioVolumeLinear: Float = 1.0
     /// Lightweight handle the SwiftUI player container hands us so we
     /// can drive a snapshot crossfade across an AVPlayer identity swap
     /// without forcing the view-model to know about UIKit views.
@@ -498,6 +503,16 @@ final class PlayerViewModel: ObservableObject {
         applyRate(to: targetPlayer)
     }
 
+    /// Sets the global player gain (linear multiplier). Idempotent.
+    /// SwiftUI calls this whenever ``AppSettings.audioGainDb`` changes
+    /// or a fresh AVPlayer is mounted.
+    func setAudioVolumeLinear(_ linear: Float) {
+        let clamped = min(max(linear, 0), 1)
+        guard audioVolumeLinear != clamped else { return }
+        audioVolumeLinear = clamped
+        player?.volume = clamped
+    }
+
     func switchQuality(to qn: Int64) async {
         guard let player else { return }
         let generation = loadGeneration
@@ -644,6 +659,7 @@ final class PlayerViewModel: ObservableObject {
         }
         player = newPlayer
         if let newPlayer {
+            newPlayer.volume = audioVolumeLinear
             observePlayerTimeControl(newPlayer)
             applyRate(to: newPlayer)
         } else {
@@ -1696,14 +1712,10 @@ private final class PlayerHoldSpeedGestureMaskView: UIView {
 }
 
 fileprivate final class PlayerHoldSpeedBadgeView: UIView {
-    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterialDark))
-    private let iconPlateView = UIView()
-    private let iconView = UIImageView(image: UIImage(systemName: "forward.fill"))
-    private let titleLabel = UILabel()
-    private let subtitleLabel = UILabel()
-
     static let hiddenTransform = CGAffineTransform(scaleX: 0.94, y: 0.94)
         .translatedBy(x: 0, y: -8)
+
+    private let hostingController = UIHostingController(rootView: PlayerHoldSpeedBadgeContent())
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -1721,72 +1733,73 @@ fileprivate final class PlayerHoldSpeedBadgeView: UIView {
         alpha = 0
         transform = Self.hiddenTransform
 
+        // Subtle drop shadow keeps the badge legible against bright
+        // video frames without competing with the glass material.
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.18
         layer.shadowRadius = 18
         layer.shadowOffset = CGSize(width: 0, height: 8)
 
-        addSubview(blurView)
-        blurView.translatesAutoresizingMaskIntoConstraints = false
-        blurView.clipsToBounds = true
-        blurView.layer.cornerRadius = 18
-        blurView.layer.cornerCurve = .continuous
-        blurView.layer.borderWidth = 0.5
-        blurView.layer.borderColor = UIColor.white.withAlphaComponent(0.10).cgColor
-
+        let host = hostingController.view!
+        host.backgroundColor = .clear
+        host.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(host)
         NSLayoutConstraint.activate([
-            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            blurView.topAnchor.constraint(equalTo: topAnchor),
-            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            host.leadingAnchor.constraint(equalTo: leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: trailingAnchor),
+            host.topAnchor.constraint(equalTo: topAnchor),
+            host.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+    }
+}
 
-        iconPlateView.translatesAutoresizingMaskIntoConstraints = false
-        iconPlateView.backgroundColor = IbiliTheme.accentUIColor.withAlphaComponent(0.16)
-        iconPlateView.layer.cornerRadius = 15
-        iconPlateView.layer.cornerCurve = .continuous
+/// SwiftUI body of the 2x hold-speed HUD. Adopts the iOS 26 liquid
+/// glass material when available so the badge occludes as little of
+/// the underlying video as possible; falls back to `.ultraThinMaterial`
+/// on older systems for visual parity with the rest of the app.
+private struct PlayerHoldSpeedBadgeContent: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "forward.fill")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(IbiliTheme.accent)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .fill(IbiliTheme.accent.opacity(0.16))
+                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text("2x")
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("按住加速")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.74))
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 14)
+        .padding(.vertical, 10)
+        .modifier(PlayerHoldSpeedBadgeBackgroundModifier())
+    }
+}
 
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.tintColor = IbiliTheme.accentUIColor
-        iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .bold)
-
-        let titleBaseFont = UIFont.systemFont(ofSize: 18, weight: .bold)
-        titleLabel.text = "2x"
-        titleLabel.textColor = .white
-        titleLabel.font = titleBaseFont.fontDescriptor.withDesign(.rounded)
-            .map { UIFont(descriptor: $0, size: 18) } ?? titleBaseFont
-
-        subtitleLabel.text = "按住加速"
-        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.74)
-        subtitleLabel.font = UIFont.systemFont(ofSize: 11, weight: .medium)
-
-        let labelsStack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
-        labelsStack.axis = .vertical
-        labelsStack.alignment = .leading
-        labelsStack.spacing = 1
-        labelsStack.translatesAutoresizingMaskIntoConstraints = false
-
-        iconPlateView.addSubview(iconView)
-        NSLayoutConstraint.activate([
-            iconPlateView.widthAnchor.constraint(equalToConstant: 30),
-            iconPlateView.heightAnchor.constraint(equalToConstant: 30),
-            iconView.centerXAnchor.constraint(equalTo: iconPlateView.centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: iconPlateView.centerYAnchor),
-        ])
-
-        let row = UIStackView(arrangedSubviews: [iconPlateView, labelsStack])
-        row.axis = .horizontal
-        row.alignment = .center
-        row.spacing = 10
-        row.translatesAutoresizingMaskIntoConstraints = false
-
-        blurView.contentView.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: blurView.contentView.leadingAnchor, constant: 12),
-            row.trailingAnchor.constraint(equalTo: blurView.contentView.trailingAnchor, constant: -14),
-            row.topAnchor.constraint(equalTo: blurView.contentView.topAnchor, constant: 10),
-            row.bottomAnchor.constraint(equalTo: blurView.contentView.bottomAnchor, constant: -10),
-        ])
+private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            // Liquid glass: highly translucent, picks up the video's
+            // colours behind it instead of painting a solid dark slab.
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            content.background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(.white.opacity(0.10), lineWidth: 0.5)
+                    )
+            )
+        }
     }
 }
 
@@ -2304,9 +2317,13 @@ struct PlayerView: View {
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer {
+                vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
                 danmaku.attach(p)
                 vm.activatePlayback()
             }
+        }
+        .onChange(of: settings.audioGainDb) { _ in
+            vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
         }
         .onChange(of: scenePhase) { phase in
             // ---- Background path: keep audio rolling under lock ----
@@ -2372,6 +2389,7 @@ struct PlayerView: View {
             handleDeviceOrientationChange()
         }
         .onAppear {
+            vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
             if didBootstrap {
                 UIDevice.current.beginGeneratingDeviceOrientationNotifications()
                 vm.activatePlayback()
