@@ -44,6 +44,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentAudioQn: Int64 = 0
     @Published private(set) var prefersLandscapeFullscreen = true
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
+    @Published private(set) var isTemporarySpeedBoostActive = false
     private let holdSpeedRate: Float = 2.0
     private var temporaryPlaybackRateOverride: Float?
     /// Lightweight handle the SwiftUI player container hands us so we
@@ -480,22 +481,20 @@ final class PlayerViewModel: ObservableObject {
         return player.timeControlStatus == .playing || player.rate > 0
     }
 
-    var isTemporarySpeedBoostActive: Bool {
-        temporaryPlaybackRateOverride != nil
-    }
-
     @discardableResult
     func beginTemporarySpeedBoost() -> Bool {
         guard canBeginTemporarySpeedBoost else { return false }
         guard temporaryPlaybackRateOverride != holdSpeedRate else { return true }
         temporaryPlaybackRateOverride = holdSpeedRate
+        isTemporarySpeedBoostActive = true
         applyRate()
         return true
     }
 
     func endTemporarySpeedBoost(on targetPlayer: AVPlayer? = nil) {
-        guard temporaryPlaybackRateOverride != nil else { return }
+        guard temporaryPlaybackRateOverride != nil || isTemporarySpeedBoostActive else { return }
         temporaryPlaybackRateOverride = nil
+        isTemporarySpeedBoostActive = false
         applyRate(to: targetPlayer)
     }
 
@@ -641,6 +640,7 @@ final class PlayerViewModel: ObservableObject {
         playerTimeControlObservation = nil
         if newPlayer == nil {
             temporaryPlaybackRateOverride = nil
+            isTemporarySpeedBoostActive = false
         }
         player = newPlayer
         if let newPlayer {
@@ -1695,6 +1695,101 @@ private final class PlayerHoldSpeedGestureMaskView: UIView {
     }
 }
 
+fileprivate final class PlayerHoldSpeedBadgeView: UIView {
+    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterialDark))
+    private let iconPlateView = UIView()
+    private let iconView = UIImageView(image: UIImage(systemName: "forward.fill"))
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
+
+    static let hiddenTransform = CGAffineTransform(scaleX: 0.94, y: 0.94)
+        .translatedBy(x: 0, y: -8)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        isUserInteractionEnabled = false
+        translatesAutoresizingMaskIntoConstraints = false
+        alpha = 0
+        transform = Self.hiddenTransform
+
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.18
+        layer.shadowRadius = 18
+        layer.shadowOffset = CGSize(width: 0, height: 8)
+
+        addSubview(blurView)
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        blurView.clipsToBounds = true
+        blurView.layer.cornerRadius = 18
+        blurView.layer.cornerCurve = .continuous
+        blurView.layer.borderWidth = 0.5
+        blurView.layer.borderColor = UIColor.white.withAlphaComponent(0.10).cgColor
+
+        NSLayoutConstraint.activate([
+            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            blurView.topAnchor.constraint(equalTo: topAnchor),
+            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+
+        iconPlateView.translatesAutoresizingMaskIntoConstraints = false
+        iconPlateView.backgroundColor = IbiliTheme.accentUIColor.withAlphaComponent(0.16)
+        iconPlateView.layer.cornerRadius = 15
+        iconPlateView.layer.cornerCurve = .continuous
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.tintColor = IbiliTheme.accentUIColor
+        iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .bold)
+
+        let titleBaseFont = UIFont.systemFont(ofSize: 18, weight: .bold)
+        titleLabel.text = "2x"
+        titleLabel.textColor = .white
+        titleLabel.font = titleBaseFont.fontDescriptor.withDesign(.rounded)
+            .map { UIFont(descriptor: $0, size: 18) } ?? titleBaseFont
+
+        subtitleLabel.text = "按住加速"
+        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.74)
+        subtitleLabel.font = UIFont.systemFont(ofSize: 11, weight: .medium)
+
+        let labelsStack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
+        labelsStack.axis = .vertical
+        labelsStack.alignment = .leading
+        labelsStack.spacing = 1
+        labelsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        iconPlateView.addSubview(iconView)
+        NSLayoutConstraint.activate([
+            iconPlateView.widthAnchor.constraint(equalToConstant: 30),
+            iconPlateView.heightAnchor.constraint(equalToConstant: 30),
+            iconView.centerXAnchor.constraint(equalTo: iconPlateView.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconPlateView.centerYAnchor),
+        ])
+
+        let row = UIStackView(arrangedSubviews: [iconPlateView, labelsStack])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        blurView.contentView.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: blurView.contentView.leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: blurView.contentView.trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: blurView.contentView.topAnchor, constant: 10),
+            row.bottomAnchor.constraint(equalTo: blurView.contentView.bottomAnchor, constant: -10),
+        ])
+    }
+}
+
 /// Wraps `AVPlayerViewController`. Critically, the danmaku overlay is mounted
 /// inside `contentOverlayView`, which travels with the player into native
 /// fullscreen — so danmaku stays visible there.
@@ -1801,6 +1896,15 @@ struct PlayerContainer: UIViewControllerRepresentable {
             holdGesture.delaysTouchesEnded = false
             holdGesture.delegate = context.coordinator
             gestureMask.addGestureRecognizer(holdGesture)
+
+            let badge = PlayerHoldSpeedBadgeView()
+            overlay.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.centerXAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.centerXAnchor),
+                badge.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor, constant: 14),
+            ])
+            context.coordinator.holdSpeedBadgeView = badge
+            context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: false)
         }
         return vc
     }
@@ -1827,11 +1931,13 @@ struct PlayerContainer: UIViewControllerRepresentable {
         context.coordinator.danmakuCanvas?.normalFontWeight = danmakuFontWeight
         context.coordinator.danmakuCanvas?.normalFontScale = CGFloat(danmakuFontScale)
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
+        context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: true)
     }
 
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay, UIGestureRecognizerDelegate {
         var parent: PlayerContainer
         weak var danmakuCanvas: DanmakuCanvasView?
+        fileprivate weak var holdSpeedBadgeView: PlayerHoldSpeedBadgeView?
         var assignedPlayerID: ObjectIdentifier?
         /// Most recent in-flight crossfade overlay. Held weakly so we
         /// don't extend its life past `removeFromSuperview`.
@@ -1840,6 +1946,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         private var wasPlayingBeforeTransition = false
         private var preTransitionRate: Float?
         private var preTransitionWasPlaying: Bool?
+        private var holdSpeedBadgeIsVisible = false
         init(parent: PlayerContainer) { self.parent = parent }
 
         var shouldAllowHoldSpeedGestureHitTesting: Bool {
@@ -1887,12 +1994,34 @@ struct PlayerContainer: UIViewControllerRepresentable {
             }
         }
 
+        func setHoldSpeedBadgeVisible(_ visible: Bool, animated: Bool) {
+            guard holdSpeedBadgeIsVisible != visible || !animated else { return }
+            holdSpeedBadgeIsVisible = visible
+            guard let badge = holdSpeedBadgeView else { return }
+            let updates = {
+                badge.alpha = visible ? 1.0 : 0.0
+                badge.transform = visible ? .identity : PlayerHoldSpeedBadgeView.hiddenTransform
+            }
+            guard animated else {
+                updates()
+                return
+            }
+            UIView.animate(withDuration: visible ? 0.18 : 0.16,
+                           delay: 0,
+                           options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction],
+                           animations: updates)
+        }
+
         @objc func handleHoldSpeedGesture(_ gesture: UILongPressGestureRecognizer) {
             switch gesture.state {
             case .began:
-                _ = parent.beginTemporarySpeedBoost()
+                let began = parent.beginTemporarySpeedBoost()
+                if began {
+                    setHoldSpeedBadgeVisible(true, animated: true)
+                }
             case .ended, .cancelled, .failed:
                 parent.endTemporarySpeedBoost()
+                setHoldSpeedBadgeVisible(false, animated: true)
             default:
                 break
             }
