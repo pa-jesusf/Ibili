@@ -58,7 +58,11 @@ final class AppLogStore: ObservableObject {
              category: String,
              message: String,
              metadata: [String: String] = [:]) {
-        let entry = AppLogEntry(level: level, category: category, message: message, metadata: metadata)
+        let normalizedCategory = AppLogCategoryCatalog.normalizedKey(category)
+        let entry = AppLogEntry(level: level,
+                    category: normalizedCategory,
+                    message: message,
+                    metadata: metadata)
         entries.append(entry)
         entries = trimToMaxEntries(entries)
         let snapshot = entries

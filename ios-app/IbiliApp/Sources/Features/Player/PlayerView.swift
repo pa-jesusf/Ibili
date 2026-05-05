@@ -119,6 +119,7 @@ final class PlayerViewModel: ObservableObject {
     deinit {
         MainActor.assumeIsolated {
             PlayerPlaybackCoordinator.shared.unregister(self)
+            PlayerNowPlayingCoordinator.shared.unregister(self)
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
             player?.pause()
             stopHeartbeat()
@@ -445,14 +446,19 @@ final class PlayerViewModel: ObservableObject {
         switch event {
         case .interfaceActivated:
             PlayerPlaybackCoordinator.shared.activate(self)
+            PlayerNowPlayingCoordinator.shared.activate(self)
         case .pictureInPictureChanged(let isActive):
             if isActive {
                 endTemporarySpeedBoost()
                 PlayerPlaybackCoordinator.shared.activate(self)
+                PlayerNowPlayingCoordinator.shared.activate(self)
             }
+        case .playbackIntentChanged(.pause):
+            endTemporarySpeedBoost()
         case .observedTimeControlStatus(.paused):
             endTemporarySpeedBoost()
         case .interfaceDeactivated,
+             .playbackIntentChanged(.play),
              .prepareAutoplayForMediaReplacement,
              .suppressNextObservedIntent,
              .observedTimeControlStatus:
@@ -462,13 +468,58 @@ final class PlayerViewModel: ObservableObject {
         guard behaviorState.apply(event) else { return }
 
         switch event {
-        case .interfaceActivated, .interfaceDeactivated, .pictureInPictureChanged:
+        case .interfaceActivated, .interfaceDeactivated, .pictureInPictureChanged, .playbackIntentChanged:
             applyPlaybackIntent()
+            PlayerNowPlayingCoordinator.shared.refresh(for: self)
         case .observedTimeControlStatus:
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
+            PlayerNowPlayingCoordinator.shared.refresh(for: self)
         case .prepareAutoplayForMediaReplacement, .suppressNextObservedIntent:
             break
         }
+    }
+
+    var nowPlayingMetadata: PlayerNowPlayingMetadata? {
+        guard let item = lastLoadedItem else { return nil }
+        return PlayerNowPlayingMetadata(
+            title: item.title,
+            artist: item.author,
+            artworkURL: BiliImageURL.resized(item.cover,
+                                             pointSize: CGSize(width: 320, height: 320),
+                                             quality: 90),
+            duration: item.durationSec > 0 ? TimeInterval(item.durationSec) : nil
+        )
+    }
+
+    var currentElapsedPlaybackTime: TimeInterval? {
+        guard let seconds = player?.currentTime().seconds,
+              seconds.isFinite,
+              seconds >= 0 else {
+            return nil
+        }
+        return seconds
+    }
+
+    var systemMediaPlaybackRate: Float {
+        guard let player else { return 0 }
+        if player.timeControlStatus == .paused, player.rate == 0 {
+            return 0
+        }
+        let resolvedRate = desiredPlaybackRate > 0 ? desiredPlaybackRate : player.rate
+        return resolvedRate > 0 ? resolvedRate : 1.0
+    }
+
+    var systemMediaDefaultRate: Float {
+        let resolvedRate = desiredPlaybackRate > 0 ? desiredPlaybackRate : rate
+        return resolvedRate > 0 ? resolvedRate : 1.0
+    }
+
+    func refreshSystemMediaSession() {
+        PlayerNowPlayingCoordinator.shared.refresh(for: self)
+    }
+
+    func handleRemotePlaybackIntent(_ intent: PlayerIntent) {
+        handle(.playbackIntentChanged(intent))
     }
 
     /// Read-only flag mirroring the internal PiP state. Used by the
@@ -594,6 +645,7 @@ final class PlayerViewModel: ObservableObject {
 
     func teardown() {
         PlayerPlaybackCoordinator.shared.unregister(self)
+        PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
         AppLog.debug("player", "销毁播放器", metadata: [
             "aid": String(aid),
@@ -664,8 +716,10 @@ final class PlayerViewModel: ObservableObject {
             newPlayer.volume = audioVolumeLinear
             observePlayerTimeControl(newPlayer)
             applyRate(to: newPlayer)
+            PlayerNowPlayingCoordinator.shared.refresh(for: self)
         } else {
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
+            PlayerNowPlayingCoordinator.shared.refresh(for: self)
         }
     }
 
@@ -1026,6 +1080,7 @@ final class PlayerViewModel: ObservableObject {
                         }
                     }
                     self.startHeartbeatIfNeeded()
+                    self.refreshSystemMediaSession()
                 case .failed:
                     let detail = item.error?.localizedDescription ?? "unknown"
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
@@ -1051,6 +1106,7 @@ final class PlayerViewModel: ObservableObject {
                     } else {
                         self.errorText = detail
                     }
+                    self.refreshSystemMediaSession()
                 default:
                     break
                 }

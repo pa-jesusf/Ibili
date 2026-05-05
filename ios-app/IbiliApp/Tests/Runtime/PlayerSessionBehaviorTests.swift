@@ -39,6 +39,19 @@ final class PlayerSessionBehaviorTests: XCTestCase {
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
     }
 
+    func testExplicitPlaybackIntentChangeUpdatesDesiredCommand() {
+        var state = PlayerSessionBehaviorState()
+
+        state.apply(.interfaceActivated)
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
+
+        state.apply(.playbackIntentChanged(.pause))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
+
+        state.apply(.playbackIntentChanged(.play))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
+    }
+
     func testFullscreenTransitionSnapshotDoesNotRestoreAcrossPlayerIdentity() {
         let sourcePlayer = AVPlayer()
         let otherPlayer = AVPlayer()

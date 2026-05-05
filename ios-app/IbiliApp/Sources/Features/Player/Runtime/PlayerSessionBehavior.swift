@@ -17,6 +17,7 @@ enum PlayerSessionEvent: Equatable {
     case interfaceActivated
     case interfaceDeactivated
     case pictureInPictureChanged(Bool)
+    case playbackIntentChanged(PlayerIntent)
     case prepareAutoplayForMediaReplacement
     case suppressNextObservedIntent(PlayerIntent)
     case observedTimeControlStatus(AVPlayer.TimeControlStatus)
@@ -44,6 +45,9 @@ struct PlayerSessionBehaviorState: Equatable {
             return true
         case .pictureInPictureChanged(let isActive):
             setPictureInPictureActive(isActive)
+            return true
+        case .playbackIntentChanged(let intent):
+            setIntent(intent)
             return true
         case .prepareAutoplayForMediaReplacement:
             markMediaReplacementAutoplayIntent()
@@ -80,6 +84,11 @@ struct PlayerSessionBehaviorState: Equatable {
         } else if !interfaceIsActive {
             hasPlaybackFocus = false
         }
+    }
+
+    mutating func setIntent(_ intent: PlayerIntent) {
+        self.intent = intent
+        suppressedObservedIntent = nil
     }
 
     mutating func suppressNextObservedIntent(_ intent: PlayerIntent) {

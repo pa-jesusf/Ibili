@@ -171,7 +171,12 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.loadViewIfNeeded()
         vc.player = player
         vc.title = title
-        vc.updatesNowPlayingInfoCenter = true
+        // Lock-screen metadata/control is maintained explicitly via
+        // PlayerNowPlayingCoordinator. Leaving AVKit auto-sync on here
+        // races with our background detach path (`vc.player = nil`) and
+        // causes the system media card to briefly reappear, then get
+        // cleared again by AVPlayerViewController.
+        vc.updatesNowPlayingInfoCenter = false
         context.coordinator.assignedPlayerID = ObjectIdentifier(player)
         vc.delegate = context.coordinator
         DispatchQueue.main.async {

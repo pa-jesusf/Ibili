@@ -352,6 +352,11 @@ enum PlayerViewLifecycleController {
            playerBox.detachedPlayer == nil {
             viewModel.endTemporarySpeedBoost(on: player)
             let continuationRate = viewModel.backgroundContinuationRate(for: player)
+            AppLog.info("player", "锁屏后台分离 AVPlayerViewController 绑定", metadata: [
+                "aid": String(viewModel.currentAid),
+                "cid": String(viewModel.currentCid),
+                "continuationRate": continuationRate.map { String($0) } ?? "nil",
+            ])
             playerBox.detachedPlayer = player
             vc.player = nil
             // Re-issue play on the now-headless player so the OS
@@ -361,6 +366,7 @@ enum PlayerViewLifecycleController {
             if let continuationRate {
                 player.playImmediately(atRate: continuationRate)
             }
+            viewModel.refreshSystemMediaSession()
         }
 
         guard phase == .active, didBootstrap else { return }
@@ -369,11 +375,16 @@ enum PlayerViewLifecycleController {
         // left off.
         if let detachedPlayer = playerBox.detachedPlayer,
            let vc = playerBox.vc {
+            AppLog.info("player", "前台恢复 AVPlayerViewController 绑定", metadata: [
+                "aid": String(viewModel.currentAid),
+                "cid": String(viewModel.currentCid),
+            ])
             if vc.player !== detachedPlayer {
                 vc.player = detachedPlayer
             }
             viewModel.reapplyPlaybackBehavior(to: detachedPlayer)
             playerBox.detachedPlayer = nil
+            viewModel.refreshSystemMediaSession()
         }
         guard viewModel.player != nil else { return }
         // When the app returns to the foreground after a long lock the
@@ -399,6 +410,7 @@ enum PlayerViewLifecycleController {
                 vc.allowsPictureInPicturePlayback = true
             }
         }
+        viewModel.refreshSystemMediaSession()
     }
 
     static func handleAppear(didBootstrap: Bool,
@@ -412,6 +424,7 @@ enum PlayerViewLifecycleController {
         if let player = viewModel.player {
             danmaku.attach(player)
         }
+        viewModel.refreshSystemMediaSession()
     }
 
     static func handleDisappear(isFullscreen: Bool,
@@ -434,6 +447,7 @@ enum PlayerViewLifecycleController {
             viewModel.handle(.interfaceDeactivated)
             Orientation.request(.portrait)
         }
+        viewModel.refreshSystemMediaSession()
     }
 }
 

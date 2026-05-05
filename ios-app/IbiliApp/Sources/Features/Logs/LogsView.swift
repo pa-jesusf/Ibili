@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-private enum LogFilter: String, CaseIterable, Identifiable {
+private enum LogLevelFilter: String, CaseIterable, Identifiable {
     case all
     case infoAndAbove
     case warningAndAbove
@@ -28,14 +28,69 @@ private enum LogFilter: String, CaseIterable, Identifiable {
     }
 }
 
+private enum LogGroupFilter: String, CaseIterable, Identifiable {
+    case all
+    case apiRequests
+    case playerBehavior
+    case authSession
+    case content
+    case interaction
+    case other
+
+    var id: String { rawValue }
+
+    var title: String {
+        group?.title ?? "全部分类"
+    }
+
+    var group: AppLogCategoryGroup? {
+        switch self {
+        case .all: return nil
+        case .apiRequests: return .apiRequests
+        case .playerBehavior: return .playerBehavior
+        case .authSession: return .authSession
+        case .content: return .content
+        case .interaction: return .interaction
+        case .other: return .other
+        }
+    }
+}
+
+private enum LogCategoryFilterKey {
+    static let all = "__all__"
+}
+
 struct LogsView: View {
     @EnvironmentObject private var logStore: AppLogStore
-    @State private var filter: LogFilter = .all
+    @State private var levelFilter: LogLevelFilter = .all
+    @State private var groupFilter: LogGroupFilter = .all
+    @State private var categoryFilterKey = LogCategoryFilterKey.all
     @State private var showCopiedAlert = false
     @State private var showClearConfirmation = false
 
+    private var entriesMatchingLevelAndGroup: [AppLogEntry] {
+        logStore.entries.filter { entry in
+            levelFilter.includes(entry.level)
+                && (groupFilter.group == nil || entry.categoryDescriptor.group == groupFilter.group)
+        }
+    }
+
+    private var availableCategories: [AppLogCategoryDescriptor] {
+        AppLogCategoryCatalog.descriptors(from: entriesMatchingLevelAndGroup,
+                                          in: groupFilter.group)
+    }
+
     private var filteredEntries: [AppLogEntry] {
-        Array(logStore.entries.filter { filter.includes($0.level) }.reversed())
+        Array(entriesMatchingLevelAndGroup.filter { entry in
+            categoryFilterKey == LogCategoryFilterKey.all
+                || entry.categoryDescriptor.key == categoryFilterKey
+        }.reversed())
+    }
+
+    private var activeFilterSummary: String {
+        let groupTitle = groupFilter.title
+        let categoryTitle = availableCategories.first(where: { $0.key == categoryFilterKey })?.title ?? "全部子类"
+        return "级别：\(levelFilter.title)  分类：\(groupTitle)  子类：\(categoryTitle)"
     }
 
     var body: some View {
@@ -43,6 +98,12 @@ struct LogsView: View {
             Section {
                 Text("遇到问题后，复制并发送日志给开发者可以帮助快速定位问题。")
                     .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Text(activeFilterSummary)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
@@ -75,9 +136,30 @@ struct LogsView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
-                    Picker("筛选", selection: $filter) {
-                        ForEach(LogFilter.allCases) { option in
-                            Text(option.title).tag(option)
+                    Section("级别") {
+                        Picker("级别", selection: $levelFilter) {
+                            ForEach(LogLevelFilter.allCases) { option in
+                                Text(option.title).tag(option)
+                            }
+                        }
+                    }
+
+                    Section("分类") {
+                        Picker("分类", selection: $groupFilter) {
+                            ForEach(LogGroupFilter.allCases) { option in
+                                Text(option.title).tag(option)
+                            }
+                        }
+                    }
+
+                    if !availableCategories.isEmpty {
+                        Section("子类") {
+                            Picker("子类", selection: $categoryFilterKey) {
+                                Text("全部子类").tag(LogCategoryFilterKey.all)
+                                ForEach(availableCategories) { option in
+                                    Text(option.title).tag(option.key)
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -103,6 +185,15 @@ struct LogsView: View {
                 .disabled(logStore.entries.isEmpty)
             }
         }
+        .onChange(of: levelFilter) { _ in
+            resetCategoryFilterIfNeeded()
+        }
+        .onChange(of: groupFilter) { _ in
+            categoryFilterKey = LogCategoryFilterKey.all
+        }
+        .onChange(of: logStore.entries) { _ in
+            resetCategoryFilterIfNeeded()
+        }
         .alert("日志已复制", isPresented: $showCopiedAlert) {
             Button("好", role: .cancel) {}
         } message: {
@@ -119,6 +210,14 @@ struct LogsView: View {
             Text("这会删除应用内已保存的所有日志。")
         }
     }
+
+    private func resetCategoryFilterIfNeeded() {
+        guard categoryFilterKey != LogCategoryFilterKey.all else { return }
+        guard availableCategories.contains(where: { $0.key == categoryFilterKey }) else {
+            categoryFilterKey = LogCategoryFilterKey.all
+            return
+        }
+    }
 }
 
 private struct LogRow: View {
@@ -128,7 +227,8 @@ private struct LogRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 LogLevelBadge(level: entry.level)
-                Text(entry.category)
+                LogCategoryGroupBadge(group: entry.categoryDescriptor.group)
+                Text(entry.categoryDescriptor.title)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
@@ -179,6 +279,30 @@ private struct LogLevelBadge: View {
         case .info: return .blue
         case .warning: return .orange
         case .error: return .red
+        }
+    }
+}
+
+private struct LogCategoryGroupBadge: View {
+    let group: AppLogCategoryGroup
+
+    var body: some View {
+        Text(group.title)
+            .font(.caption2.weight(.bold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.16), in: Capsule())
+            .foregroundStyle(color)
+    }
+
+    private var color: Color {
+        switch group {
+        case .apiRequests: return .teal
+        case .playerBehavior: return .purple
+        case .authSession: return .green
+        case .content: return .indigo
+        case .interaction: return .pink
+        case .other: return .gray
         }
     }
 }
