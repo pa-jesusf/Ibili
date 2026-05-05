@@ -23,7 +23,43 @@ settings:
     CODE_SIGNING_REQUIRED: "NO"
     DEVELOPMENT_LANGUAGE: "zh-Hans"
 
+schemes:
+  IbiliPlayerRuntime:
+    build:
+      targets:
+        IbiliPlayerRuntime: all
+        IbiliPlayerRuntimeTests:
+          - test
+    test:
+      gatherCoverageData: false
+      targets:
+        - name: IbiliPlayerRuntimeTests
+
 targets:
+  IbiliPlayerRuntime:
+    type: framework
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: IbiliApp/Sources/Features/Player/Runtime/PlayerSessionBehavior.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ibili.client.player-runtime
+        SWIFT_VERSION: "5.9"
+
+  IbiliPlayerRuntimeTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: IbiliApp/Tests/Runtime
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ibili.client.player-runtime.tests
+        SWIFT_VERSION: "5.9"
+    dependencies:
+      - target: IbiliPlayerRuntime
+
   Ibili:
     type: application
     platform: iOS
@@ -97,6 +133,8 @@ targets:
     deploymentTarget: "16.0"
     sources:
       - path: IbiliApp/Tests
+        excludes:
+          - Runtime/**
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ibili.client.tests

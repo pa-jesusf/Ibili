@@ -24,11 +24,6 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
-    private enum PlaybackIntent: String {
-        case play
-        case pause
-    }
-
     @Published var isLoading = true
     @Published var errorText: String?
     @Published private(set) var player: AVPlayer?
@@ -113,12 +108,13 @@ final class PlayerViewModel: ObservableObject {
     /// Coordination task that awaits `pendingReadyTask` and promotes it
     /// once the high-quality player is actually playing.
     private var pendingUpgradeTask: Task<Void, Never>?
-    private var playbackIntent: PlaybackIntent = .play
-    private var interfaceIsActive = false
-    private var pictureInPictureIsActive = false
-    private var hasPlaybackFocus = false
+    private let sessionID: PlayerSessionID
+    private var behaviorState = PlayerSessionBehaviorState()
     private var playerTimeControlObservation: NSKeyValueObservation?
-    private var pendingObservedPlaybackIntent: PlaybackIntent?
+
+    init(sessionID: PlayerSessionID = PlayerSessionID()) {
+        self.sessionID = sessionID
+    }
 
     deinit {
         MainActor.assumeIsolated {
@@ -183,8 +179,7 @@ final class PlayerViewModel: ObservableObject {
             // `.paused` callbacks from the outgoing player cannot
             // permanently flip the new source into a non-playing
             // intent.
-            playbackIntent = .play
-            pendingObservedPlaybackIntent = nil
+            handle(.prepareAutoplayForMediaReplacement)
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
             // Replacing the media inside the same player route (分 P /
             // 合集切换 uses `replaceCurrent`) must tear the outgoing
@@ -446,40 +441,50 @@ final class PlayerViewModel: ObservableObject {
     /// iOS suspends the app long enough to kill the listener.
     var isEngineAlive: Bool { HLSProxyEngine.shared.isAlive }
 
-    func activatePlayback() {
-        PlayerPlaybackCoordinator.shared.activate(self)
-        hasPlaybackFocus = true
-        interfaceIsActive = true
-        applyPlaybackIntent()
-    }
-
-    func pauseForDeactivation() {
-        interfaceIsActive = false
-        if !pictureInPictureIsActive {
-            hasPlaybackFocus = false
-        }
-        applyPlaybackIntent()
-    }
-
-    func setPictureInPictureActive(_ isActive: Bool) {
-        pictureInPictureIsActive = isActive
-        if isActive {
-            endTemporarySpeedBoost()
-        }
-        if isActive {
+    func handle(_ event: PlayerSessionEvent) {
+        switch event {
+        case .interfaceActivated:
             PlayerPlaybackCoordinator.shared.activate(self)
-            hasPlaybackFocus = true
-        } else if !interfaceIsActive {
-            hasPlaybackFocus = false
+        case .pictureInPictureChanged(let isActive):
+            if isActive {
+                endTemporarySpeedBoost()
+                PlayerPlaybackCoordinator.shared.activate(self)
+            }
+        case .observedTimeControlStatus(.paused):
+            endTemporarySpeedBoost()
+        case .interfaceDeactivated,
+             .prepareAutoplayForMediaReplacement,
+             .suppressNextObservedIntent,
+             .observedTimeControlStatus:
+            break
         }
-        applyPlaybackIntent()
+
+        guard behaviorState.apply(event) else { return }
+
+        switch event {
+        case .interfaceActivated, .interfaceDeactivated, .pictureInPictureChanged:
+            applyPlaybackIntent()
+        case .observedTimeControlStatus:
+            PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
+        case .prepareAutoplayForMediaReplacement, .suppressNextObservedIntent:
+            break
+        }
     }
 
     /// Read-only flag mirroring the internal PiP state. Used by the
     /// view-side scene-phase recovery to decide whether returning to
     /// the foreground should auto-collapse the PiP floating window
     /// (only the originating session has this set).
-    var isPictureInPictureActive: Bool { pictureInPictureIsActive }
+    var isPictureInPictureActive: Bool { behaviorState.pictureInPictureIsActive }
+
+    func backgroundContinuationRate(for player: AVPlayer) -> Float? {
+        behaviorState.backgroundContinuationRate(currentRate: player.rate,
+                                                desiredRate: desiredPlaybackRate)
+    }
+
+    func reapplyPlaybackBehavior(to targetPlayer: AVPlayer? = nil) {
+        applyPlaybackIntent(to: targetPlayer)
+    }
 
     var canBeginTemporarySpeedBoost: Bool {
         guard let player else { return false }
@@ -602,10 +607,7 @@ final class PlayerViewModel: ObservableObject {
         activePreparation?.release()
         activePreparation = nil
         cancelPendingUpgrade()
-        interfaceIsActive = false
-        pictureInPictureIsActive = false
-        hasPlaybackFocus = false
-        pendingObservedPlaybackIntent = nil
+        behaviorState = PlayerSessionBehaviorState()
         isVideoReady = false
     }
 
@@ -630,7 +632,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private var shouldHoldAudioSession: Bool {
-        playbackIntent == .play && hasPlaybackFocus && (interfaceIsActive || pictureInPictureIsActive)
+        behaviorState.shouldHoldAudioSession
     }
 
     private func resetCurrentPlaybackForMediaSwitch() {
@@ -676,35 +678,25 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func handleObservedPlaybackState(_ status: AVPlayer.TimeControlStatus) {
-        if status == .paused {
-            endTemporarySpeedBoost()
-        }
-        guard let observedIntent = Self.playbackIntent(for: status) else { return }
-        if let pendingObservedPlaybackIntent, pendingObservedPlaybackIntent == observedIntent {
-            self.pendingObservedPlaybackIntent = nil
-            return
-        }
-        guard hasPlaybackFocus, interfaceIsActive || pictureInPictureIsActive else { return }
-        playbackIntent = observedIntent
-        PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
+        handle(.observedTimeControlStatus(status))
     }
 
     private func applyPlaybackIntent(to targetPlayer: AVPlayer? = nil) {
         PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
         guard let targetPlayer = targetPlayer ?? player else { return }
-        let targetIntent: PlaybackIntent = shouldHoldAudioSession ? .play : .pause
-        suppressNextObservedPlaybackIntent(targetIntent)
-        switch targetIntent {
-        case .play:
-            targetPlayer.playImmediately(atRate: desiredPlaybackRate)
+        switch behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) {
+        case .play(let rate):
+            suppressNextObservedPlaybackIntent(.play)
+            targetPlayer.playImmediately(atRate: rate)
         case .pause:
+            suppressNextObservedPlaybackIntent(.pause)
             targetPlayer.pause()
             endTemporarySpeedBoost(on: targetPlayer)
         }
     }
 
-    private func suppressNextObservedPlaybackIntent(_ intent: PlaybackIntent) {
-        pendingObservedPlaybackIntent = intent
+    private func suppressNextObservedPlaybackIntent(_ intent: PlayerIntent) {
+        handle(.suppressNextObservedIntent(intent))
     }
 
     private var basePlaybackRate: Float {
@@ -713,17 +705,6 @@ final class PlayerViewModel: ObservableObject {
 
     private var desiredPlaybackRate: Float {
         temporaryPlaybackRateOverride ?? basePlaybackRate
-    }
-
-    private static func playbackIntent(for status: AVPlayer.TimeControlStatus) -> PlaybackIntent? {
-        switch status {
-        case .paused:
-            return .pause
-        case .playing, .waitingToPlayAtSpecifiedRate:
-            return .play
-        @unknown default:
-            return nil
-        }
     }
 
     /// Install a periodic time observer that reports the playhead to
@@ -1297,170 +1278,6 @@ final class PlayerViewModel: ObservableObject {
     }
 }
 
-@MainActor
-final class PlayerSessionStore {
-    static let shared = PlayerSessionStore()
-
-    private var viewModels: [UUID: PlayerViewModel] = [:]
-    private var pictureInPictureRouteID: UUID?
-    private var pictureInPictureSnapshot: DeepLinkRouter.SessionSnapshot?
-
-    func viewModel(for routeID: UUID) -> PlayerViewModel {
-        if let existing = viewModels[routeID] {
-            return existing
-        }
-        let viewModel = PlayerViewModel()
-        viewModels[routeID] = viewModel
-        return viewModel
-    }
-
-    func setPictureInPictureActive(_ isActive: Bool,
-                                   for routeID: UUID,
-                                   snapshot: DeepLinkRouter.SessionSnapshot? = nil) {
-        if isActive {
-            pictureInPictureRouteID = routeID
-            pictureInPictureSnapshot = snapshot
-        } else if pictureInPictureRouteID == routeID {
-            pictureInPictureRouteID = nil
-            pictureInPictureSnapshot = nil
-        }
-    }
-
-    func pictureInPictureSnapshot(for routeID: UUID) -> DeepLinkRouter.SessionSnapshot? {
-        guard pictureInPictureRouteID == routeID else { return nil }
-        return pictureInPictureSnapshot
-    }
-
-    func retainSessions(root: DeepLinkRouter.PlayerRoute?, stack: [DeepLinkRouter.PlayerRoute]) {
-        var retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
-        if let pictureInPictureRouteID {
-            retainedIDs.insert(pictureInPictureRouteID)
-        }
-        for (routeID, viewModel) in viewModels where !retainedIDs.contains(routeID) {
-            viewModel.teardown()
-            viewModels.removeValue(forKey: routeID)
-        }
-    }
-}
-
-@MainActor
-private final class PlayerPlaybackCoordinator {
-    static let shared = PlayerPlaybackCoordinator()
-
-    private static let handoffGraceSeconds: TimeInterval = 2.0
-
-    private weak var active: PlayerViewModel?
-
-    func activate(_ viewModel: PlayerViewModel) {
-        if active !== viewModel {
-            let priorActive = active
-            if priorActive != nil {
-                PlayerAudioSessionCoordinator.shared.beginPlayerHandoff()
-            }
-            priorActive?.pauseForDeactivation()
-            active = viewModel
-            if priorActive != nil {
-                PlayerAudioSessionCoordinator.shared.schedulePlayerHandoffEnd(
-                    after: Self.handoffGraceSeconds
-                )
-            }
-        }
-    }
-
-    func unregister(_ viewModel: PlayerViewModel) {
-        if active === viewModel {
-            active = nil
-        }
-    }
-}
-
-@MainActor
-private final class PlayerAudioSessionCoordinator {
-    static let shared = PlayerAudioSessionCoordinator()
-
-    private var activeOwners: Set<ObjectIdentifier> = []
-    private var playerHandoffDepth = 0
-    private var sessionIsActive = false
-    private let sessionQueue = DispatchQueue(label: "ibili.player.audio-session", qos: .userInitiated)
-    private var pendingHandoffEndWorkItem: DispatchWorkItem?
-
-    func beginPlayerHandoff() {
-        pendingHandoffEndWorkItem?.cancel()
-        pendingHandoffEndWorkItem = nil
-        playerHandoffDepth += 1
-        reconcileSessionState()
-    }
-
-    func schedulePlayerHandoffEnd(after delay: TimeInterval) {
-        pendingHandoffEndWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingHandoffEndWorkItem = nil
-            self.endPlayerHandoff()
-        }
-        pendingHandoffEndWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-    }
-
-    func endPlayerHandoff() {
-        playerHandoffDepth = max(0, playerHandoffDepth - 1)
-        reconcileSessionState()
-    }
-
-    func setSessionNeeded(_ needed: Bool, by owner: AnyObject) {
-        let ownerID = ObjectIdentifier(owner)
-        if needed {
-            _ = activeOwners.insert(ownerID).inserted
-            if playerHandoffDepth > 0 {
-                pendingHandoffEndWorkItem?.cancel()
-                pendingHandoffEndWorkItem = nil
-                playerHandoffDepth = 0
-            }
-        } else {
-            _ = activeOwners.remove(ownerID)
-        }
-        reconcileSessionState()
-    }
-
-    private func reconcileSessionState() {
-        let shouldKeepSessionActive = !activeOwners.isEmpty || playerHandoffDepth > 0
-        guard shouldKeepSessionActive != sessionIsActive else { return }
-        sessionIsActive = shouldKeepSessionActive
-        if shouldKeepSessionActive {
-            activateAudioSession()
-        } else {
-            deactivateAudioSession()
-        }
-    }
-
-    private func activateAudioSession() {
-        sessionQueue.async {
-            let session = AVAudioSession.sharedInstance()
-            do {
-                try session.setCategory(.playback, mode: .moviePlayback, options: [])
-                try session.setActive(true, options: [])
-            } catch {
-                AppLog.warning("player", "音频会话配置失败", metadata: [
-                    "error": error.localizedDescription,
-                ])
-            }
-        }
-    }
-
-    private func deactivateAudioSession() {
-        sessionQueue.async {
-            let session = AVAudioSession.sharedInstance()
-            do {
-                try session.setActive(false, options: [.notifyOthersOnDeactivation])
-            } catch {
-                AppLog.warning("player", "音频会话释放失败", metadata: [
-                    "error": error.localizedDescription,
-                ])
-            }
-        }
-    }
-}
-
 actor PlayerArtworkStore {
     static let shared = PlayerArtworkStore()
 
@@ -1593,559 +1410,6 @@ fileprivate enum WarmPlayerError: Error {
     case unexpectedFailure
 }
 
-/// Drives the brief snapshot crossfade we run when the visible AVPlayer
-/// instance is swapped (fast-load upgrade). Declared as a protocol so
-/// the view-model can call into UIKit code without importing it as a
-/// concrete type.
-@MainActor
-protocol PlayerSwapOverlay: AnyObject {
-    /// Snapshot the current AVPlayerLayer contents, overlay them on the
-    /// AVPlayerViewController, and schedule a fade-out. Idempotent: if
-    /// a previous overlay is still fading we replace it.
-    func beginCrossfade()
-}
-
-// MARK: - Orientation helpers
-
-@MainActor
-enum Orientation {
-    /// App-level orientation gate for iPhone. Normal pages stay portrait;
-    /// once the native AVKit fullscreen flow starts we temporarily widen
-    /// the mask so the fullscreen controller can rotate to landscape.
-    private static var phoneSupportedMask: UIInterfaceOrientationMask = .portrait
-
-    static func supportedMask() -> UIInterfaceOrientationMask {
-        UIDevice.current.userInterfaceIdiom == .phone ? phoneSupportedMask : .all
-    }
-
-    /// Tighten the phone orientation mask to *only* landscape so iOS
-    /// is forced to rotate the entire interface, regardless of which
-    /// physical orientation the device is currently held in. iOS 16's
-    /// `requestGeometryUpdate` will reject any orientation outside
-    /// the supported mask, so widening the mask to `.allButUpsideDown`
-    /// is what previously caused portrait-held devices to silently
-    /// stay upright when the user tapped the fullscreen button. The
-    /// mask is restored to `.portrait` by `request(.portrait)` on
-    /// fullscreen exit.
-    static func preparePhoneFullscreenLandscape() {
-        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
-        phoneSupportedMask = .landscape
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }) else { return }
-        scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-        AppLog.debug("player", "收紧手机方向掩码到 landscape，强制系统横屏", metadata: [
-            "mask": interfaceOrientationMaskDescription(phoneSupportedMask),
-        ])
-    }
-
-    /// Request a specific interface-orientation set from the active scene.
-    /// On iOS 16+ this is the public API; pre-16 falls back to the legacy
-    /// `UIDevice.orientation` setter.
-    static func request(_ mask: UIInterfaceOrientationMask) {
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            // Mirror the requested orientation in the mask so the
-            // system actually performs the rotation: only landscape
-            // when we want landscape, only portrait when we want to
-            // come back. `.allButUpsideDown` was permissive enough to
-            // make the geometry request a no-op on a portrait-held
-            // device.
-            switch mask {
-            case .portrait:
-                phoneSupportedMask = .portrait
-            case .landscape, .landscapeLeft, .landscapeRight:
-                phoneSupportedMask = .landscape
-            default:
-                phoneSupportedMask = mask
-            }
-        }
-        requestWithoutMaskChange(mask)
-    }
-
-    /// Request a geometry update without changing the supported mask.
-    /// Used when the mask has already been widened (e.g. by
-    /// `preparePhoneFullscreenLandscape`) and we just need to
-    /// trigger the rotation.
-    static func requestWithoutMaskChange(_ mask: UIInterfaceOrientationMask) {
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }) else { return }
-        if #available(iOS 16, *) {
-            scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-            AppLog.debug("player", "请求界面方向更新", metadata: [
-                "requestedMask": interfaceOrientationMaskDescription(mask),
-                "effectiveMask": interfaceOrientationMaskDescription(phoneSupportedMask),
-            ])
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
-                AppLog.warning("player", "界面方向更新被系统拒绝", metadata: [
-                    "requestedMask": interfaceOrientationMaskDescription(mask),
-                    "error": error.localizedDescription,
-                ])
-            }
-        } else {
-            let value: UIDeviceOrientation
-            switch mask {
-            case .portrait:        value = .portrait
-            case .landscapeLeft:   value = .landscapeRight
-            case .landscapeRight:  value = .landscapeLeft
-            case .landscape:       value = .landscapeLeft
-            default:               value = .portrait
-            }
-            AppLog.debug("player", "使用旧版方式请求设备方向", metadata: [
-                "requestedMask": interfaceOrientationMaskDescription(mask),
-                "deviceOrientation": deviceOrientationDescription(value),
-            ])
-            UIDevice.current.setValue(value.rawValue, forKey: "orientation")
-        }
-    }
-}
-
-// MARK: - Player container (UIKit) hosting AVPlayerViewController + danmaku overlay
-
-private final class PlayerHoldSpeedGestureMaskView: UIView {
-    var hitTestingEnabledProvider: () -> Bool = { true }
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard hitTestingEnabledProvider() else { return false }
-        return super.point(inside: point, with: event)
-    }
-}
-
-fileprivate final class PlayerHoldSpeedBadgeView: UIView {
-    static let hiddenTransform = CGAffineTransform(scaleX: 0.94, y: 0.94)
-        .translatedBy(x: 0, y: -8)
-
-    private let hostingController = UIHostingController(rootView: PlayerHoldSpeedBadgeContent())
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        setup()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setup()
-    }
-
-    private func setup() {
-        isUserInteractionEnabled = false
-        translatesAutoresizingMaskIntoConstraints = false
-        alpha = 0
-        transform = Self.hiddenTransform
-
-        // Subtle drop shadow keeps the badge legible against bright
-        // video frames without competing with the glass material.
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.18
-        layer.shadowRadius = 18
-        layer.shadowOffset = CGSize(width: 0, height: 8)
-
-        let host = hostingController.view!
-        host.backgroundColor = .clear
-        host.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(host)
-        NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: trailingAnchor),
-            host.topAnchor.constraint(equalTo: topAnchor),
-            host.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-    }
-}
-
-/// SwiftUI body of the 2x hold-speed HUD. Adopts the iOS 26 liquid
-/// glass material when available so the badge occludes as little of
-/// the underlying video as possible; falls back to `.ultraThinMaterial`
-/// on older systems for visual parity with the rest of the app.
-private struct PlayerHoldSpeedBadgeContent: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "forward.fill")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(IbiliTheme.accent)
-                .frame(width: 30, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(IbiliTheme.accent.opacity(0.16))
-                )
-            VStack(alignment: .leading, spacing: 1) {
-                Text("2x")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("按住加速")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.74))
-            }
-        }
-        .padding(.leading, 12)
-        .padding(.trailing, 14)
-        .padding(.vertical, 10)
-        .modifier(PlayerHoldSpeedBadgeBackgroundModifier())
-    }
-}
-
-private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            // Liquid glass: highly translucent, picks up the video's
-            // colours behind it instead of painting a solid dark slab.
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        } else {
-            content.background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(.white.opacity(0.10), lineWidth: 0.5)
-                    )
-            )
-        }
-    }
-}
-
-/// Wraps `AVPlayerViewController`. Critically, the danmaku overlay is mounted
-/// inside `contentOverlayView`, which travels with the player into native
-/// fullscreen — so danmaku stays visible there.
-struct PlayerContainer: UIViewControllerRepresentable {
-    let player: AVPlayer
-    let title: String
-    let prefersLandscapeFullscreen: Bool
-    let danmaku: DanmakuController
-    let danmakuEnabled: Bool
-    let danmakuOpacity: Double
-    let danmakuBlockLevel: Int
-    let danmakuFrameRate: Int
-    let danmakuStrokeWidth: Double
-    let danmakuFontWeight: Int
-    let danmakuFontScale: Double
-    let isTemporarySpeedBoostActive: () -> Bool
-    let canBeginTemporarySpeedBoost: () -> Bool
-    let beginTemporarySpeedBoost: () -> Bool
-    let endTemporarySpeedBoost: () -> Void
-    /// Called once, with the just-created AVPlayerViewController. Lets the
-    /// SwiftUI parent drive native fullscreen entry/exit.
-    let onCreated: (AVPlayerViewController) -> Void
-    /// Called when the user taps AVKit's native fullscreen button (or our own).
-    let onFullscreenChange: (Bool) -> Void
-    /// Called when PiP starts/stops so the route session can be kept alive.
-    let onPictureInPictureActiveChange: (Bool) -> Void
-    /// Called when the system wants us to restore the original playback UI
-    /// for a running PiP session.
-    let onPictureInPictureRestore: (@escaping (Bool) -> Void) -> Void
-    /// Called once, after the AVPlayerViewController exists, with a
-    /// handle the view-model uses to drive the swap crossfade.
-    let onSwapOverlayReady: (PlayerSwapOverlay) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let vc = AVPlayerViewController()
-        vc.loadViewIfNeeded()
-        vc.player = player
-        vc.title = title
-        vc.updatesNowPlayingInfoCenter = true
-        context.coordinator.assignedPlayerID = ObjectIdentifier(player)
-        vc.delegate = context.coordinator
-        DispatchQueue.main.async {
-            onCreated(vc)
-            onSwapOverlayReady(context.coordinator)
-        }
-        vc.allowsPictureInPicturePlayback = true
-        vc.canStartPictureInPictureAutomaticallyFromInline = true
-        vc.entersFullScreenWhenPlaybackBegins = false
-        vc.exitsFullScreenWhenPlaybackEnds = false
-        vc.videoGravity = .resizeAspect
-
-        // Mount the danmaku canvas directly into contentOverlayView.
-        // Using a raw UIView instead of UIHostingController avoids
-        // SwiftUI re-render overhead and fixes the width-shrink bug
-        // after fullscreen→portrait transitions.
-        let canvas = danmaku.prepareCanvas()
-        canvas.blockLevel = danmakuBlockLevel
-        canvas.preferredFrameRate = danmakuFrameRate
-        canvas.normalStrokeWidth = CGFloat(danmakuStrokeWidth)
-        canvas.normalFontWeight = danmakuFontWeight
-        canvas.normalFontScale = CGFloat(danmakuFontScale)
-        if let overlay = vc.contentOverlayView {
-            canvas.translatesAutoresizingMaskIntoConstraints = false
-            canvas.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
-            overlay.addSubview(canvas)
-            NSLayoutConstraint.activate([
-                canvas.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
-                canvas.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
-                canvas.topAnchor.constraint(equalTo: overlay.topAnchor),
-                canvas.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
-            ])
-            context.coordinator.danmakuCanvas = canvas
-
-            // Keep the gesture inside `contentOverlayView` so it
-            // survives AVKit's native fullscreen hand-off. When the
-            // player is paused the mask removes itself from hit-
-            // testing entirely, letting iOS long-press features on
-            // the paused frame keep working.
-            let gestureMask = PlayerHoldSpeedGestureMaskView()
-            gestureMask.translatesAutoresizingMaskIntoConstraints = false
-            gestureMask.backgroundColor = .clear
-            gestureMask.hitTestingEnabledProvider = { [weak coordinator = context.coordinator] in
-                coordinator?.shouldAllowHoldSpeedGestureHitTesting ?? false
-            }
-            overlay.addSubview(gestureMask)
-            NSLayoutConstraint.activate([
-                gestureMask.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
-                gestureMask.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
-                gestureMask.topAnchor.constraint(equalTo: overlay.topAnchor),
-                gestureMask.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
-            ])
-            let holdGesture = UILongPressGestureRecognizer(
-                target: context.coordinator,
-                action: #selector(Coordinator.handleHoldSpeedGesture(_:))
-            )
-            holdGesture.minimumPressDuration = 0.32
-            holdGesture.allowableMovement = 26
-            holdGesture.cancelsTouchesInView = false
-            holdGesture.delaysTouchesBegan = false
-            holdGesture.delaysTouchesEnded = false
-            holdGesture.delegate = context.coordinator
-            gestureMask.addGestureRecognizer(holdGesture)
-
-            let badge = PlayerHoldSpeedBadgeView()
-            overlay.addSubview(badge)
-            NSLayoutConstraint.activate([
-                badge.centerXAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.centerXAnchor),
-                badge.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor, constant: 14),
-            ])
-            context.coordinator.holdSpeedBadgeView = badge
-            context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: false)
-        }
-        return vc
-    }
-
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
-        context.coordinator.parent = self
-        let incomingPlayerID = ObjectIdentifier(player)
-        if vc.title != title {
-            vc.title = title
-        }
-        // Reassign only when SwiftUI handed us a genuinely different
-        // AVPlayer instance. During fullscreen transitions AVKit may
-        // transiently nil out `vc.player`; we deliberately ignore that
-        // path so the controller can restore its own player without us
-        // restarting playback from zero. Fast-load promotion, however,
-        // does intentionally swap to a new player identity.
-        if context.coordinator.assignedPlayerID != incomingPlayerID {
-            vc.player = player
-            context.coordinator.assignedPlayerID = incomingPlayerID
-        }
-        context.coordinator.danmakuCanvas?.blockLevel = danmakuBlockLevel
-        context.coordinator.danmakuCanvas?.preferredFrameRate = danmakuFrameRate
-        context.coordinator.danmakuCanvas?.normalStrokeWidth = CGFloat(danmakuStrokeWidth)
-        context.coordinator.danmakuCanvas?.normalFontWeight = danmakuFontWeight
-        context.coordinator.danmakuCanvas?.normalFontScale = CGFloat(danmakuFontScale)
-        context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
-        context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: true)
-    }
-
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay, UIGestureRecognizerDelegate {
-        var parent: PlayerContainer
-        weak var danmakuCanvas: DanmakuCanvasView?
-        fileprivate weak var holdSpeedBadgeView: PlayerHoldSpeedBadgeView?
-        var assignedPlayerID: ObjectIdentifier?
-        /// Most recent in-flight crossfade overlay. Held weakly so we
-        /// don't extend its life past `removeFromSuperview`.
-        weak var activeCrossfade: UIView?
-        private var rateBeforeTransition: Float = 1.0
-        private var wasPlayingBeforeTransition = false
-        private var preTransitionRate: Float?
-        private var preTransitionWasPlaying: Bool?
-        private var holdSpeedBadgeIsVisible = false
-        init(parent: PlayerContainer) { self.parent = parent }
-
-        var shouldAllowHoldSpeedGestureHitTesting: Bool {
-            parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost()
-        }
-
-        func prepareForFullscreenTransition(player: AVPlayer?) {
-            guard let player else { return }
-            preTransitionWasPlaying = player.timeControlStatus == .playing || player.rate > 0
-            let activeRate = player.rate
-            let defaultRate = player.defaultRate
-            preTransitionRate = activeRate > 0 ? activeRate : (defaultRate > 0 ? defaultRate : 1.0)
-        }
-
-        // MARK: PlayerSwapOverlay
-
-        func beginCrossfade() {
-            // The AVPlayerViewController itself isn't reachable from
-            // here, but its `contentOverlayView` lives on the
-            // hosting controller's superview chain. We snapshot via
-            // `view.snapshotView(afterScreenUpdates:)` which captures
-            // AVPlayerLayer contents on iOS 16+.
-            guard let canvas = danmakuCanvas,
-                  let containerView = canvas.superview?.superview ?? canvas.superview
-            else { return }
-            // Drop any stale crossfade still on screen.
-            activeCrossfade?.removeFromSuperview()
-            guard let snapshot = containerView.snapshotView(afterScreenUpdates: false) else {
-                return
-            }
-            snapshot.frame = containerView.bounds
-            snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            snapshot.isUserInteractionEnabled = false
-            containerView.addSubview(snapshot)
-            activeCrossfade = snapshot
-            // Hold the snapshot opaque for one runloop tick so AVKit's
-            // black-frame transition is fully covered, then fade.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak snapshot] in
-                guard let snapshot, snapshot.superview != nil else { return }
-                UIView.animate(withDuration: 0.22,
-                               delay: 0,
-                               options: [.curveEaseOut, .allowUserInteraction],
-                               animations: { snapshot.alpha = 0 },
-                               completion: { _ in snapshot.removeFromSuperview() })
-            }
-        }
-
-        func setHoldSpeedBadgeVisible(_ visible: Bool, animated: Bool) {
-            guard holdSpeedBadgeIsVisible != visible || !animated else { return }
-            holdSpeedBadgeIsVisible = visible
-            guard let badge = holdSpeedBadgeView else { return }
-            let updates = {
-                badge.alpha = visible ? 1.0 : 0.0
-                badge.transform = visible ? .identity : PlayerHoldSpeedBadgeView.hiddenTransform
-            }
-            guard animated else {
-                updates()
-                return
-            }
-            UIView.animate(withDuration: visible ? 0.18 : 0.16,
-                           delay: 0,
-                           options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction],
-                           animations: updates)
-        }
-
-        @objc func handleHoldSpeedGesture(_ gesture: UILongPressGestureRecognizer) {
-            switch gesture.state {
-            case .began:
-                let began = parent.beginTemporarySpeedBoost()
-                if began {
-                    setHoldSpeedBadgeVisible(true, animated: true)
-                }
-            case .ended, .cancelled, .failed:
-                parent.endTemporarySpeedBoost()
-                setHoldSpeedBadgeVisible(false, animated: true)
-            default:
-                break
-            }
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            parent.canBeginTemporarySpeedBoost()
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
-        }
-
-        // MARK: AVPlayerViewControllerDelegate
-
-        func playerViewController(_ vc: AVPlayerViewController,
-                                  willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-            capturePlaybackState(from: vc)
-            let currentDeviceOrientation = UIDevice.current.orientation
-            AppLog.info("player", "AVKit 即将进入全屏", metadata: [
-                "deviceOrientation": deviceOrientationDescription(currentDeviceOrientation),
-                "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-                "prefersLandscapeFullscreen": String(parent.prefersLandscapeFullscreen),
-                "rate": String(rateBeforeTransition),
-                "playing": String(wasPlayingBeforeTransition),
-            ])
-            parent.onFullscreenChange(true)
-            let targetMask: UIInterfaceOrientationMask
-            if parent.prefersLandscapeFullscreen {
-                targetMask = currentDeviceOrientation == .landscapeRight
-                    ? .landscapeLeft : .landscapeRight
-            } else {
-                targetMask = .portrait
-            }
-            Orientation.requestWithoutMaskChange(targetMask)
-            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
-                guard let self, let vc else { return }
-                self.restorePlaybackState(on: vc)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
-                    guard let self, let vc else { return }
-                    self.restorePlaybackState(on: vc)
-                }
-            }
-        }
-        func playerViewController(_ vc: AVPlayerViewController,
-                                  willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-            capturePlaybackState(from: vc)
-            AppLog.info("player", "AVKit 即将退出全屏", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-                "rate": String(rateBeforeTransition),
-                "playing": String(wasPlayingBeforeTransition),
-            ])
-            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
-                guard let self, let vc else { return }
-                self.parent.onFullscreenChange(false)
-                Orientation.request(.portrait)
-                self.restorePlaybackState(on: vc)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
-                    guard let self, let vc else { return }
-                    self.restorePlaybackState(on: vc)
-                }
-            }
-        }
-
-        func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
-            AppLog.info("player", "PiP 即将开始")
-            parent.onPictureInPictureActiveChange(true)
-        }
-
-        func playerViewController(_ playerViewController: AVPlayerViewController,
-                                  failedToStartPictureInPictureWithError error: Error) {
-            AppLog.warning("player", "PiP 启动失败", metadata: [
-                "error": error.localizedDescription,
-            ])
-            parent.onPictureInPictureActiveChange(false)
-        }
-
-        func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
-            AppLog.info("player", "PiP 已停止")
-            parent.onPictureInPictureActiveChange(false)
-        }
-
-        func playerViewController(_ playerViewController: AVPlayerViewController,
-                                  restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
-            AppLog.info("player", "PiP 请求恢复原播放器界面")
-            parent.onPictureInPictureRestore(completionHandler)
-        }
-
-        private func capturePlaybackState(from vc: AVPlayerViewController) {
-            if let pre = preTransitionWasPlaying {
-                wasPlayingBeforeTransition = pre
-                rateBeforeTransition = preTransitionRate ?? 1.0
-                preTransitionWasPlaying = nil
-                preTransitionRate = nil
-            } else {
-                wasPlayingBeforeTransition = vc.player?.timeControlStatus == .playing || (vc.player?.rate ?? 0) > 0
-                let defaultRate = vc.player?.defaultRate ?? 0
-                let activeRate = vc.player?.rate ?? 0
-                rateBeforeTransition = activeRate > 0 ? activeRate : (defaultRate > 0 ? defaultRate : 1.0)
-            }
-        }
-
-        private func restorePlaybackState(on vc: AVPlayerViewController) {
-            guard wasPlayingBeforeTransition, let player = vc.player else { return }
-            player.playImmediately(atRate: rateBeforeTransition)
-        }
-    }
-}
-
 // MARK: - Player view
 
 struct PlayerView: View {
@@ -2192,6 +1456,63 @@ struct PlayerView: View {
         "\(item.aid):\(item.bvid):\(item.cid)"
     }
 
+    private var fullscreenTransitionContext: PlayerFullscreenTransitionContext {
+        PlayerFullscreenTransitionContext(
+            aid: item.aid,
+            cid: item.cid,
+            isFullscreen: isFullscreen,
+            lastDeviceOrientation: lastDeviceOrientation,
+            prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen
+        )
+    }
+
+    private var autoFullscreenContext: PlayerAutoFullscreenContext {
+        PlayerAutoFullscreenContext(
+            currentOrientation: UIDevice.current.orientation,
+            lastDeviceOrientation: lastDeviceOrientation,
+            isFullscreen: isFullscreen,
+            prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
+            autoRotateFullscreen: settings.autoRotateFullscreen,
+            isPhone: UIDevice.current.userInterfaceIdiom == .phone
+        )
+    }
+
+    private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
+        switch event {
+        case .fullscreenChanged(let isFullscreen):
+            self.isFullscreen = isFullscreen
+        case .pictureInPictureChanged(let isActive):
+            if let onPictureInPictureActiveChange {
+                onPictureInPictureActiveChange(isActive)
+            } else {
+                vm.handle(.pictureInPictureChanged(isActive))
+            }
+        case .pictureInPictureRestoreRequested(let completion):
+            onPictureInPictureRestore?(completion) ?? completion(false)
+        }
+    }
+
+    private func requestFullscreenTransition(_ direction: PlayerFullscreenTransitionDirection) {
+        PlayerFullscreenController.requestTransition(direction,
+                                                     context: fullscreenTransitionContext,
+                                                     playerBox: playerVCRef,
+                                                     player: vm.player,
+                                                     updateFullscreenState: { isFullscreen = $0 })
+    }
+
+    private func handleDeviceOrientationChange() {
+        PlayerFullscreenController.handleDeviceOrientationChange(autoFullscreenContext,
+                                                                 onEnterFullscreen: {
+                                                                     requestFullscreenTransition(.enter)
+                                                                 },
+                                                                 onExitFullscreen: {
+                                                                     requestFullscreenTransition(.exit)
+                                                                 },
+                                                                 rememberOrientation: {
+                                                                     lastDeviceOrientation = $0
+                                                                 })
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
@@ -2214,14 +1535,10 @@ struct PlayerView: View {
                         beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
                         endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
                         onCreated: { vc in playerVCRef.vc = vc },
-                        onFullscreenChange: { fs in isFullscreen = fs },
-                        onPictureInPictureActiveChange: { isActive in
-                            vm.setPictureInPictureActive(isActive)
-                            onPictureInPictureActiveChange?(isActive)
+                        onPresentationControllerReady: { controller in
+                            playerVCRef.presentationController = controller
                         },
-                        onPictureInPictureRestore: { completion in
-                            onPictureInPictureRestore?(completion) ?? completion(false)
-                        },
+                        onPresentationEvent: handlePresentationEvent,
                         onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
                     )
                     // Cover the native chrome until the first frame is
@@ -2299,10 +1616,10 @@ struct PlayerView: View {
             // starts loading so route-to-route navigation does not
             // momentarily release the shared audio session while the
             // new AVPlayer is still buffering.
-            vm.activatePlayback()
+            vm.handle(.interfaceActivated)
 
             guard loadedMediaKey != mediaLoadKey || vm.player == nil else {
-                vm.activatePlayback()
+                vm.handle(.interfaceActivated)
                 return
             }
 
@@ -2313,109 +1630,46 @@ struct PlayerView: View {
                                             fastLoad: settings.fastLoad)
             async let danmaku: Void = loadDanmaku()
             _ = await (video, danmaku)
-            vm.activatePlayback()
+            vm.handle(.interfaceActivated)
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer {
                 vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
                 danmaku.attach(p)
-                vm.activatePlayback()
+                vm.handle(.interfaceActivated)
             }
         }
         .onChange(of: settings.audioGainDb) { _ in
             vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
         }
         .onChange(of: scenePhase) { phase in
-            // ---- Background path: keep audio rolling under lock ----
-            //
-            // AVPlayerViewController is wired up to auto-pause its
-            // bound AVPlayer the moment iOS locks the screen, no
-            // matter how the audio session is configured. The
-            // workaround is to detach the AVPlayer from the VC for
-            // the duration of the background phase: the player stays
-            // alive in `playerVCRef.detachedPlayer`, the audio session
-            // (already `.playback` + `.moviePlayback`) continues to
-            // route audio, and only the *video* surface is torn down.
-            // We restore the binding on `.active` so the user
-            // unlocking the screen sees the same frame they left.
-            if phase == .background, didBootstrap, !vm.isPictureInPictureActive,
-               let vc = playerVCRef.vc, let p = vc.player, playerVCRef.detachedPlayer == nil {
-                vm.endTemporarySpeedBoost(on: p)
-                playerVCRef.detachedPlayer = p
-                playerVCRef.detachedRate = p.rate > 0 ? p.rate : 1.0
-                vc.player = nil
-                // Re-issue play on the now-headless player so the OS
-                // doesn't immediately stall the queue. `playImmediately`
-                // is required because the player's rate is reset to 0
-                // by the OS-driven pause that races with our detach.
-                p.playImmediately(atRate: playerVCRef.detachedRate)
-            }
-            guard phase == .active, didBootstrap else { return }
-            // Reattach any player we detached in `.background` so the
-            // visible AVPlayerLayer picks back up where the audio
-            // session left off.
-            if let detached = playerVCRef.detachedPlayer, let vc = playerVCRef.vc {
-                if vc.player !== detached {
-                    vc.player = detached
-                }
-                playerVCRef.detachedPlayer = nil
-            }
-            guard vm.player != nil else { return }
-            // When the app returns to the foreground after a long lock
-            // the local proxy may have been killed by iOS (Network
-            // framework cancels listeners on suspended apps). Rebuild
-            // the AVPlayerItem against a freshly-bound port so playback
-            // does not silently fail with "could not load resource".
-            if !vm.isEngineAlive {
-                Task { await vm.reload() }
-            }
-            // If this session owns the active PiP window, the user
-            // returning to the page should collapse PiP back into
-            // the inline player instead of leaving the floating
-            // window hovering on top. AVPlayerViewController has no
-            // direct stop API, but flipping
-            // `allowsPictureInPicturePlayback` off and back on tears
-            // the active session down cleanly. The
-            // `isPictureInPictureActive` guard ensures only the
-            // originating PlayerView reacts.
-            if vm.isPictureInPictureActive, let vc = playerVCRef.vc {
-                vc.allowsPictureInPicturePlayback = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    vc.allowsPictureInPicturePlayback = true
-                }
-            }
+            PlayerViewLifecycleController.handleScenePhaseChange(
+                phase,
+                didBootstrap: didBootstrap,
+                viewModel: vm,
+                playerBox: playerVCRef,
+                reloadPlayer: { await vm.reload() }
+            )
         }
         .onReceive(orientationPublisher) { _ in
             handleDeviceOrientationChange()
         }
         .onAppear {
-            vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
-            if didBootstrap {
-                UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-                vm.activatePlayback()
-                if let p = vm.player { danmaku.attach(p) }
-            }
+            PlayerViewLifecycleController.handleAppear(
+                didBootstrap: didBootstrap,
+                viewModel: vm,
+                danmaku: danmaku,
+                resolvedAudioVolumeLinear: settings.resolvedAudioVolumeLinear()
+            )
         }
         .onDisappear {
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil
-            UIDevice.current.endGeneratingDeviceOrientationNotifications()
-            // Only tear the danmaku pipeline down when we're truly
-            // leaving the player page. AVKit's native fullscreen
-            // presentation covers the SwiftUI host with its own
-            // window, which fires `.onDisappear` on this view even
-            // though the player (and its danmaku canvas inside
-            // `contentOverlayView`) keeps running. Detaching here
-            // would invalidate the CADisplayLink + periodic time
-            // observer and clear `active`, leaving the canvas blank
-            // for the entire duration of fullscreen — `.onAppear`
-            // doesn't fire while we're still covered, so nothing
-            // would re-attach until the user exits fullscreen.
-            if !isFullscreen {
-                danmaku.detach()
-                vm.pauseForDeactivation()
-                Orientation.request(.portrait)
-            }
+            PlayerViewLifecycleController.handleDisappear(
+                isFullscreen: isFullscreen,
+                viewModel: vm,
+                danmaku: danmaku
+            )
         }
         .onChange(of: settings.danmakuEnabled) { newValue in
             // Surface a one-shot reminder the first few times the user
@@ -2575,206 +1829,6 @@ struct PlayerView: View {
         )
     }
 
-    // MARK: - Fullscreen / orientation
-
-    /// Enter native fullscreen and rotate to landscape. Uses AVKit's private
-    /// transition selector — this is widely used in shipping apps and works
-    /// reliably across iOS 14–17. Since this app isn't going through App
-    /// Review, that's fine.
-    private func enterFullscreen() {
-        guard !isFullscreen else {
-            AppLog.debug("player", "忽略自动进全屏：已经处于全屏状态", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        guard let vc = playerVCRef.vc else {
-            AppLog.warning("player", "自动进全屏失败：AVPlayerViewController 引用为空", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
-            ])
-            return
-        }
-        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenEnterSelectorCandidates)
-        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenEnterSelectorCandidates) else {
-            AppLog.warning("player", "自动进全屏失败：没有可用的 fullscreen selector", metadata: [
-                "supportedSelectors": supportedSelectors,
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
-            ])
-            return
-        }
-        let sel = NSSelectorFromString(selectorName)
-        if vm.prefersLandscapeFullscreen {
-            Orientation.preparePhoneFullscreenLandscape()
-        } else {
-            Orientation.request(.portrait)
-        }
-        isFullscreen = true
-        if let coordinator = playerVCRef.vc?.delegate as? PlayerContainer.Coordinator {
-            coordinator.prepareForFullscreenTransition(player: vm.player)
-        }
-        let deviceOrientation = UIDevice.current.orientation
-        let targetMask: UIInterfaceOrientationMask
-        if vm.prefersLandscapeFullscreen {
-            targetMask = deviceOrientation == .landscapeRight ? .landscapeLeft : .landscapeRight
-        } else {
-            targetMask = .portrait
-        }
-        Orientation.requestWithoutMaskChange(targetMask)
-        AppLog.info("player", "请求进入全屏", metadata: [
-            "aid": String(item.aid),
-            "cid": String(item.cid),
-            "selector": selectorName,
-            "supportedSelectors": supportedSelectors,
-            "prefersLandscapeFullscreen": String(vm.prefersLandscapeFullscreen),
-            "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
-            "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-        ])
-        vc.perform(sel, with: true, with: nil)
-    }
-
-    private func exitFullscreen() {
-        guard isFullscreen else {
-            AppLog.debug("player", "忽略自动退全屏：当前不在全屏", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        isFullscreen = false
-        guard let vc = playerVCRef.vc else {
-            AppLog.warning("player", "自动退全屏失败：AVPlayerViewController 引用为空", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenExitSelectorCandidates)
-        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenExitSelectorCandidates) else {
-            AppLog.warning("player", "自动退全屏失败：没有可用的 fullscreen selector", metadata: [
-                "supportedSelectors": supportedSelectors,
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        let sel = NSSelectorFromString(selectorName)
-        AppLog.info("player", "请求退出全屏", metadata: [
-            "aid": String(item.aid),
-            "cid": String(item.cid),
-            "selector": selectorName,
-            "supportedSelectors": supportedSelectors,
-            "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-        ])
-        vc.perform(sel, with: true, with: nil)
-    }
-
-    private func handleDeviceOrientationChange() {
-        let o = UIDevice.current.orientation
-        AppLog.debug("player", "收到设备方向变化", metadata: [
-            "deviceOrientation": deviceOrientationDescription(o),
-            "lastDeviceOrientation": deviceOrientationDescription(lastDeviceOrientation),
-            "isFullscreen": String(isFullscreen),
-            "autoRotateFullscreen": String(settings.autoRotateFullscreen),
-            "idiom": UIDevice.current.userInterfaceIdiom == .phone ? "phone" : "pad",
-        ])
-        guard settings.autoRotateFullscreen else {
-            AppLog.debug("player", "忽略设备方向变化：自动全屏已关闭")
-            return
-        }
-        // iPad: skip the auto rotate-into-fullscreen behaviour. iPads
-        // are commonly used in landscape as the default reading
-        // orientation, so flipping the player into fullscreen on every
-        // rotation would be more annoying than useful. The native
-        // fullscreen button still works.
-        guard UIDevice.current.userInterfaceIdiom == .phone else {
-            AppLog.debug("player", "忽略设备方向变化：当前设备不是手机")
-            return
-        }
-        guard o != lastDeviceOrientation else {
-            AppLog.debug("player", "忽略设备方向变化：与上次方向相同", metadata: [
-                "deviceOrientation": deviceOrientationDescription(o),
-            ])
-            return
-        }
-        defer { lastDeviceOrientation = o }
-        if o.isLandscape, vm.prefersLandscapeFullscreen, !isFullscreen {
-            enterFullscreen()
-        } else if o == .portrait, vm.prefersLandscapeFullscreen, isFullscreen {
-            exitFullscreen()
-        } else {
-            AppLog.debug("player", "设备方向变化未触发全屏切换", metadata: [
-                "deviceOrientation": deviceOrientationDescription(o),
-                "isLandscape": String(o.isLandscape),
-                "prefersLandscapeFullscreen": String(vm.prefersLandscapeFullscreen),
-                "isFullscreen": String(isFullscreen),
-            ])
-        }
-    }
 }
 
-// MARK: - PlayerVC handle
-
-fileprivate let fullscreenEnterSelectorCandidates = [
-    "enterFullScreenAnimated:completion:",
-    "enterFullScreenAnimated:completionHandler:",
-    "enterFullscreenAnimated:completion:",
-    "enterFullscreenAnimated:completionHandler:",
-]
-
-fileprivate let fullscreenExitSelectorCandidates = [
-    "exitFullScreenAnimated:completion:",
-    "exitFullScreenAnimated:completionHandler:",
-    "exitFullscreenAnimated:completion:",
-    "exitFullscreenAnimated:completionHandler:",
-]
-
-fileprivate func fullscreenSelectorSupportDescription(on vc: NSObject, selectorNames: [String]) -> String {
-    selectorNames.map { name in
-        let supported = vc.responds(to: NSSelectorFromString(name))
-        return "\(name)=\(supported ? "yes" : "no")"
-    }.joined(separator: ",")
-}
-
-fileprivate func firstSupportedFullscreenSelector(on vc: NSObject, selectorNames: [String]) -> String? {
-    selectorNames.first { vc.responds(to: NSSelectorFromString($0)) }
-}
-
-fileprivate func deviceOrientationDescription(_ orientation: UIDeviceOrientation) -> String {
-    switch orientation {
-    case .unknown: return "unknown"
-    case .portrait: return "portrait"
-    case .portraitUpsideDown: return "portraitUpsideDown"
-    case .landscapeLeft: return "landscapeLeft"
-    case .landscapeRight: return "landscapeRight"
-    case .faceUp: return "faceUp"
-    case .faceDown: return "faceDown"
-    @unknown default: return "future(\(orientation.rawValue))"
-    }
-}
-
-fileprivate func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> String {
-    if mask == .portrait { return "portrait" }
-    if mask == .landscape { return "landscape" }
-    if mask == .allButUpsideDown { return "allButUpsideDown" }
-    if mask == .all { return "all" }
-    if mask == .portraitUpsideDown { return "portraitUpsideDown" }
-    if mask == .landscapeLeft { return "landscapeLeft" }
-    if mask == .landscapeRight { return "landscapeRight" }
-    return "raw(\(mask.rawValue))"
-}
-
-final class PlayerVCBox {
-    weak var vc: AVPlayerViewController?
-    /// Strong reference to the AVPlayer that was temporarily
-    /// detached from `vc` while the app is backgrounded / the screen
-    /// is locked. iOS auto-pauses any AVPlayer that's bound to an
-    /// `AVPlayerViewController` when the screen locks, even with a
-    /// `.playback` audio category. Detaching the player from the VC
-    /// (and holding it here so it isn't deallocated) sidesteps that
-    /// behaviour so audio continues uninterrupted; we re-bind on
-    /// `.active` to restore video.
-    var detachedPlayer: AVPlayer?
-    var detachedRate: Float = 1.0
-}
 

@@ -225,7 +225,7 @@ private struct DeepLinkPlayerHost: View {
     }
 
     private func syncPlayerSessions() {
-        PlayerSessionStore.shared.retainSessions(root: router.pending, stack: router.playerPath)
+        PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending, stack: router.playerPath)
     }
 
     @ViewBuilder
@@ -244,7 +244,7 @@ private struct DeepLinkPlayerHost: View {
     private func playerDestination(for route: DeepLinkRouter.PlayerRoute) -> PlayerView {
         PlayerView(
             item: route.item,
-            viewModel: PlayerSessionStore.shared.viewModel(for: route.id),
+            viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id),
             onPictureInPictureActiveChange: { isActive in
                 handlePictureInPictureChange(isActive, routeID: route.id)
             },
@@ -293,7 +293,8 @@ private struct DeepLinkPlayerHost: View {
     }
 
     private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
-        PlayerSessionStore.shared.setPictureInPictureActive(
+        PlayerRuntimeCoordinator.shared.handle(.pictureInPictureChanged(isActive), for: routeID)
+        PlayerRuntimeCoordinator.shared.setPictureInPictureActive(
             isActive,
             for: routeID,
             snapshot: isActive ? router.snapshot : nil
@@ -303,7 +304,7 @@ private struct DeepLinkPlayerHost: View {
 
     private func restorePictureInPicture(routeID: UUID,
                                          completion: @escaping (Bool) -> Void) {
-        if let snapshot = PlayerSessionStore.shared.pictureInPictureSnapshot(for: routeID) {
+        if let snapshot = PlayerRuntimeCoordinator.shared.pictureInPictureSnapshot(for: routeID) {
             router.restore(snapshot)
             syncPlayerSessions()
             completion(true)
