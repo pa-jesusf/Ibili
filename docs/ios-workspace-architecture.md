@@ -1,543 +1,171 @@
-# iOS Workspace Architecture
+# iOS 工作区架构
 
-## 1. Purpose
+## 1. 目的
 
-This document turns the high-level iOS native architecture guide into a concrete workspace and target layout.
+这份文档描述当前工作区和 iOS 工程布局。
 
-Goals:
+截至 2026-05，仓库已经不再符合早期“拆成多个本地 Swift package”的设想。这里的说明以磁盘上的真实结构为准。
 
-- keep protocol logic isolated from the UI
-- maximize native iOS component usage
-- support iOS 26 glass-style visuals with a centralized fallback path
-- keep feature code small, testable, and reusable
-- make the codebase safe to evolve as protocol behavior changes
-
-This document should be read together with:
+相关文档：
 
 - `./ios-native-development-guide.md`
-- `./upstream-sync-implementation.md`
 - `./rust-core-swift-bridge-interface-design.md`
+- `./ios-ui-components.md`
+- `./upstream-sync-implementation.md`
 
-## 2. Workspace Shape
-
-Recommended top-level structure:
+## 2. 顶层工作区结构
 
 ```text
 Ibili/
   docs/
-  upstream-piliplus/
-  ios-app/
-    Ibili.xcworkspace
-    IbiliApp/
-    Packages/
-      DesignSystem/
-      SharedUI/
-      AppFoundation/
-      Application/
-      Infrastructure/
-      ProtocolCoreBridge/
-      FeatureHome/
-      FeatureVideo/
-      FeaturePlayer/
-      FeatureDanmaku/
-      FeatureSearch/
-      FeatureAuth/
-      FeatureProfile/
-      FeatureDynamic/
-      FeatureSettings/
   core/
-    rust/ or go/
+    rust/
+  ios-app/
   tools/
-    upstream-sync/
-    regression/
+  upstream-piliplus/
+  ibili-diagnostics/
 ```
 
-Recommended approach:
+### 2.1 目录职责
 
-- keep the iOS app in its own `ios-app/` directory
-- keep the cross-platform protocol core in `core/`
-- keep upstream tooling in `tools/`
-- keep feature code inside Swift packages rather than inside one large app target
+- `docs/`：架构、设计、调试和维护文档
+- `core/rust/`：Rust workspace，包含 `ibili_core` 和 `ibili_ffi`
+- `ios-app/`：原生 iOS 应用、XcodeGen 配置、XCFramework 挂载点
+- `tools/`：当前构建流程使用的脚本
+- `upstream-piliplus/`：上游 Flutter 参考实现
+- `ibili-diagnostics/`：导出的播放诊断和 packaging workspace 样本
 
-## 3. Targets and Packages
+## 3. iOS 工程布局
 
-### 3.1 App Targets
+iOS 工程由 `ios-app/project.yml` 生成。
 
-Recommended Xcode targets:
+当前 targets：
 
-1. `IbiliApp`
-2. `IbiliAppTests`
-3. `IbiliAppUITests`
+1. `Ibili` 应用 target
+2. `IbiliTests` 单元测试 target
 
-Optional later targets:
+`project.yml` 当前的重要属性：
 
-1. `IbiliShareExtension`
-2. `IbiliWidgetExtension`
-3. `IbiliNotificationExtension`
+- 部署版本：iOS 16.0
+- 生成出的项目名：`Ibili`
+- Rust framework 依赖：`Frameworks/IbiliCore.xcframework`
+- unsigned 构建流程下默认关闭 code signing
 
-The app target should stay thin. It should only own:
+## 4. 源码目录结构
 
-- app entry
-- dependency graph composition
-- environment bootstrap
-- app scene routing
-- system capability registration
-
-### 3.2 Swift Package Modules
-
-Recommended package ownership:
-
-1. `DesignSystem`
-2. `SharedUI`
-3. `AppFoundation`
-4. `Application`
-5. `Infrastructure`
-6. `ProtocolCoreBridge`
-7. `FeatureHome`
-8. `FeatureVideo`
-9. `FeaturePlayer`
-10. `FeatureDanmaku`
-11. `FeatureSearch`
-12. `FeatureAuth`
-13. `FeatureProfile`
-14. `FeatureDynamic`
-15. `FeatureSettings`
-
-## 4. Dependency Rules
-
-Dependency direction must remain one-way.
-
-Allowed direction:
+`ios-app/IbiliApp/Sources/` 当前真实布局如下：
 
 ```text
-Feature* -> Application -> Infrastructure -> ProtocolCoreBridge -> Core Library
-Feature* -> SharedUI -> DesignSystem
-Feature* -> AppFoundation
-Infrastructure -> AppFoundation
-SharedUI -> DesignSystem
-App target -> all packages
+App/
+Bridge/
+DesignSystem/
+Features/
 ```
 
-Forbidden direction:
+### 4.1 `App/`
 
-- `DesignSystem` must not depend on any feature module.
-- `SharedUI` must not import `Infrastructure`.
-- `Feature*` modules must not call FFI directly.
-- `Application` must not depend on SwiftUI views.
-- `ProtocolCoreBridge` must not know about screens or view models.
+负责应用启动和全局状态。
 
-## 5. Module Responsibilities
+当前文件包括：
 
-### 5.1 DesignSystem
+- `IbiliApp.swift`
+- `RootView.swift`
+- `DeepLinkRouter.swift`
+- `AppSession.swift`
+- `AppSettings.swift`
+- `Logging/`
 
-Responsibilities:
+### 4.2 `Bridge/`
 
-- semantic colors
-- typography tokens
-- radius tokens
-- spacing tokens
-- elevation and shadow tokens
-- glass and fallback materials
-- motion tokens
-- icon sizing rules
-- toolbar and tab chrome styles
-- reusable control themes
+负责 Swift 侧的 Rust 桥接。
 
-Suggested folders:
+当前文件包括：
+
+- `CoreClient.swift`
+- `CoreDTOs.swift`
+- `SessionStore.swift`
+- `BiliImageURL.swift`
+
+这个目录就是当前仓库里旧 `ProtocolCoreBridge` 设想的实际落点。
+
+### 4.3 `DesignSystem/`
+
+负责共享视觉 token、基础视图和复合组件。
+
+关键文件：
+
+- `Theme.swift`
+- `SharedViews.swift`
+- `BiliFormat.swift`
+- `EmptyStateView.swift`
+- `ImageDiskCache.swift`
+- `Components/`
+
+### 4.4 `Features/`
+
+负责产品功能页。
+
+当前 feature 目录包括：
+
+- `Auth/`
+- `Dynamic/`
+- `Home/`
+- `Logs/`
+- `Player/`
+- `Profile/`
+- `Search/`
+- `Settings/`
+- `UserSpace/`
+- `VideoDetail/`
+
+## 5. 依赖规则
+
+iOS 应用目前仍是单一 target，因此这些边界主要靠目录约定而不是编译期 package 约束。
+
+要求的依赖方向：
 
 ```text
-Sources/
-  Tokens/
-  Materials/
-  Controls/
-  Layout/
-  Motion/
-  Accessibility/
+Features -> App / Bridge / DesignSystem
+Bridge -> Rust C ABI
+Rust C ABI -> Rust service modules
 ```
 
-### 5.2 SharedUI
+规则：
 
-Responsibilities:
+- Feature 不得直接调用原始 FFI 函数。
+- DesignSystem 不得 import feature 模块。
+- Rust 特有的传输、签名细节不得从 `Bridge/` 泄漏到外层。
+- `App/` 可以协调导航和共享状态，但协议逻辑仍归 Rust 所有。
 
-- reusable UI blocks built on `DesignSystem`
-- loading, empty, and error states
-- reusable cards, rows, badges, pills, avatars, counters
-- common pull-to-refresh and paged list containers
-- modal and sheet wrappers
+## 6. 构建产物与工具
 
-Typical examples:
+当前构建脚本：
 
-- `AsyncStateView`
-- `VideoCard`
-- `AuthorRow`
-- `StatBadge`
-- `GlassPanel`
-- `SectionHeader`
-- `PagedFeedContainer`
+- `tools/build_rust_xcframework.sh`
+- `tools/build_unsigned_ipa.sh`
 
-### 5.3 AppFoundation
+当前构建流程：
 
-Responsibilities:
+1. 为 iOS targets 构建 Rust workspace
+2. 打包 `IbiliCore.xcframework`
+3. 用 XcodeGen 生成 Xcode 工程
+4. 在关闭签名的条件下 archive app
+5. 把 `Ibili.app` 重新打包为 unsigned IPA
 
-- app-wide primitives and protocols
-- environment configuration
-- logging interfaces
-- feature flags
-- error types
-- scheduling abstractions
-- persistence keys
-- system service protocols
+关键生成产物：
 
-Examples:
+- `ios-app/Frameworks/IbiliCore.xcframework`
+- `ios-app/Ibili.xcodeproj`
+- `dist/Ibili-unsigned.ipa`
 
-- `AppEnvironment`
-- `Logger`
-- `Clock`
-- `AppError`
-- `FeatureFlagProvider`
-- `SessionState`
+## 7. 诊断与测试
 
-### 5.4 ProtocolCoreBridge
+- 播放器和 packaging 诊断输出位于 `ibili-diagnostics/`
+- Swift 测试位于 `ios-app/IbiliApp/Tests/`
+- Rust 测试位于 `core/rust/`
 
-Responsibilities:
+## 8. 后续模块化可能性
 
-- wrap the Rust or Go exported API
-- convert opaque FFI results into Swift value types
-- expose `async` and cancellation-aware calls
-- isolate memory management and unsafe code
+未来仍然可以把 `Bridge/`、`DesignSystem/` 或部分 `Features/` 提取成 Swift package。
 
-Rules:
-
-- no SwiftUI imports
-- no domain policy beyond bridge adaptation
-- all FFI and unsafe pointer handling stays here
-
-Suggested substructure:
-
-```text
-Sources/
-  FFI/
-  Models/
-  Mapping/
-  BridgeClients/
-  Errors/
-```
-
-### 5.5 Infrastructure
-
-Responsibilities:
-
-- repository implementations
-- persistence adapters
-- caching
-- image loading integration
-- account/session storage
-- background sync adapters
-- upstream sync adapters
-
-This is where the app decides how Swift repositories call the bridge and local storage.
-
-### 5.6 Application
-
-Responsibilities:
-
-- use cases
-- coordinators for cross-feature flows
-- aggregation of repository results
-- business-level retry policy
-- pagination orchestration
-- feed prefetch orchestration
-- player handoff orchestration
-
-Suggested substructure:
-
-```text
-Sources/
-  UseCases/
-  Coordinators/
-  Domain/
-  Policies/
-  Mappers/
-```
-
-### 5.7 Feature Modules
-
-Each feature package should own only its presentation and feature-local composition.
-
-Suggested per-feature structure:
-
-```text
-Sources/
-  Scene/
-  ViewModels/
-  Components/
-  Routing/
-  State/
-  Preview/
-```
-
-Rules:
-
-- one scene entry per major screen
-- one view model per screen or large section
-- reusable subviews move to `Components/`
-- no raw endpoint strings
-- no signing or request building
-
-## 6. Feature Breakdown
-
-### 6.1 FeatureHome
-
-Owns:
-
-- home tab shell
-- recommendation feed
-- category switching if introduced later
-- refresh and feed pagination UI
-
-Should depend on:
-
-- `Application`
-- `SharedUI`
-- `DesignSystem`
-- `AppFoundation`
-
-### 6.2 FeatureVideo
-
-Owns:
-
-- video detail scene
-- metadata panels
-- comments entry
-- related content panels
-- selectable qualities and episodes entry points
-
-Must not own the player engine itself.
-
-### 6.3 FeaturePlayer
-
-Owns:
-
-- native player host scene
-- overlay controls
-- gesture handling
-- PiP integration
-- quality switching UI
-- subtitle and audio route UI
-- brightness and volume interaction policy
-
-Recommended internal split:
-
-```text
-FeaturePlayer/
-  Scene/
-  PlayerHost/
-  Overlay/
-  Controls/
-  Gestures/
-  State/
-  Routing/
-```
-
-Player-specific rule:
-
-- render using native media APIs
-- keep protocol stream resolution outside this module
-
-### 6.3.1 Playback ADR Note
-
-As of 2026-05-02, the repository has a verified playback constraint for HEVC Main10 HDR variants such as qn125:
-
-- the current live `sidx -> HLS BYTERANGE` proxy path is not the long-term architecture target
-- repeated `init.mp4` patching and FFmpeg live remux experiments did not solve `CoreMediaErrorDomain -12927`
-- the strategic direction for the AVPlayer path is Apple-compatible HLS/CMAF packaging with segment semantics controlled by a real packager, not by ad-hoc local proxy patching
-
-As of the same date, one remaining Dolby Vision class was also root-caused more precisely:
-
-- some `dvh1.08.xx` samples are Dolby Vision 8.4 with HLG-compatible base layer, not PQ
-- these streams must be authored with base `hvc1` in `CODECS`, Dolby Vision in `SUPPLEMENTAL-CODECS`, and `VIDEO-RANGE=HLG`
-- inferring HDR range from qn alone is not reliable and must not override parsed init metadata
-- diagnostics-browser workspace smoke tests now use a direct file URL so packaged-HLS validation is isolated from localhost delivery behavior
-
-Implication:
-
-- `FeaturePlayer` may continue to host the current engine stack for ordinary streams, but future investment for unsupported HEVC/HDR variants must go into proper packaging, not more proxy-layer hotfixes
-
-### 6.4 FeatureDanmaku
-
-Owns:
-
-- danmaku overlay orchestration
-- danmaku settings UI
-- danmaku filtering and timing controls
-
-The actual data loading should still come from `Application` use cases and repositories.
-
-### 6.5 FeatureAuth
-
-Owns:
-
-- login method selection UI
-- password login UI
-- SMS login UI
-- TV QR login UI
-- risk-control verification UI
-- account switching UI
-
-The feature should model the login process as scenes over a state machine rather than one large screen.
-
-## 7. Scene Composition Rules
-
-### 7.1 Maximum File Size Heuristic
-
-Strong recommendation:
-
-- SwiftUI view files should usually remain below 200 to 300 lines
-- view model files should usually remain below 250 to 350 lines
-- if a file grows past that because of repeated UI blocks, split components immediately
-
-### 7.2 Scene Layers
-
-Recommended scene layering:
-
-1. `Scene`
-2. `ScreenState`
-3. `ViewModel`
-4. `Section Views`
-5. `Reusable Components`
-
-Example:
-
-```text
-VideoDetailScene
-  -> VideoDetailViewModel
-  -> VideoDetailState
-  -> VideoHeaderSection
-  -> VideoActionsSection
-  -> RelatedFeedSection
-  -> Reusable components from SharedUI
-```
-
-### 7.3 State Shape
-
-Each major screen should explicitly model:
-
-- initial loading
-- refresh loading
-- loaded content
-- paginating content
-- empty state
-- recoverable error
-- unrecoverable error
-
-Avoid boolean soup such as multiple unrelated flags with no single source of truth.
-
-## 8. Native iOS 26 Glass Implementation
-
-### 8.1 Centralized Provider
-
-Implement the glass behavior once in the design system.
-
-Recommended abstractions:
-
-- `SurfaceToken`
-- `ChromeToken`
-- `GlassStyleProviding`
-- `ResolvedSurfaceStyle`
-
-Recommended providers:
-
-- `IOS26GlassProvider`
-- `FallbackMaterialProvider`
-
-### 8.2 Usage Pattern
-
-Views ask for semantic styling, not platform-specific implementation.
-
-Example policy:
-
-- navigation bar background uses `chromeToken = .navigationBar`
-- player floating controls use `surfaceToken = .floatingOverlay`
-- tab shell uses `chromeToken = .tabBar`
-- cards use `surfaceToken = .card`
-
-The provider resolves the actual iOS 26 glass style or fallback material.
-
-### 8.3 Fallback Policy
-
-For lower iOS versions:
-
-- preserve the same hierarchy and interaction structure
-- use tokenized blur and material styling
-- do not create a second design language
-
-This means the fallback differs in implementation, not in information architecture.
-
-## 9. Testing Strategy by Layer
-
-### 9.1 DesignSystem Tests
-
-Test:
-
-- token mapping
-- glass provider fallback behavior
-- accessibility contrast assumptions where possible
-
-### 9.2 Application Tests
-
-Test:
-
-- use case behavior
-- retry policy
-- pagination policy
-- account/session transitions
-
-### 9.3 Infrastructure Tests
-
-Test:
-
-- repository mapping
-- persistence behavior
-- bridge error handling
-- cache invalidation logic
-
-### 9.4 Feature Snapshot and Interaction Tests
-
-Test:
-
-- representative screen states
-- loading / empty / error rendering
-- player overlay state changes
-- auth scene transitions
-
-## 10. Initial Build Order
-
-Recommended order:
-
-1. create workspace and package graph
-2. build `DesignSystem`
-3. build `AppFoundation`
-4. build `ProtocolCoreBridge`
-5. build `Infrastructure`
-6. build `Application`
-7. build `SharedUI`
-8. build `FeatureHome`
-9. build `FeatureVideo`
-10. build `FeaturePlayer`
-11. build `FeatureAuth`
-12. add remaining features
-
-This order reduces rework because the lower layers stabilize before features multiply.
-
-## 11. Non-Negotiable Rules
-
-- The app target must stay thin.
-- Cross-feature reusable UI belongs in `SharedUI`, not random feature folders.
-- Styling belongs in `DesignSystem`, not feature code.
-- View models call use cases, not repositories directly unless the feature is deliberately trivial.
-- Repositories stay in `Infrastructure`.
-- All FFI stays in `ProtocolCoreBridge`.
-- All protocol behavior stays outside SwiftUI features.
-- All glass and fallback behavior is resolved by semantic style providers.
-
-If this structure is respected, the codebase stays maintainable even when the protocol core and UI both evolve quickly.
+但那属于未来重构，不是当前架构。在真正完成这类重构之前，文档应当始终引用真实源码目录，而不是旧的 package 方案。
