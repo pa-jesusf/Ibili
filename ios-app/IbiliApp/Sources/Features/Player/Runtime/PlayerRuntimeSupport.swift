@@ -169,7 +169,22 @@ final class PlayerNowPlayingCoordinator {
     func refresh(for viewModel: PlayerViewModel) {
         configureRemoteCommandsIfNeeded()
         guard preferredOwner === viewModel || activeOwner === viewModel else { return }
-        guard let metadata = viewModel.nowPlayingMetadata else { return }
+        guard viewModel.shouldExposeSystemMediaSession,
+              let metadata = viewModel.nowPlayingMetadata else {
+            if preferredOwner === viewModel {
+                preferredOwner = nil
+            }
+            if activeOwner === viewModel {
+                AppLog.info("player", "系统媒体会话已自动隐藏", metadata: viewModel.systemMediaSessionDebugMetadata)
+                activeOwner = nil
+                currentArtworkURL = nil
+                artworkLoadID = UUID()
+                let infoCenter = MPNowPlayingInfoCenter.default()
+                infoCenter.nowPlayingInfo = nil
+                infoCenter.playbackState = .stopped
+            }
+            return
+        }
         if preferredOwner === viewModel, viewModel.player != nil, activeOwner !== viewModel {
             activeOwner = viewModel
             AppLog.info("player", "系统媒体会话切换到当前播放器", metadata: [

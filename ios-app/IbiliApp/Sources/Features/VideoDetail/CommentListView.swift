@@ -15,10 +15,23 @@ struct CommentListView: View {
     /// 17 = word/forward dynamic, 12 = article. Defaults to video so
     /// existing call sites keep their current behaviour.
     var kind: Int32 = 1
-    @StateObject private var vm = CommentListViewModel()
+    @StateObject private var ownedViewModel = CommentListViewModel()
+    private let providedViewModel: CommentListViewModel?
     @State private var thread: ReplyItemDTO?
     @State private var showSendSheet = false
     @EnvironmentObject private var session: AppSession
+
+    init(oid: Int64,
+         kind: Int32 = 1,
+         viewModel: CommentListViewModel? = nil) {
+        self.oid = oid
+        self.kind = kind
+        self.providedViewModel = viewModel
+    }
+
+    private var vm: CommentListViewModel {
+        providedViewModel ?? ownedViewModel
+    }
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 0) {

@@ -62,7 +62,7 @@ final class PlayerViewModel: ObservableObject {
     private var loadGeneration: UInt64 = 0
     private let discoveryQn: Int64 = 120
     private let engine: PlaybackEngine = HLSProxyEngine.shared
-    private var sourceByQn: [Int64: PlayUrlDTO] = [:]
+    let pageCache = PlayerPageSessionCache()
     /// Server-recorded resume position for the *current* (aid,cid).
     /// Captured from `playurl.last_play_time_ms` and consumed once when
     /// the AVPlayerItem first reaches `.readyToPlay` so we don't fight
@@ -111,6 +111,8 @@ final class PlayerViewModel: ObservableObject {
     private let sessionID: PlayerSessionID
     private var behaviorState = PlayerSessionBehaviorState()
     private var playerTimeControlObservation: NSKeyValueObservation?
+    private var isPlaybackCompleted = false
+    private var isRecoveringPlaybackFromPageCache = false
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -170,7 +172,7 @@ final class PlayerViewModel: ObservableObject {
         autoReloadAttempts = 0
         if !isSameVideo {
             blockedQns.removeAll()
-            sourceByQn.removeAll()
+            pageCache.clearMediaData()
             stopHeartbeat()
             cancelPendingUpgrade()
             // Switching to a different video/part inside the same
@@ -191,6 +193,7 @@ final class PlayerViewModel: ObservableObject {
             // session stays claimed throughout the hand-off.
             resetCurrentPlaybackForMediaSwitch()
         }
+        isPlaybackCompleted = false
         if preferredAudioQn > 0 { currentAudioQn = preferredAudioQn }
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
@@ -211,6 +214,7 @@ final class PlayerViewModel: ObservableObject {
                                                        cid: item.cid,
                                                        qn: discoveryQnTarget) {
                 initial = warm
+                rememberPlayURL(warm)
             } else {
                 initial = try await fetchPlayUrl(aid: item.aid,
                                                  cid: item.cid,
@@ -226,6 +230,7 @@ final class PlayerViewModel: ObservableObject {
                                                                 cid: item.cid,
                                                                 qn: targetQn) {
                 info = warm
+                rememberPlayURL(warm)
             } else {
                 info = try await fetchPlayUrl(aid: item.aid,
                                               cid: item.cid,
@@ -234,7 +239,7 @@ final class PlayerViewModel: ObservableObject {
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
             self.availableQualities = finalQualities
-            self.sourceByQn[info.quality] = info
+            rememberPlayURL(info)
             self.availableAudioQualities = normalizedAudioQualities(from: info)
             self.currentAudioQn = info.audioQuality
             // Capture server-recorded resume position. Treated as a
@@ -255,13 +260,14 @@ final class PlayerViewModel: ObservableObject {
                                                             cid: item.cid,
                                                             qn: lowestQn) {
                     loInfo = warm
+                    rememberPlayURL(warm)
                 } else {
                     loInfo = try await fetchPlayUrl(aid: item.aid,
                                                     cid: item.cid,
                                                     qn: lowestQn)
                 }
                 guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
-                self.sourceByQn[loInfo.quality] = loInfo
+                rememberPlayURL(loInfo)
                 // Race on hidden players reaching actual playback, not
                 // on `makeItem` completion. That keeps the feature true
                 // to its purpose: first picture wins, not first asset
@@ -491,6 +497,29 @@ final class PlayerViewModel: ObservableObject {
         )
     }
 
+    var currentFeedItem: FeedItemDTO? {
+        lastLoadedItem
+    }
+
+    var shouldExposeSystemMediaSession: Bool {
+        guard player != nil, nowPlayingMetadata != nil else { return false }
+        if behaviorState.isInterfacePresentingPlayer {
+            return true
+        }
+        return !isPlaybackCompleted
+    }
+
+    var systemMediaSessionDebugMetadata: [String: String] {
+        [
+            "aid": String(currentAid),
+            "cid": String(currentCid),
+            "hasPlayer": String(player != nil),
+            "isPresentationActive": String(behaviorState.isInterfacePresentingPlayer),
+            "isPlaybackCompleted": String(isPlaybackCompleted),
+            "playbackRate": String(systemMediaPlaybackRate),
+        ]
+    }
+
     var currentElapsedPlaybackTime: TimeInterval? {
         guard let seconds = player?.currentTime().seconds,
               seconds.isFinite,
@@ -519,7 +548,28 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func handleRemotePlaybackIntent(_ intent: PlayerIntent) {
-        handle(.playbackIntentChanged(intent))
+        switch intent {
+        case .pause:
+            handle(.playbackIntentChanged(.pause))
+        case .play:
+            Task { @MainActor in
+                self.isPlaybackCompleted = false
+                self.handle(.playbackIntentChanged(.play))
+                guard !self.isEngineAlive else { return }
+                if await self.recoverPlaybackFromPageCacheIfPossible(trigger: "system-remote-play") {
+                    return
+                }
+                await self.reload()
+            }
+        }
+    }
+
+    func recoverFromInactiveEngineIfNeeded(trigger: String) async {
+        guard !isEngineAlive else { return }
+        if await recoverPlaybackFromPageCacheIfPossible(trigger: trigger) {
+            return
+        }
+        await reload()
     }
 
     /// Read-only flag mirroring the internal PiP state. Used by the
@@ -601,7 +651,7 @@ final class PlayerViewModel: ObservableObject {
             // one keeps the proxy token table from growing across
             // switches without tearing down other tab's retained players.
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
-            self.sourceByQn[info.quality] = info
+            rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
@@ -659,7 +709,9 @@ final class PlayerViewModel: ObservableObject {
         activePreparation?.release()
         activePreparation = nil
         cancelPendingUpgrade()
+        pageCache.clearMediaData()
         behaviorState = PlayerSessionBehaviorState()
+        isPlaybackCompleted = false
         isVideoReady = false
     }
 
@@ -710,6 +762,8 @@ final class PlayerViewModel: ObservableObject {
         if newPlayer == nil {
             temporaryPlaybackRateOverride = nil
             isTemporarySpeedBoostActive = false
+        } else {
+            isPlaybackCompleted = false
         }
         player = newPlayer
         if let newPlayer {
@@ -801,6 +855,8 @@ final class PlayerViewModel: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 guard let self else { return }
+                self.isPlaybackCompleted = true
+                self.refreshSystemMediaSession()
                 let sec = Int64(CMTimeGetSeconds(item.duration))
                 Task.detached(priority: .background) {
                     try? CoreClient.shared.archiveHeartbeat(
@@ -1056,6 +1112,7 @@ final class PlayerViewModel: ObservableObject {
                 guard let self, self.loadGeneration == generation else { return }
                 switch item.status {
                 case .readyToPlay:
+                    self.isPlaybackCompleted = false
                     self.isVideoReady = true
                     // Seek to the server-recorded resume position
                     // exactly once per load. Cleared so a later
@@ -1083,6 +1140,7 @@ final class PlayerViewModel: ObservableObject {
                     self.refreshSystemMediaSession()
                 case .failed:
                     let detail = item.error?.localizedDescription ?? "unknown"
+                    self.pageCache.removePlayURL(qn: self.currentQn, audioQn: self.currentAudioQn)
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
                         "detail": detail,
                     ])
@@ -1129,9 +1187,137 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
-        try await Task.detached {
+        if self.aid == aid,
+           self.cid == cid,
+           let cached = pageCache.playURL(qn: qn, audioQn: audioQn) {
+            AppLog.debug("player", "命中播放页缓存的播放地址", metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "qn": String(qn),
+                "audioQn": String(audioQn),
+            ])
+            return cached
+        }
+        let info = try await Task.detached {
             try CoreClient.shared.playUrl(aid: aid, cid: cid, qn: qn, audioQn: audioQn)
         }.value
+        rememberPlayURL(info)
+        return info
+    }
+
+    private func rememberPlayURL(_ info: PlayUrlDTO) {
+        pageCache.storePlayURL(info)
+    }
+
+    private func currentPlaybackTimeForRecovery() -> CMTime {
+        guard let player else {
+            if pendingResumeMs > 0 {
+                return CMTime(seconds: Double(pendingResumeMs) / 1000.0, preferredTimescale: 600)
+            }
+            return .zero
+        }
+        let current = player.currentTime()
+        if current.isValid, !current.isIndefinite {
+            return current
+        }
+        if pendingResumeMs > 0 {
+            return CMTime(seconds: Double(pendingResumeMs) / 1000.0, preferredTimescale: 600)
+        }
+        return .zero
+    }
+
+    private func recoverPlaybackFromPageCacheIfPossible(trigger: String) async -> Bool {
+        guard !isRecoveringPlaybackFromPageCache else { return true }
+        guard currentQn > 0,
+              let info = pageCache.playURL(qn: currentQn, audioQn: currentAudioQn) else {
+            AppLog.debug("player", "播放页缓存未命中，无法直接恢复播放源", metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "trigger": trigger,
+                "qn": String(currentQn),
+                "audioQn": String(currentAudioQn),
+            ])
+            return false
+        }
+
+        isRecoveringPlaybackFromPageCache = true
+        defer { isRecoveringPlaybackFromPageCache = false }
+
+        let generation = loadGeneration
+        let resumeAt = currentPlaybackTimeForRecovery()
+
+        AppLog.info("player", "尝试使用播放页缓存恢复播放源", metadata: [
+            "aid": String(aid),
+            "cid": String(cid),
+            "trigger": trigger,
+            "qn": String(info.quality),
+            "audioQn": String(info.audioQuality),
+            "resumeSec": String(format: "%.3f", CMTimeGetSeconds(resumeAt)),
+        ])
+
+        do {
+            let prep = try await engine.makeItem(for: info)
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else {
+                prep.release()
+                return true
+            }
+
+            if let item = lastLoadedItem {
+                applyPresentationMetadata(to: prep.item, for: item)
+            }
+
+            isVideoReady = false
+            cancelPendingUpgrade()
+            stopHeartbeat()
+            itemStatusObservation = nil
+
+            let previousPreparation = activePreparation
+            let targetPlayer: AVPlayer
+            if let existingPlayer = player {
+                suppressNextObservedPlaybackIntent(.pause)
+                existingPlayer.pause()
+                endTemporarySpeedBoost(on: existingPlayer)
+                existingPlayer.replaceCurrentItem(with: nil)
+                targetPlayer = existingPlayer
+            } else {
+                targetPlayer = AVPlayer(playerItem: prep.item)
+            }
+
+            activePreparation = prep
+            observeItemStatus(prep.item, generation: generation)
+
+            if player == nil {
+                setPlayer(targetPlayer)
+            } else {
+                targetPlayer.replaceCurrentItem(with: prep.item)
+            }
+
+            await targetPlayer.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+            applyRate(to: targetPlayer)
+            applyPlaybackIntent(to: targetPlayer)
+            previousPreparation?.release()
+            refreshSystemMediaSession()
+
+            AppLog.info("player", "播放页缓存恢复成功", metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "trigger": trigger,
+                "qn": String(info.quality),
+                "audioQn": String(info.audioQuality),
+            ])
+            return true
+        } catch {
+            pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality)
+            AppLog.warning("player", "播放页缓存恢复失败，已回退到常规重载路径", metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "trigger": trigger,
+                "qn": String(info.quality),
+                "audioQn": String(info.audioQuality),
+                "error": error.localizedDescription,
+            ])
+            return false
+        }
     }
 
     private func isCurrentLoad(_ generation: UInt64, aid: Int64, cid: Int64) -> Bool {
@@ -1241,7 +1427,7 @@ final class PlayerViewModel: ObservableObject {
             activePreparation?.release()
             activePreparation = nil
             let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: currentQn, audioQn: audioQn)
-            self.sourceByQn[info.quality] = info
+            rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
@@ -1618,7 +1804,9 @@ struct PlayerView: View {
             .aspectRatio(16.0/9.0, contentMode: .fit)
 
             if shouldMountDetailContent {
-                VideoDetailContent(item: item)
+                VideoDetailContent(item: item,
+                                   detailViewModel: vm.pageCache.detailViewModel,
+                                   commentListViewModel: vm.pageCache.commentListViewModel)
                     .transition(.opacity)
             } else {
                 VStack(spacing: 12) {
@@ -1704,7 +1892,7 @@ struct PlayerView: View {
                 didBootstrap: didBootstrap,
                 viewModel: vm,
                 playerBox: playerVCRef,
-                reloadPlayer: { await vm.reload() }
+                reloadPlayer: { await vm.recoverFromInactiveEngineIfNeeded(trigger: "foreground-active") }
             )
         }
         .onReceive(orientationPublisher) { _ in
@@ -1848,7 +2036,21 @@ struct PlayerView: View {
 
     private func loadDanmaku() async {
         do {
-            let resolvedItem = try await resolvePlayableItemIfNeeded(item)
+            let resolvedItem: FeedItemDTO
+            if let currentFeedItem = vm.currentFeedItem {
+                resolvedItem = currentFeedItem
+            } else {
+                resolvedItem = try await resolvePlayableItemIfNeeded(item)
+            }
+            if let cachedItems = vm.pageCache.danmaku(for: resolvedItem.cid) {
+                danmaku.setItems(cachedItems)
+                if let p = vm.player { danmaku.attach(p) }
+                AppLog.debug("danmaku", "命中播放页缓存的弹幕", metadata: [
+                    "cid": String(resolvedItem.cid),
+                    "count": String(cachedItems.count),
+                ])
+                return
+            }
             AppLog.info("danmaku", "开始加载弹幕", metadata: [
                 "cid": String(resolvedItem.cid),
             ])
@@ -1857,6 +2059,7 @@ struct PlayerView: View {
                     .items
                     .sorted { $0.timeSec < $1.timeSec }
             }.value
+            vm.pageCache.storeDanmaku(sortedItems, for: resolvedItem.cid)
             danmaku.setItems(sortedItems)
             if let p = vm.player { danmaku.attach(p) }
             AppLog.info("danmaku", "弹幕加载完成", metadata: [

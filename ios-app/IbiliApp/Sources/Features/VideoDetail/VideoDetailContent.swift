@@ -14,8 +14,8 @@ import SwiftUI
 /// 7. Segmented tabs: 简介 / 评论 / 相关
 struct VideoDetailContent: View {
     let item: FeedItemDTO
-
-    @StateObject private var vm = VideoDetailViewModel()
+    @ObservedObject private var vm: VideoDetailViewModel
+    private let commentListViewModel: CommentListViewModel
     @StateObject private var interaction = VideoInteractionService()
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
@@ -24,6 +24,14 @@ struct VideoDetailContent: View {
     @State private var toast: String?
 
     private let topAnchorID = "videoDetailTop"
+
+    init(item: FeedItemDTO,
+         detailViewModel: VideoDetailViewModel,
+         commentListViewModel: CommentListViewModel) {
+        self.item = item
+        self._vm = ObservedObject(wrappedValue: detailViewModel)
+        self.commentListViewModel = commentListViewModel
+    }
 
     enum Tab: String, CaseIterable, Identifiable {
         case intro = "简介"
@@ -167,7 +175,7 @@ struct VideoDetailContent: View {
                 case .intro:
                     introBody
                 case .replies:
-                    CommentListView(oid: item.aid)
+                    CommentListView(oid: item.aid, viewModel: commentListViewModel)
                         .padding(.horizontal, 16)
                 case .related:
                     RelatedVideoList(

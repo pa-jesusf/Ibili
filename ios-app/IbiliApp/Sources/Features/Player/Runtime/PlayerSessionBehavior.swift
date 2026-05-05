@@ -30,6 +30,10 @@ struct PlayerSessionBehaviorState: Equatable {
     private(set) var pictureInPictureIsActive = false
     private var suppressedObservedIntent: PlayerIntent?
 
+    var isInterfacePresentingPlayer: Bool {
+        interfaceIsActive || pictureInPictureIsActive
+    }
+
     var shouldHoldAudioSession: Bool {
         intent == .play && hasPlaybackFocus && (interfaceIsActive || pictureInPictureIsActive)
     }
