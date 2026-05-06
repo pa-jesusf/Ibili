@@ -96,31 +96,6 @@ enum Orientation {
     }
 }
 
-let fullscreenEnterSelectorCandidates = [
-    "enterFullScreenAnimated:completion:",
-    "enterFullScreenAnimated:completionHandler:",
-    "enterFullscreenAnimated:completion:",
-    "enterFullscreenAnimated:completionHandler:",
-]
-
-let fullscreenExitSelectorCandidates = [
-    "exitFullScreenAnimated:completion:",
-    "exitFullScreenAnimated:completionHandler:",
-    "exitFullscreenAnimated:completion:",
-    "exitFullscreenAnimated:completionHandler:",
-]
-
-func fullscreenSelectorSupportDescription(on vc: NSObject, selectorNames: [String]) -> String {
-    selectorNames.map { name in
-        let supported = vc.responds(to: NSSelectorFromString(name))
-        return "\(name)=\(supported ? "yes" : "no")"
-    }.joined(separator: ",")
-}
-
-func firstSupportedFullscreenSelector(on vc: NSObject, selectorNames: [String]) -> String? {
-    selectorNames.first { vc.responds(to: NSSelectorFromString($0)) }
-}
-
 func deviceOrientationDescription(_ orientation: UIDeviceOrientation) -> String {
     switch orientation {
     case .unknown: return "unknown"
@@ -174,17 +149,15 @@ enum PlayerFullscreenController {
                                   playerBox: PlayerVCBox,
                                   player: AVPlayer?,
                                   updateFullscreenState: (Bool) -> Void) {
-        switch direction {
-        case .enter:
-            enterFullscreen(context: context,
-                            playerBox: playerBox,
-                            player: player,
-                            updateFullscreenState: updateFullscreenState)
-        case .exit:
-            exitFullscreen(context: context,
-                           playerBox: playerBox,
-                           updateFullscreenState: updateFullscreenState)
-        }
+        playerBox.presentationController?.prepareForFullscreenTransition(player: player)
+        AppLog.info("player", "忽略程序化全屏请求：公开 API 路线下只允许用户通过 AVKit 原生控件进入/退出全屏", metadata: [
+            "aid": String(context.aid),
+            "cid": String(context.cid),
+            "direction": direction == .enter ? "enter" : "exit",
+            "isFullscreen": String(context.isFullscreen),
+            "prefersLandscapeFullscreen": String(context.prefersLandscapeFullscreen),
+        ])
+        updateFullscreenState(context.isFullscreen)
     }
 
     static func handleDeviceOrientationChange(_ context: PlayerAutoFullscreenContext,
@@ -220,9 +193,13 @@ enum PlayerFullscreenController {
         }
         defer { rememberOrientation(orientation) }
         if orientation.isLandscape, context.prefersLandscapeFullscreen, !context.isFullscreen {
-            onEnterFullscreen()
+            AppLog.info("player", "设备横屏不再自动触发原生全屏：公开 API 路线下等待用户点击 AVKit 全屏按钮", metadata: [
+                "deviceOrientation": deviceOrientationDescription(orientation),
+            ])
         } else if orientation == .portrait, context.prefersLandscapeFullscreen, context.isFullscreen {
-            onExitFullscreen()
+            AppLog.info("player", "设备竖屏不再自动退出原生全屏：公开 API 路线下等待 AVKit delegate 状态", metadata: [
+                "deviceOrientation": deviceOrientationDescription(orientation),
+            ])
         } else {
             AppLog.debug("player", "设备方向变化未触发全屏切换", metadata: [
                 "deviceOrientation": deviceOrientationDescription(orientation),
@@ -231,97 +208,6 @@ enum PlayerFullscreenController {
                 "isFullscreen": String(context.isFullscreen),
             ])
         }
-    }
-
-    private static func enterFullscreen(context: PlayerFullscreenTransitionContext,
-                                        playerBox: PlayerVCBox,
-                                        player: AVPlayer?,
-                                        updateFullscreenState: (Bool) -> Void) {
-        guard !context.isFullscreen else {
-            AppLog.debug("player", "忽略自动进全屏：已经处于全屏状态", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        guard let vc = playerBox.vc else {
-            AppLog.warning("player", "自动进全屏失败：AVPlayerViewController 引用为空", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "lastDeviceOrientation": deviceOrientationDescription(context.lastDeviceOrientation),
-            ])
-            return
-        }
-        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenEnterSelectorCandidates)
-        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenEnterSelectorCandidates) else {
-            AppLog.warning("player", "自动进全屏失败：没有可用的 fullscreen selector", metadata: [
-                "supportedSelectors": supportedSelectors,
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "lastDeviceOrientation": deviceOrientationDescription(context.lastDeviceOrientation),
-            ])
-            return
-        }
-        let sel = NSSelectorFromString(selectorName)
-        if context.prefersLandscapeFullscreen {
-            Orientation.preparePhoneFullscreenLandscape()
-        } else {
-            Orientation.request(.portrait)
-        }
-        updateFullscreenState(true)
-        playerBox.presentationController?.prepareForFullscreenTransition(player: player)
-        let deviceOrientation = UIDevice.current.orientation
-        let targetMask: UIInterfaceOrientationMask
-        if context.prefersLandscapeFullscreen {
-            targetMask = deviceOrientation == .landscapeRight ? .landscapeLeft : .landscapeRight
-        } else {
-            targetMask = .portrait
-        }
-        Orientation.requestWithoutMaskChange(targetMask)
-        AppLog.info("player", "请求进入全屏", metadata: [
-            "aid": String(context.aid),
-            "cid": String(context.cid),
-            "selector": selectorName,
-            "supportedSelectors": supportedSelectors,
-            "prefersLandscapeFullscreen": String(context.prefersLandscapeFullscreen),
-            "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            "lastDeviceOrientation": deviceOrientationDescription(context.lastDeviceOrientation),
-            "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-        ])
-        vc.perform(sel, with: true, with: nil)
-    }
-
-    private static func exitFullscreen(context: PlayerFullscreenTransitionContext,
-                                       playerBox: PlayerVCBox,
-                                       updateFullscreenState: (Bool) -> Void) {
-        guard context.isFullscreen else {
-            AppLog.debug("player", "忽略自动退全屏：当前不在全屏", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        updateFullscreenState(false)
-        guard let vc = playerBox.vc else {
-            AppLog.warning("player", "自动退全屏失败：AVPlayerViewController 引用为空", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenExitSelectorCandidates)
-        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenExitSelectorCandidates) else {
-            AppLog.warning("player", "自动退全屏失败：没有可用的 fullscreen selector", metadata: [
-                "supportedSelectors": supportedSelectors,
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        let sel = NSSelectorFromString(selectorName)
-        AppLog.info("player", "请求退出全屏", metadata: [
-            "aid": String(context.aid),
-            "cid": String(context.cid),
-            "selector": selectorName,
-            "supportedSelectors": supportedSelectors,
-            "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-        ])
-        vc.perform(sel, with: true, with: nil)
     }
 }
 
@@ -427,7 +313,7 @@ enum PlayerViewLifecycleController {
         viewModel.refreshSystemMediaSession()
     }
 
-    static func handleDisappear(isFullscreen: Bool,
+    static func handleDisappear(isPlayerPresentationActive: Bool,
                                 viewModel: PlayerViewModel,
                                 danmaku: DanmakuController) {
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
@@ -442,7 +328,7 @@ enum PlayerViewLifecycleController {
         // fullscreen — `.onAppear` doesn't fire while we're still
         // covered, so nothing would re-attach until the user exits
         // fullscreen.
-        if !isFullscreen {
+        if !isPlayerPresentationActive {
             danmaku.detach()
             viewModel.handle(.interfaceDeactivated)
             Orientation.request(.portrait)

@@ -159,3 +159,35 @@ struct PlayerFullscreenTransitionSnapshot: Equatable {
         return .play(rate: playbackRate)
     }
 }
+
+struct PlayerPresentationIdentity: Equatable {
+    let sessionID: PlayerSessionID
+    let playerID: ObjectIdentifier?
+}
+
+struct PlayerPresentationState: Equatable {
+    private(set) var fullscreenIdentity: PlayerPresentationIdentity?
+
+    var isFullscreenPresentationActive: Bool {
+        fullscreenIdentity != nil
+    }
+
+    mutating func beginFullscreen(_ identity: PlayerPresentationIdentity) -> Bool {
+        guard fullscreenIdentity != identity else { return false }
+        fullscreenIdentity = identity
+        return true
+    }
+
+    mutating func endFullscreen(_ identity: PlayerPresentationIdentity) -> Bool {
+        guard accepts(identity) else { return false }
+        fullscreenIdentity = nil
+        return true
+    }
+
+    func accepts(_ identity: PlayerPresentationIdentity) -> Bool {
+        guard fullscreenIdentity?.sessionID == identity.sessionID else { return false }
+        guard let activePlayerID = fullscreenIdentity?.playerID,
+              let incomingPlayerID = identity.playerID else { return true }
+        return activePlayerID == incomingPlayerID
+    }
+}

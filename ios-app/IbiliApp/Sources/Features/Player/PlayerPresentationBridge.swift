@@ -18,9 +18,9 @@ protocol PlayerSwapOverlay: AnyObject {
 typealias PlayerPresentationRestoreCompletion = (Bool) -> Void
 
 enum PlayerPresentationEvent {
-    case fullscreenChanged(Bool)
-    case pictureInPictureChanged(Bool)
-    case pictureInPictureRestoreRequested(PlayerPresentationRestoreCompletion)
+    case fullscreenChanged(Bool, PlayerPresentationIdentity)
+    case pictureInPictureChanged(Bool, PlayerPresentationIdentity)
+    case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
 }
 
 @MainActor
@@ -134,6 +134,7 @@ private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
 /// fullscreen — so danmaku stays visible there.
 struct PlayerContainer: UIViewControllerRepresentable {
     let player: AVPlayer
+    let sessionID: PlayerSessionID
     let title: String
     let prefersLandscapeFullscreen: Bool
     let danmaku: DanmakuController
@@ -388,9 +389,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 "rate": String(transitionSnapshot?.playbackRate ?? pendingTransitionSnapshot?.playbackRate ?? 1.0),
                 "playing": String(transitionSnapshot?.wasPlaying ?? pendingTransitionSnapshot?.wasPlaying ?? false),
             ])
-            parent.onPresentationEvent(.fullscreenChanged(true))
+            parent.onPresentationEvent(.fullscreenChanged(true, presentationIdentity(for: vc)))
             let targetMask: UIInterfaceOrientationMask
             if parent.prefersLandscapeFullscreen {
+                Orientation.preparePhoneFullscreenLandscape()
                 targetMask = currentDeviceOrientation == .landscapeRight
                     ? .landscapeLeft : .landscapeRight
             } else {
@@ -418,7 +420,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             ])
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
-                self.parent.onPresentationEvent(.fullscreenChanged(false))
+                self.parent.onPresentationEvent(.fullscreenChanged(false, self.presentationIdentity(for: vc)))
                 Orientation.request(.portrait)
                 self.restorePlaybackState(on: vc)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
@@ -430,7 +432,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
             AppLog.info("player", "PiP 即将开始")
-            parent.onPresentationEvent(.pictureInPictureChanged(true))
+            parent.onPresentationEvent(.pictureInPictureChanged(true, presentationIdentity(for: playerViewController)))
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,
@@ -438,18 +440,25 @@ struct PlayerContainer: UIViewControllerRepresentable {
             AppLog.warning("player", "PiP 启动失败", metadata: [
                 "error": error.localizedDescription,
             ])
-            parent.onPresentationEvent(.pictureInPictureChanged(false))
+            parent.onPresentationEvent(.pictureInPictureChanged(false, presentationIdentity(for: playerViewController)))
         }
 
         func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
             AppLog.info("player", "PiP 已停止")
-            parent.onPresentationEvent(.pictureInPictureChanged(false))
+            parent.onPresentationEvent(.pictureInPictureChanged(false, presentationIdentity(for: playerViewController)))
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,
                                   restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
             AppLog.info("player", "PiP 请求恢复原播放器界面")
-            parent.onPresentationEvent(.pictureInPictureRestoreRequested(completionHandler))
+            parent.onPresentationEvent(.pictureInPictureRestoreRequested(presentationIdentity(for: playerViewController), completionHandler))
+        }
+
+        private func presentationIdentity(for vc: AVPlayerViewController) -> PlayerPresentationIdentity {
+            PlayerPresentationIdentity(
+                sessionID: parent.sessionID,
+                playerID: vc.player.map(ObjectIdentifier.init) ?? assignedPlayerID
+            )
         }
 
         private func capturePlaybackState(from vc: AVPlayerViewController) {

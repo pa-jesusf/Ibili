@@ -501,6 +501,10 @@ final class PlayerViewModel: ObservableObject {
         lastLoadedItem
     }
 
+    var currentSessionID: PlayerSessionID {
+        sessionID
+    }
+
     var shouldExposeSystemMediaSession: Bool {
         guard player != nil, nowPlayingMetadata != nil else { return false }
         if behaviorState.isInterfacePresentingPlayer {
@@ -1666,6 +1670,7 @@ struct PlayerView: View {
     @State private var didBootstrap = false
     @State private var loadedMediaKey: String?
     @State private var isFullscreen = false
+    @State private var presentationState = PlayerPresentationState()
     @State private var lastDeviceOrientation: UIDeviceOrientation = .portrait
     /// Weak handle to the AVPlayerViewController so we can drive native FS.
     @State private var playerVCRef = PlayerVCBox()
@@ -1721,17 +1726,52 @@ struct PlayerView: View {
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
-        case .fullscreenChanged(let isFullscreen):
+        case .fullscreenChanged(let isFullscreen, let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else {
+                AppLog.debug("player", "忽略旧播放器 fullscreen 回调", metadata: [
+                    "eventSessionID": identity.sessionID.uuidString,
+                    "currentSessionID": vm.currentSessionID.uuidString,
+                ])
+                return
+            }
             self.isFullscreen = isFullscreen
-        case .pictureInPictureChanged(let isActive):
+            if isFullscreen {
+                _ = presentationState.beginFullscreen(identity)
+            } else {
+                _ = presentationState.endFullscreen(identity)
+            }
+        case .pictureInPictureChanged(let isActive, let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else {
+                AppLog.debug("player", "忽略旧播放器 PiP 回调", metadata: [
+                    "eventSessionID": identity.sessionID.uuidString,
+                    "currentSessionID": vm.currentSessionID.uuidString,
+                ])
+                return
+            }
             if let onPictureInPictureActiveChange {
                 onPictureInPictureActiveChange(isActive)
             } else {
                 vm.handle(.pictureInPictureChanged(isActive))
             }
-        case .pictureInPictureRestoreRequested(let completion):
+        case .pictureInPictureRestoreRequested(let identity, let completion):
+            guard presentationIdentityMatchesCurrentRoute(identity) else {
+                AppLog.debug("player", "拒绝旧播放器 PiP 恢复请求", metadata: [
+                    "eventSessionID": identity.sessionID.uuidString,
+                    "currentSessionID": vm.currentSessionID.uuidString,
+                ])
+                completion(false)
+                return
+            }
             onPictureInPictureRestore?(completion) ?? completion(false)
         }
+    }
+
+    private func presentationIdentityMatchesCurrentRoute(_ identity: PlayerPresentationIdentity) -> Bool {
+        guard identity.sessionID == vm.currentSessionID else { return false }
+        if presentationState.accepts(identity) { return true }
+        guard let currentPlayerID = vm.player.map(ObjectIdentifier.init),
+              let incomingPlayerID = identity.playerID else { return true }
+        return currentPlayerID == incomingPlayerID
     }
 
     private func requestFullscreenTransition(_ direction: PlayerFullscreenTransitionDirection) {
@@ -1762,6 +1802,7 @@ struct PlayerView: View {
                 if let p = vm.player {
                     PlayerContainer(
                         player: p,
+                        sessionID: vm.currentSessionID,
                         title: item.title,
                         prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
                         danmaku: danmaku,
@@ -1910,7 +1951,7 @@ struct PlayerView: View {
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil
             PlayerViewLifecycleController.handleDisappear(
-                isFullscreen: isFullscreen,
+                isPlayerPresentationActive: presentationState.isFullscreenPresentationActive,
                 viewModel: vm,
                 danmaku: danmaku
             )

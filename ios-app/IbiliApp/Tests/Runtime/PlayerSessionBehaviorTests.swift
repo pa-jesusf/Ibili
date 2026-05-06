@@ -74,4 +74,51 @@ final class PlayerSessionBehaviorTests: XCTestCase {
 
         XCTAssertEqual(snapshot.desiredPlaybackCommand(for: player), .play(rate: 1.5))
     }
+
+    func testFullscreenPresentationStateTracksActiveSession() {
+        let sessionID = PlayerSessionID()
+        let player = AVPlayer()
+        let identity = PlayerPresentationIdentity(sessionID: sessionID, playerID: ObjectIdentifier(player))
+        var state = PlayerPresentationState()
+
+        XCTAssertTrue(state.beginFullscreen(identity))
+        XCTAssertTrue(state.isFullscreenPresentationActive)
+        XCTAssertTrue(state.accepts(identity))
+
+        XCTAssertTrue(state.endFullscreen(identity))
+        XCTAssertFalse(state.isFullscreenPresentationActive)
+    }
+
+    func testFullscreenPresentationStateRejectsStaleSessionEnd() {
+        let activePlayer = AVPlayer()
+        let stalePlayer = AVPlayer()
+        let activeIdentity = PlayerPresentationIdentity(
+            sessionID: PlayerSessionID(),
+            playerID: ObjectIdentifier(activePlayer)
+        )
+        let staleIdentity = PlayerPresentationIdentity(
+            sessionID: PlayerSessionID(),
+            playerID: ObjectIdentifier(stalePlayer)
+        )
+        var state = PlayerPresentationState()
+
+        XCTAssertTrue(state.beginFullscreen(activeIdentity))
+        XCTAssertFalse(state.endFullscreen(staleIdentity))
+        XCTAssertTrue(state.isFullscreenPresentationActive)
+        XCTAssertFalse(state.accepts(staleIdentity))
+    }
+
+    func testFullscreenPresentationStateAllowsNilIncomingPlayerForSameSession() {
+        let sessionID = PlayerSessionID()
+        let player = AVPlayer()
+        let activeIdentity = PlayerPresentationIdentity(sessionID: sessionID, playerID: ObjectIdentifier(player))
+        let delegateIdentityDuringDetach = PlayerPresentationIdentity(sessionID: sessionID, playerID: nil)
+        var state = PlayerPresentationState()
+
+        XCTAssertTrue(state.beginFullscreen(activeIdentity))
+
+        XCTAssertTrue(state.accepts(delegateIdentityDuringDetach))
+        XCTAssertTrue(state.endFullscreen(delegateIdentityDuringDetach))
+        XCTAssertFalse(state.isFullscreenPresentationActive)
+    }
 }
