@@ -8,6 +8,11 @@ import Foundation
 /// (e.g. "投币成功") to the caller for HUD display.
 @MainActor
 final class VideoInteractionService: ObservableObject {
+    private struct HydrationIdentity: Equatable {
+        let aid: Int64
+        let bvid: String
+    }
+
     struct State: Equatable {
         var liked: Bool = false
         var coined: Bool = false
@@ -40,7 +45,27 @@ final class VideoInteractionService: ObservableObject {
     @Published private(set) var favoriteAnimating: Bool = false
     @Published var lastToast: String?
 
+    private var hydratedIdentity: HydrationIdentity?
+
     init() {}
+
+    func matchesHydratedState(aid: Int64, bvid: String) -> Bool {
+        guard let hydratedIdentity else { return false }
+        guard hydratedIdentity.aid == aid else { return false }
+        return hydratedIdentity.bvid.isEmpty || bvid.isEmpty || hydratedIdentity.bvid == bvid
+    }
+
+    func resetForNextItem() {
+        state = State()
+        folders = []
+        defaultFolderId = 0
+        favoritedFolderIds = []
+        isHydrating = false
+        tripleAnimating = false
+        favoriteAnimating = false
+        lastToast = nil
+        hydratedIdentity = nil
+    }
 
     func reset(stat: VideoStatDTO) {
         state.likeCount = stat.like
@@ -52,6 +77,9 @@ final class VideoInteractionService: ObservableObject {
     /// folder list so the action row can render the correct active
     /// states and the long-press folder picker has data immediately.
     func hydrate(aid: Int64, bvid: String, ownerMid: Int64?) async {
+        if matchesHydratedState(aid: aid, bvid: bvid) {
+            return
+        }
         isHydrating = true
         // Concurrently fetch relation state + folder list + watch-later
         // membership so all three buttons can render their *real* state
@@ -93,6 +121,7 @@ final class VideoInteractionService: ObservableObject {
         } else if let first = snapshot.1.first {
             defaultFolderId = first.folderId
         }
+        hydratedIdentity = HydrationIdentity(aid: aid, bvid: bvid)
         isHydrating = false
     }
 

@@ -90,6 +90,7 @@ private struct DeepLinkPlayerHost: View {
     @State private var offsetX: CGFloat = UIScreen.main.bounds.width
     @State private var pendingDismissWork: DispatchWorkItem?
     @State private var isRootDismissInFlight = false
+    @State private var animatedInRouteID: UUID?
     /// Tri-state lock for the leading-edge drag. `undecided` while
     /// we're still reading the slope of the user's motion; once we
     /// commit to either `.horizontal` (swipe-back) or `.vertical`
@@ -146,15 +147,15 @@ private struct DeepLinkPlayerHost: View {
                 isRootDismissInFlight = false
             }
             syncPlayerSessions()
+            animateHostInIfNeeded(for: router.pending?.id)
         }
-        .onChange(of: router.pending?.id) { _ in
+        .onChange(of: router.pending?.id) { newRouteID in
             cancelPendingDismiss()
-            if router.pending != nil {
+            if newRouteID != nil {
                 isRootDismissInFlight = false
-                offsetX = UIScreen.main.bounds.width
-                withAnimation(Self.slideSpring) {
-                    offsetX = 0
-                }
+                animateHostInIfNeeded(for: newRouteID)
+            } else {
+                animatedInRouteID = nil
             }
             syncPlayerSessions()
         }
@@ -164,17 +165,6 @@ private struct DeepLinkPlayerHost: View {
                 isRootDismissInFlight = false
             }
             syncPlayerSessions()
-        }
-        .onAppear {
-            // Start off-screen, then animate in. Doing it in
-            // `onAppear` (rather than via a parent `.transition`)
-            // means the slide is driven by exactly one offset
-            // animation, which keeps the frame budget free for
-            // 120 Hz.
-            offsetX = UIScreen.main.bounds.width
-            withAnimation(Self.slideSpring) {
-                offsetX = 0
-            }
         }
         // Restore the iOS interactive-pop gesture by hosting an
         // invisible DragGesture region pinned to the leading edge.
@@ -261,6 +251,16 @@ private struct DeepLinkPlayerHost: View {
     private func cancelPendingDismiss() {
         pendingDismissWork?.cancel()
         pendingDismissWork = nil
+    }
+
+    private func animateHostInIfNeeded(for routeID: UUID?) {
+        guard let routeID else { return }
+        guard animatedInRouteID != routeID else { return }
+        offsetX = UIScreen.main.bounds.width
+        withAnimation(Self.slideSpring) {
+            offsetX = 0
+        }
+        animatedInRouteID = routeID
     }
 
     private func syncPlayerSessions() {

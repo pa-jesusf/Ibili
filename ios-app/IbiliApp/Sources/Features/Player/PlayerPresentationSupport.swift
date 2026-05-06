@@ -120,6 +120,19 @@ func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> 
     return "raw(\(mask.rawValue))"
 }
 
+func timeControlStatusDescription(_ status: AVPlayer.TimeControlStatus) -> String {
+    switch status {
+    case .paused:
+        return "paused"
+    case .waitingToPlayAtSpecifiedRate:
+        return "waiting"
+    case .playing:
+        return "playing"
+    @unknown default:
+        return "future(\(status.rawValue))"
+    }
+}
+
 @MainActor
 enum PlayerViewLifecycleController {
     static func handleScenePhaseChange(_ phase: ScenePhase,

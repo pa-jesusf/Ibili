@@ -38,6 +38,17 @@ struct PlayerSessionBehaviorState: Equatable {
         intent == .play && hasPlaybackFocus && (interfaceIsActive || pictureInPictureIsActive)
     }
 
+    var debugMetadata: [String: String] {
+        [
+            "intent": intent.rawValue,
+            "hasPlaybackFocus": String(hasPlaybackFocus),
+            "interfaceIsActive": String(interfaceIsActive),
+            "pictureInPictureIsActive": String(pictureInPictureIsActive),
+            "suppressedObservedIntent": suppressedObservedIntent?.rawValue ?? "nil",
+            "shouldHoldAudioSession": String(shouldHoldAudioSession),
+        ]
+    }
+
     @discardableResult
     mutating func apply(_ event: PlayerSessionEvent) -> Bool {
         switch event {

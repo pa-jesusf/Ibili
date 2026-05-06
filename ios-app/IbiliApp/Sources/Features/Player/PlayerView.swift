@@ -113,6 +113,10 @@ final class PlayerViewModel: ObservableObject {
     private var playerTimeControlObservation: NSKeyValueObservation?
     private var isPlaybackCompleted = false
     private var isRecoveringPlaybackFromPageCache = false
+    private var transientPauseSuppressionDeadline = Date.distantPast
+    private var transientPauseSuppressionContext: PlayerTransientPauseSuppressionContext?
+    private var fullscreenPlaybackRecoveryWork: DispatchWorkItem?
+    private var suppressedObservedPauseConfirmationWork: DispatchWorkItem?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -123,6 +127,8 @@ final class PlayerViewModel: ObservableObject {
             PlayerPlaybackCoordinator.shared.unregister(self)
             PlayerNowPlayingCoordinator.shared.unregister(self)
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
+            cancelSuppressedObservedPauseConfirmation()
+            fullscreenPlaybackRecoveryWork?.cancel()
             player?.pause()
             stopHeartbeat()
             itemStatusObservation = nil
@@ -132,6 +138,46 @@ final class PlayerViewModel: ObservableObject {
             activePreparation = nil
             pendingUpgradeTask?.cancel()
             pendingReadyTask?.cancel()
+        }
+    }
+
+    private func playbackDebugMetadata(for targetPlayer: AVPlayer? = nil,
+                                      extra: [String: String] = [:]) -> [String: String] {
+        let player = targetPlayer ?? self.player
+        let suppressionRemainingMs = max(0, Int(transientPauseSuppressionDeadline.timeIntervalSinceNow * 1000))
+        var metadata = behaviorState.debugMetadata
+        metadata["aid"] = String(aid)
+        metadata["cid"] = String(cid)
+        metadata["sessionID"] = sessionID.uuidString
+        metadata["timeControlStatus"] = player.map { timeControlStatusDescription($0.timeControlStatus) } ?? "nil"
+        metadata["playerRate"] = player.map { String($0.rate) } ?? "nil"
+        metadata["playerDefaultRate"] = player.map { String($0.defaultRate) } ?? "nil"
+        metadata["desiredPlaybackRate"] = String(desiredPlaybackRate)
+        metadata["transientPauseSuppressionContext"] = transientPauseSuppressionContext?.rawValue ?? "nil"
+        metadata["transientPauseSuppressionActive"] = String(Date() < transientPauseSuppressionDeadline)
+        metadata["transientPauseSuppressionRemainingMs"] = String(suppressionRemainingMs)
+        for (key, value) in extra {
+            metadata[key] = value
+        }
+        return metadata
+    }
+
+    private func playerSessionEventDescription(_ event: PlayerSessionEvent) -> String {
+        switch event {
+        case .interfaceActivated:
+            return "interfaceActivated"
+        case .interfaceDeactivated:
+            return "interfaceDeactivated"
+        case .pictureInPictureChanged(let isActive):
+            return "pictureInPictureChanged(\(isActive))"
+        case .playbackIntentChanged(let intent):
+            return "playbackIntentChanged(\(intent.rawValue))"
+        case .prepareAutoplayForMediaReplacement:
+            return "prepareAutoplayForMediaReplacement"
+        case .suppressNextObservedIntent(let intent):
+            return "suppressNextObservedIntent(\(intent.rawValue))"
+        case .observedTimeControlStatus(let status):
+            return "observedTimeControlStatus(\(timeControlStatusDescription(status)))"
         }
     }
 
@@ -471,7 +517,13 @@ final class PlayerViewModel: ObservableObject {
             break
         }
 
-        guard behaviorState.apply(event) else { return }
+        let eventDescription = playerSessionEventDescription(event)
+        let applied = behaviorState.apply(event)
+        AppLog.debug("player", applied ? "播放器会话事件已应用" : "播放器会话事件被忽略", metadata: playbackDebugMetadata(extra: [
+            "event": eventDescription,
+            "applied": String(applied),
+        ]))
+        guard applied else { return }
 
         switch event {
         case .interfaceActivated, .interfaceDeactivated, .pictureInPictureChanged, .playbackIntentChanged:
@@ -701,6 +753,8 @@ final class PlayerViewModel: ObservableObject {
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
+        cancelSuppressedObservedPauseConfirmation()
+        cancelFullscreenPlaybackRecovery()
         AppLog.debug("player", "销毁播放器", metadata: [
             "aid": String(aid),
             "cid": String(cid),
@@ -763,6 +817,7 @@ final class PlayerViewModel: ObservableObject {
     private func setPlayer(_ newPlayer: AVPlayer?) {
         playerTimeControlObservation?.invalidate()
         playerTimeControlObservation = nil
+        cancelSuppressedObservedPauseConfirmation()
         if newPlayer == nil {
             temporaryPlaybackRateOverride = nil
             isTemporarySpeedBoostActive = false
@@ -784,13 +839,136 @@ final class PlayerViewModel: ObservableObject {
     private func observePlayerTimeControl(_ player: AVPlayer) {
         playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor in
-                self?.handleObservedPlaybackState(player.timeControlStatus)
+                self?.handleObservedPlaybackState(player.timeControlStatus, observedPlayer: player)
             }
         }
     }
 
-    private func handleObservedPlaybackState(_ status: AVPlayer.TimeControlStatus) {
+    private func handleObservedPlaybackState(_ status: AVPlayer.TimeControlStatus,
+                                            observedPlayer: AVPlayer? = nil) {
+        let suppressionActive = Date() < transientPauseSuppressionDeadline
+        AppLog.debug("player", "观察到 AVPlayer.timeControlStatus 变化", metadata: playbackDebugMetadata(for: observedPlayer, extra: [
+            "observedStatus": timeControlStatusDescription(status),
+        ]))
+        if status == .paused,
+           suppressionActive {
+            AppLog.debug("player", "忽略 fullscreen 过渡中的瞬时暂停回调", metadata: [
+                "aid": String(aid),
+                "cid": String(cid),
+                "observedStatus": timeControlStatusDescription(status),
+            ])
+            if transientPauseSuppressionContext == .fullscreenExit {
+                scheduleSuppressedObservedPauseConfirmationIfNeeded()
+                scheduleFullscreenPlaybackRecovery(delay: 0.08)
+            }
+            return
+        }
+        if status == .playing || status == .waitingToPlayAtSpecifiedRate {
+            cancelSuppressedObservedPauseConfirmation()
+        }
         handle(.observedTimeControlStatus(status))
+    }
+
+    func armTransientPauseSuppression(for context: PlayerTransientPauseSuppressionContext) {
+        transientPauseSuppressionContext = context
+        transientPauseSuppressionDeadline = Date().addingTimeInterval(context.window)
+        cancelSuppressedObservedPauseConfirmation()
+        AppLog.debug("player", "启用 fullscreen 瞬时暂停抑制窗口", metadata: playbackDebugMetadata(extra: [
+            "windowMs": String(Int(context.window * 1000)),
+        ]))
+    }
+
+    private func scheduleSuppressedObservedPauseConfirmationIfNeeded() {
+        guard transientPauseSuppressionContext == .fullscreenExit else { return }
+        cancelSuppressedObservedPauseConfirmation()
+        let remainingDelay = max(0, transientPauseSuppressionDeadline.timeIntervalSinceNow)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.confirmSuppressedObservedPauseIfNeeded()
+        }
+        suppressedObservedPauseConfirmationWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + remainingDelay, execute: work)
+    }
+
+    private func cancelSuppressedObservedPauseConfirmation() {
+        suppressedObservedPauseConfirmationWork?.cancel()
+        suppressedObservedPauseConfirmationWork = nil
+    }
+
+    private func confirmSuppressedObservedPauseIfNeeded() {
+        suppressedObservedPauseConfirmationWork = nil
+        guard transientPauseSuppressionContext == .fullscreenExit else { return }
+        guard Date() >= transientPauseSuppressionDeadline else {
+            scheduleSuppressedObservedPauseConfirmationIfNeeded()
+            return
+        }
+        guard let player else {
+            AppLog.debug("player", "跳过 fullscreen 退出后的暂停确认", metadata: playbackDebugMetadata(extra: [
+                "reason": "player-nil",
+            ]))
+            return
+        }
+        guard player.timeControlStatus == .paused, player.rate == 0 else {
+            AppLog.debug("player", "跳过 fullscreen 退出后的暂停确认", metadata: playbackDebugMetadata(for: player, extra: [
+                "reason": "player-resumed-before-confirmation",
+            ]))
+            return
+        }
+        AppLog.debug("player", "确认 fullscreen 退出后的暂停状态", metadata: playbackDebugMetadata(for: player))
+        handle(.observedTimeControlStatus(.paused))
+    }
+
+    func scheduleFullscreenPlaybackRecovery(delay: TimeInterval = 0.35) {
+        cancelFullscreenPlaybackRecovery()
+        AppLog.debug("player", "安排 fullscreen 退出后的播放恢复检查", metadata: playbackDebugMetadata(extra: [
+            "delayMs": String(Int(delay * 1000)),
+        ]))
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.recoverPlaybackAfterFullscreenTransitionIfNeeded()
+        }
+        fullscreenPlaybackRecoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelFullscreenPlaybackRecovery() {
+        fullscreenPlaybackRecoveryWork?.cancel()
+        fullscreenPlaybackRecoveryWork = nil
+    }
+
+    private func recoverPlaybackAfterFullscreenTransitionIfNeeded() {
+        fullscreenPlaybackRecoveryWork = nil
+        guard Date() < transientPauseSuppressionDeadline else {
+            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(extra: [
+                "reason": "suppression-window-expired",
+            ]))
+            return
+        }
+        guard let player else {
+            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(extra: [
+                "reason": "player-nil",
+            ]))
+            return
+        }
+        guard case .play(let rate) = behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) else {
+            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(for: player, extra: [
+                "reason": "desired-command-not-play",
+            ]))
+            return
+        }
+        guard player.timeControlStatus == .paused, player.rate == 0 else {
+            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(for: player, extra: [
+                "reason": "player-not-paused",
+            ]))
+            return
+        }
+        AppLog.info("player", "恢复 fullscreen 退出后的意外暂停", metadata: [
+            "aid": String(aid),
+            "cid": String(cid),
+            "rate": String(rate),
+        ])
+        suppressNextObservedPlaybackIntent(.play)
+        player.playImmediately(atRate: rate)
     }
 
     private func applyPlaybackIntent(to targetPlayer: AVPlayer? = nil) {
@@ -798,9 +976,16 @@ final class PlayerViewModel: ObservableObject {
         guard let targetPlayer = targetPlayer ?? player else { return }
         switch behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) {
         case .play(let rate):
+            AppLog.debug("player", "向 AVPlayer 下发播放命令", metadata: playbackDebugMetadata(for: targetPlayer, extra: [
+                "command": "play",
+                "commandRate": String(rate),
+            ]))
             suppressNextObservedPlaybackIntent(.play)
             targetPlayer.playImmediately(atRate: rate)
         case .pause:
+            AppLog.debug("player", "向 AVPlayer 下发暂停命令", metadata: playbackDebugMetadata(for: targetPlayer, extra: [
+                "command": "pause",
+            ]))
             suppressNextObservedPlaybackIntent(.pause)
             targetPlayer.pause()
             endTemporarySpeedBoost(on: targetPlayer)
@@ -1710,19 +1895,28 @@ struct PlayerView: View {
                 ])
                 return
             }
+            AppLog.debug("player", "处理 fullscreen 展示状态变化", metadata: [
+                "aid": String(vm.currentAid),
+                "cid": String(vm.currentCid),
+                "isFullscreen": String(isFullscreen),
+                "isInlineHostVisible": String(isInlineHostVisible),
+                "sessionID": identity.sessionID.uuidString,
+            ])
             self.isFullscreen = isFullscreen
             if isFullscreen {
                 _ = presentationState.beginFullscreen(identity)
             } else {
                 _ = presentationState.endFullscreen(identity)
+                vm.scheduleFullscreenPlaybackRecovery()
                 if isInlineHostVisible {
                     _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
                 }
             }
-        case .suppressTransientPauseObservation(let identity):
+        case .suppressTransientPauseObservation(let identity, let context):
             guard presentationIdentityMatchesCurrentRoute(identity) else {
                 return
             }
+            vm.armTransientPauseSuppression(for: context)
             vm.handle(.suppressNextObservedIntent(.pause))
         case .pictureInPictureChanged(let isActive, let identity):
             guard presentationIdentityMatchesCurrentRoute(identity) else {
@@ -1814,7 +2008,8 @@ struct PlayerView: View {
             if shouldMountDetailContent {
                 VideoDetailContent(item: item,
                                    detailViewModel: vm.pageCache.detailViewModel,
-                                   commentListViewModel: vm.pageCache.commentListViewModel)
+                                   commentListViewModel: vm.pageCache.commentListViewModel,
+                                   interactionService: vm.pageCache.interactionService)
                     .transition(.opacity)
             } else {
                 VStack(spacing: 12) {
@@ -1903,6 +2098,13 @@ struct PlayerView: View {
             )
         }
         .onAppear {
+            AppLog.debug("player", "播放器页面 onAppear", metadata: [
+                "aid": String(vm.currentAid),
+                "cid": String(vm.currentCid),
+                "isFullscreen": String(isFullscreen),
+                "isFullscreenPresentationActive": String(presentationState.isFullscreenPresentationActive),
+                "isAwaitingInlineFullscreenReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
+            ])
             isInlineHostVisible = true
             if presentationState.isAwaitingInlineFullscreenReturn {
                 _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
@@ -1915,6 +2117,13 @@ struct PlayerView: View {
             )
         }
         .onDisappear {
+            AppLog.debug("player", "播放器页面 onDisappear", metadata: [
+                "aid": String(vm.currentAid),
+                "cid": String(vm.currentCid),
+                "isFullscreen": String(isFullscreen),
+                "isFullscreenPresentationActive": String(presentationState.isFullscreenPresentationActive),
+                "isAwaitingInlineFullscreenReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
+            ])
             isInlineHostVisible = false
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil

@@ -16,7 +16,7 @@ struct VideoDetailContent: View {
     let item: FeedItemDTO
     @ObservedObject private var vm: VideoDetailViewModel
     private let commentListViewModel: CommentListViewModel
-    @StateObject private var interaction = VideoInteractionService()
+    @ObservedObject private var interaction: VideoInteractionService
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
     @State private var detailScrollOffset: CGFloat = 0
@@ -33,10 +33,12 @@ struct VideoDetailContent: View {
 
     init(item: FeedItemDTO,
          detailViewModel: VideoDetailViewModel,
-         commentListViewModel: CommentListViewModel) {
+         commentListViewModel: CommentListViewModel,
+         interactionService: VideoInteractionService) {
         self.item = item
         self._vm = ObservedObject(wrappedValue: detailViewModel)
         self.commentListViewModel = commentListViewModel
+        self._interaction = ObservedObject(wrappedValue: interactionService)
     }
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -70,19 +72,34 @@ struct VideoDetailContent: View {
                 }
         }
         .task(id: "\(item.aid):\(item.bvid)") {
-            interaction.reset(stat: vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0))
-            // Run detail (view info) and relation hydrate concurrently.
-            // The hydrate call only needs aid+bvid which are already
-            // known from the feed item, so it doesn't have to wait for
-            // the heavier `view` payload to come back. Saves ~1 RTT
-            // off the total time-to-correct-button-state.
-            if item.aid > 0 || !item.bvid.isEmpty {
-                async let bootstrapTask: Void = vm.bootstrap(aid: item.aid, bvid: item.bvid)
-                async let hydrateTask: Void = interaction.hydrate(aid: item.aid, bvid: item.bvid, ownerMid: nil)
-                _ = await (bootstrapTask, hydrateTask)
-            } else {
+            let stat = vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0)
+            interaction.reset(stat: stat)
+
+            let detailAlreadyLoaded = vm.matchesLoadedDetail(aid: item.aid, bvid: item.bvid)
+            let interactionAlreadyHydrated = interaction.matchesHydratedState(aid: item.aid, bvid: item.bvid)
+
+            if detailAlreadyLoaded && interactionAlreadyHydrated {
+                AppLog.debug("video", "播放页详情复用现有状态", metadata: [
+                    "aid": String(item.aid),
+                    "bvid": item.bvid,
+                ])
+            } else if item.aid > 0 || !item.bvid.isEmpty {
+                if !detailAlreadyLoaded && !interactionAlreadyHydrated {
+                    async let bootstrapTask: Void = vm.bootstrap(aid: item.aid, bvid: item.bvid)
+                    async let hydrateTask: Void = interaction.hydrate(aid: item.aid, bvid: item.bvid, ownerMid: nil)
+                    _ = await (bootstrapTask, hydrateTask)
+                } else {
+                    if !detailAlreadyLoaded {
+                        await vm.bootstrap(aid: item.aid, bvid: item.bvid)
+                    }
+                    if !interactionAlreadyHydrated {
+                        await interaction.hydrate(aid: item.aid, bvid: item.bvid, ownerMid: nil)
+                    }
+                }
+            } else if !detailAlreadyLoaded {
                 await vm.bootstrap(aid: item.aid, bvid: item.bvid)
             }
+
             if let stat = vm.view?.stat { interaction.reset(stat: stat) }
         }
         .onChange(of: interaction.lastToast) { newToast in

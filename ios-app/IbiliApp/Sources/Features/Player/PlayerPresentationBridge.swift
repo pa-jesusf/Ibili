@@ -17,9 +17,23 @@ protocol PlayerSwapOverlay: AnyObject {
 
 typealias PlayerPresentationRestoreCompletion = (Bool) -> Void
 
+enum PlayerTransientPauseSuppressionContext: String {
+    case fullscreenEnter
+    case fullscreenExit
+
+    var window: TimeInterval {
+        switch self {
+        case .fullscreenEnter:
+            return 1.0
+        case .fullscreenExit:
+            return 2.0
+        }
+    }
+}
+
 enum PlayerPresentationEvent {
     case fullscreenChanged(Bool, PlayerPresentationIdentity)
-    case suppressTransientPauseObservation(PlayerPresentationIdentity)
+    case suppressTransientPauseObservation(PlayerPresentationIdentity, PlayerTransientPauseSuppressionContext)
     case pictureInPictureChanged(Bool, PlayerPresentationIdentity)
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
 }
@@ -369,7 +383,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             capturePlaybackState(from: vc)
             let identity = presentationIdentity(for: vc)
             if transitionSnapshot?.wasPlaying == true {
-                parent.onPresentationEvent(.suppressTransientPauseObservation(identity))
+                parent.onPresentationEvent(.suppressTransientPauseObservation(identity, .fullscreenEnter))
             }
             let currentDeviceOrientation = UIDevice.current.orientation
             AppLog.info("player", "AVKit 即将进入全屏", metadata: [
@@ -382,10 +396,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
             parent.onPresentationEvent(.fullscreenChanged(true, identity))
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
-                self.restorePlaybackState(on: vc)
+                self.restorePlaybackState(on: vc, source: "enter-completion")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
                     guard let self, let vc else { return }
-                    self.restorePlaybackState(on: vc)
+                    self.restorePlaybackState(on: vc, source: "enter-delayed")
                 }
             }
         }
@@ -395,7 +409,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             capturePlaybackState(from: vc)
             let identity = presentationIdentity(for: vc)
             if transitionSnapshot?.wasPlaying == true {
-                parent.onPresentationEvent(.suppressTransientPauseObservation(identity))
+                parent.onPresentationEvent(.suppressTransientPauseObservation(identity, .fullscreenExit))
             }
             AppLog.info("player", "AVKit 即将退出全屏", metadata: [
                 "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
@@ -406,10 +420,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
                 self.parent.onPresentationEvent(.fullscreenChanged(false, identity))
-                self.restorePlaybackState(on: vc)
+                self.restorePlaybackState(on: vc, source: "exit-completion")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
                     guard let self, let vc else { return }
-                    self.restorePlaybackState(on: vc)
+                    self.restorePlaybackState(on: vc, source: "exit-delayed")
                 }
             }
         }
@@ -449,9 +463,32 @@ struct PlayerContainer: UIViewControllerRepresentable {
             transitionSnapshot = PlayerFullscreenTransitionSnapshot.capture(from: vc.player)
         }
 
-        private func restorePlaybackState(on vc: AVPlayerViewController) {
-            guard let player = vc.player,
-                  case .play(let rate)? = transitionSnapshot?.desiredPlaybackCommand(for: player) else { return }
+        private func restorePlaybackState(on vc: AVPlayerViewController, source: String) {
+            guard let player = vc.player else {
+                AppLog.debug("player", "跳过 AVKit fullscreen 播放恢复", metadata: [
+                    "reason": "vc-player-nil",
+                    "source": source,
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+                return
+            }
+            guard case .play(let rate)? = transitionSnapshot?.desiredPlaybackCommand(for: player) else {
+                AppLog.debug("player", "跳过 AVKit fullscreen 播放恢复", metadata: [
+                    "reason": "snapshot-not-playing",
+                    "source": source,
+                    "sessionID": parent.sessionID.uuidString,
+                    "timeControlStatus": timeControlStatusDescription(player.timeControlStatus),
+                    "playerRate": String(player.rate),
+                ])
+                return
+            }
+            AppLog.debug("player", "执行 AVKit fullscreen 播放恢复", metadata: [
+                "source": source,
+                "sessionID": parent.sessionID.uuidString,
+                "timeControlStatus": timeControlStatusDescription(player.timeControlStatus),
+                "playerRate": String(player.rate),
+                "restoreRate": String(rate),
+            ])
             player.playImmediately(atRate: rate)
         }
     }

@@ -45,6 +45,11 @@ final class VideoDetailViewModel: ObservableObject {
         }
     }
 
+    func matchesLoadedDetail(aid: Int64, bvid: String) -> Bool {
+        guard view != nil, self.aid == aid else { return false }
+        return self.bvid.isEmpty || bvid.isEmpty || self.bvid == bvid
+    }
+
     /// `archive/related` is one-shot (~30 items, no native pagination).
     /// Once the user reaches the end of that list we fall back to the
     /// home feed (`feed.home`) and keep appending fresh items so the

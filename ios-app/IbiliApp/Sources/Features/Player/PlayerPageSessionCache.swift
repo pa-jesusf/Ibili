@@ -9,6 +9,7 @@ private struct PlayerPagePlayURLKey: Hashable {
 final class PlayerPageSessionCache {
     let detailViewModel = VideoDetailViewModel()
     let commentListViewModel = CommentListViewModel()
+    let interactionService = VideoInteractionService()
 
     private var playURLs: [PlayerPagePlayURLKey: PlayUrlDTO] = [:]
     private var danmakuTracks: [Int64: [DanmakuItemDTO]] = [:]
@@ -16,6 +17,7 @@ final class PlayerPageSessionCache {
     func clearMediaData() {
         playURLs.removeAll()
         danmakuTracks.removeAll()
+        interactionService.resetForNextItem()
     }
 
     func storePlayURL(_ info: PlayUrlDTO) {
