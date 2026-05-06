@@ -9,9 +9,39 @@ enum Orientation {
     /// once the native AVKit fullscreen flow starts we temporarily widen
     /// the mask so the fullscreen controller can rotate to landscape.
     private static var phoneSupportedMask: UIInterfaceOrientationMask = .portrait
+    private static var activePlayerFullscreenPreference: (sessionID: PlayerSessionID, prefersLandscape: Bool)?
 
-    static func supportedMask() -> UIInterfaceOrientationMask {
-        UIDevice.current.userInterfaceIdiom == .phone ? phoneSupportedMask : .all
+    private static func activeForegroundWindowScene() -> UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })
+    }
+
+    static func supportedMask(for window: UIWindow? = nil) -> UIInterfaceOrientationMask {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return .all }
+        let topViewController = topPresentedViewController(from: window?.rootViewController)
+        if shouldForceLandscapeForExplicitFullscreen(topViewController: topViewController) {
+            return .landscape
+        }
+        return phoneSupportedMask
+    }
+
+    static func setActivePlayerFullscreenPreference(_ prefersLandscape: Bool,
+                                                    for sessionID: PlayerSessionID) {
+        activePlayerFullscreenPreference = (sessionID, prefersLandscape)
+    }
+
+    static func clearActivePlayerFullscreenPreference(for sessionID: PlayerSessionID) {
+        guard activePlayerFullscreenPreference?.sessionID == sessionID else { return }
+        activePlayerFullscreenPreference = nil
+    }
+
+    private static func shouldForceLandscapeForExplicitFullscreen(topViewController: UIViewController?) -> Bool {
+        guard activePlayerFullscreenPreference?.prefersLandscape == true,
+              let topViewController else {
+            return false
+        }
+        return String(describing: type(of: topViewController)) == "AVFullScreenViewController"
     }
 
     /// Tighten the phone orientation mask to *only* landscape so iOS
@@ -25,14 +55,22 @@ enum Orientation {
     /// fullscreen exit.
     static func preparePhoneFullscreenLandscape() {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        let previousMask = phoneSupportedMask
         phoneSupportedMask = .landscape
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }) else { return }
-        scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-        AppLog.debug("player", "收紧手机方向掩码到 landscape，强制系统横屏", metadata: [
-            "mask": interfaceOrientationMaskDescription(phoneSupportedMask),
-        ])
+        guard let scene = activeForegroundWindowScene() else {
+            AppLog.debug("player", "收紧手机方向掩码到 landscape，强制系统横屏", metadata: [
+                "maskBefore": interfaceOrientationMaskDescription(previousMask),
+                "maskAfter": interfaceOrientationMaskDescription(phoneSupportedMask),
+                "sceneFound": "false",
+            ])
+            return
+        }
+        let primaryWindow = scene.windows.first(where: \ .isKeyWindow) ?? scene.windows.first
+        primaryWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        var metadata = sceneOrientationDebugMetadata(for: scene, rootViewController: primaryWindow?.rootViewController)
+        metadata["maskBefore"] = interfaceOrientationMaskDescription(previousMask)
+        metadata["maskAfter"] = interfaceOrientationMaskDescription(phoneSupportedMask)
+        AppLog.debug("player", "收紧手机方向掩码到 landscape，强制系统横屏", metadata: metadata)
     }
 
     /// Request a specific interface-orientation set from the active scene.
@@ -63,20 +101,47 @@ enum Orientation {
     /// `preparePhoneFullscreenLandscape`) and we just need to
     /// trigger the rotation.
     static func requestWithoutMaskChange(_ mask: UIInterfaceOrientationMask) {
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }) else { return }
-        if #available(iOS 16, *) {
-            scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        guard let scene = activeForegroundWindowScene() else {
             AppLog.debug("player", "请求界面方向更新", metadata: [
                 "requestedMask": interfaceOrientationMaskDescription(mask),
                 "effectiveMask": interfaceOrientationMaskDescription(phoneSupportedMask),
+                "sceneFound": "false",
             ])
+            return
+        }
+        let primaryWindow = scene.windows.first(where: \ .isKeyWindow) ?? scene.windows.first
+        if #available(iOS 16, *) {
+            primaryWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            let requestedMaskDescription = interfaceOrientationMaskDescription(mask)
+            var metadata = sceneOrientationDebugMetadata(for: scene, rootViewController: primaryWindow?.rootViewController)
+            metadata["requestedMask"] = requestedMaskDescription
+            metadata["effectiveMask"] = interfaceOrientationMaskDescription(phoneSupportedMask)
+            AppLog.debug("player", "请求界面方向更新", metadata: metadata)
             scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
                 AppLog.warning("player", "界面方向更新被系统拒绝", metadata: [
-                    "requestedMask": interfaceOrientationMaskDescription(mask),
+                    "requestedMask": requestedMaskDescription,
                     "error": error.localizedDescription,
                 ])
+            }
+            let sceneID = scene.session.persistentIdentifier
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                Task { @MainActor in
+                    guard let observedScene = UIApplication.shared.connectedScenes
+                        .compactMap({ $0 as? UIWindowScene })
+                        .first(where: { $0.session.persistentIdentifier == sceneID }) else {
+                        AppLog.debug("player", "界面方向更新后观察失败", metadata: [
+                            "requestedMask": requestedMaskDescription,
+                            "reason": "scene-missing",
+                            "scenePersistentID": sceneID,
+                        ])
+                        return
+                    }
+                    let observedWindow = observedScene.windows.first(where: \ .isKeyWindow) ?? observedScene.windows.first
+                    var followUpMetadata = sceneOrientationDebugMetadata(for: observedScene, rootViewController: observedWindow?.rootViewController)
+                    followUpMetadata["requestedMask"] = requestedMaskDescription
+                    followUpMetadata["effectiveMask"] = interfaceOrientationMaskDescription(phoneSupportedMask)
+                    AppLog.debug("player", "界面方向更新后观察", metadata: followUpMetadata)
+                }
             }
         } else {
             let value: UIDeviceOrientation
@@ -107,6 +172,53 @@ func deviceOrientationDescription(_ orientation: UIDeviceOrientation) -> String 
     case .faceDown: return "faceDown"
     @unknown default: return "future(\(orientation.rawValue))"
     }
+}
+
+func interfaceOrientationDescription(_ orientation: UIInterfaceOrientation) -> String {
+    switch orientation {
+    case .unknown: return "unknown"
+    case .portrait: return "portrait"
+    case .portraitUpsideDown: return "portraitUpsideDown"
+    case .landscapeLeft: return "landscapeLeft"
+    case .landscapeRight: return "landscapeRight"
+    @unknown default: return "future(\(orientation.rawValue))"
+    }
+}
+
+func sceneActivationStateDescription(_ state: UIScene.ActivationState) -> String {
+    switch state {
+    case .unattached: return "unattached"
+    case .foregroundActive: return "foregroundActive"
+    case .foregroundInactive: return "foregroundInactive"
+    case .background: return "background"
+    @unknown default: return "future"
+    }
+}
+
+private func topPresentedViewController(from rootViewController: UIViewController?) -> UIViewController? {
+    var current = rootViewController
+    while let presented = current?.presentedViewController {
+        current = presented
+    }
+    return current
+}
+
+func sceneOrientationDebugMetadata(for scene: UIWindowScene?,
+                                   rootViewController: UIViewController? = nil) -> [String: String] {
+    let primaryWindow = scene?.windows.first(where: \ .isKeyWindow) ?? scene?.windows.first
+    let rootViewController = rootViewController ?? primaryWindow?.rootViewController
+    let topViewController = topPresentedViewController(from: rootViewController)
+    return [
+        "scenePersistentID": scene?.session.persistentIdentifier ?? "nil",
+        "sceneActivationState": scene.map { sceneActivationStateDescription($0.activationState) } ?? "nil",
+        "sceneInterfaceOrientation": scene.map { interfaceOrientationDescription($0.interfaceOrientation) } ?? "nil",
+        "sceneWindowCount": scene.map { String($0.windows.count) } ?? "0",
+        "sceneKeyWindowCount": scene.map { String($0.windows.filter(\.isKeyWindow).count) } ?? "0",
+        "rootViewController": rootViewController.map { String(describing: type(of: $0)) } ?? "nil",
+        "rootSupportedMask": rootViewController.map { interfaceOrientationMaskDescription($0.supportedInterfaceOrientations) } ?? "nil",
+        "topViewController": topViewController.map { String(describing: type(of: $0)) } ?? "nil",
+        "topSupportedMask": topViewController.map { interfaceOrientationMaskDescription($0.supportedInterfaceOrientations) } ?? "nil",
+    ]
 }
 
 func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> String {
