@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The richer detail content area below the player. Owns its own
 /// `VideoDetailViewModel` and the interaction service. Designed to
@@ -30,6 +31,7 @@ struct VideoDetailContent: View {
     private static let upwardRefreshTriggerOffset: CGFloat = 72
     private static let upwardRefreshResetOffset: CGFloat = 8
     private static let metadataRefreshCooldown: TimeInterval = 12
+    private static let floatingControlsReservedBottomInset: CGFloat = 24
 
     init(item: FeedItemDTO,
          detailViewModel: VideoDetailViewModel,
@@ -46,29 +48,35 @@ struct VideoDetailContent: View {
         case replies = "评论"
         case related = "相关"
         var id: String { rawValue }
+
+        var systemImage: String {
+            switch self {
+            case .intro:
+                return "info.circle"
+            case .replies:
+                return "text.bubble"
+            case .related:
+                return "rectangle.stack"
+            }
+        }
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             scrollContent
                 .background(IbiliTheme.background)
-                .overlay(alignment: .bottomTrailing) {
-                    // Always rendered, but fades/scales out when not
-                    // applicable. This sidesteps SwiftUI's tendency to
-                    // skip layout for an `if` branch inside `.overlay`
-                    // when transitions and animations are stacked.
-                    ScrollToTopFloatingButton {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                            proxy.scrollTo(topAnchorID, anchor: .top)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    PlayerDetailFloatingControlCluster(
+                        tabs: Tab.allCases,
+                        selection: $tab,
+                        showsScrollToTopAction: showsScrollToTopButton,
+                        onScrollToTop: {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                                proxy.scrollTo(topAnchorID, anchor: .top)
+                            }
                         }
-                    }
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 20)
-                    .opacity(showsScrollToTopButton ? 1 : 0)
-                    .scaleEffect(showsScrollToTopButton ? 1 : 0.6, anchor: .bottomTrailing)
-                    .allowsHitTesting(showsScrollToTopButton)
+                    )
                     .animation(.spring(response: 0.28, dampingFraction: 0.86), value: showsScrollToTopButton)
-                    .zIndex(10)
                 }
         }
         .task(id: "\(item.aid):\(item.bvid)") {
@@ -121,7 +129,6 @@ struct VideoDetailContent: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: toast)
-        .animation(.easeInOut(duration: 0.2), value: showsScrollToTopButton)
     }
 
     private var showsScrollToTopButton: Bool {
@@ -191,23 +198,6 @@ struct VideoDetailContent: View {
     @ViewBuilder
     private var contentColumn: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if #available(iOS 26.0, *) {
-                NativeIsolatedPicker(
-                    items: Array(Tab.allCases),
-                    title: { $0.rawValue },
-                    selection: $tab
-                )
-                .frame(height: 50)
-                .padding(.horizontal, 16)
-            } else {
-                IbiliSegmentedTabs(
-                    tabs: Tab.allCases,
-                    title: { $0.rawValue },
-                    selection: $tab
-                )
-                .padding(.horizontal, 16)
-            }
-
             Group {
                 switch tab {
                 case .intro:
@@ -230,7 +220,7 @@ struct VideoDetailContent: View {
                     .padding(.horizontal, 12)
                 }
             }
-            .padding(.bottom, 24)
+            .padding(.bottom, Self.floatingControlsReservedBottomInset)
         }
         .padding(.top, 12)
     }
@@ -380,6 +370,196 @@ private struct DetailScrollOffsetPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private struct PlayerDetailFloatingControlCluster: View {
+    let tabs: [VideoDetailContent.Tab]
+    @Binding var selection: VideoDetailContent.Tab
+    let showsScrollToTopAction: Bool
+    let onScrollToTop: () -> Void
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            PlayerDetailSystemTabBar(
+                tabs: tabs,
+                selection: $selection,
+                showsScrollToTopAction: showsScrollToTopAction,
+                onScrollToTop: onScrollToTop
+            )
+            .frame(height: 49)
+        } else {
+            HStack(spacing: 12) {
+                PlayerDetailFloatingTabs(tabs: tabs, selection: $selection)
+
+                if showsScrollToTopAction {
+                    ScrollToTopFloatingButton(action: onScrollToTop)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+    }
+}
+
+@available(iOS 26.0, *)
+private struct PlayerDetailSystemTabBar: UIViewRepresentable {
+    let tabs: [VideoDetailContent.Tab]
+    @Binding var selection: VideoDetailContent.Tab
+    let showsScrollToTopAction: Bool
+    let onScrollToTop: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selection: $selection, onScrollToTop: onScrollToTop)
+    }
+
+    func makeUIView(context: Context) -> UITabBar {
+        let tabBar = UITabBar(frame: .zero)
+        tabBar.delegate = context.coordinator
+        tabBar.tintColor = IbiliTheme.accentUIColor
+        tabBar.unselectedItemTintColor = .secondaryLabel
+        tabBar.itemPositioning = .automatic
+        updateItems(on: tabBar, coordinator: context.coordinator)
+        return tabBar
+    }
+
+    func updateUIView(_ uiView: UITabBar, context: Context) {
+        updateItems(on: uiView, coordinator: context.coordinator)
+    }
+
+    private func updateItems(on tabBar: UITabBar, coordinator: Coordinator) {
+        let resolvedItems = nativeItems
+        coordinator.items = resolvedItems
+        tabBar.tintColor = IbiliTheme.accentUIColor
+        tabBar.unselectedItemTintColor = .secondaryLabel
+        tabBar.setItems(resolvedItems.map(\.tabBarItem), animated: false)
+        if let selectedItem = resolvedItems.first(where: { $0.tab == selection }) {
+            tabBar.selectedItem = selectedItem.tabBarItem
+        }
+    }
+
+    private var nativeItems: [NativeItem] {
+        var items = tabs.map { tab in
+            NativeItem(
+                kind: .tab(tab),
+                tabBarItem: UITabBarItem(
+                    title: tab.rawValue,
+                    image: UIImage(systemName: tab.systemImage),
+                    tag: tab.hashValue
+                )
+            )
+        }
+        if showsScrollToTopAction {
+            items.append(
+                NativeItem(
+                    kind: .scrollToTop,
+                    tabBarItem: UITabBarItem(
+                        title: "回顶",
+                        image: UIImage(systemName: "arrow.up"),
+                        tag: Int.max
+                    )
+                )
+            )
+        }
+        return items
+    }
+
+    final class Coordinator: NSObject, UITabBarDelegate {
+        var selection: Binding<VideoDetailContent.Tab>
+        var onScrollToTop: () -> Void
+        var items: [NativeItem] = []
+
+        init(selection: Binding<VideoDetailContent.Tab>, onScrollToTop: @escaping () -> Void) {
+            self.selection = selection
+            self.onScrollToTop = onScrollToTop
+        }
+
+        func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
+            guard let matchedItem = items.first(where: { $0.tabBarItem == item }) else { return }
+            switch matchedItem.kind {
+            case .tab(let tab):
+                selection.wrappedValue = tab
+            case .scrollToTop:
+                onScrollToTop()
+                if let selectedItem = items.first(where: { $0.tab == selection.wrappedValue }) {
+                    tabBar.selectedItem = selectedItem.tabBarItem
+                }
+            }
+        }
+    }
+
+    struct NativeItem: Equatable {
+        enum Kind: Equatable {
+            case tab(VideoDetailContent.Tab)
+            case scrollToTop
+        }
+
+        let kind: Kind
+        let tabBarItem: UITabBarItem
+
+        var tab: VideoDetailContent.Tab? {
+            guard case .tab(let tab) = kind else { return nil }
+            return tab
+        }
+
+        static func == (lhs: NativeItem, rhs: NativeItem) -> Bool {
+            lhs.kind == rhs.kind
+        }
+    }
+}
+
+private struct PlayerDetailFloatingTabs: View {
+    let tabs: [VideoDetailContent.Tab]
+    @Binding var selection: VideoDetailContent.Tab
+
+    @Namespace private var indicator
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(tabs) { tab in
+                let isSelected = selection == tab
+                Button {
+                    guard !isSelected else { return }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        selection = tab
+                    }
+                } label: {
+                    Text(tab.rawValue)
+                        .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? IbiliTheme.accent : IbiliTheme.textSecondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .background {
+                            if isSelected {
+                                Capsule()
+                                    .fill(IbiliTheme.accent.opacity(0.16))
+                                    .matchedGeometryEffect(id: "player.detail.floating.tab", in: indicator)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(PlayerDetailFloatingTabsBackground())
+    }
+}
+
+private struct PlayerDetailFloatingTabsBackground: View {
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            Capsule()
+                .fill(.regularMaterial)
+                .glassEffect(.regular, in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 0.5))
+        } else {
+            Capsule()
+                .fill(.regularMaterial)
+                .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 0.5))
+        }
     }
 }
 
