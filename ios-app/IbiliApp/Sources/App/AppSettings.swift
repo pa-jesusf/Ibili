@@ -97,10 +97,6 @@ final class AppSettings: ObservableObject {
     /// (≈ 40 dB SPL at min system volume), which the user reported
     /// is otherwise ~15 dB louder than peers.
     @AppStorage("ibili.player.audioGainDb") var audioGainDb: Double = -15
-    /// When enabled, rotating to landscape automatically enters fullscreen,
-    /// rotating back to portrait exits fullscreen. Tap of the fullscreen
-    /// button always rotates regardless of this setting.
-    @AppStorage("ibili.player.autoRotateFullscreen") var autoRotateFullscreen: Bool = true
     /// Race the lowest available quality against the user's preferred
     /// quality on player startup. Whichever AVPlayerItem reaches
     /// `.readyToPlay` first is shown immediately; if the lowest variant

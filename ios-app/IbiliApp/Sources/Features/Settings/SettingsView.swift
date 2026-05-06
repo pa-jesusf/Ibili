@@ -179,7 +179,6 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Toggle("手机横屏自动进入/退出全屏", isOn: $settings.autoRotateFullscreen)
                 Toggle("快速加载", isOn: $settings.fastLoad)
                 VStack(alignment: .leading) {
                     HStack {

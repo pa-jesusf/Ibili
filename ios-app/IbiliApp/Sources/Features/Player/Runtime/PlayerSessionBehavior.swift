@@ -165,28 +165,58 @@ struct PlayerPresentationIdentity: Equatable {
     let playerID: ObjectIdentifier?
 }
 
+private enum PlayerFullscreenPresentationPhase: Equatable {
+    case active(PlayerPresentationIdentity)
+    case dismissing(PlayerPresentationIdentity)
+
+    var identity: PlayerPresentationIdentity {
+        switch self {
+        case .active(let identity), .dismissing(let identity):
+            return identity
+        }
+    }
+}
+
 struct PlayerPresentationState: Equatable {
-    private(set) var fullscreenIdentity: PlayerPresentationIdentity?
+    private var fullscreenPhase: PlayerFullscreenPresentationPhase?
 
     var isFullscreenPresentationActive: Bool {
-        fullscreenIdentity != nil
+        fullscreenPhase != nil
+    }
+
+    var isAwaitingInlineFullscreenReturn: Bool {
+        if case .dismissing = fullscreenPhase {
+            return true
+        }
+        return false
     }
 
     mutating func beginFullscreen(_ identity: PlayerPresentationIdentity) -> Bool {
-        guard fullscreenIdentity != identity else { return false }
-        fullscreenIdentity = identity
+        guard fullscreenPhase != .active(identity) else { return false }
+        fullscreenPhase = .active(identity)
         return true
     }
 
     mutating func endFullscreen(_ identity: PlayerPresentationIdentity) -> Bool {
         guard accepts(identity) else { return false }
-        fullscreenIdentity = nil
+        let trackedIdentity = fullscreenPhase?.identity ?? identity
+        guard fullscreenPhase != .dismissing(trackedIdentity) else { return false }
+        fullscreenPhase = .dismissing(trackedIdentity)
+        return true
+    }
+
+    mutating func finishFullscreenReturn(_ identity: PlayerPresentationIdentity? = nil) -> Bool {
+        guard isAwaitingInlineFullscreenReturn else { return false }
+        if let identity {
+            guard accepts(identity) else { return false }
+        }
+        fullscreenPhase = nil
         return true
     }
 
     func accepts(_ identity: PlayerPresentationIdentity) -> Bool {
-        guard fullscreenIdentity?.sessionID == identity.sessionID else { return false }
-        guard let activePlayerID = fullscreenIdentity?.playerID,
+        guard fullscreenPhase?.identity.sessionID == identity.sessionID else { return false }
+        guard let activePlayerID = fullscreenPhase?.identity.playerID,
               let incomingPlayerID = identity.playerID else { return true }
         return activePlayerID == incomingPlayerID
     }

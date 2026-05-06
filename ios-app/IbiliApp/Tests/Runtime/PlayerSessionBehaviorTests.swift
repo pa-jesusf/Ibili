@@ -83,9 +83,14 @@ final class PlayerSessionBehaviorTests: XCTestCase {
 
         XCTAssertTrue(state.beginFullscreen(identity))
         XCTAssertTrue(state.isFullscreenPresentationActive)
+        XCTAssertFalse(state.isAwaitingInlineFullscreenReturn)
         XCTAssertTrue(state.accepts(identity))
 
         XCTAssertTrue(state.endFullscreen(identity))
+        XCTAssertTrue(state.isFullscreenPresentationActive)
+        XCTAssertTrue(state.isAwaitingInlineFullscreenReturn)
+
+        XCTAssertTrue(state.finishFullscreenReturn(identity))
         XCTAssertFalse(state.isFullscreenPresentationActive)
     }
 
@@ -105,6 +110,7 @@ final class PlayerSessionBehaviorTests: XCTestCase {
         XCTAssertTrue(state.beginFullscreen(activeIdentity))
         XCTAssertFalse(state.endFullscreen(staleIdentity))
         XCTAssertTrue(state.isFullscreenPresentationActive)
+        XCTAssertFalse(state.isAwaitingInlineFullscreenReturn)
         XCTAssertFalse(state.accepts(staleIdentity))
     }
 
@@ -119,6 +125,8 @@ final class PlayerSessionBehaviorTests: XCTestCase {
 
         XCTAssertTrue(state.accepts(delegateIdentityDuringDetach))
         XCTAssertTrue(state.endFullscreen(delegateIdentityDuringDetach))
+        XCTAssertTrue(state.isAwaitingInlineFullscreenReturn)
+        XCTAssertTrue(state.finishFullscreenReturn(delegateIdentityDuringDetach))
         XCTAssertFalse(state.isFullscreenPresentationActive)
     }
 }

@@ -1671,7 +1671,7 @@ struct PlayerView: View {
     @State private var loadedMediaKey: String?
     @State private var isFullscreen = false
     @State private var presentationState = PlayerPresentationState()
-    @State private var lastDeviceOrientation: UIDeviceOrientation = .portrait
+    @State private var isInlineHostVisible = false
     /// Weak handle to the AVPlayerViewController so we can drive native FS.
     @State private var playerVCRef = PlayerVCBox()
     /// Long-press on the danmaku toggle opens this sheet for sending.
@@ -1686,9 +1686,6 @@ struct PlayerView: View {
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
-    private let orientationPublisher = NotificationCenter.default
-        .publisher(for: UIDevice.orientationDidChangeNotification)
-
     init(item: FeedItemDTO,
          viewModel: PlayerViewModel? = nil,
          onPictureInPictureActiveChange: ((Bool) -> Void)? = nil,
@@ -1701,27 +1698,6 @@ struct PlayerView: View {
 
     private var mediaLoadKey: String {
         "\(item.aid):\(item.bvid):\(item.cid)"
-    }
-
-    private var fullscreenTransitionContext: PlayerFullscreenTransitionContext {
-        PlayerFullscreenTransitionContext(
-            aid: item.aid,
-            cid: item.cid,
-            isFullscreen: isFullscreen,
-            lastDeviceOrientation: lastDeviceOrientation,
-            prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen
-        )
-    }
-
-    private var autoFullscreenContext: PlayerAutoFullscreenContext {
-        PlayerAutoFullscreenContext(
-            currentOrientation: UIDevice.current.orientation,
-            lastDeviceOrientation: lastDeviceOrientation,
-            isFullscreen: isFullscreen,
-            prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
-            autoRotateFullscreen: settings.autoRotateFullscreen,
-            isPhone: UIDevice.current.userInterfaceIdiom == .phone
-        )
     }
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
@@ -1739,7 +1715,15 @@ struct PlayerView: View {
                 _ = presentationState.beginFullscreen(identity)
             } else {
                 _ = presentationState.endFullscreen(identity)
+                if isInlineHostVisible {
+                    _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
+                }
             }
+        case .suppressTransientPauseObservation(let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else {
+                return
+            }
+            vm.handle(.suppressNextObservedIntent(.pause))
         case .pictureInPictureChanged(let isActive, let identity):
             guard presentationIdentityMatchesCurrentRoute(identity) else {
                 AppLog.debug("player", "忽略旧播放器 PiP 回调", metadata: [
@@ -1774,25 +1758,11 @@ struct PlayerView: View {
         return currentPlayerID == incomingPlayerID
     }
 
-    private func requestFullscreenTransition(_ direction: PlayerFullscreenTransitionDirection) {
-        PlayerFullscreenController.requestTransition(direction,
-                                                     context: fullscreenTransitionContext,
-                                                     playerBox: playerVCRef,
-                                                     player: vm.player,
-                                                     updateFullscreenState: { isFullscreen = $0 })
-    }
-
-    private func handleDeviceOrientationChange() {
-        PlayerFullscreenController.handleDeviceOrientationChange(autoFullscreenContext,
-                                                                 onEnterFullscreen: {
-                                                                     requestFullscreenTransition(.enter)
-                                                                 },
-                                                                 onExitFullscreen: {
-                                                                     requestFullscreenTransition(.exit)
-                                                                 },
-                                                                 rememberOrientation: {
-                                                                     lastDeviceOrientation = $0
-                                                                 })
+    private var currentPresentationIdentity: PlayerPresentationIdentity {
+        PlayerPresentationIdentity(
+            sessionID: vm.currentSessionID,
+            playerID: vm.player.map(ObjectIdentifier.init)
+        )
     }
 
     var body: some View {
@@ -1818,9 +1788,6 @@ struct PlayerView: View {
                         beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
                         endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
                         onCreated: { vc in playerVCRef.vc = vc },
-                        onPresentationControllerReady: { controller in
-                            playerVCRef.presentationController = controller
-                        },
                         onPresentationEvent: handlePresentationEvent,
                         onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
                     )
@@ -1888,7 +1855,6 @@ struct PlayerView: View {
         .task(id: mediaLoadKey) {
             if !didBootstrap {
                 didBootstrap = true
-                UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             }
 
             if loadedMediaKey != mediaLoadKey {
@@ -1936,10 +1902,11 @@ struct PlayerView: View {
                 reloadPlayer: { await vm.recoverFromInactiveEngineIfNeeded(trigger: "foreground-active") }
             )
         }
-        .onReceive(orientationPublisher) { _ in
-            handleDeviceOrientationChange()
-        }
         .onAppear {
+            isInlineHostVisible = true
+            if presentationState.isAwaitingInlineFullscreenReturn {
+                _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
+            }
             PlayerViewLifecycleController.handleAppear(
                 didBootstrap: didBootstrap,
                 viewModel: vm,
@@ -1948,6 +1915,7 @@ struct PlayerView: View {
             )
         }
         .onDisappear {
+            isInlineHostVisible = false
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil
             PlayerViewLifecycleController.handleDisappear(

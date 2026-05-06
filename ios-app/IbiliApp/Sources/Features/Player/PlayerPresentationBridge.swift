@@ -19,13 +19,9 @@ typealias PlayerPresentationRestoreCompletion = (Bool) -> Void
 
 enum PlayerPresentationEvent {
     case fullscreenChanged(Bool, PlayerPresentationIdentity)
+    case suppressTransientPauseObservation(PlayerPresentationIdentity)
     case pictureInPictureChanged(Bool, PlayerPresentationIdentity)
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
-}
-
-@MainActor
-protocol PlayerPresentationControlling: AnyObject {
-    func prepareForFullscreenTransition(player: AVPlayer?)
 }
 
 private final class PlayerHoldSpeedGestureMaskView: UIView {
@@ -149,13 +145,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let canBeginTemporarySpeedBoost: () -> Bool
     let beginTemporarySpeedBoost: () -> Bool
     let endTemporarySpeedBoost: () -> Void
-    /// Called once, with the just-created AVPlayerViewController. Lets the
-    /// SwiftUI parent drive native fullscreen entry/exit.
+    /// Called once, with the just-created AVPlayerViewController, so the
+    /// SwiftUI parent can retain the native controller for lifecycle work.
     let onCreated: (AVPlayerViewController) -> Void
-    /// Called once, after the AVPlayerViewController exists, with a
-    /// handle for presentation-only coordination such as fullscreen
-    /// transition preparation.
-    let onPresentationControllerReady: (any PlayerPresentationControlling) -> Void
     /// Called when the bridge receives a fullscreen/PiP related callback
     /// from AVKit and needs to hand it back to SwiftUI.
     let onPresentationEvent: (PlayerPresentationEvent) -> Void
@@ -182,7 +174,6 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.delegate = context.coordinator
         DispatchQueue.main.async {
             onCreated(vc)
-            onPresentationControllerReady(context.coordinator)
             onSwapOverlayReady(context.coordinator)
         }
         vc.allowsPictureInPicturePlayback = true
@@ -280,7 +271,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: true)
     }
 
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay, PlayerPresentationControlling, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay, UIGestureRecognizerDelegate {
         var parent: PlayerContainer
         weak var danmakuCanvas: DanmakuCanvasView?
         fileprivate weak var holdSpeedBadgeView: PlayerHoldSpeedBadgeView?
@@ -289,16 +280,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
         /// don't extend its life past `removeFromSuperview`.
         weak var activeCrossfade: UIView?
         private var transitionSnapshot: PlayerFullscreenTransitionSnapshot?
-        private var pendingTransitionSnapshot: PlayerFullscreenTransitionSnapshot?
         private var holdSpeedBadgeIsVisible = false
         init(parent: PlayerContainer) { self.parent = parent }
 
         var shouldAllowHoldSpeedGestureHitTesting: Bool {
             parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost()
-        }
-
-        func prepareForFullscreenTransition(player: AVPlayer?) {
-            pendingTransitionSnapshot = PlayerFullscreenTransitionSnapshot.capture(from: player)
         }
 
         // MARK: PlayerSwapOverlay
@@ -381,24 +367,19 @@ struct PlayerContainer: UIViewControllerRepresentable {
         func playerViewController(_ vc: AVPlayerViewController,
                                   willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
             capturePlaybackState(from: vc)
+            let identity = presentationIdentity(for: vc)
+            if transitionSnapshot?.wasPlaying == true {
+                parent.onPresentationEvent(.suppressTransientPauseObservation(identity))
+            }
             let currentDeviceOrientation = UIDevice.current.orientation
             AppLog.info("player", "AVKit 即将进入全屏", metadata: [
                 "deviceOrientation": deviceOrientationDescription(currentDeviceOrientation),
                 "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
                 "prefersLandscapeFullscreen": String(parent.prefersLandscapeFullscreen),
-                "rate": String(transitionSnapshot?.playbackRate ?? pendingTransitionSnapshot?.playbackRate ?? 1.0),
-                "playing": String(transitionSnapshot?.wasPlaying ?? pendingTransitionSnapshot?.wasPlaying ?? false),
+                "rate": String(transitionSnapshot?.playbackRate ?? 1.0),
+                "playing": String(transitionSnapshot?.wasPlaying ?? false),
             ])
-            parent.onPresentationEvent(.fullscreenChanged(true, presentationIdentity(for: vc)))
-            let targetMask: UIInterfaceOrientationMask
-            if parent.prefersLandscapeFullscreen {
-                Orientation.preparePhoneFullscreenLandscape()
-                targetMask = currentDeviceOrientation == .landscapeRight
-                    ? .landscapeLeft : .landscapeRight
-            } else {
-                targetMask = .portrait
-            }
-            Orientation.requestWithoutMaskChange(targetMask)
+            parent.onPresentationEvent(.fullscreenChanged(true, identity))
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
                 self.restorePlaybackState(on: vc)
@@ -412,16 +393,19 @@ struct PlayerContainer: UIViewControllerRepresentable {
         func playerViewController(_ vc: AVPlayerViewController,
                                   willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
             capturePlaybackState(from: vc)
+            let identity = presentationIdentity(for: vc)
+            if transitionSnapshot?.wasPlaying == true {
+                parent.onPresentationEvent(.suppressTransientPauseObservation(identity))
+            }
             AppLog.info("player", "AVKit 即将退出全屏", metadata: [
                 "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
                 "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-                "rate": String(transitionSnapshot?.playbackRate ?? pendingTransitionSnapshot?.playbackRate ?? 1.0),
-                "playing": String(transitionSnapshot?.wasPlaying ?? pendingTransitionSnapshot?.wasPlaying ?? false),
+                "rate": String(transitionSnapshot?.playbackRate ?? 1.0),
+                "playing": String(transitionSnapshot?.wasPlaying ?? false),
             ])
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
                 guard let self, let vc else { return }
-                self.parent.onPresentationEvent(.fullscreenChanged(false, self.presentationIdentity(for: vc)))
-                Orientation.request(.portrait)
+                self.parent.onPresentationEvent(.fullscreenChanged(false, identity))
                 self.restorePlaybackState(on: vc)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
                     guard let self, let vc else { return }
@@ -462,11 +446,6 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func capturePlaybackState(from vc: AVPlayerViewController) {
-            if let pendingTransitionSnapshot {
-                transitionSnapshot = pendingTransitionSnapshot
-                self.pendingTransitionSnapshot = nil
-                return
-            }
             transitionSnapshot = PlayerFullscreenTransitionSnapshot.capture(from: vc.player)
         }
 

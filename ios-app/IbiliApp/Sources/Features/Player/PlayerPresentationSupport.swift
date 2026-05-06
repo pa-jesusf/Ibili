@@ -120,97 +120,6 @@ func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> 
     return "raw(\(mask.rawValue))"
 }
 
-enum PlayerFullscreenTransitionDirection {
-    case enter
-    case exit
-}
-
-struct PlayerFullscreenTransitionContext {
-    let aid: Int64
-    let cid: Int64
-    let isFullscreen: Bool
-    let lastDeviceOrientation: UIDeviceOrientation
-    let prefersLandscapeFullscreen: Bool
-}
-
-struct PlayerAutoFullscreenContext {
-    let currentOrientation: UIDeviceOrientation
-    let lastDeviceOrientation: UIDeviceOrientation
-    let isFullscreen: Bool
-    let prefersLandscapeFullscreen: Bool
-    let autoRotateFullscreen: Bool
-    let isPhone: Bool
-}
-
-@MainActor
-enum PlayerFullscreenController {
-    static func requestTransition(_ direction: PlayerFullscreenTransitionDirection,
-                                  context: PlayerFullscreenTransitionContext,
-                                  playerBox: PlayerVCBox,
-                                  player: AVPlayer?,
-                                  updateFullscreenState: (Bool) -> Void) {
-        playerBox.presentationController?.prepareForFullscreenTransition(player: player)
-        AppLog.info("player", "忽略程序化全屏请求：公开 API 路线下只允许用户通过 AVKit 原生控件进入/退出全屏", metadata: [
-            "aid": String(context.aid),
-            "cid": String(context.cid),
-            "direction": direction == .enter ? "enter" : "exit",
-            "isFullscreen": String(context.isFullscreen),
-            "prefersLandscapeFullscreen": String(context.prefersLandscapeFullscreen),
-        ])
-        updateFullscreenState(context.isFullscreen)
-    }
-
-    static func handleDeviceOrientationChange(_ context: PlayerAutoFullscreenContext,
-                                              onEnterFullscreen: () -> Void,
-                                              onExitFullscreen: () -> Void,
-                                              rememberOrientation: (UIDeviceOrientation) -> Void) {
-        let orientation = context.currentOrientation
-        AppLog.debug("player", "收到设备方向变化", metadata: [
-            "deviceOrientation": deviceOrientationDescription(orientation),
-            "lastDeviceOrientation": deviceOrientationDescription(context.lastDeviceOrientation),
-            "isFullscreen": String(context.isFullscreen),
-            "autoRotateFullscreen": String(context.autoRotateFullscreen),
-            "idiom": context.isPhone ? "phone" : "pad",
-        ])
-        guard context.autoRotateFullscreen else {
-            AppLog.debug("player", "忽略设备方向变化：自动全屏已关闭")
-            return
-        }
-        // iPad: skip the auto rotate-into-fullscreen behaviour. iPads
-        // are commonly used in landscape as the default reading
-        // orientation, so flipping the player into fullscreen on every
-        // rotation would be more annoying than useful. The native
-        // fullscreen button still works.
-        guard context.isPhone else {
-            AppLog.debug("player", "忽略设备方向变化：当前设备不是手机")
-            return
-        }
-        guard orientation != context.lastDeviceOrientation else {
-            AppLog.debug("player", "忽略设备方向变化：与上次方向相同", metadata: [
-                "deviceOrientation": deviceOrientationDescription(orientation),
-            ])
-            return
-        }
-        defer { rememberOrientation(orientation) }
-        if orientation.isLandscape, context.prefersLandscapeFullscreen, !context.isFullscreen {
-            AppLog.info("player", "设备横屏不再自动触发原生全屏：公开 API 路线下等待用户点击 AVKit 全屏按钮", metadata: [
-                "deviceOrientation": deviceOrientationDescription(orientation),
-            ])
-        } else if orientation == .portrait, context.prefersLandscapeFullscreen, context.isFullscreen {
-            AppLog.info("player", "设备竖屏不再自动退出原生全屏：公开 API 路线下等待 AVKit delegate 状态", metadata: [
-                "deviceOrientation": deviceOrientationDescription(orientation),
-            ])
-        } else {
-            AppLog.debug("player", "设备方向变化未触发全屏切换", metadata: [
-                "deviceOrientation": deviceOrientationDescription(orientation),
-                "isLandscape": String(orientation.isLandscape),
-                "prefersLandscapeFullscreen": String(context.prefersLandscapeFullscreen),
-                "isFullscreen": String(context.isFullscreen),
-            ])
-        }
-    }
-}
-
 @MainActor
 enum PlayerViewLifecycleController {
     static func handleScenePhaseChange(_ phase: ScenePhase,
@@ -305,7 +214,6 @@ enum PlayerViewLifecycleController {
                              resolvedAudioVolumeLinear: Float) {
         viewModel.setAudioVolumeLinear(resolvedAudioVolumeLinear)
         guard didBootstrap else { return }
-        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         viewModel.handle(.interfaceActivated)
         if let player = viewModel.player {
             danmaku.attach(player)
@@ -316,7 +224,6 @@ enum PlayerViewLifecycleController {
     static func handleDisappear(isPlayerPresentationActive: Bool,
                                 viewModel: PlayerViewModel,
                                 danmaku: DanmakuController) {
-        UIDevice.current.endGeneratingDeviceOrientationNotifications()
         // Only tear the danmaku pipeline down when we're truly
         // leaving the player page. AVKit's native fullscreen
         // presentation covers the SwiftUI host with its own window,
@@ -339,7 +246,6 @@ enum PlayerViewLifecycleController {
 
 final class PlayerVCBox {
     weak var vc: AVPlayerViewController?
-    weak var presentationController: (any PlayerPresentationControlling)?
     /// Strong reference to the AVPlayer that was temporarily
     /// detached from `vc` while the app is backgrounded / the screen
     /// is locked. iOS auto-pauses any AVPlayer that's bound to an
