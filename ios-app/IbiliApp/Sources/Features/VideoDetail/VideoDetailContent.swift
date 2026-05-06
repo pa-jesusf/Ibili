@@ -52,7 +52,7 @@ struct VideoDetailContent: View {
         var systemImage: String {
             switch self {
             case .intro:
-                return "info.circle"
+                return "note.text"
             case .replies:
                 return "text.bubble"
             case .related:
@@ -69,14 +69,12 @@ struct VideoDetailContent: View {
                     PlayerDetailFloatingControlCluster(
                         tabs: Tab.allCases,
                         selection: $tab,
-                        showsScrollToTopAction: showsScrollToTopButton,
-                        onScrollToTop: {
+                        onReselectCurrentTab: {
                             withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                                 proxy.scrollTo(topAnchorID, anchor: .top)
                             }
                         }
                     )
-                    .animation(.spring(response: 0.28, dampingFraction: 0.86), value: showsScrollToTopButton)
                 }
         }
         .task(id: "\(item.aid):\(item.bvid)") {
@@ -129,15 +127,6 @@ struct VideoDetailContent: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: toast)
-    }
-
-    private var showsScrollToTopButton: Bool {
-        switch tab {
-        case .replies, .related:
-            return detailScrollOffset > 40
-        case .intro:
-            return false
-        }
     }
 
     private var commentOID: Int64 {
@@ -376,27 +365,22 @@ private struct DetailScrollOffsetPreferenceKey: PreferenceKey {
 private struct PlayerDetailFloatingControlCluster: View {
     let tabs: [VideoDetailContent.Tab]
     @Binding var selection: VideoDetailContent.Tab
-    let showsScrollToTopAction: Bool
-    let onScrollToTop: () -> Void
+    let onReselectCurrentTab: () -> Void
 
     var body: some View {
         if #available(iOS 26.0, *) {
             PlayerDetailSystemTabBar(
                 tabs: tabs,
                 selection: $selection,
-                showsScrollToTopAction: showsScrollToTopAction,
-                onScrollToTop: onScrollToTop
+                onReselectCurrentTab: onReselectCurrentTab
             )
             .frame(height: 49)
         } else {
-            HStack(spacing: 12) {
-                PlayerDetailFloatingTabs(tabs: tabs, selection: $selection)
-
-                if showsScrollToTopAction {
-                    ScrollToTopFloatingButton(action: onScrollToTop)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
-            }
+            PlayerDetailFloatingTabs(
+                tabs: tabs,
+                selection: $selection,
+                onReselectCurrentTab: onReselectCurrentTab
+            )
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
@@ -408,11 +392,10 @@ private struct PlayerDetailFloatingControlCluster: View {
 private struct PlayerDetailSystemTabBar: UIViewRepresentable {
     let tabs: [VideoDetailContent.Tab]
     @Binding var selection: VideoDetailContent.Tab
-    let showsScrollToTopAction: Bool
-    let onScrollToTop: () -> Void
+    let onReselectCurrentTab: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(selection: $selection, onScrollToTop: onScrollToTop)
+        Coordinator(selection: $selection, onReselectCurrentTab: onReselectCurrentTab)
     }
 
     func makeUIView(context: Context) -> UITabBar {
@@ -441,7 +424,7 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
     }
 
     private var nativeItems: [NativeItem] {
-        var items = tabs.map { tab in
+        tabs.map { tab in
             NativeItem(
                 kind: .tab(tab),
                 tabBarItem: UITabBarItem(
@@ -451,41 +434,26 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
                 )
             )
         }
-        if showsScrollToTopAction {
-            items.append(
-                NativeItem(
-                    kind: .scrollToTop,
-                    tabBarItem: UITabBarItem(
-                        title: "回顶",
-                        image: UIImage(systemName: "arrow.up"),
-                        tag: Int.max
-                    )
-                )
-            )
-        }
-        return items
     }
 
     final class Coordinator: NSObject, UITabBarDelegate {
         var selection: Binding<VideoDetailContent.Tab>
-        var onScrollToTop: () -> Void
+        var onReselectCurrentTab: () -> Void
         var items: [NativeItem] = []
 
-        init(selection: Binding<VideoDetailContent.Tab>, onScrollToTop: @escaping () -> Void) {
+        init(selection: Binding<VideoDetailContent.Tab>, onReselectCurrentTab: @escaping () -> Void) {
             self.selection = selection
-            self.onScrollToTop = onScrollToTop
+            self.onReselectCurrentTab = onReselectCurrentTab
         }
 
         func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
             guard let matchedItem = items.first(where: { $0.tabBarItem == item }) else { return }
-            switch matchedItem.kind {
-            case .tab(let tab):
+            guard case .tab(let tab) = matchedItem.kind else { return }
+
+            if selection.wrappedValue == tab {
+                onReselectCurrentTab()
+            } else {
                 selection.wrappedValue = tab
-            case .scrollToTop:
-                onScrollToTop()
-                if let selectedItem = items.first(where: { $0.tab == selection.wrappedValue }) {
-                    tabBar.selectedItem = selectedItem.tabBarItem
-                }
             }
         }
     }
@@ -493,7 +461,6 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
     struct NativeItem: Equatable {
         enum Kind: Equatable {
             case tab(VideoDetailContent.Tab)
-            case scrollToTop
         }
 
         let kind: Kind
@@ -513,6 +480,7 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
 private struct PlayerDetailFloatingTabs: View {
     let tabs: [VideoDetailContent.Tab]
     @Binding var selection: VideoDetailContent.Tab
+    let onReselectCurrentTab: () -> Void
 
     @Namespace private var indicator
 
@@ -521,9 +489,12 @@ private struct PlayerDetailFloatingTabs: View {
             ForEach(tabs) { tab in
                 let isSelected = selection == tab
                 Button {
-                    guard !isSelected else { return }
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                        selection = tab
+                    if isSelected {
+                        onReselectCurrentTab()
+                    } else {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                            selection = tab
+                        }
                     }
                 } label: {
                     Text(tab.rawValue)
@@ -559,41 +530,6 @@ private struct PlayerDetailFloatingTabsBackground: View {
             Capsule()
                 .fill(.regularMaterial)
                 .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 0.5))
-        }
-    }
-}
-
-private struct ScrollToTopFloatingButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "arrow.up")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(IbiliTheme.accent)
-                .frame(width: 46, height: 46)
-        }
-        .buttonStyle(.plain)
-        .background(ScrollToTopGlassBackground())
-        .clipShape(Circle())
-        .shadow(color: .black.opacity(0.12), radius: 14, y: 6)
-        .contentShape(Circle())
-        .accessibilityLabel("回到顶部")
-    }
-}
-
-private struct ScrollToTopGlassBackground: View {
-    var body: some View {
-        if #available(iOS 26.0, *) {
-            Circle()
-                .fill(.regularMaterial)
-                .glassEffect(.regular, in: Circle())
-        } else {
-            Circle()
-                .fill(.regularMaterial)
-                .overlay(
-                    Circle().stroke(.white.opacity(0.10), lineWidth: 0.5)
-                )
         }
     }
 }
