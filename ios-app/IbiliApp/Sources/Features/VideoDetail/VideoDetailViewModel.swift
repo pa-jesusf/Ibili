@@ -27,48 +27,18 @@ final class VideoDetailViewModel: ObservableObject {
     }
 
     func bootstrap(aid: Int64, bvid: String) async {
-        guard self.view == nil || self.aid != aid || self.bvid != bvid else { return }
-        self.aid = aid
-        self.bvid = bvid
-        isLoading = true
-        errorText = nil
-        do {
-            let v = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
-            }.value
-            let resolvedBvid = v.bvid.isEmpty ? bvid : v.bvid
-            self.aid = v.aid
-            self.bvid = resolvedBvid
-            self.view = v
-            self.related = await Task.detached(priority: .utility) {
-                (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
-            }.value
-            self.seenAids = Set(self.related.map { $0.aid })
-            self.seenAids.insert(v.aid)
-            self.relatedIsEnd = false
-            self.feedFreshIdx = 1
-            AppLog.info("video", "视频详情加载成功", metadata: [
-                "aid": String(v.aid),
-                "bvid": resolvedBvid,
-                "tags": String(v.tags.count),
-                "pages": String(v.pages.count),
-            ])
-        } catch {
-            self.errorText = (error as NSError).localizedDescription
-            self.related = []
-            AppLog.error("video", "视频详情加载失败", error: error, metadata: [
-                "aid": String(aid),
-                "bvid": bvid,
-            ])
-        }
-        isLoading = false
+        await loadDetail(aid: aid, bvid: bvid, force: false)
+    }
+
+    func refresh(aid: Int64, bvid: String) async {
+        await loadDetail(aid: aid, bvid: bvid, force: true)
     }
 
     func refreshStat() async {
         guard aid > 0 || !bvid.isEmpty else { return }
-        if let updated = try? await Task.detached(priority: .utility) { [aid = self.aid, bvid = self.bvid] in
+        if let updated = try? await Task.detached(priority: .utility, operation: { [aid = self.aid, bvid = self.bvid] in
             try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
-        }.value {
+        }).value {
             self.aid = updated.aid
             self.bvid = updated.bvid.isEmpty ? bvid : updated.bvid
             self.view = updated
@@ -115,5 +85,46 @@ final class VideoDetailViewModel: ObservableObject {
         }
         related.append(contentsOf: mapped)
         feedFreshIdx += 1
+    }
+
+    private func loadDetail(aid: Int64, bvid: String, force: Bool) async {
+        guard force || self.view == nil || self.aid != aid || self.bvid != bvid else { return }
+        let hadVisibleContent = view != nil || !related.isEmpty
+        self.aid = aid
+        self.bvid = bvid
+        isLoading = true
+        errorText = nil
+        do {
+            let v = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
+            }.value
+            let resolvedBvid = v.bvid.isEmpty ? bvid : v.bvid
+            self.aid = v.aid
+            self.bvid = resolvedBvid
+            self.view = v
+            self.related = await Task.detached(priority: .utility) {
+                (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
+            }.value
+            self.seenAids = Set(self.related.map { $0.aid })
+            self.seenAids.insert(v.aid)
+            self.relatedIsEnd = false
+            self.feedFreshIdx = 1
+            AppLog.info("video", force ? "视频详情刷新成功" : "视频详情加载成功", metadata: [
+                "aid": String(v.aid),
+                "bvid": resolvedBvid,
+                "tags": String(v.tags.count),
+                "pages": String(v.pages.count),
+            ])
+        } catch {
+            self.errorText = (error as NSError).localizedDescription
+            if !hadVisibleContent {
+                self.related = []
+            }
+            AppLog.error("video", force ? "视频详情刷新失败" : "视频详情加载失败", error: error, metadata: [
+                "aid": String(aid),
+                "bvid": bvid,
+            ])
+        }
+        isLoading = false
     }
 }

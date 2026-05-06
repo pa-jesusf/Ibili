@@ -22,8 +22,14 @@ struct VideoDetailContent: View {
     @State private var detailScrollOffset: CGFloat = 0
     @State private var toastWork: DispatchWorkItem?
     @State private var toast: String?
+    @State private var isRefreshingMetadata = false
+    @State private var didTriggerUpwardRefreshSinceTop = false
+    @State private var lastMetadataRefreshAt = Date.distantPast
 
     private let topAnchorID = "videoDetailTop"
+    private static let upwardRefreshTriggerOffset: CGFloat = 72
+    private static let upwardRefreshResetOffset: CGFloat = 8
+    private static let metadataRefreshCooldown: TimeInterval = 12
 
     init(item: FeedItemDTO,
          detailViewModel: VideoDetailViewModel,
@@ -114,6 +120,11 @@ struct VideoDetailContent: View {
         vm.view?.aid ?? item.aid
     }
 
+    private var refreshBVID: String {
+        let resolved = vm.view?.bvid ?? ""
+        return resolved.isEmpty ? item.bvid : resolved
+    }
+
     @ViewBuilder
     private var scrollContent: some View {
         if #available(iOS 18.0, *) {
@@ -121,11 +132,14 @@ struct VideoDetailContent: View {
                 Color.clear.frame(height: 0).id(topAnchorID)
                 contentColumn
             }
+            .refreshable {
+                await refreshMetadata()
+            }
             .scrollIndicators(.hidden)
             .onScrollGeometryChange(for: CGFloat.self) { geo in
                 geo.contentOffset.y
             } action: { _, newValue in
-                detailScrollOffset = newValue
+                handleDetailScrollOffsetChange(newValue)
             }
         } else {
             ScrollView {
@@ -146,10 +160,13 @@ struct VideoDetailContent: View {
                 .id(topAnchorID)
                 contentColumn
             }
+            .refreshable {
+                await refreshMetadata()
+            }
             .coordinateSpace(name: "video-detail-scroll")
             .scrollIndicators(.hidden)
             .onPreferenceChange(DetailScrollOffsetPreferenceKey.self) { value in
-                detailScrollOffset = value
+                handleDetailScrollOffsetChange(value)
             }
         }
     }
@@ -284,6 +301,59 @@ struct VideoDetailContent: View {
                 emptyState(title: "详情加载失败", symbol: "exclamationmark.triangle", message: err)
                     .padding(.vertical, 20)
             }
+        }
+    }
+
+    private func refreshMetadata(trigger: String = "pull-to-refresh") async {
+        guard !isRefreshingMetadata else { return }
+        isRefreshingMetadata = true
+        lastMetadataRefreshAt = Date()
+        defer { isRefreshingMetadata = false }
+
+        let targetAid = commentOID
+        let targetBvid = refreshBVID
+
+        AppLog.info("video", "播放页详情刷新触发", metadata: [
+            "trigger": trigger,
+            "aid": String(targetAid),
+            "tab": tab.rawValue,
+        ])
+
+        await vm.refresh(aid: targetAid, bvid: targetBvid)
+
+        let resolvedAid = commentOID
+        let resolvedBvid = refreshBVID
+        if let stat = vm.view?.stat {
+            interaction.reset(stat: stat)
+        }
+
+        async let hydrateTask: Void = interaction.hydrate(
+            aid: resolvedAid,
+            bvid: resolvedBvid,
+            ownerMid: vm.view?.owner.mid
+        )
+        async let commentsTask: Void = commentListViewModel.refresh(oid: resolvedAid)
+        _ = await (hydrateTask, commentsTask)
+    }
+
+    private func handleDetailScrollOffsetChange(_ newValue: CGFloat) {
+        detailScrollOffset = newValue
+
+        if newValue <= Self.upwardRefreshResetOffset {
+            didTriggerUpwardRefreshSinceTop = false
+            return
+        }
+
+        guard newValue >= Self.upwardRefreshTriggerOffset,
+              !didTriggerUpwardRefreshSinceTop,
+              !isRefreshingMetadata,
+              Date().timeIntervalSince(lastMetadataRefreshAt) >= Self.metadataRefreshCooldown else {
+            return
+        }
+
+        didTriggerUpwardRefreshSinceTop = true
+        Task {
+            await refreshMetadata(trigger: "upward-swipe")
         }
     }
 }

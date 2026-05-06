@@ -43,6 +43,34 @@ final class CommentListViewModel: ObservableObject {
         Task { await loadMore() }
     }
 
+    func refresh(oid: Int64, kind: Int32 = 1) async {
+        self.oid = oid
+        self.kind = kind
+        guard oid > 0, !isLoading else { return }
+        isLoading = true
+        errorText = nil
+        defer { isLoading = false }
+        do {
+            let page = try await Task.detached(priority: .userInitiated) { [oid, kind, sort] in
+                try CoreClient.shared.replyMain(oid: oid, kind: kind, sort: sort, nextOffset: "")
+            }.value
+            top = page.top
+            total = page.total
+            upperMid = page.upperMid
+            items = page.items
+            nextOffset = page.cursorNext
+            isEnd = page.isEnd || page.cursorNext.isEmpty
+            AppLog.info("comments", "评论刷新成功", metadata: [
+                "oid": String(oid),
+                "sort": String(sort),
+                "count": String(page.items.count),
+            ])
+        } catch {
+            errorText = (error as NSError).localizedDescription
+            AppLog.error("comments", "评论刷新失败", error: error, metadata: ["oid": String(oid)])
+        }
+    }
+
     func loadMore() async {
         guard oid > 0, !isLoading, !isEnd else { return }
         isLoading = true
