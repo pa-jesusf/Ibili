@@ -374,7 +374,7 @@ private struct PlayerDetailFloatingControlCluster: View {
                 selection: $selection,
                 onReselectCurrentTab: onReselectCurrentTab
             )
-            .frame(height: 49)
+            .frame(maxWidth: .infinity)
         } else {
             PlayerDetailFloatingTabs(
                 tabs: tabs,
@@ -399,17 +399,22 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UITabBar {
-        let tabBar = UITabBar(frame: .zero)
+        let tabBar = PlayerDetailHostingTabBar(frame: .zero)
         tabBar.delegate = context.coordinator
         tabBar.tintColor = IbiliTheme.accentUIColor
         tabBar.unselectedItemTintColor = .secondaryLabel
-        tabBar.itemPositioning = .automatic
+        tabBar.itemPositioning = .fill
         updateItems(on: tabBar, coordinator: context.coordinator)
         return tabBar
     }
 
     func updateUIView(_ uiView: UITabBar, context: Context) {
         updateItems(on: uiView, coordinator: context.coordinator)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITabBar, context: Context) -> CGSize? {
+        let targetWidth = proposal.width ?? UIScreen.main.bounds.width
+        return uiView.sizeThatFits(CGSize(width: targetWidth, height: proposal.height ?? 0))
     }
 
     private func updateItems(on tabBar: UITabBar, coordinator: Coordinator) {
@@ -455,6 +460,16 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
             } else {
                 selection.wrappedValue = tab
             }
+        }
+    }
+
+    final class PlayerDetailHostingTabBar: UITabBar {
+        override func sizeThatFits(_ size: CGSize) -> CGSize {
+            var fittedSize = super.sizeThatFits(size)
+            if size.width > 0 {
+                fittedSize.width = size.width
+            }
+            return fittedSize
         }
     }
 
