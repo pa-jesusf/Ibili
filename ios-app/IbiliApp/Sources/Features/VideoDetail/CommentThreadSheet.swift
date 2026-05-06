@@ -17,19 +17,26 @@ struct CommentThreadSheet: View {
     @State private var isEnd = false
     @State private var total: Int64 = 0
 
+    private var currentRootItem: ReplyItemDTO {
+        rootState ?? root
+    }
+
+    private var navigationTitleText: String {
+        if root.replyCount > 0 {
+            let visibleTotal = max(total, Int64(root.replyCount))
+            return "\(visibleTotal) 条回复"
+        }
+        return "评论详情"
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    let rootItem = rootState ?? root
-                    CommentRow(item: rootItem, upperMid: 0, isPinned: false,
-                               onLike: { Task { await toggleLike(on: rootItem) } }) {}
-                        .padding(.horizontal, 16)
+                    threadRow(for: currentRootItem)
                     Divider()
                     ForEach(replies) { r in
-                        CommentRow(item: r, upperMid: 0, isPinned: false,
-                                   onLike: { Task { await toggleLike(on: r) } }) {}
-                            .padding(.horizontal, 16)
+                        threadRow(for: r)
                             .onAppear {
                                 if r.id == replies.last?.id, !isEnd, !isLoading {
                                     Task { await loadMore() }
@@ -46,10 +53,28 @@ struct CommentThreadSheet: View {
                     }
                 }
             }
-            .navigationTitle("\(total) 条回复")
+            .navigationTitle(navigationTitleText)
             .navigationBarTitleDisplayMode(.inline)
         }
-        .task { await loadMore() }
+        .task {
+            guard root.replyCount > 0 else { return }
+            await loadMore()
+        }
+    }
+
+    private func threadRow(for item: ReplyItemDTO) -> AnyView {
+        AnyView(
+            CommentRow(item: item,
+                       upperMid: 0,
+                       isPinned: false,
+                       messageLineLimit: nil,
+                       allowsThreadPresentation: false,
+                       onLike: {
+                           Task { await toggleLike(on: item) }
+                       },
+                       onOpenThread: {})
+                .padding(.horizontal, 16)
+        )
     }
 
     private func loadMore() async {

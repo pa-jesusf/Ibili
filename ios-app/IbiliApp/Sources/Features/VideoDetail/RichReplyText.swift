@@ -14,16 +14,66 @@ struct RichReplyText: View {
     let emotes: [ReplyEmoteDTO]
     let jumpUrls: [ReplyJumpUrlDTO]
     var lineLimit: Int? = nil
+    var font: Font = .body
+    var textColor: Color = .primary
+    var onTruncationChange: ((Bool) -> Void)? = nil
 
     @State private var emoteImages: [String: UIImage] = [:]
+    @State private var truncates: Bool = false
 
     var body: some View {
-        rendered
+        measuredText
             .lineLimit(lineLimit)
             .lineSpacing(2)
+            .foregroundStyle(textColor)
+            .background(measureGeometry)
             .task(id: emotes.map { $0.url }.joined(separator: "|")) {
                 await loadEmotes()
             }
+            .onAppear {
+                onTruncationChange?(truncates)
+            }
+            .onChange(of: truncates) { newValue in
+                onTruncationChange?(newValue)
+            }
+    }
+
+    private var measuredText: Text {
+        rendered
+            .font(font)
+    }
+
+    private var measureGeometry: some View {
+        Group {
+            if let lineLimit {
+                measuredText
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .hidden()
+                    .background(GeometryReader { full in
+                        measuredText
+                            .lineSpacing(2)
+                            .lineLimit(lineLimit)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .background(GeometryReader { clipped in
+                                Color.clear
+                                    .onAppear {
+                                        updateTruncation(clippedHeight: clipped.size.height,
+                                                         fullHeight: full.size.height)
+                                    }
+                                    .onChange(of: emoteImages.count) { _ in
+                                        updateTruncation(clippedHeight: clipped.size.height,
+                                                         fullHeight: full.size.height)
+                                    }
+                            })
+                            .hidden()
+                    })
+            }
+        }
+    }
+
+    private func updateTruncation(clippedHeight: CGFloat, fullHeight: CGFloat) {
+        truncates = clippedHeight < fullHeight - 1
     }
 
     // MARK: - Rendering

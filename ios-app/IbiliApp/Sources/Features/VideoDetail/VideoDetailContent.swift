@@ -110,6 +110,10 @@ struct VideoDetailContent: View {
         }
     }
 
+    private var commentOID: Int64 {
+        vm.view?.aid ?? item.aid
+    }
+
     @ViewBuilder
     private var scrollContent: some View {
         if #available(iOS 18.0, *) {
@@ -175,7 +179,7 @@ struct VideoDetailContent: View {
                 case .intro:
                     introBody
                 case .replies:
-                    CommentListView(oid: item.aid, viewModel: commentListViewModel)
+                    CommentListView(oid: commentOID, viewModel: commentListViewModel)
                         .padding(.horizontal, 16)
                 case .related:
                     RelatedVideoList(

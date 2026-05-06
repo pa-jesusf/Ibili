@@ -15,13 +15,14 @@ private struct IsInPlayerHostNavigationKey: EnvironmentKey {
 struct RootView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var router = DeepLinkRouter()
+    @State private var retainsDismissedPlayerHost = false
+    @State private var releaseDismissedPlayerHostWork: DispatchWorkItem?
 
     var body: some View {
         ZStack {
             Group {
                 if session.isLoggedIn {
                     MainTabView()
-                        .allowsHitTesting(router.pending == nil)
                         .transition(.opacity)
                 } else {
                     LoginView()
@@ -39,8 +40,8 @@ struct RootView: View {
             // deliberately don't combine `.transition(.move)` with a
             // separate offset, because that doubles up the work and
             // tends to fall back to 60 Hz.
-            if router.pending != nil {
-                DeepLinkPlayerHost()
+            if router.pending != nil || retainsDismissedPlayerHost {
+                DeepLinkPlayerHost(onRootDismissed: retainDismissedPlayerHost)
                     .environmentObject(router)
                     .tint(IbiliTheme.accent)
                     .zIndex(1)
@@ -50,6 +51,24 @@ struct RootView: View {
         .environment(\.openURL, OpenURLAction { url in
             router.handle(url)
         })
+        .onChange(of: router.pending?.id) { newValue in
+            guard newValue != nil else { return }
+            releaseDismissedPlayerHostWork?.cancel()
+            releaseDismissedPlayerHostWork = nil
+            retainsDismissedPlayerHost = false
+        }
+    }
+
+    private func retainDismissedPlayerHost(for interval: TimeInterval) {
+        releaseDismissedPlayerHostWork?.cancel()
+        retainsDismissedPlayerHost = true
+        let work = DispatchWorkItem {
+            guard router.pending == nil else { return }
+            retainsDismissedPlayerHost = false
+            releaseDismissedPlayerHostWork = nil
+        }
+        releaseDismissedPlayerHostWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
     }
 }
 
@@ -58,6 +77,7 @@ struct RootView: View {
 /// new layer, or replaces the current layer.
 private struct DeepLinkPlayerHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    let onRootDismissed: (TimeInterval) -> Void
     /// Single source of truth for the host's horizontal position.
     /// Driven by:
     ///   - `onAppear`: animates from `screenWidth` → 0 (slide-in).
@@ -69,6 +89,7 @@ private struct DeepLinkPlayerHost: View {
     ///     ProMotion 120 Hz path.
     @State private var offsetX: CGFloat = UIScreen.main.bounds.width
     @State private var pendingDismissWork: DispatchWorkItem?
+    @State private var isRootDismissInFlight = false
     /// Tri-state lock for the leading-edge drag. `undecided` while
     /// we're still reading the slope of the user's motion; once we
     /// commit to either `.horizontal` (swipe-back) or `.vertical`
@@ -89,6 +110,7 @@ private struct DeepLinkPlayerHost: View {
         dampingFraction: 0.86,
         blendDuration: 0
     )
+    private static let hostReleaseGrace: TimeInterval = 0.28
 
     var body: some View {
         NavigationStack(path: $router.path) {
@@ -117,16 +139,30 @@ private struct DeepLinkPlayerHost: View {
         .environment(\.isInPlayerHostNavigation, true)
         .background(IbiliTheme.background)
         .offset(x: offsetX)
+        .allowsHitTesting(!isRootDismissInFlight)
         .onAppear {
             cancelPendingDismiss()
+            if router.pending != nil {
+                isRootDismissInFlight = false
+            }
             syncPlayerSessions()
         }
         .onChange(of: router.pending?.id) { _ in
             cancelPendingDismiss()
+            if router.pending != nil {
+                isRootDismissInFlight = false
+                offsetX = UIScreen.main.bounds.width
+                withAnimation(Self.slideSpring) {
+                    offsetX = 0
+                }
+            }
             syncPlayerSessions()
         }
         .onChange(of: router.path.map(\.id)) { _ in
             cancelPendingDismiss()
+            if router.pending != nil {
+                isRootDismissInFlight = false
+            }
             syncPlayerSessions()
         }
         .onAppear {
@@ -178,6 +214,7 @@ private struct DeepLinkPlayerHost: View {
         }
         .onDisappear {
             cancelPendingDismiss()
+            isRootDismissInFlight = false
         }
     }
 
@@ -200,6 +237,7 @@ private struct DeepLinkPlayerHost: View {
             return
         }
         let width = UIScreen.main.bounds.width
+        isRootDismissInFlight = true
         withAnimation(Self.slideSpring) {
             offsetX = width
         }
@@ -208,6 +246,7 @@ private struct DeepLinkPlayerHost: View {
         let work = DispatchWorkItem {
             guard router.pending?.id == dismissingRouteID,
                   router.path.isEmpty else { return }
+            onRootDismissed(Self.hostReleaseGrace)
             router.closeSession()
         }
         pendingDismissWork = work

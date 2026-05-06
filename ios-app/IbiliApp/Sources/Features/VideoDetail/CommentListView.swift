@@ -29,29 +29,74 @@ struct CommentListView: View {
         self.providedViewModel = viewModel
     }
 
-    private var vm: CommentListViewModel {
+    private var currentViewModel: CommentListViewModel {
         providedViewModel ?? ownedViewModel
     }
+
+    var body: some View {
+        Group {
+            if let providedViewModel {
+                CommentListContent(
+                    oid: oid,
+                    kind: kind,
+                    viewModel: providedViewModel,
+                    thread: $thread,
+                    showSendSheet: $showSendSheet
+                )
+            } else {
+                CommentListContent(
+                    oid: oid,
+                    kind: kind,
+                    viewModel: ownedViewModel,
+                    thread: $thread,
+                    showSendSheet: $showSendSheet
+                )
+            }
+        }
+        .sheet(item: $thread) { root in
+            CommentThreadSheet(root: root)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showSendSheet) {
+            CommentSendSheet(
+                oid: oid,
+                kind: kind,
+                selfMid: session.mid,
+                selfName: ""
+            ) { echo in
+                currentViewModel.prependLocal(echo)
+            }
+        }
+    }
+}
+
+private struct CommentListContent: View {
+    let oid: Int64
+    let kind: Int32
+    @ObservedObject var viewModel: CommentListViewModel
+    @Binding var thread: ReplyItemDTO?
+    @Binding var showSendSheet: Bool
+    @EnvironmentObject private var session: AppSession
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("评论")
                     .font(.headline)
-                Text("\(vm.total)")
+                Text("\(viewModel.total)")
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(IbiliTheme.textSecondary)
                 Spacer()
                 Menu {
-                    Button { vm.sort = 1 } label: {
-                        Label("热门", systemImage: vm.sort == 1 ? "checkmark" : "")
+                    Button { viewModel.sort = 1 } label: {
+                        Label("热门", systemImage: viewModel.sort == 1 ? "checkmark" : "")
                     }
-                    Button { vm.sort = 2 } label: {
-                        Label("时间", systemImage: vm.sort == 2 ? "checkmark" : "")
+                    Button { viewModel.sort = 2 } label: {
+                        Label("时间", systemImage: viewModel.sort == 2 ? "checkmark" : "")
                     }
                 } label: {
                     HStack(spacing: 2) {
-                        Text(vm.sort == 1 ? "热门" : "时间")
+                        Text(viewModel.sort == 1 ? "热门" : "时间")
                         Image(systemName: "chevron.down").imageScale(.small)
                     }
                     .font(.footnote.weight(.medium))
@@ -60,9 +105,6 @@ struct CommentListView: View {
             }
             .padding(.bottom, 8)
 
-            // Composer entry — tapping anywhere opens the comment send
-            // sheet. Only shown to logged-in users; otherwise the
-            // anonymous reader sees a hint to sign in.
             Button {
                 if session.isLoggedIn { showSendSheet = true }
             } label: {
@@ -85,48 +127,42 @@ struct CommentListView: View {
             .disabled(!session.isLoggedIn)
             .padding(.bottom, 12)
 
-            if let top = vm.top {
-                CommentRow(item: top, upperMid: vm.upperMid, isPinned: true,
-                           onLike: { Task { await vm.toggleLike(rpid: top.rpid) } }) { thread = top }
+            if let top = viewModel.top {
+                CommentRow(item: top, upperMid: viewModel.upperMid, isPinned: true,
+                           onLike: { Task { await viewModel.toggleLike(rpid: top.rpid) } }) { thread = top }
                 Divider()
             }
 
-            ForEach(vm.items) { item in
-                CommentRow(item: item, upperMid: vm.upperMid, isPinned: false,
-                           onLike: { Task { await vm.toggleLike(rpid: item.rpid) } }) { thread = item }
+            ForEach(viewModel.items) { item in
+                CommentRow(item: item, upperMid: viewModel.upperMid, isPinned: false,
+                           onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } }) { thread = item }
                     .onAppear {
-                        if item.id == vm.items.last?.id, !vm.isEnd {
-                            Task { await vm.loadMore() }
+                        if item.id == viewModel.items.last?.id, !viewModel.isEnd {
+                            Task { await viewModel.loadMore() }
                         }
                     }
                 Divider()
             }
 
-            if vm.isLoading {
+            if viewModel.isLoading {
                 HStack { Spacer(); ProgressView(); Spacer() }
                     .padding(.vertical, 12)
-            } else if vm.isEnd, !vm.items.isEmpty {
+            } else if viewModel.isEnd, !viewModel.items.isEmpty {
                 HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
                     .padding(.vertical, 12)
-            } else if vm.items.isEmpty, !vm.isLoading {
+            } else if viewModel.items.isEmpty, !viewModel.isLoading {
                 emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
                     .padding(.vertical, 30)
             }
         }
-        .task(id: oid) { vm.bind(oid: oid, kind: kind) }
-        .sheet(item: $thread) { root in
-            CommentThreadSheet(root: root)
-                .presentationDetents([.medium, .large])
+        .onAppear {
+            viewModel.bind(oid: oid, kind: kind)
         }
-        .sheet(isPresented: $showSendSheet) {
-            CommentSendSheet(
-                oid: oid,
-                kind: kind,
-                selfMid: session.mid,
-                selfName: ""
-            ) { echo in
-                vm.prependLocal(echo)
-            }
+        .onChange(of: oid) { newValue in
+            viewModel.bind(oid: newValue, kind: kind)
+        }
+        .onChange(of: kind) { newValue in
+            viewModel.bind(oid: oid, kind: newValue)
         }
     }
 }
@@ -137,8 +173,16 @@ struct CommentRow: View {
     let item: ReplyItemDTO
     let upperMid: Int64
     let isPinned: Bool
+    var messageLineLimit: Int? = 6
+    var allowsThreadPresentation: Bool = true
     var onLike: (() -> Void)? = nil
     let onOpenThread: () -> Void
+
+    @State private var isMessageTruncated = false
+
+    private var canOpenThread: Bool {
+        allowsThreadPresentation && (item.replyCount > 0 || isMessageTruncated)
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -172,9 +216,10 @@ struct CommentRow: View {
                 RichReplyText(message: item.message,
                               emotes: item.emotes,
                               jumpUrls: item.jumpUrls,
-                              lineLimit: 6)
-                    .font(.footnote)
-                    .foregroundStyle(IbiliTheme.textPrimary)
+                              lineLimit: messageLineLimit,
+                              font: .footnote,
+                              textColor: IbiliTheme.textPrimary,
+                              onTruncationChange: { isMessageTruncated = $0 })
                     .contextMenu {
                         Button {
                             UIPasteboard.general.string = item.message
@@ -218,7 +263,7 @@ struct CommentRow: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onTapGesture {
-            if item.replyCount > 0 { onOpenThread() }
+            if canOpenThread { onOpenThread() }
         }
     }
 }
@@ -239,14 +284,19 @@ struct ReplyPictureGrid: View {
 
     var body: some View {
         let cols = urls.count == 1 ? 1 : (urls.count == 2 ? 2 : 3)
-        let target = UIScreen.main.bounds.width * 0.6
-        let tileSide = (target - CGFloat(cols - 1) * 4) / CGFloat(cols)
+        let screenWidth = UIScreen.main.bounds.width
+        let spacing: CGFloat = 4
+        let target = screenWidth * 0.6
+        let maxTileSide = screenWidth * 0.3
+        let naturalTileSide = (target - CGFloat(cols - 1) * spacing) / CGFloat(cols)
+        let tileSide = min(maxTileSide, naturalTileSide)
+        let gridWidth = tileSide * CGFloat(cols) + CGFloat(cols - 1) * spacing
         let columns = Array(
-            repeating: GridItem(.fixed(tileSide), spacing: 4),
+            repeating: GridItem(.fixed(tileSide), spacing: spacing),
             count: cols
         )
         HStack(spacing: 0) {
-            LazyVGrid(columns: columns, spacing: 4) {
+            LazyVGrid(columns: columns, spacing: spacing) {
                 ForEach(Array(urls.enumerated()), id: \.offset) { i, u in
                     Button { preview = .init(index: i) } label: {
                         RemoteImage(url: u,
@@ -262,7 +312,7 @@ struct ReplyPictureGrid: View {
                     .buttonStyle(.plain)
                 }
             }
-            .frame(width: target, alignment: .leading)
+            .frame(width: min(target, gridWidth), alignment: .leading)
             Spacer(minLength: 0)
         }
         .fullScreenCover(item: $preview) { sel in

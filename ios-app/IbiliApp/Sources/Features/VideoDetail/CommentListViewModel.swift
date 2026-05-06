@@ -19,17 +19,27 @@ final class CommentListViewModel: ObservableObject {
     private var nextOffset: String = ""
 
     func bind(oid: Int64, kind: Int32 = 1) {
-        if self.oid == oid && self.kind == kind { return }
+        let isSameTarget = self.oid == oid && self.kind == kind
         self.oid = oid
         self.kind = kind
+        if isSameTarget {
+            if top == nil, items.isEmpty, !isLoading {
+                errorText = nil
+                Task { await loadMore() }
+            }
+            return
+        }
         reset()
     }
 
     func reset() {
         items.removeAll()
         top = nil
+        total = 0
+        upperMid = 0
         nextOffset = ""
         isEnd = false
+        errorText = nil
         Task { await loadMore() }
     }
 
