@@ -918,7 +918,7 @@ final class PlayerViewModel: ObservableObject {
         handle(.observedTimeControlStatus(.paused))
     }
 
-    func scheduleFullscreenPlaybackRecovery(delay: TimeInterval = 0.35) {
+    private func scheduleFullscreenPlaybackRecovery(delay: TimeInterval) {
         cancelFullscreenPlaybackRecovery()
         AppLog.debug("player", "安排 fullscreen 退出后的播放恢复检查", metadata: playbackDebugMetadata(extra: [
             "delayMs": String(Int(delay * 1000)),
@@ -1907,7 +1907,6 @@ struct PlayerView: View {
                 _ = presentationState.beginFullscreen(identity)
             } else {
                 _ = presentationState.endFullscreen(identity)
-                vm.scheduleFullscreenPlaybackRecovery()
                 if isInlineHostVisible {
                     _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
                 }
