@@ -59,6 +59,7 @@ final class PlayerViewModel: ObservableObject {
     /// thread `(aid, cid)` through every state binding.
     var currentAid: Int64 { aid }
     var currentCid: Int64 { cid }
+    var currentSessionID: PlayerSessionID { sessionID }
     private var loadGeneration: UInt64 = 0
     private let discoveryQn: Int64 = 120
     private let engine: PlaybackEngine = HLSProxyEngine.shared
@@ -527,6 +528,40 @@ final class PlayerViewModel: ObservableObject {
             return nil
         }
         return seconds
+    }
+
+    var playbackDurationForUI: TimeInterval? {
+        guard let seconds = player?.currentItem?.duration.seconds,
+              seconds.isFinite,
+              seconds > 0 else {
+            return nil
+        }
+        return seconds
+    }
+
+    var isPlayingForUI: Bool {
+        switch behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) {
+        case .play:
+            return true
+        case .pause:
+            return false
+        }
+    }
+
+    func togglePlaybackFromUI() {
+        handle(.playbackIntentChanged(isPlayingForUI ? .pause : .play))
+    }
+
+    func seek(to seconds: Double) async {
+        guard let player else { return }
+        let target = CMTime(seconds: max(seconds, 0), preferredTimescale: 600)
+        await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        refreshSystemMediaSession()
+    }
+
+    func seek(by deltaSeconds: Double) async {
+        let currentSeconds = currentElapsedPlaybackTime ?? 0
+        await seek(to: currentSeconds + deltaSeconds)
     }
 
     var systemMediaPlaybackRate: Float {
@@ -1661,23 +1696,22 @@ struct PlayerView: View {
     @StateObject private var vm: PlayerViewModel
     private let onPictureInPictureActiveChange: ((Bool) -> Void)?
     private let onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))?
-    /// Plain reference type — see `DanmakuController` notes.
     @State private var danmaku = DanmakuController()
     @State private var didBootstrap = false
     @State private var loadedMediaKey: String?
     @State private var isFullscreen = false
     @State private var lastDeviceOrientation: UIDeviceOrientation = .portrait
-    /// Weak handle to the AVPlayerViewController so we can drive native FS.
-    @State private var playerVCRef = PlayerVCBox()
-    /// Long-press on the danmaku toggle opens this sheet for sending.
+    @State private var playerPresentationBox = PlayerPresentationBox()
     @State private var showDanmakuSheet = false
-    /// One-shot transient hint that surfaces when the user enables
-    /// danmaku, telling them they can long-press the toggle to send one.
-    /// Suppressible via `AppSettings.showDanmakuSendHint`.
     @State private var danmakuHint: String?
     @State private var danmakuHintWork: DispatchWorkItem?
     @State private var deferredDetailMountWork: DispatchWorkItem?
     @State private var shouldMountDetailContent = false
+    @State private var arePlaybackControlsVisible = true
+    @State private var playbackControlsAutoHideWork: DispatchWorkItem?
+    @State private var isScrubbingPlayback = false
+    @State private var scrubbedPlaybackPositionSec: Double = 0
+    @State private var isInlineVolumeExpanded = false
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -1721,8 +1755,6 @@ struct PlayerView: View {
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
-        case .fullscreenChanged(let isFullscreen):
-            self.isFullscreen = isFullscreen
         case .pictureInPictureChanged(let isActive):
             if let onPictureInPictureActiveChange {
                 onPictureInPictureActiveChange(isActive)
@@ -1737,7 +1769,7 @@ struct PlayerView: View {
     private func requestFullscreenTransition(_ direction: PlayerFullscreenTransitionDirection) {
         PlayerFullscreenController.requestTransition(direction,
                                                      context: fullscreenTransitionContext,
-                                                     playerBox: playerVCRef,
+                                                     playerBox: playerPresentationBox,
                                                      player: vm.player,
                                                      updateFullscreenState: { isFullscreen = $0 })
     }
@@ -1756,94 +1788,28 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Color.black
-                if let p = vm.player {
-                    PlayerContainer(
-                        player: p,
-                        title: item.title,
-                        prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
-                        danmaku: danmaku,
-                        danmakuEnabled: settings.danmakuEnabled,
-                        danmakuOpacity: settings.danmakuOpacity,
-                        danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
-                        danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
-                        danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
-                        danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
-                        danmakuFontScale: settings.resolvedDanmakuFontScale(),
-                        isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
-                        canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
-                        beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
-                        endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
-                        onCreated: { vc in playerVCRef.vc = vc },
-                        onPresentationControllerReady: { controller in
-                            playerVCRef.presentationController = controller
-                        },
-                        onPresentationEvent: handlePresentationEvent,
-                        onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
-                    )
-                    // Cover the native chrome until the first frame is
-                    // ready, otherwise users see a misleading pause icon
-                    // hovering over a black surface during buffering.
-                    if !vm.isVideoReady {
-                        Color.black.opacity(0.85)
-                        ProgressView().tint(.white)
-                    }
-                } else if vm.isLoading {
-                    ProgressView().tint(.white)
-                } else if let err = vm.errorText {
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle").font(.largeTitle)
-                            .foregroundStyle(.yellow)
-                        Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
-                            .padding(.horizontal)
-                    }
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                if isFullscreen {
+                    Color.black
+                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                } else {
+                    inlinePlayerSurface
                 }
-            }
-            .aspectRatio(16.0/9.0, contentMode: .fit)
 
-            if shouldMountDetailContent {
-                VideoDetailContent(item: item,
-                                   detailViewModel: vm.pageCache.detailViewModel,
-                                   commentListViewModel: vm.pageCache.commentListViewModel)
-                    .transition(.opacity)
-            } else {
-                VStack(spacing: 12) {
-                    ProgressView().tint(IbiliTheme.accent)
-                    Text("正在准备详情")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 160)
-                .background(IbiliTheme.background)
+                detailContentSection
+            }
+            .allowsHitTesting(!isFullscreen)
+
+            if isFullscreen {
+                fullscreenPlayerSurface
+                    .zIndex(1)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if !isFullscreen, vm.player != nil {
-                ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarDanmaku(
-                        danmakuEnabled: $settings.danmakuEnabled,
-                        onLongPress: { showDanmakuSheet = true }
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarVideoQuality(
-                        qualities: vm.availableQualities,
-                        currentQn: vm.currentQn,
-                        onPick: { qn in Task { await vm.switchQuality(to: qn) } }
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarAudioQuality(
-                        audioQualities: vm.availableAudioQualities,
-                        currentAudioQn: vm.currentAudioQn,
-                        onPick: { qn in Task { await vm.switchAudioQuality(to: qn) } }
-                    )
-                }
-            }
-        }
+        .navigationBarBackButtonHidden(isFullscreen)
+        .toolbar(isFullscreen ? .hidden : .visible, for: .navigationBar)
         .task(id: mediaLoadKey) {
             if !didBootstrap {
                 didBootstrap = true
@@ -1856,10 +1822,6 @@ struct PlayerView: View {
                 shouldMountDetailContent = true
             }
 
-            // Claim playback focus as soon as the pushed player page
-            // starts loading so route-to-route navigation does not
-            // momentarily release the shared audio session while the
-            // new AVPlayer is still buffering.
             vm.handle(.interfaceActivated)
 
             guard loadedMediaKey != mediaLoadKey || vm.player == nil else {
@@ -1875,12 +1837,25 @@ struct PlayerView: View {
             async let danmaku: Void = loadDanmaku()
             _ = await (video, danmaku)
             vm.handle(.interfaceActivated)
+            showPlaybackControls()
         }
         .onChange(of: vm.player) { newPlayer in
-            if let p = newPlayer {
+            if let player = newPlayer {
                 vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
-                danmaku.attach(p)
+                danmaku.attach(player)
                 vm.handle(.interfaceActivated)
+                showPlaybackControls()
+            }
+        }
+        .onChange(of: isFullscreen) { _ in
+            showPlaybackControls()
+        }
+        .onChange(of: vm.isPlayingForUI) { isPlaying in
+            if isPlaying {
+                schedulePlaybackControlsAutoHide()
+            } else {
+                playbackControlsAutoHideWork?.cancel()
+                showPlaybackControls(resetTimer: false)
             }
         }
         .onChange(of: settings.audioGainDb) { _ in
@@ -1891,7 +1866,7 @@ struct PlayerView: View {
                 phase,
                 didBootstrap: didBootstrap,
                 viewModel: vm,
-                playerBox: playerVCRef,
+                playerBox: playerPresentationBox,
                 reloadPlayer: { await vm.recoverFromInactiveEngineIfNeeded(trigger: "foreground-active") }
             )
         }
@@ -1899,16 +1874,21 @@ struct PlayerView: View {
             handleDeviceOrientationChange()
         }
         .onAppear {
+            UIDevice.current.isBatteryMonitoringEnabled = true
             PlayerViewLifecycleController.handleAppear(
                 didBootstrap: didBootstrap,
                 viewModel: vm,
                 danmaku: danmaku,
                 resolvedAudioVolumeLinear: settings.resolvedAudioVolumeLinear()
             )
+            showPlaybackControls(resetTimer: false)
         }
         .onDisappear {
+            UIDevice.current.isBatteryMonitoringEnabled = false
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil
+            playbackControlsAutoHideWork?.cancel()
+            playbackControlsAutoHideWork = nil
             PlayerViewLifecycleController.handleDisappear(
                 isFullscreen: isFullscreen,
                 viewModel: vm,
@@ -1916,10 +1896,6 @@ struct PlayerView: View {
             )
         }
         .onChange(of: settings.danmakuEnabled) { newValue in
-            // Surface a one-shot reminder the first few times the user
-            // enables danmaku — long-press to send is otherwise hidden.
-            // Users can disable this from 设置 once they've internalised
-            // the gesture.
             guard newValue, settings.showDanmakuSendHint else { return }
             danmakuHint = "长按弹幕开关可发送弹幕（可在设置中关闭提示）"
             danmakuHintWork?.cancel()
@@ -1944,17 +1920,12 @@ struct PlayerView: View {
                 cid: vm.currentCid > 0 ? vm.currentCid : item.cid,
                 progressProvider: { currentPlayheadMs() },
                 onSent: { echo in
-                    // Local-echo into the live renderer so the user
-                    // sees their bullet immediately. Frame styling is
-                    // handled inside the canvas based on `isSelf`.
                     danmaku.appendLive(echo)
                 }
             )
         }
     }
 
-    /// Snapshot the live AVPlayer playhead in milliseconds. Falls back
-    /// to 0 if the player isn't ready or the time is invalid.
     private func currentPlayheadMs() -> Int64 {
         guard let p = vm.player else { return 0 }
         let t = p.currentTime()
@@ -1964,16 +1935,287 @@ struct PlayerView: View {
         return Int64(s * 1000)
     }
 
+    private var shouldShowPictureInPictureButton: Bool {
+        AVPictureInPictureController.isPictureInPictureSupported()
+    }
+
+    private var detailContentSection: some View {
+        Group {
+            if shouldMountDetailContent {
+                VideoDetailContent(item: item,
+                                   detailViewModel: vm.pageCache.detailViewModel,
+                                   commentListViewModel: vm.pageCache.commentListViewModel)
+                    .transition(.opacity)
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView().tint(IbiliTheme.accent)
+                    Text("正在准备详情")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 160)
+                .background(IbiliTheme.background)
+            }
+        }
+    }
+
+    private var playerSurfaceContent: some View {
+        ZStack {
+            Color.black
+            if let player = vm.player {
+                PlayerContainer(
+                    sessionID: vm.currentSessionID,
+                    player: player,
+                    title: item.title,
+                    danmaku: danmaku,
+                    danmakuEnabled: settings.danmakuEnabled,
+                    danmakuOpacity: settings.danmakuOpacity,
+                    danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
+                    danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
+                    danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
+                    danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
+                    danmakuFontScale: settings.resolvedDanmakuFontScale(),
+                    isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
+                    canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
+                    beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
+                    endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
+                    onPictureInPictureControllerReady: { controller in
+                        playerPresentationBox.pictureInPictureController = controller
+                    },
+                    onPresentationEvent: handlePresentationEvent,
+                    onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
+                )
+                if !vm.isVideoReady {
+                    Color.black.opacity(0.85)
+                    ProgressView().tint(.white)
+                }
+            } else if vm.isLoading {
+                ProgressView().tint(.white)
+            } else if let err = vm.errorText {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.yellow)
+                    Text(err)
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+            }
+        }
+    }
+
+    private var inlinePlayerSurface: some View {
+        playerSurfaceContent
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay {
+                playerControlsOverlay(isFullscreen: false)
+            }
+    }
+
+    private var fullscreenPlayerSurface: some View {
+        playerSurfaceContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .overlay {
+                playerControlsOverlay(isFullscreen: true)
+            }
+            .ignoresSafeArea()
+            .transition(.opacity)
+    }
+
     @ViewBuilder
-    private var controlBar: some View {
-        HStack(spacing: 10) {
+    private func playerControlsOverlay(isFullscreen: Bool) -> some View {
+        if vm.player != nil {
+            ZStack {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if arePlaybackControlsVisible {
+                            hidePlaybackControls()
+                        } else {
+                            showPlaybackControls()
+                        }
+                    }
+
+                if arePlaybackControlsVisible {
+                    Color.black.opacity(isFullscreen ? 0.12 : 0.08)
+                        .ignoresSafeArea()
+
+                    ZStack {
+                        VStack(spacing: 0) {
+                            topOverlayChrome(isFullscreen: isFullscreen)
+                            Spacer(minLength: 0)
+                            bottomOverlayChrome(isFullscreen: isFullscreen)
+                        }
+
+                        playbackCenterCluster(isFullscreen: isFullscreen)
+                    }
+                    .padding(.horizontal, isFullscreen ? 18 : 16)
+                    .padding(.top, isFullscreen ? 14 : 12)
+                    .padding(.bottom, isFullscreen ? 18 : 12)
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: arePlaybackControlsVisible)
+        }
+    }
+
+    private func topOverlayChrome(isFullscreen: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            if isFullscreen {
+                HStack(spacing: 12) {
+                    overlayCircleButton(systemName: "xmark", size: 72, symbolSize: 28) {
+                        requestFullscreenTransition(.exit)
+                    }
+                    utilityDock(includeMore: false, includeFullscreenToggle: false)
+                }
+                Spacer(minLength: 12)
+                volumeControlDock
+                    .frame(width: 324)
+            } else {
+                utilityDock(includeMore: false, includeFullscreenToggle: true)
+                Spacer(minLength: 12)
+                inlineVolumeControl
+            }
+        }
+    }
+
+    private func playbackCenterCluster(isFullscreen: Bool) -> some View {
+        HStack(spacing: isFullscreen ? 44 : 28) {
+            transportCircleButton(systemName: "gobackward.10",
+                                  size: isFullscreen ? 102 : 84,
+                                  symbolSize: isFullscreen ? 31 : 25,
+                                  tint: Color.white.opacity(0.18),
+                                  stroke: Color.white.opacity(0.24)) {
+                Task { await vm.seek(by: -10) }
+            }
+
+            transportCircleButton(systemName: vm.isPlayingForUI ? "pause.fill" : "play.fill",
+                                  size: isFullscreen ? 138 : 118,
+                                  symbolSize: isFullscreen ? 52 : 42,
+                                  weight: .bold,
+                                  tint: Color(red: 0.49, green: 0.56, blue: 0.29).opacity(0.62),
+                                  stroke: Color(red: 0.93, green: 0.84, blue: 0.38).opacity(0.82),
+                                  shadowColor: Color(red: 0.93, green: 0.84, blue: 0.38).opacity(0.26)) {
+                vm.togglePlaybackFromUI()
+                showPlaybackControls()
+            }
+
+            transportCircleButton(systemName: "goforward.10",
+                                  size: isFullscreen ? 102 : 84,
+                                  symbolSize: isFullscreen ? 31 : 25,
+                                  tint: Color(red: 0.32, green: 0.50, blue: 0.16).opacity(0.58),
+                                  stroke: Color(red: 0.60, green: 0.88, blue: 0.34).opacity(0.72),
+                                  shadowColor: Color(red: 0.60, green: 0.88, blue: 0.34).opacity(0.22)) {
+                Task { await vm.seek(by: 10) }
+            }
+        }
+    }
+
+    private func bottomOverlayChrome(isFullscreen: Bool) -> some View {
+        TimelineView(.periodic(from: .now, by: 0.25)) { timeline in
+            let duration = max(playbackDurationSec, 1)
+            let livePosition = min(playbackPositionSec, duration)
+            let trailingTime = isFullscreen
+                ? "-\(formatPlaybackTime(max(duration - livePosition, 0)))"
+                : formatPlaybackTime(playbackDurationSec)
+
+            VStack(alignment: .leading, spacing: isFullscreen ? 12 : 8) {
+                if isFullscreen {
+                    fullscreenContextStamp(date: timeline.date)
+                    fullscreenNowPlayingTitle
+                }
+
+                HStack(alignment: .bottom, spacing: 12) {
+                    progressRail(currentPosition: livePosition,
+                                 duration: duration,
+                                 trailingTime: trailingTime,
+                                 isFullscreen: isFullscreen)
+
+                    bottomAccessoryDock(isFullscreen: isFullscreen)
+                }
+            }
+        }
+    }
+
+    private func utilityDock(includeMore: Bool,
+                             includeFullscreenToggle: Bool) -> some View {
+        glassPanel(cornerRadius: 24) {
+            HStack(spacing: 8) {
+                if shouldShowPictureInPictureButton {
+                    Button {
+                        if vm.isPictureInPictureActive {
+                            playerPresentationBox.pictureInPictureController?.stopPictureInPicture()
+                        } else {
+                            playerPresentationBox.pictureInPictureController?.startPictureInPicture()
+                        }
+                        showPlaybackControls()
+                    } label: {
+                        dockGlyph(systemName: vm.isPictureInPictureActive ? "pip.exit" : "pip.enter")
+                    }
+                    .disabled(playerPresentationBox.pictureInPictureController == nil)
+                }
+
+                routePickerDockGlyph
+
+                if includeMore {
+                    overflowMenuButton(compact: false)
+                }
+
+                if includeFullscreenToggle {
+                    Button {
+                        requestFullscreenTransition(.enter)
+                    } label: {
+                        dockGlyph(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private var inlineVolumeControl: some View {
+        Group {
+            if isInlineVolumeExpanded {
+                volumeControlDock
+                    .frame(width: 188)
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isInlineVolumeExpanded = false
+                        }
+                    }
+            } else {
+                overlayCircleButton(systemName: "speaker.wave.3.fill", size: 62, symbolSize: 27) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isInlineVolumeExpanded = true
+                    }
+                }
+            }
+        }
+    }
+
+    private var volumeControlDock: some View {
+        glassPanel(cornerRadius: 26) {
+            HStack(spacing: 12) {
+                capsuleVolumeSlider
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
+    }
+
+    private func overflowMenuButton(compact: Bool) -> some View {
+        Menu {
             if !vm.availableQualities.isEmpty {
-                Menu {
+                Menu("清晰度") {
                     ForEach(vm.availableQualities, id: \.qn) { q in
                         Button {
-                            Task {
-                                await vm.switchQuality(to: q.qn)
-                            }
+                            Task { await vm.switchQuality(to: q.qn) }
                         } label: {
                             if q.qn == vm.currentQn {
                                 Label(q.label, systemImage: "checkmark")
@@ -1982,16 +2224,14 @@ struct PlayerView: View {
                             }
                         }
                     }
-                } label: { chip(icon: "slider.horizontal.3", text: currentQualityLabel) }
+                }
             }
 
             if !vm.availableAudioQualities.isEmpty {
-                Menu {
+                Menu("音质") {
                     ForEach(vm.availableAudioQualities, id: \.qn) { q in
                         Button {
-                            Task {
-                                await vm.switchAudioQuality(to: q.qn)
-                            }
+                            Task { await vm.switchAudioQuality(to: q.qn) }
                         } label: {
                             if q.qn == vm.currentAudioQn {
                                 Label(q.label, systemImage: "checkmark")
@@ -2000,38 +2240,387 @@ struct PlayerView: View {
                             }
                         }
                     }
-                } label: { chip(icon: "hifispeaker", text: currentAudioQualityLabel) }
+                }
             }
 
-            Button {
+            Button(settings.danmakuEnabled ? "关闭弹幕" : "开启弹幕",
+                   systemImage: settings.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble") {
                 settings.danmakuEnabled.toggle()
-            } label: {
-                chip(icon: settings.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble",
-                     text: settings.danmakuEnabled ? "弹幕" : "弹幕关")
             }
 
-            Spacer()
+            Button("发弹幕", systemImage: "paperplane") {
+                showDanmakuSheet = true
+            }
+        } label: {
+            if compact {
+                overlayCircleGlyph(systemName: "ellipsis", size: 54, symbolSize: 22)
+            } else {
+                dockGlyph(systemName: "ellipsis")
+            }
+        }
+    }
+
+    private func fullscreenContextStamp(date: Date) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "bolt.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.yellow)
+                Text("\(currentBatteryText) • \(formattedOverlayClock(date))")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            Text(appDisplayName)
+                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+        }
+        .padding(.leading, 4)
+    }
+
+    private var fullscreenNowPlayingTitle: some View {
+        Text(item.title)
+            .font(.system(size: 22, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .shadow(color: .black.opacity(0.25), radius: 12, y: 3)
+            .padding(.leading, 4)
+    }
+
+    private func progressRail(currentPosition: Double,
+                              duration: Double,
+                              trailingTime: String,
+                              isFullscreen: Bool) -> some View {
+        glassPanel(cornerRadius: isFullscreen ? 28 : 26) {
+            HStack(spacing: 12) {
+                Text(formatPlaybackTime(currentPosition))
+                    .font(.system(size: isFullscreen ? 17 : 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .monospacedDigit()
+
+                playbackScrubber(duration: duration)
+                    .frame(maxWidth: .infinity)
+
+                Text(trailingTime)
+                    .font(.system(size: isFullscreen ? 17 : 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, isFullscreen ? 18 : 16)
+            .padding(.vertical, isFullscreen ? 12 : 11)
+        }
+    }
+
+    private func transportCircleButton(systemName: String,
+                                       size: CGFloat,
+                                       symbolSize: CGFloat,
+                                       weight: Font.Weight = .medium,
+                                       tint: Color,
+                                       stroke: Color,
+                                       shadowColor: Color = .black.opacity(0.12),
+                                       action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: symbolSize, weight: weight))
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
+                .background(
+                    Circle()
+                        .fill(.thinMaterial)
+                        .overlay(Circle().fill(tint))
+                        .overlay(Circle().stroke(stroke, lineWidth: 1.2))
+                )
+                .shadow(color: shadowColor, radius: 18, y: 6)
+                .shadow(color: .black.opacity(0.18), radius: 14, y: 5)
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 16).padding(.vertical, 8)
     }
 
-    private func chip(icon: String, text: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-            Text(text).font(.subheadline.weight(.medium))
+    private func overlayCircleButton(systemName: String,
+                                     size: CGFloat,
+                                     symbolSize: CGFloat,
+                                     action: @escaping () -> Void = {}) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: symbolSize, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
+                .background(
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.8))
+                )
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(.thinMaterial, in: Capsule())
-        .contentShape(Capsule())
+        .buttonStyle(.plain)
     }
 
-    private var currentQualityLabel: String {
-        vm.availableQualities.first { $0.qn == vm.currentQn }?.label ?? "清晰度"
+    private func overlayCircleGlyph(systemName: String,
+                                    size: CGFloat,
+                                    symbolSize: CGFloat) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: symbolSize, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.8))
+            )
     }
 
-    private var currentAudioQualityLabel: String {
-        vm.availableAudioQualities.first { $0.qn == vm.currentAudioQn }?.label ?? "音质"
+    private func bottomAccessoryDock(isFullscreen: Bool) -> some View {
+        glassPanel(cornerRadius: 24) {
+            HStack(spacing: 8) {
+                if isFullscreen {
+                    Button {
+                        settings.danmakuEnabled.toggle()
+                    } label: {
+                        dockGlyph(systemName: settings.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble")
+                    }
+
+                    Button {
+                        showDanmakuSheet = true
+                    } label: {
+                        dockGlyph(systemName: "text.bubble")
+                    }
+                }
+
+                overflowMenuButton(compact: false)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private var capsuleVolumeSlider: some View {
+        GeometryReader { geometry in
+            let width = max(geometry.size.width, 1)
+            let progress = CGFloat(audioLevelBinding.wrappedValue)
+            let knobWidth: CGFloat = 44
+            let knobX = min(max(progress * width, knobWidth / 2), width - knobWidth / 2)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.18))
+                    .frame(height: 8)
+
+                Capsule()
+                    .fill(.white.opacity(0.96))
+                    .frame(width: knobX, height: 8)
+
+                Capsule()
+                    .fill(.white)
+                    .frame(width: knobWidth, height: 38)
+                    .offset(x: knobX - knobWidth / 2)
+                    .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let ratio = min(max(value.location.x / width, 0), 1)
+                        audioLevelBinding.wrappedValue = ratio
+                    }
+            )
+        }
+        .frame(height: 40)
+    }
+
+    private func playbackScrubber(duration: Double) -> some View {
+        GeometryReader { geometry in
+            let width = max(geometry.size.width, 1)
+            let currentPosition = currentPlaybackScrubPosition(duration: duration)
+            let ratio = duration > 0 ? min(max(currentPosition / duration, 0), 1) : 0
+            let progressWidth = width * ratio
+            let knobWidth: CGFloat = 28
+            let knobX = min(max(progressWidth, knobWidth / 2), width - knobWidth / 2)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.18))
+                    .frame(height: 10)
+
+                Capsule()
+                    .fill(.white.opacity(0.9))
+                    .frame(width: max(progressWidth, knobWidth * 0.5), height: 10)
+
+                Capsule()
+                    .fill(.white)
+                    .frame(width: knobWidth, height: 30)
+                    .offset(x: knobX - knobWidth / 2)
+                    .shadow(color: .black.opacity(0.14), radius: 8, y: 2)
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard duration > 0, vm.player != nil else { return }
+                        if !isScrubbingPlayback {
+                            handlePlaybackScrubEditingChanged(true, duration: duration)
+                        }
+                        let ratio = min(max(value.location.x / width, 0), 1)
+                        scrubbedPlaybackPositionSec = duration * ratio
+                        showPlaybackControls()
+                    }
+                    .onEnded { _ in
+                        guard duration > 0, vm.player != nil else { return }
+                        handlePlaybackScrubEditingChanged(false, duration: duration)
+                    }
+            )
+        }
+        .frame(height: 34)
+    }
+
+    private func dockGlyph(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 38, height: 38)
+            .contentShape(Circle())
+    }
+
+    private var routePickerDockGlyph: some View {
+        PlayerRoutePickerButton()
+            .frame(width: 38, height: 38)
+    }
+
+    private var audioLevelBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(settings.resolvedAudioVolumeLinear())
+            },
+            set: { newValue in
+                let clamped = min(max(newValue, 0.1), 1.0)
+                settings.audioGainDb = 20 * log10(clamped)
+            }
+        )
+    }
+
+    private var appDisplayName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? "Ibili"
+    }
+
+    private var currentBatteryText: String {
+        let level = UIDevice.current.batteryLevel
+        guard level >= 0 else { return "--%" }
+        return "\(Int((level * 100).rounded()))%"
+    }
+
+    private func formattedOverlayClock(_ date: Date) -> String {
+        date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+    }
+
+    private var playbackDurationSec: Double {
+        if let duration = vm.playbackDurationForUI, duration.isFinite, duration > 0 {
+            return duration
+        }
+        if item.durationSec > 0 {
+            return Double(item.durationSec)
+        }
+        return 0
+    }
+
+    private var playbackPositionSec: Double {
+        guard let elapsed = vm.currentElapsedPlaybackTime,
+              elapsed.isFinite,
+              elapsed >= 0 else {
+            return 0
+        }
+        if playbackDurationSec > 0 {
+            return min(elapsed, playbackDurationSec)
+        }
+        return elapsed
+    }
+
+    private func currentPlaybackScrubPosition(duration: Double) -> Double {
+        if isScrubbingPlayback {
+            return min(scrubbedPlaybackPositionSec, duration)
+        }
+        return min(playbackPositionSec, duration)
+    }
+
+    private func playbackSliderBinding(duration: Double) -> Binding<Double> {
+        Binding(
+            get: {
+                if isScrubbingPlayback {
+                    return min(scrubbedPlaybackPositionSec, duration)
+                }
+                return min(playbackPositionSec, duration)
+            },
+            set: { newValue in
+                scrubbedPlaybackPositionSec = newValue
+            }
+        )
+    }
+
+    private func handlePlaybackScrubEditingChanged(_ editing: Bool, duration: Double) {
+        if editing {
+            isScrubbingPlayback = true
+            scrubbedPlaybackPositionSec = min(playbackPositionSec, duration)
+            return
+        }
+        let target = min(max(scrubbedPlaybackPositionSec, 0), duration)
+        isScrubbingPlayback = false
+        Task { await vm.seek(to: target) }
+    }
+
+    private func formatPlaybackTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "00:00" }
+        let totalSeconds = Int(seconds.rounded(.down))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let secs = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+
+    private func showPlaybackControls(resetTimer: Bool = true) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            arePlaybackControlsVisible = true
+        }
+        guard resetTimer else { return }
+        schedulePlaybackControlsAutoHide()
+    }
+
+    private func hidePlaybackControls() {
+        playbackControlsAutoHideWork?.cancel()
+        playbackControlsAutoHideWork = nil
+        isInlineVolumeExpanded = false
+        withAnimation(.easeInOut(duration: 0.2)) {
+            arePlaybackControlsVisible = false
+        }
+    }
+
+    private func schedulePlaybackControlsAutoHide() {
+        playbackControlsAutoHideWork?.cancel()
+        guard vm.isPlayingForUI else { return }
+        let work = DispatchWorkItem { hidePlaybackControls() }
+        playbackControlsAutoHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.2, execute: work)
+    }
+
+    @ViewBuilder
+    private func glassPanel<Content: View>(cornerRadius: CGFloat,
+                                           @ViewBuilder content: () -> Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content()
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            content()
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                .stroke(.white.opacity(0.10), lineWidth: 0.5)
+                        )
+                )
+        }
     }
 
     private func loadDanmaku() async {

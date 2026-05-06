@@ -1,28 +1,15 @@
 import AVFoundation
-import AVKit
 import SwiftUI
 import UIKit
 
 @MainActor
 enum Orientation {
-    /// App-level orientation gate for iPhone. Normal pages stay portrait;
-    /// once the native AVKit fullscreen flow starts we temporarily widen
-    /// the mask so the fullscreen controller can rotate to landscape.
     private static var phoneSupportedMask: UIInterfaceOrientationMask = .portrait
 
     static func supportedMask() -> UIInterfaceOrientationMask {
         UIDevice.current.userInterfaceIdiom == .phone ? phoneSupportedMask : .all
     }
 
-    /// Tighten the phone orientation mask to *only* landscape so iOS
-    /// is forced to rotate the entire interface, regardless of which
-    /// physical orientation the device is currently held in. iOS 16's
-    /// `requestGeometryUpdate` will reject any orientation outside
-    /// the supported mask, so widening the mask to `.allButUpsideDown`
-    /// is what previously caused portrait-held devices to silently
-    /// stay upright when the user tapped the fullscreen button. The
-    /// mask is restored to `.portrait` by `request(.portrait)` on
-    /// fullscreen exit.
     static func preparePhoneFullscreenLandscape() {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return }
         phoneSupportedMask = .landscape
@@ -35,17 +22,8 @@ enum Orientation {
         ])
     }
 
-    /// Request a specific interface-orientation set from the active scene.
-    /// On iOS 16+ this is the public API; pre-16 falls back to the legacy
-    /// `UIDevice.orientation` setter.
     static func request(_ mask: UIInterfaceOrientationMask) {
         if UIDevice.current.userInterfaceIdiom == .phone {
-            // Mirror the requested orientation in the mask so the
-            // system actually performs the rotation: only landscape
-            // when we want landscape, only portrait when we want to
-            // come back. `.allButUpsideDown` was permissive enough to
-            // make the geometry request a no-op on a portrait-held
-            // device.
             switch mask {
             case .portrait:
                 phoneSupportedMask = .portrait
@@ -58,10 +36,6 @@ enum Orientation {
         requestWithoutMaskChange(mask)
     }
 
-    /// Request a geometry update without changing the supported mask.
-    /// Used when the mask has already been widened (e.g. by
-    /// `preparePhoneFullscreenLandscape`) and we just need to
-    /// trigger the rotation.
     static func requestWithoutMaskChange(_ mask: UIInterfaceOrientationMask) {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
@@ -94,31 +68,6 @@ enum Orientation {
             UIDevice.current.setValue(value.rawValue, forKey: "orientation")
         }
     }
-}
-
-let fullscreenEnterSelectorCandidates = [
-    "enterFullScreenAnimated:completion:",
-    "enterFullScreenAnimated:completionHandler:",
-    "enterFullscreenAnimated:completion:",
-    "enterFullscreenAnimated:completionHandler:",
-]
-
-let fullscreenExitSelectorCandidates = [
-    "exitFullScreenAnimated:completion:",
-    "exitFullScreenAnimated:completionHandler:",
-    "exitFullscreenAnimated:completion:",
-    "exitFullscreenAnimated:completionHandler:",
-]
-
-func fullscreenSelectorSupportDescription(on vc: NSObject, selectorNames: [String]) -> String {
-    selectorNames.map { name in
-        let supported = vc.responds(to: NSSelectorFromString(name))
-        return "\(name)=\(supported ? "yes" : "no")"
-    }.joined(separator: ",")
-}
-
-func firstSupportedFullscreenSelector(on vc: NSObject, selectorNames: [String]) -> String? {
-    selectorNames.first { vc.responds(to: NSSelectorFromString($0)) }
 }
 
 func deviceOrientationDescription(_ orientation: UIDeviceOrientation) -> String {
@@ -171,19 +120,14 @@ struct PlayerAutoFullscreenContext {
 enum PlayerFullscreenController {
     static func requestTransition(_ direction: PlayerFullscreenTransitionDirection,
                                   context: PlayerFullscreenTransitionContext,
-                                  playerBox: PlayerVCBox,
-                                  player: AVPlayer?,
+                                  playerBox _: PlayerPresentationBox,
+                                  player _: AVPlayer?,
                                   updateFullscreenState: (Bool) -> Void) {
         switch direction {
         case .enter:
-            enterFullscreen(context: context,
-                            playerBox: playerBox,
-                            player: player,
-                            updateFullscreenState: updateFullscreenState)
+            enterFullscreen(context: context, updateFullscreenState: updateFullscreenState)
         case .exit:
-            exitFullscreen(context: context,
-                           playerBox: playerBox,
-                           updateFullscreenState: updateFullscreenState)
+            exitFullscreen(context: context, updateFullscreenState: updateFullscreenState)
         }
     }
 
@@ -203,11 +147,6 @@ enum PlayerFullscreenController {
             AppLog.debug("player", "忽略设备方向变化：自动全屏已关闭")
             return
         }
-        // iPad: skip the auto rotate-into-fullscreen behaviour. iPads
-        // are commonly used in landscape as the default reading
-        // orientation, so flipping the player into fullscreen on every
-        // rotation would be more annoying than useful. The native
-        // fullscreen button still works.
         guard context.isPhone else {
             AppLog.debug("player", "忽略设备方向变化：当前设备不是手机")
             return
@@ -234,8 +173,6 @@ enum PlayerFullscreenController {
     }
 
     private static func enterFullscreen(context: PlayerFullscreenTransitionContext,
-                                        playerBox: PlayerVCBox,
-                                        player: AVPlayer?,
                                         updateFullscreenState: (Bool) -> Void) {
         guard !context.isFullscreen else {
             AppLog.debug("player", "忽略自动进全屏：已经处于全屏状态", metadata: [
@@ -243,30 +180,12 @@ enum PlayerFullscreenController {
             ])
             return
         }
-        guard let vc = playerBox.vc else {
-            AppLog.warning("player", "自动进全屏失败：AVPlayerViewController 引用为空", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "lastDeviceOrientation": deviceOrientationDescription(context.lastDeviceOrientation),
-            ])
-            return
-        }
-        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenEnterSelectorCandidates)
-        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenEnterSelectorCandidates) else {
-            AppLog.warning("player", "自动进全屏失败：没有可用的 fullscreen selector", metadata: [
-                "supportedSelectors": supportedSelectors,
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "lastDeviceOrientation": deviceOrientationDescription(context.lastDeviceOrientation),
-            ])
-            return
-        }
-        let sel = NSSelectorFromString(selectorName)
         if context.prefersLandscapeFullscreen {
             Orientation.preparePhoneFullscreenLandscape()
         } else {
             Orientation.request(.portrait)
         }
         updateFullscreenState(true)
-        playerBox.presentationController?.prepareForFullscreenTransition(player: player)
         let deviceOrientation = UIDevice.current.orientation
         let targetMask: UIInterfaceOrientationMask
         if context.prefersLandscapeFullscreen {
@@ -275,21 +194,17 @@ enum PlayerFullscreenController {
             targetMask = .portrait
         }
         Orientation.requestWithoutMaskChange(targetMask)
-        AppLog.info("player", "请求进入全屏", metadata: [
+        AppLog.info("player", "请求进入 app-owned 全屏", metadata: [
             "aid": String(context.aid),
             "cid": String(context.cid),
-            "selector": selectorName,
-            "supportedSelectors": supportedSelectors,
             "prefersLandscapeFullscreen": String(context.prefersLandscapeFullscreen),
-            "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
+            "deviceOrientation": deviceOrientationDescription(deviceOrientation),
             "lastDeviceOrientation": deviceOrientationDescription(context.lastDeviceOrientation),
             "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
         ])
-        vc.perform(sel, with: true, with: nil)
     }
 
     private static func exitFullscreen(context: PlayerFullscreenTransitionContext,
-                                       playerBox: PlayerVCBox,
                                        updateFullscreenState: (Bool) -> Void) {
         guard context.isFullscreen else {
             AppLog.debug("player", "忽略自动退全屏：当前不在全屏", metadata: [
@@ -298,30 +213,13 @@ enum PlayerFullscreenController {
             return
         }
         updateFullscreenState(false)
-        guard let vc = playerBox.vc else {
-            AppLog.warning("player", "自动退全屏失败：AVPlayerViewController 引用为空", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        let supportedSelectors = fullscreenSelectorSupportDescription(on: vc, selectorNames: fullscreenExitSelectorCandidates)
-        guard let selectorName = firstSupportedFullscreenSelector(on: vc, selectorNames: fullscreenExitSelectorCandidates) else {
-            AppLog.warning("player", "自动退全屏失败：没有可用的 fullscreen selector", metadata: [
-                "supportedSelectors": supportedSelectors,
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-            ])
-            return
-        }
-        let sel = NSSelectorFromString(selectorName)
-        AppLog.info("player", "请求退出全屏", metadata: [
+        Orientation.request(.portrait)
+        AppLog.info("player", "请求退出 app-owned 全屏", metadata: [
             "aid": String(context.aid),
             "cid": String(context.cid),
-            "selector": selectorName,
-            "supportedSelectors": supportedSelectors,
             "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
             "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
         ])
-        vc.perform(sel, with: true, with: nil)
     }
 }
 
@@ -330,39 +228,19 @@ enum PlayerViewLifecycleController {
     static func handleScenePhaseChange(_ phase: ScenePhase,
                                        didBootstrap: Bool,
                                        viewModel: PlayerViewModel,
-                                       playerBox: PlayerVCBox,
+                                       playerBox: PlayerPresentationBox,
                                        reloadPlayer: @escaping @MainActor () async -> Void) {
-        // ---- Background path: keep audio rolling under lock ----
-        //
-        // AVPlayerViewController is wired up to auto-pause its
-        // bound AVPlayer the moment iOS locks the screen, no matter
-        // how the audio session is configured. The workaround is to
-        // detach the AVPlayer from the VC for the duration of the
-        // background phase: the player stays alive in
-        // `playerBox.detachedPlayer`, the audio session (already
-        // `.playback` + `.moviePlayback`) continues to route audio,
-        // and only the *video* surface is torn down. We restore the
-        // binding on `.active` so the user unlocking the screen sees
-        // the same frame they left.
         if phase == .background,
            didBootstrap,
            !viewModel.isPictureInPictureActive,
-           let vc = playerBox.vc,
-           let player = vc.player,
-           playerBox.detachedPlayer == nil {
+           let player = viewModel.player {
             viewModel.endTemporarySpeedBoost(on: player)
             let continuationRate = viewModel.backgroundContinuationRate(for: player)
-            AppLog.info("player", "锁屏后台分离 AVPlayerViewController 绑定", metadata: [
+            AppLog.info("player", "app-owned surface 进入后台，保持播放器会话", metadata: [
                 "aid": String(viewModel.currentAid),
                 "cid": String(viewModel.currentCid),
                 "continuationRate": continuationRate.map { String($0) } ?? "nil",
             ])
-            playerBox.detachedPlayer = player
-            vc.player = nil
-            // Re-issue play on the now-headless player so the OS
-            // doesn't immediately stall the queue. `playImmediately`
-            // is required because the player's rate is reset to 0 by
-            // the OS-driven pause that races with our detach.
             if let continuationRate {
                 player.playImmediately(atRate: continuationRate)
             }
@@ -370,45 +248,12 @@ enum PlayerViewLifecycleController {
         }
 
         guard phase == .active, didBootstrap else { return }
-        // Reattach any player we detached in `.background` so the
-        // visible AVPlayerLayer picks back up where the audio session
-        // left off.
-        if let detachedPlayer = playerBox.detachedPlayer,
-           let vc = playerBox.vc {
-            AppLog.info("player", "前台恢复 AVPlayerViewController 绑定", metadata: [
-                "aid": String(viewModel.currentAid),
-                "cid": String(viewModel.currentCid),
-            ])
-            if vc.player !== detachedPlayer {
-                vc.player = detachedPlayer
-            }
-            viewModel.reapplyPlaybackBehavior(to: detachedPlayer)
-            playerBox.detachedPlayer = nil
-            viewModel.refreshSystemMediaSession()
-        }
         guard viewModel.player != nil else { return }
-        // When the app returns to the foreground after a long lock the
-        // local proxy may have been killed by iOS (Network framework
-        // cancels listeners on suspended apps). Rebuild the
-        // AVPlayerItem against a freshly-bound port so playback does
-        // not silently fail with "could not load resource".
         if !viewModel.isEngineAlive {
             Task { await reloadPlayer() }
         }
-        // If this session owns the active PiP window, the user
-        // returning to the page should collapse PiP back into the
-        // inline player instead of leaving the floating window
-        // hovering on top. AVPlayerViewController has no direct stop
-        // API, but flipping `allowsPictureInPicturePlayback` off and
-        // back on tears the active session down cleanly. The
-        // `isPictureInPictureActive` guard ensures only the
-        // originating PlayerView reacts.
-        if viewModel.isPictureInPictureActive,
-           let vc = playerBox.vc {
-            vc.allowsPictureInPicturePlayback = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                vc.allowsPictureInPicturePlayback = true
-            }
+        if viewModel.isPictureInPictureActive {
+            playerBox.pictureInPictureController?.stopPictureInPicture()
         }
         viewModel.refreshSystemMediaSession()
     }
@@ -427,40 +272,19 @@ enum PlayerViewLifecycleController {
         viewModel.refreshSystemMediaSession()
     }
 
-    static func handleDisappear(isFullscreen: Bool,
+    static func handleDisappear(isFullscreen _: Bool,
                                 viewModel: PlayerViewModel,
                                 danmaku: DanmakuController) {
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
-        // Only tear the danmaku pipeline down when we're truly
-        // leaving the player page. AVKit's native fullscreen
-        // presentation covers the SwiftUI host with its own window,
-        // which fires `.onDisappear` on this view even though the
-        // player (and its danmaku canvas inside `contentOverlayView`)
-        // keeps running. Detaching here would invalidate the
-        // CADisplayLink + periodic time observer and clear `active`,
-        // leaving the canvas blank for the entire duration of
-        // fullscreen — `.onAppear` doesn't fire while we're still
-        // covered, so nothing would re-attach until the user exits
-        // fullscreen.
-        if !isFullscreen {
-            danmaku.detach()
-            viewModel.handle(.interfaceDeactivated)
+        danmaku.detach()
+        viewModel.handle(.interfaceDeactivated)
+        if !viewModel.isPictureInPictureActive {
             Orientation.request(.portrait)
         }
         viewModel.refreshSystemMediaSession()
     }
 }
 
-final class PlayerVCBox {
-    weak var vc: AVPlayerViewController?
-    weak var presentationController: (any PlayerPresentationControlling)?
-    /// Strong reference to the AVPlayer that was temporarily
-    /// detached from `vc` while the app is backgrounded / the screen
-    /// is locked. iOS auto-pauses any AVPlayer that's bound to an
-    /// `AVPlayerViewController` when the screen locks, even with a
-    /// `.playback` audio category. Detaching the player from the VC
-    /// (and holding it here so it isn't deallocated) sidesteps that
-    /// behaviour so audio continues uninterrupted; we re-bind on
-    /// `.active` to restore video.
-    var detachedPlayer: AVPlayer?
+final class PlayerPresentationBox {
+    weak var pictureInPictureController: (any PlayerPictureInPictureControlling)?
 }

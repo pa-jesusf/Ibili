@@ -3,29 +3,34 @@ import AVKit
 import AVFoundation
 import UIKit
 
-/// Drives the brief snapshot crossfade we run when the visible AVPlayer
-/// instance is swapped (fast-load upgrade). Declared as a protocol so
-/// the view-model can call into UIKit code without importing it as a
-/// concrete type.
 @MainActor
 protocol PlayerSwapOverlay: AnyObject {
-    /// Snapshot the current AVPlayerLayer contents, overlay them on the
-    /// AVPlayerViewController, and schedule a fade-out. Idempotent: if
-    /// a previous overlay is still fading we replace it.
     func beginCrossfade()
 }
 
 typealias PlayerPresentationRestoreCompletion = (Bool) -> Void
 
 enum PlayerPresentationEvent {
-    case fullscreenChanged(Bool)
     case pictureInPictureChanged(Bool)
     case pictureInPictureRestoreRequested(PlayerPresentationRestoreCompletion)
 }
 
 @MainActor
-protocol PlayerPresentationControlling: AnyObject {
-    func prepareForFullscreenTransition(player: AVPlayer?)
+protocol PlayerPictureInPictureControlling: AnyObject {
+    var isPictureInPicturePossible: Bool { get }
+    var isPictureInPictureActive: Bool { get }
+    func startPictureInPicture()
+    func stopPictureInPicture()
+}
+
+final class PlayerSurfaceContainerView: UIView {
+    override class var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+
+    var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
 }
 
 private final class PlayerHoldSpeedGestureMaskView: UIView {
@@ -59,8 +64,6 @@ fileprivate final class PlayerHoldSpeedBadgeView: UIView {
         alpha = 0
         transform = Self.hiddenTransform
 
-        // Subtle drop shadow keeps the badge legible against bright
-        // video frames without competing with the glass material.
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.18
         layer.shadowRadius = 18
@@ -79,10 +82,6 @@ fileprivate final class PlayerHoldSpeedBadgeView: UIView {
     }
 }
 
-/// SwiftUI body of the 2x hold-speed HUD. Adopts the iOS 26 liquid
-/// glass material when available so the badge occludes as little of
-/// the underlying video as possible; falls back to `.ultraThinMaterial`
-/// on older systems for visual parity with the rest of the app.
 private struct PlayerHoldSpeedBadgeContent: View {
     var body: some View {
         HStack(spacing: 10) {
@@ -113,8 +112,6 @@ private struct PlayerHoldSpeedBadgeContent: View {
 private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            // Liquid glass: highly translucent, picks up the video's
-            // colours behind it instead of painting a solid dark slab.
             content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         } else {
             content.background(
@@ -129,13 +126,10 @@ private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
     }
 }
 
-/// Wraps `AVPlayerViewController`. Critically, the danmaku overlay is mounted
-/// inside `contentOverlayView`, which travels with the player into native
-/// fullscreen — so danmaku stays visible there.
-struct PlayerContainer: UIViewControllerRepresentable {
+struct PlayerContainer: UIViewRepresentable {
+    let sessionID: PlayerSessionID
     let player: AVPlayer
     let title: String
-    let prefersLandscapeFullscreen: Bool
     let danmaku: DanmakuController
     let danmakuEnabled: Bool
     let danmakuOpacity: Double
@@ -148,128 +142,94 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let canBeginTemporarySpeedBoost: () -> Bool
     let beginTemporarySpeedBoost: () -> Bool
     let endTemporarySpeedBoost: () -> Void
-    /// Called once, with the just-created AVPlayerViewController. Lets the
-    /// SwiftUI parent drive native fullscreen entry/exit.
-    let onCreated: (AVPlayerViewController) -> Void
-    /// Called once, after the AVPlayerViewController exists, with a
-    /// handle for presentation-only coordination such as fullscreen
-    /// transition preparation.
-    let onPresentationControllerReady: (any PlayerPresentationControlling) -> Void
-    /// Called when the bridge receives a fullscreen/PiP related callback
-    /// from AVKit and needs to hand it back to SwiftUI.
+    let onPictureInPictureControllerReady: (any PlayerPictureInPictureControlling) -> Void
     let onPresentationEvent: (PlayerPresentationEvent) -> Void
-    /// Called once, after the AVPlayerViewController exists, with a
-    /// handle the view-model uses to drive the swap crossfade.
     let onSwapOverlayReady: (PlayerSwapOverlay) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
 
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let vc = AVPlayerViewController()
-        vc.loadViewIfNeeded()
-        vc.player = player
-        vc.title = title
-        // Lock-screen metadata/control is maintained explicitly via
-        // PlayerNowPlayingCoordinator. Leaving AVKit auto-sync on here
-        // races with our background detach path (`vc.player = nil`) and
-        // causes the system media card to briefly reappear, then get
-        // cleared again by AVPlayerViewController.
-        vc.updatesNowPlayingInfoCenter = false
+    func makeUIView(context: Context) -> PlayerSurfaceContainerView {
+        let surfaceView = PlayerSurfaceContainerView()
+        surfaceView.backgroundColor = .black
+        surfaceView.accessibilityLabel = title
+        surfaceView.playerLayer.player = player
+        surfaceView.playerLayer.videoGravity = .resizeAspect
+        context.coordinator.surfaceView = surfaceView
         context.coordinator.assignedPlayerID = ObjectIdentifier(player)
-        vc.delegate = context.coordinator
-        DispatchQueue.main.async {
-            onCreated(vc)
-            onPresentationControllerReady(context.coordinator)
-            onSwapOverlayReady(context.coordinator)
-        }
-        vc.allowsPictureInPicturePlayback = true
-        vc.canStartPictureInPictureAutomaticallyFromInline = true
-        vc.entersFullScreenWhenPlaybackBegins = false
-        vc.exitsFullScreenWhenPlaybackEnds = false
-        vc.videoGravity = .resizeAspect
 
-        // Mount the danmaku canvas directly into contentOverlayView.
-        // Using a raw UIView instead of UIHostingController avoids
-        // SwiftUI re-render overhead and fixes the width-shrink bug
-        // after fullscreen→portrait transitions.
         let canvas = danmaku.prepareCanvas()
         canvas.blockLevel = danmakuBlockLevel
         canvas.preferredFrameRate = danmakuFrameRate
         canvas.normalStrokeWidth = CGFloat(danmakuStrokeWidth)
         canvas.normalFontWeight = danmakuFontWeight
         canvas.normalFontScale = CGFloat(danmakuFontScale)
-        if let overlay = vc.contentOverlayView {
-            canvas.translatesAutoresizingMaskIntoConstraints = false
-            canvas.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
-            overlay.addSubview(canvas)
-            NSLayoutConstraint.activate([
-                canvas.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
-                canvas.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
-                canvas.topAnchor.constraint(equalTo: overlay.topAnchor),
-                canvas.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
-            ])
-            context.coordinator.danmakuCanvas = canvas
+        canvas.translatesAutoresizingMaskIntoConstraints = false
+        canvas.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
+        surfaceView.addSubview(canvas)
+        NSLayoutConstraint.activate([
+            canvas.leadingAnchor.constraint(equalTo: surfaceView.leadingAnchor),
+            canvas.trailingAnchor.constraint(equalTo: surfaceView.trailingAnchor),
+            canvas.topAnchor.constraint(equalTo: surfaceView.topAnchor),
+            canvas.bottomAnchor.constraint(equalTo: surfaceView.bottomAnchor),
+        ])
+        context.coordinator.danmakuCanvas = canvas
 
-            // Keep the gesture inside `contentOverlayView` so it
-            // survives AVKit's native fullscreen hand-off. When the
-            // player is paused the mask removes itself from hit-
-            // testing entirely, letting iOS long-press features on
-            // the paused frame keep working.
-            let gestureMask = PlayerHoldSpeedGestureMaskView()
-            gestureMask.translatesAutoresizingMaskIntoConstraints = false
-            gestureMask.backgroundColor = .clear
-            gestureMask.hitTestingEnabledProvider = { [weak coordinator = context.coordinator] in
-                coordinator?.shouldAllowHoldSpeedGestureHitTesting ?? false
-            }
-            overlay.addSubview(gestureMask)
-            NSLayoutConstraint.activate([
-                gestureMask.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
-                gestureMask.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
-                gestureMask.topAnchor.constraint(equalTo: overlay.topAnchor),
-                gestureMask.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
-            ])
-            let holdGesture = UILongPressGestureRecognizer(
-                target: context.coordinator,
-                action: #selector(Coordinator.handleHoldSpeedGesture(_:))
-            )
-            holdGesture.minimumPressDuration = 0.32
-            holdGesture.allowableMovement = 26
-            holdGesture.cancelsTouchesInView = false
-            holdGesture.delaysTouchesBegan = false
-            holdGesture.delaysTouchesEnded = false
-            holdGesture.delegate = context.coordinator
-            gestureMask.addGestureRecognizer(holdGesture)
-
-            let badge = PlayerHoldSpeedBadgeView()
-            overlay.addSubview(badge)
-            NSLayoutConstraint.activate([
-                badge.centerXAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.centerXAnchor),
-                badge.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor, constant: 14),
-            ])
-            context.coordinator.holdSpeedBadgeView = badge
-            context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: false)
+        let gestureMask = PlayerHoldSpeedGestureMaskView()
+        gestureMask.translatesAutoresizingMaskIntoConstraints = false
+        gestureMask.backgroundColor = .clear
+        gestureMask.hitTestingEnabledProvider = { [weak coordinator = context.coordinator] in
+            coordinator?.shouldAllowHoldSpeedGestureHitTesting ?? false
         }
-        return vc
+        surfaceView.addSubview(gestureMask)
+        NSLayoutConstraint.activate([
+            gestureMask.leadingAnchor.constraint(equalTo: surfaceView.leadingAnchor),
+            gestureMask.trailingAnchor.constraint(equalTo: surfaceView.trailingAnchor),
+            gestureMask.topAnchor.constraint(equalTo: surfaceView.topAnchor),
+            gestureMask.bottomAnchor.constraint(equalTo: surfaceView.bottomAnchor),
+        ])
+        let holdGesture = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleHoldSpeedGesture(_:))
+        )
+        holdGesture.minimumPressDuration = 0.32
+        holdGesture.allowableMovement = 26
+        holdGesture.cancelsTouchesInView = false
+        holdGesture.delaysTouchesBegan = false
+        holdGesture.delaysTouchesEnded = false
+        holdGesture.delegate = context.coordinator
+        gestureMask.addGestureRecognizer(holdGesture)
+
+        let badge = PlayerHoldSpeedBadgeView()
+        surfaceView.addSubview(badge)
+        NSLayoutConstraint.activate([
+            badge.centerXAnchor.constraint(equalTo: surfaceView.safeAreaLayoutGuide.centerXAnchor),
+            badge.topAnchor.constraint(equalTo: surfaceView.safeAreaLayoutGuide.topAnchor, constant: 14),
+        ])
+        context.coordinator.holdSpeedBadgeView = badge
+        context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: false)
+        context.coordinator.configurePictureInPictureController(using: surfaceView.playerLayer)
+
+        DispatchQueue.main.async {
+            if context.coordinator.pictureInPictureController != nil {
+                onPictureInPictureControllerReady(context.coordinator)
+            }
+            onSwapOverlayReady(context.coordinator)
+        }
+        return surfaceView
     }
 
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
+    func updateUIView(_ surfaceView: PlayerSurfaceContainerView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.surfaceView = surfaceView
+        surfaceView.accessibilityLabel = title
         let incomingPlayerID = ObjectIdentifier(player)
-        if vc.title != title {
-            vc.title = title
-        }
-        // Reassign only when SwiftUI handed us a genuinely different
-        // AVPlayer instance. During fullscreen transitions AVKit may
-        // transiently nil out `vc.player`; we deliberately ignore that
-        // path so the controller can restore its own player without us
-        // restarting playback from zero. Fast-load promotion, however,
-        // does intentionally swap to a new player identity.
         if context.coordinator.assignedPlayerID != incomingPlayerID {
-            vc.player = player
+            surfaceView.playerLayer.player = player
             context.coordinator.assignedPlayerID = incomingPlayerID
         }
+        surfaceView.playerLayer.videoGravity = .resizeAspect
         context.coordinator.danmakuCanvas?.blockLevel = danmakuBlockLevel
         context.coordinator.danmakuCanvas?.preferredFrameRate = danmakuFrameRate
         context.coordinator.danmakuCanvas?.normalStrokeWidth = CGFloat(danmakuStrokeWidth)
@@ -277,52 +237,98 @@ struct PlayerContainer: UIViewControllerRepresentable {
         context.coordinator.danmakuCanvas?.normalFontScale = CGFloat(danmakuFontScale)
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
         context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: true)
+        context.coordinator.configurePictureInPictureController(using: surfaceView.playerLayer)
     }
 
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, PlayerSwapOverlay, PlayerPresentationControlling, UIGestureRecognizerDelegate {
+    static func dismantleUIView(_ surfaceView: PlayerSurfaceContainerView, coordinator: Coordinator) {
+        coordinator.teardown()
+        surfaceView.playerLayer.player = nil
+    }
+
+    final class Coordinator: NSObject, PlayerSwapOverlay, PlayerPictureInPictureControlling, AVPictureInPictureControllerDelegate, UIGestureRecognizerDelegate {
         var parent: PlayerContainer
+        weak var surfaceView: PlayerSurfaceContainerView?
         weak var danmakuCanvas: DanmakuCanvasView?
         fileprivate weak var holdSpeedBadgeView: PlayerHoldSpeedBadgeView?
         var assignedPlayerID: ObjectIdentifier?
-        /// Most recent in-flight crossfade overlay. Held weakly so we
-        /// don't extend its life past `removeFromSuperview`.
         weak var activeCrossfade: UIView?
-        private var transitionSnapshot: PlayerFullscreenTransitionSnapshot?
-        private var pendingTransitionSnapshot: PlayerFullscreenTransitionSnapshot?
+        fileprivate var pictureInPictureController: AVPictureInPictureController?
         private var holdSpeedBadgeIsVisible = false
-        init(parent: PlayerContainer) { self.parent = parent }
+
+        init(parent: PlayerContainer) {
+            self.parent = parent
+        }
 
         var shouldAllowHoldSpeedGestureHitTesting: Bool {
             parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost()
         }
 
-        func prepareForFullscreenTransition(player: AVPlayer?) {
-            pendingTransitionSnapshot = PlayerFullscreenTransitionSnapshot.capture(from: player)
+        var isPictureInPicturePossible: Bool {
+            pictureInPictureController?.isPictureInPicturePossible ?? false
         }
 
-        // MARK: PlayerSwapOverlay
+        var isPictureInPictureActive: Bool {
+            pictureInPictureController?.isPictureInPictureActive ?? false
+        }
 
-        func beginCrossfade() {
-            // The AVPlayerViewController itself isn't reachable from
-            // here, but its `contentOverlayView` lives on the
-            // hosting controller's superview chain. We snapshot via
-            // `view.snapshotView(afterScreenUpdates:)` which captures
-            // AVPlayerLayer contents on iOS 16+.
-            guard let canvas = danmakuCanvas,
-                  let containerView = canvas.superview?.superview ?? canvas.superview
-            else { return }
-            // Drop any stale crossfade still on screen.
-            activeCrossfade?.removeFromSuperview()
-            guard let snapshot = containerView.snapshotView(afterScreenUpdates: false) else {
+        func startPictureInPicture() {
+            guard let controller = pictureInPictureController else { return }
+            AppLog.info("player", "请求启动 app-owned PiP", metadata: [
+                "sessionID": parent.sessionID.uuidString,
+                "possible": String(controller.isPictureInPicturePossible),
+            ])
+            controller.startPictureInPicture()
+        }
+
+        func stopPictureInPicture() {
+            guard let controller = pictureInPictureController,
+                  controller.isPictureInPictureActive else { return }
+            AppLog.info("player", "请求停止 app-owned PiP", metadata: [
+                "sessionID": parent.sessionID.uuidString,
+            ])
+            controller.stopPictureInPicture()
+        }
+
+        func configurePictureInPictureController(using playerLayer: AVPlayerLayer) {
+            guard AVPictureInPictureController.isPictureInPictureSupported() else {
+                pictureInPictureController?.delegate = nil
+                pictureInPictureController = nil
                 return
             }
-            snapshot.frame = containerView.bounds
+            if let existing = pictureInPictureController,
+               existing.playerLayer === playerLayer {
+                return
+            }
+            pictureInPictureController?.delegate = nil
+            guard let controller = AVPictureInPictureController(playerLayer: playerLayer) else {
+                pictureInPictureController = nil
+                return
+            }
+            controller.delegate = self
+            pictureInPictureController = controller
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.parent.onPictureInPictureControllerReady(self)
+            }
+        }
+
+        func teardown() {
+            pictureInPictureController?.delegate = nil
+            pictureInPictureController = nil
+            activeCrossfade?.removeFromSuperview()
+        }
+
+        func beginCrossfade() {
+            guard let surfaceView else { return }
+            activeCrossfade?.removeFromSuperview()
+            guard let snapshot = surfaceView.snapshotView(afterScreenUpdates: false) else {
+                return
+            }
+            snapshot.frame = surfaceView.bounds
             snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             snapshot.isUserInteractionEnabled = false
-            containerView.addSubview(snapshot)
+            surfaceView.addSubview(snapshot)
             activeCrossfade = snapshot
-            // Hold the snapshot opaque for one runloop tick so AVKit's
-            // black-frame transition is fully covered, then fade.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak snapshot] in
                 guard let snapshot, snapshot.superview != nil else { return }
                 UIView.animate(withDuration: 0.22,
@@ -375,96 +381,47 @@ struct PlayerContainer: UIViewControllerRepresentable {
             true
         }
 
-        // MARK: AVPlayerViewControllerDelegate
-
-        func playerViewController(_ vc: AVPlayerViewController,
-                                  willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-            capturePlaybackState(from: vc)
-            let currentDeviceOrientation = UIDevice.current.orientation
-            AppLog.info("player", "AVKit 即将进入全屏", metadata: [
-                "deviceOrientation": deviceOrientationDescription(currentDeviceOrientation),
-                "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-                "prefersLandscapeFullscreen": String(parent.prefersLandscapeFullscreen),
-                "rate": String(transitionSnapshot?.playbackRate ?? pendingTransitionSnapshot?.playbackRate ?? 1.0),
-                "playing": String(transitionSnapshot?.wasPlaying ?? pendingTransitionSnapshot?.wasPlaying ?? false),
+        func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+            AppLog.info("player", "app-owned PiP 即将开始", metadata: [
+                "sessionID": parent.sessionID.uuidString,
             ])
-            parent.onPresentationEvent(.fullscreenChanged(true))
-            let targetMask: UIInterfaceOrientationMask
-            if parent.prefersLandscapeFullscreen {
-                targetMask = currentDeviceOrientation == .landscapeRight
-                    ? .landscapeLeft : .landscapeRight
-            } else {
-                targetMask = .portrait
-            }
-            Orientation.requestWithoutMaskChange(targetMask)
-            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
-                guard let self, let vc else { return }
-                self.restorePlaybackState(on: vc)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
-                    guard let self, let vc else { return }
-                    self.restorePlaybackState(on: vc)
-                }
-            }
         }
 
-        func playerViewController(_ vc: AVPlayerViewController,
-                                  willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-            capturePlaybackState(from: vc)
-            AppLog.info("player", "AVKit 即将退出全屏", metadata: [
-                "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
-                "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
-                "rate": String(transitionSnapshot?.playbackRate ?? pendingTransitionSnapshot?.playbackRate ?? 1.0),
-                "playing": String(transitionSnapshot?.wasPlaying ?? pendingTransitionSnapshot?.wasPlaying ?? false),
+        func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+            AppLog.info("player", "app-owned PiP 已开始", metadata: [
+                "sessionID": parent.sessionID.uuidString,
             ])
-            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
-                guard let self, let vc else { return }
-                self.parent.onPresentationEvent(.fullscreenChanged(false))
-                Orientation.request(.portrait)
-                self.restorePlaybackState(on: vc)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
-                    guard let self, let vc else { return }
-                    self.restorePlaybackState(on: vc)
-                }
-            }
-        }
-
-        func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
-            AppLog.info("player", "PiP 即将开始")
             parent.onPresentationEvent(.pictureInPictureChanged(true))
         }
 
-        func playerViewController(_ playerViewController: AVPlayerViewController,
-                                  failedToStartPictureInPictureWithError error: Error) {
-            AppLog.warning("player", "PiP 启动失败", metadata: [
+        func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
+                                        failedToStartPictureInPictureWithError error: Error) {
+            AppLog.warning("player", "app-owned PiP 启动失败", metadata: [
+                "sessionID": parent.sessionID.uuidString,
                 "error": error.localizedDescription,
             ])
             parent.onPresentationEvent(.pictureInPictureChanged(false))
         }
 
-        func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
-            AppLog.info("player", "PiP 已停止")
+        func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+            AppLog.info("player", "app-owned PiP 即将停止", metadata: [
+                "sessionID": parent.sessionID.uuidString,
+            ])
+        }
+
+        func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+            AppLog.info("player", "app-owned PiP 已停止", metadata: [
+                "sessionID": parent.sessionID.uuidString,
+            ])
             parent.onPresentationEvent(.pictureInPictureChanged(false))
         }
 
-        func playerViewController(_ playerViewController: AVPlayerViewController,
-                                  restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
-            AppLog.info("player", "PiP 请求恢复原播放器界面")
+        func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
+                                        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+            AppLog.info("player", "app-owned PiP 请求恢复原播放器界面", metadata: [
+                "sessionID": parent.sessionID.uuidString,
+            ])
             parent.onPresentationEvent(.pictureInPictureRestoreRequested(completionHandler))
-        }
-
-        private func capturePlaybackState(from vc: AVPlayerViewController) {
-            if let pendingTransitionSnapshot {
-                transitionSnapshot = pendingTransitionSnapshot
-                self.pendingTransitionSnapshot = nil
-                return
-            }
-            transitionSnapshot = PlayerFullscreenTransitionSnapshot.capture(from: vc.player)
-        }
-
-        private func restorePlaybackState(on vc: AVPlayerViewController) {
-            guard let player = vc.player,
-                  case .play(let rate)? = transitionSnapshot?.desiredPlaybackCommand(for: player) else { return }
-            player.playImmediately(atRate: rate)
         }
     }
 }
