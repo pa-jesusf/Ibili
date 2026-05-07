@@ -130,6 +130,7 @@ private struct DeepLinkPlayerHost: View {
                 destinationView(for: route)
             }
         }
+        .tint(.white)
         .environment(\.isInPlayerHostNavigation, true)
         .background(IbiliTheme.background)
         .offset(x: offsetX)
