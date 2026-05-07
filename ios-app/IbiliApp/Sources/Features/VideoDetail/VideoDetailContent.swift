@@ -363,6 +363,8 @@ private struct DetailScrollOffsetPreferenceKey: PreferenceKey {
 }
 
 private struct PlayerDetailFloatingControlCluster: View {
+    private static let systemTabBarBottomOffset: CGFloat = 55
+
     let tabs: [VideoDetailContent.Tab]
     @Binding var selection: VideoDetailContent.Tab
     let onReselectCurrentTab: () -> Void
@@ -375,6 +377,7 @@ private struct PlayerDetailFloatingControlCluster: View {
                 onReselectCurrentTab: onReselectCurrentTab
             )
             .frame(maxWidth: .infinity)
+            .offset(y: Self.systemTabBarBottomOffset)
         } else {
             PlayerDetailFloatingTabs(
                 tabs: tabs,
@@ -399,22 +402,17 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UITabBar {
-        let tabBar = PlayerDetailHostingTabBar(frame: .zero)
+        let tabBar = UITabBar(frame: .zero)
         tabBar.delegate = context.coordinator
         tabBar.tintColor = IbiliTheme.accentUIColor
         tabBar.unselectedItemTintColor = .secondaryLabel
-        tabBar.itemPositioning = .fill
+        tabBar.itemPositioning = .automatic
         updateItems(on: tabBar, coordinator: context.coordinator)
         return tabBar
     }
 
     func updateUIView(_ uiView: UITabBar, context: Context) {
         updateItems(on: uiView, coordinator: context.coordinator)
-    }
-
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITabBar, context: Context) -> CGSize? {
-        let targetWidth = proposal.width ?? UIScreen.main.bounds.width
-        return uiView.sizeThatFits(CGSize(width: targetWidth, height: proposal.height ?? 0))
     }
 
     private func updateItems(on tabBar: UITabBar, coordinator: Coordinator) {
@@ -460,16 +458,6 @@ private struct PlayerDetailSystemTabBar: UIViewRepresentable {
             } else {
                 selection.wrappedValue = tab
             }
-        }
-    }
-
-    final class PlayerDetailHostingTabBar: UITabBar {
-        override func sizeThatFits(_ size: CGSize) -> CGSize {
-            var fittedSize = super.sizeThatFits(size)
-            if size.width > 0 {
-                fittedSize.width = size.width
-            }
-            return fittedSize
         }
     }
 
