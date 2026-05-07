@@ -24,7 +24,7 @@ struct PlayerToolbarDanmaku: View {
         }
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.42)
-        .tint(.white)
+        .tint(IbiliTheme.accent)
         .accessibilityLabel(danmakuEnabled ? "关闭弹幕" : "开启弹幕")
         .accessibilityHint("长按发送弹幕")
         // Toolbar items can't easily host both a tap-Button and a
@@ -67,7 +67,7 @@ struct PlayerToolbarVideoQuality: View {
         }
         .disabled(qualities.isEmpty)
         .opacity(qualities.isEmpty ? 0.42 : 1)
-        .tint(.white)
+        .tint(IbiliTheme.accent)
         .accessibilityLabel("画质")
     }
 
@@ -206,7 +206,7 @@ struct PlayerToolbarAudioQuality: View {
         }
         .disabled(audioQualities.isEmpty)
         .opacity(audioQualities.isEmpty ? 0.42 : 1)
-        .tint(.white)
+        .tint(IbiliTheme.accent)
         .accessibilityLabel("音质")
     }
 }
