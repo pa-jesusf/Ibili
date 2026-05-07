@@ -2023,10 +2023,11 @@ struct PlayerView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isFullscreen, vm.player != nil {
+            if !isFullscreen {
                 ToolbarItem(placement: .topBarTrailing) {
                     PlayerToolbarDanmaku(
                         danmakuEnabled: $settings.danmakuEnabled,
+                        isEnabled: vm.player != nil,
                         onLongPress: { showDanmakuSheet = true }
                     )
                 }
@@ -2306,5 +2307,3 @@ struct PlayerView: View {
     }
 
 }
-
-

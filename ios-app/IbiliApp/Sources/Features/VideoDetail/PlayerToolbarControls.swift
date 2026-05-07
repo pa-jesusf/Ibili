@@ -11,16 +11,20 @@ import SwiftUI
 
 struct PlayerToolbarDanmaku: View {
     @Binding var danmakuEnabled: Bool
+    var isEnabled: Bool = true
     /// Long-press handler — typically opens the danmaku-send sheet.
     var onLongPress: (() -> Void)? = nil
 
     var body: some View {
         Button {
+            guard isEnabled else { return }
             danmakuEnabled.toggle()
         } label: {
             Image(systemName: danmakuEnabled ? "text.bubble.fill" : "text.bubble")
         }
-        .tint(danmakuEnabled ? IbiliTheme.accent : nil)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.42)
+        .tint(.white)
         .accessibilityLabel(danmakuEnabled ? "关闭弹幕" : "开启弹幕")
         .accessibilityHint("长按发送弹幕")
         // Toolbar items can't easily host both a tap-Button and a
@@ -29,6 +33,7 @@ struct PlayerToolbarDanmaku: View {
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.4)
                 .onEnded { _ in
+                    guard isEnabled else { return }
                     onLongPress?()
                 }
         )
@@ -41,10 +46,10 @@ struct PlayerToolbarVideoQuality: View {
     let onPick: (Int64) -> Void
 
     var body: some View {
-        if qualities.isEmpty {
-            EmptyView()
-        } else {
-            Menu {
+        Menu {
+            if qualities.isEmpty {
+                Text("正在加载")
+            } else {
                 ForEach(qualities, id: \.qn) { q in
                     Button {
                         onPick(q.qn)
@@ -56,11 +61,14 @@ struct PlayerToolbarVideoQuality: View {
                         }
                     }
                 }
-            } label: {
-                qualityIconView(for: currentQn)
             }
-            .accessibilityLabel("画质")
+        } label: {
+            qualityIconView(for: currentQn)
         }
+        .disabled(qualities.isEmpty)
+        .opacity(qualities.isEmpty ? 0.42 : 1)
+        .tint(.white)
+        .accessibilityLabel("画质")
     }
 
     /// Toolbar glyph for the current quality. SF Symbols ships
@@ -177,10 +185,10 @@ struct PlayerToolbarAudioQuality: View {
     let onPick: (Int64) -> Void
 
     var body: some View {
-        if audioQualities.isEmpty {
-            EmptyView()
-        } else {
-            Menu {
+        Menu {
+            if audioQualities.isEmpty {
+                Text("正在加载")
+            } else {
                 ForEach(audioQualities, id: \.qn) { q in
                     Button {
                         onPick(q.qn)
@@ -192,10 +200,13 @@ struct PlayerToolbarAudioQuality: View {
                         }
                     }
                 }
-            } label: {
-                Image(systemName: "hifispeaker")
             }
-            .accessibilityLabel("音质")
+        } label: {
+            Image(systemName: "hifispeaker")
         }
+        .disabled(audioQualities.isEmpty)
+        .opacity(audioQualities.isEmpty ? 0.42 : 1)
+        .tint(.white)
+        .accessibilityLabel("音质")
     }
 }

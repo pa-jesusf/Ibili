@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 extension EnvironmentValues {
     var isInPlayerHostNavigation: Bool {
@@ -91,15 +92,6 @@ private struct DeepLinkPlayerHost: View {
     @State private var pendingDismissWork: DispatchWorkItem?
     @State private var isRootDismissInFlight = false
     @State private var animatedInRouteID: UUID?
-    /// Tri-state lock for the leading-edge drag. `undecided` while
-    /// we're still reading the slope of the user's motion; once we
-    /// commit to either `.horizontal` (swipe-back) or `.vertical`
-    /// (the user is actually scrolling the page underneath), we
-    /// stay there for the rest of the drag. Resets in `onEnded`.
-    @State private var dragDecision: DragDecision = .undecided
-
-    private enum DragDecision { case undecided, horizontal, vertical }
-
     /// Native UIKit-style spring. `interpolatingSpring` produces a
     /// physics curve that SwiftUI drives via the underlying
     /// `CADisplayLink`, which on ProMotion devices ticks at 120 Hz
@@ -127,6 +119,7 @@ private struct DeepLinkPlayerHost: View {
                                     Image(systemName: "chevron.backward")
                                         .fontWeight(.semibold)
                                 }
+                                .tint(.white)
                             }
                         }
                 } else {
@@ -166,41 +159,20 @@ private struct DeepLinkPlayerHost: View {
             }
             syncPlayerSessions()
         }
-        // Restore the iOS interactive-pop gesture by hosting an
-        // invisible DragGesture region pinned to the leading edge.
-        //
-        // IMPORTANT: this overlay only operates at the true player
-        // root layer (`router.path.isEmpty`). Every pushed page in
-        // the host session, including auxiliary non-player pages
-        // such as UserSpace / DynamicDetail, now lives inside the
-        // same path, so a non-empty path means the inner
-        // `NavigationStack` provides its own
-        // `UIScreenEdgePanGestureRecognizer`-driven interactive
-        // pop, which would otherwise be shadowed by this overlay
-        // and cause the swipe to incorrectly tear the whole
-        // session down.
-        //
-        // Industry consensus for "swipe-back vs vertical scroll":
-        //   1. Generous edge zone (~20pt) so the gesture is easy to
-        //      *start*, matching UIKit's `interactivePopGestureRecognizer`.
-        //   2. A short undecided phase: read the first ~10pt of
-        //      motion before committing. If vertical dominates,
-        //      lock the gesture to `.vertical` and stop tracking
-        //      (the user is scrolling the description / comments).
-        //      If horizontal-positive dominates by ≥1.5×, lock to
-        //      `.horizontal` and start tracking the offset. The
-        //      slope ratio of 1.5 is what Apple uses internally for
-        //      `UIScrollView.directionalLockEnabled` and what most
-        //      well-behaved apps converge on.
-        //   3. Once locked, never revisit the decision — prevents
-        //      mid-drag jitter from re-capturing scroll input.
-        .overlay(alignment: .leading) {
-            if router.path.isEmpty {
-                Color.clear
-                    .frame(width: 20)
-                    .contentShape(Rectangle())
-                    .gesture(rootSwipeBackGesture)
-            }
+        // The root player is a custom slide-over host rather than a
+        // UIKit navigation controller, so the system only gives us
+        // edge-pop for pushed children. Install a pass-through pan
+        // recognizer on the host view: horizontal right swipes from
+        // anywhere in a player page dismiss/pop, while vertical
+        // scrolling and normal taps continue to hit the content below.
+        .overlay {
+            PlayerHostAnyAreaSwipeBackInstaller(
+                isEnabled: isAnyAreaPlayerSwipeBackEnabled,
+                onChanged: handleAnyAreaSwipeBackChanged,
+                onEnded: handleAnyAreaSwipeBackEnded,
+                onCancelled: handleAnyAreaSwipeBackCancelled
+            )
+            .allowsHitTesting(false)
         }
         .onDisappear {
             cancelPendingDismiss()
@@ -280,7 +252,7 @@ private struct DeepLinkPlayerHost: View {
         }
     }
 
-    private func playerDestination(for route: DeepLinkRouter.PlayerRoute) -> PlayerView {
+    private func playerDestination(for route: DeepLinkRouter.PlayerRoute) -> some View {
         PlayerView(
             item: route.item,
             viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id),
@@ -291,44 +263,37 @@ private struct DeepLinkPlayerHost: View {
                 restorePictureInPicture(routeID: route.id, completion: completion)
             }
         )
+        .tint(.white)
     }
 
-    private var rootSwipeBackGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { v in
-                let dx = v.translation.width
-                let dy = v.translation.height
-                switch dragDecision {
-                case .vertical:
-                    return
-                case .horizontal:
-                    if dx > 0 { offsetX = dx }
-                case .undecided:
-                    let ax = abs(dx), ay = abs(dy)
-                    guard max(ax, ay) > 8 else { return }
-                    if ay > ax {
-                        dragDecision = .vertical
-                    } else if dx > 0 && ax > ay * 1.5 {
-                        dragDecision = .horizontal
-                        offsetX = dx
-                    } else {
-                        dragDecision = .vertical
-                    }
-                }
-            }
-            .onEnded { v in
-                defer { dragDecision = .undecided }
-                guard dragDecision == .horizontal else { return }
-                let dx = v.translation.width
-                let vx = v.predictedEndTranslation.width
-                if dx > 80 || vx > 200 {
-                    dismiss()
-                } else {
-                    withAnimation(Self.slideSpring) {
-                        offsetX = 0
-                    }
-                }
-            }
+    private var isAnyAreaPlayerSwipeBackEnabled: Bool {
+        guard router.pending != nil, !isRootDismissInFlight else { return false }
+        return router.path.isEmpty || router.path.last?.playerRoute != nil
+    }
+
+    private func handleAnyAreaSwipeBackChanged(_ translationX: CGFloat) {
+        guard isAnyAreaPlayerSwipeBackEnabled else { return }
+        guard router.path.isEmpty else { return }
+        offsetX = min(max(translationX, 0), UIScreen.main.bounds.width)
+    }
+
+    private func handleAnyAreaSwipeBackEnded(translationX: CGFloat, velocityX: CGFloat) {
+        guard isAnyAreaPlayerSwipeBackEnabled else {
+            handleAnyAreaSwipeBackCancelled()
+            return
+        }
+        if translationX > 80 || velocityX > 650 {
+            dismiss()
+        } else {
+            handleAnyAreaSwipeBackCancelled()
+        }
+    }
+
+    private func handleAnyAreaSwipeBackCancelled() {
+        guard router.path.isEmpty else { return }
+        withAnimation(Self.slideSpring) {
+            offsetX = 0
+        }
     }
 
     private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
@@ -350,6 +315,125 @@ private struct DeepLinkPlayerHost: View {
             return
         }
         completion(router.containsRoute(id: routeID))
+    }
+}
+
+private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
+    let isEnabled: Bool
+    let onChanged: (CGFloat) -> Void
+    let onEnded: (_ translationX: CGFloat, _ velocityX: CGFloat) -> Void
+    let onCancelled: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        context.coordinator.install(from: view)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.updateEnabled(isEnabled)
+        context.coordinator.install(from: uiView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: PlayerHostAnyAreaSwipeBackInstaller
+        private weak var installedTarget: UIView?
+        private weak var pan: UIPanGestureRecognizer?
+        private var hasBegunSwipe = false
+
+        init(parent: PlayerHostAnyAreaSwipeBackInstaller) {
+            self.parent = parent
+        }
+
+        func install(from markerView: UIView) {
+            DispatchQueue.main.async { [weak self, weak markerView] in
+                guard let self, let markerView else { return }
+                guard let target = markerView.window ?? markerView.superview?.window else { return }
+                guard self.installedTarget !== target else { return }
+
+                if let pan = self.pan, let oldTarget = self.installedTarget {
+                    oldTarget.removeGestureRecognizer(pan)
+                }
+
+                let pan = UIPanGestureRecognizer(target: self, action: #selector(self.handlePan(_:)))
+                pan.cancelsTouchesInView = false
+                pan.delaysTouchesBegan = false
+                pan.delaysTouchesEnded = false
+                pan.delegate = self
+                pan.isEnabled = self.parent.isEnabled
+                target.addGestureRecognizer(pan)
+
+                self.installedTarget = target
+                self.pan = pan
+            }
+        }
+
+        deinit {
+            if let pan, let installedTarget {
+                installedTarget.removeGestureRecognizer(pan)
+            }
+        }
+
+        func updateEnabled(_ isEnabled: Bool) {
+            pan?.isEnabled = isEnabled
+            if !isEnabled {
+                hasBegunSwipe = false
+            }
+        }
+
+        @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+            switch recognizer.state {
+            case .began:
+                hasBegunSwipe = true
+            case .changed:
+                guard hasBegunSwipe else { return }
+                parent.onChanged(recognizer.translation(in: recognizer.view).x)
+            case .ended:
+                guard hasBegunSwipe else { return }
+                hasBegunSwipe = false
+                let translation = recognizer.translation(in: recognizer.view)
+                let velocity = recognizer.velocity(in: recognizer.view)
+                parent.onEnded(translation.x, velocity.x)
+            case .cancelled, .failed:
+                hasBegunSwipe = false
+                parent.onCancelled()
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard parent.isEnabled,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            guard velocity.x > 180 else { return false }
+            return abs(velocity.x) > abs(velocity.y) * 1.35
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldReceive touch: UITouch) -> Bool {
+            guard parent.isEnabled else { return false }
+            var view = touch.view
+            while let current = view {
+                if current is UIControl {
+                    return false
+                }
+                view = current.superview
+            }
+            return true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
     }
 }
 
