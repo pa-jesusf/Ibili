@@ -363,7 +363,7 @@ private struct DetailScrollOffsetPreferenceKey: PreferenceKey {
 }
 
 private struct PlayerDetailFloatingControlCluster: View {
-    private static let systemTabBarBottomOffset: CGFloat = 55
+    private static let systemTabBarBottomOffset: CGFloat = 50
 
     let tabs: [VideoDetailContent.Tab]
     @Binding var selection: VideoDetailContent.Tab
