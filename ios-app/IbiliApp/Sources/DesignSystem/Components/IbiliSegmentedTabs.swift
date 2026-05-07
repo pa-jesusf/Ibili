@@ -79,42 +79,111 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
     let tabs: [Tab]
     let title: (Tab) -> String
     @Binding var selection: Tab
-    /// Retained for source compatibility with existing call sites.
-    /// The control now lives inside the navigation bar's trailing
-    /// toolbar slot, so it no longer needs to react to scroll
-    /// collapse — the system bar already handles all of that.
+    /// 0 -> expanded segmented control, 1 -> compact one-tap switcher.
     var collapseProgress: CGFloat = 0
 
-    private let controlWidth: CGFloat = 150
+    @Namespace private var selectedSegment
+
+    private let expandedWidth: CGFloat = 158
+    private let compactWidth: CGFloat = 72
+    private let controlHeight: CGFloat = 40
+
+    private var compactProgress: CGFloat {
+        let p = min(1, max(0, collapseProgress))
+        return min(1, max(0, (p - 0.28) / 0.72))
+    }
 
     var body: some View {
-        HStack(spacing: 2) {
+        let compact = compactProgress
+
+        ZStack(alignment: .trailing) {
+            expandedControl
+                .frame(width: expandedWidth, height: controlHeight)
+                .scaleEffect(1 - compact * 0.12, anchor: .trailing)
+                .opacity(1 - compact)
+                .allowsHitTesting(compact < 0.55)
+
+            compactToggle
+                .frame(width: compactWidth, height: controlHeight)
+                .scaleEffect(0.76 + compact * 0.24, anchor: .trailing)
+                .opacity(compact)
+                .allowsHitTesting(compact > 0.45)
+        }
+        .frame(width: expandedWidth, height: controlHeight, alignment: .trailing)
+    }
+
+    private var expandedControl: some View {
+        HStack(spacing: 3) {
             ForEach(tabs) { tab in
-                let isSelected = tab == selection
-                Button {
-                    guard !isSelected else { return }
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                        selection = tab
-                    }
-                } label: {
-                    Text(title(tab))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isSelected ? IbiliTheme.accent : IbiliTheme.textPrimary.opacity(0.78))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(NavSegmentPressButtonStyle())
+                segmentButton(for: tab)
             }
         }
-        .frame(width: controlWidth)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        .modifier(NavigationGlassCapsuleModifier())
-        .overlay(
-            Capsule()
-                .stroke(.white.opacity(0.08), lineWidth: 0.5)
-        )
+        .padding(3)
+        .background(FeedGlassCapsule())
+        .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 8)
+    }
+
+    private func segmentButton(for tab: Tab) -> some View {
+        let isSelected = tab == selection
+        return Button {
+            guard !isSelected else { return }
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                selection = tab
+            }
+        } label: {
+            Text(title(tab))
+                .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                .foregroundStyle(isSelected ? .white : IbiliTheme.textPrimary.opacity(0.78))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .contentShape(Capsule())
+                .background {
+                    if isSelected {
+                        FeedSelectedGlassPill()
+                            .matchedGeometryEffect(id: "feed.nav.segment.selected", in: selectedSegment)
+                    }
+                }
+        }
+        .buttonStyle(NavSegmentPressButtonStyle())
+    }
+
+    private var compactToggle: some View {
+        Button {
+            advanceSelection()
+        } label: {
+            HStack(spacing: 4) {
+                Text(title(selection))
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Image(systemName: "chevron.forward")
+                    .font(.system(size: 10, weight: .bold))
+                    .imageScale(.small)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(NavSegmentPressButtonStyle())
+        .background(FeedCompactGlassCapsule())
+        .shadow(color: .black.opacity(0.20), radius: 14, x: 0, y: 8)
+        .accessibilityLabel("切换到\(title(nextSelection ?? selection))")
+    }
+
+    private func advanceSelection() {
+        guard let nextSelection else { return }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+            selection = nextSelection
+        }
+    }
+
+    private var nextSelection: Tab? {
+        guard let currentIndex = tabs.firstIndex(where: { $0 == selection }) else { return tabs.first }
+        let candidateIndex = tabs.index(after: currentIndex)
+        let nextIndex = candidateIndex == tabs.endIndex ? tabs.startIndex : candidateIndex
+        return tabs[nextIndex]
     }
 }
 
@@ -185,18 +254,47 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
     }
 }
 
-private struct NavigationGlassCapsuleModifier: ViewModifier {
-    func body(content: Content) -> some View {
+private struct FeedGlassCapsule: View {
+    var body: some View {
         if #available(iOS 26.0, *) {
-            content
-                .background(Capsule().fill(.regularMaterial))
+            Capsule()
+                .fill(.regularMaterial)
                 .glassEffect(.regular, in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
         } else {
-            content
-                .background(
-                    Capsule().fill(.regularMaterial)
-                        .overlay(Capsule().stroke(.white.opacity(0.10), lineWidth: 0.5))
-                )
+            Capsule()
+                .fill(.regularMaterial)
+                .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 0.5))
+        }
+    }
+}
+
+private struct FeedSelectedGlassPill: View {
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            Capsule()
+                .fill(IbiliTheme.accent.opacity(0.34))
+                .glassEffect(.regular, in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 0.5))
+        } else {
+            Capsule()
+                .fill(IbiliTheme.accent.opacity(0.82))
+                .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
+        }
+    }
+}
+
+private struct FeedCompactGlassCapsule: View {
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            Capsule()
+                .fill(IbiliTheme.accent.opacity(0.20))
+                .glassEffect(.regular, in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 0.5))
+        } else {
+            Capsule()
+                .fill(IbiliTheme.accent.opacity(0.78))
+                .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
         }
     }
 }
@@ -297,7 +395,8 @@ struct FeedSegmentedHeader<Tab: Hashable & Identifiable>: View {
             NavigationTrailingSegmentedControl(
                 tabs: tabs,
                 title: tabTitle,
-                selection: $selection
+                selection: $selection,
+                collapseProgress: p
             )
         }
         .padding(.horizontal, 16)
@@ -342,7 +441,8 @@ struct FeedFloatingSegmentedControlOverlay<Tab: Hashable & Identifiable>: View {
         NavigationTrailingSegmentedControl(
             tabs: tabs,
             title: title,
-            selection: $selection
+            selection: $selection,
+            collapseProgress: p
         )
         .padding(.trailing, 16)
         .padding(.top, topPad)
