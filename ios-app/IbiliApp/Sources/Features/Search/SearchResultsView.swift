@@ -13,6 +13,7 @@ struct SearchResultsView: View {
     @State private var pageInputText: String = ""
     @State private var isPageInputPresented: Bool = false
     @State private var scrollID: UUID = UUID()
+    @StateObject private var scrollContext = InterruptibleScrollContext()
 
     var body: some View {
         Group {
@@ -48,6 +49,8 @@ struct SearchResultsView: View {
 
             ScrollViewReader { scrollProxy in
                 ScrollView {
+                    InterruptibleScrollCapture(context: scrollContext)
+                        .frame(width: 0, height: 0)
                     Color.clear.frame(height: 0).id("searchResultsTop")
 
                     if vm.totalResults > 0 {
@@ -87,9 +90,12 @@ struct SearchResultsView: View {
                         .padding(.bottom, 20)
                 }
                 .onChange(of: scrollID) { _ in
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        scrollProxy.scrollTo("searchResultsTop", anchor: .top)
-                    }
+                    scrollProxy.interruptingScrollTo(
+                        "searchResultsTop",
+                        anchor: .top,
+                        context: scrollContext,
+                        animation: .easeOut(duration: 0.2)
+                    )
                 }
             }
         }

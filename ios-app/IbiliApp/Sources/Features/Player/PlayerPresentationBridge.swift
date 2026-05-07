@@ -48,8 +48,7 @@ private final class PlayerHoldSpeedGestureMaskView: UIView {
 }
 
 fileprivate final class PlayerHoldSpeedBadgeView: UIView {
-    static let hiddenTransform = CGAffineTransform(scaleX: 0.94, y: 0.94)
-        .translatedBy(x: 0, y: -8)
+    static let hiddenTransform = CGAffineTransform(scaleX: 0.86, y: 0.86)
 
     private let hostingController = UIHostingController(rootView: PlayerHoldSpeedBadgeContent())
 
@@ -72,9 +71,9 @@ fileprivate final class PlayerHoldSpeedBadgeView: UIView {
         // Subtle drop shadow keeps the badge legible against bright
         // video frames without competing with the glass material.
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.18
-        layer.shadowRadius = 18
-        layer.shadowOffset = CGSize(width: 0, height: 8)
+        layer.shadowOpacity = 0.16
+        layer.shadowRadius = 16
+        layer.shadowOffset = CGSize(width: 0, height: 6)
 
         let host = hostingController.view!
         host.backgroundColor = .clear
@@ -95,27 +94,11 @@ fileprivate final class PlayerHoldSpeedBadgeView: UIView {
 /// on older systems for visual parity with the rest of the app.
 private struct PlayerHoldSpeedBadgeContent: View {
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "forward.fill")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(IbiliTheme.accent)
-                .frame(width: 30, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(IbiliTheme.accent.opacity(0.16))
-                )
-            VStack(alignment: .leading, spacing: 1) {
-                Text("2x")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("按住加速")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.74))
-            }
-        }
-        .padding(.leading, 12)
-        .padding(.trailing, 14)
-        .padding(.vertical, 10)
+        Image(systemName: "forward.fill")
+            .font(.system(size: 22, weight: .bold))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(.white)
+            .frame(width: 52, height: 52)
         .modifier(PlayerHoldSpeedBadgeBackgroundModifier())
     }
 }
@@ -125,13 +108,13 @@ private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
         if #available(iOS 26.0, *) {
             // Liquid glass: highly translucent, picks up the video's
             // colours behind it instead of painting a solid dark slab.
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            content.glassEffect(.regular, in: Circle())
         } else {
             content.background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                Circle()
                     .fill(.ultraThinMaterial)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        Circle()
                             .stroke(.white.opacity(0.10), lineWidth: 0.5)
                     )
             )
@@ -242,10 +225,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 action: #selector(Coordinator.handleHoldSpeedGesture(_:))
             )
             holdGesture.minimumPressDuration = 0.32
-            holdGesture.allowableMovement = 26
-            holdGesture.cancelsTouchesInView = false
+            holdGesture.allowableMovement = 72
+            holdGesture.cancelsTouchesInView = true
             holdGesture.delaysTouchesBegan = false
-            holdGesture.delaysTouchesEnded = false
+            holdGesture.delaysTouchesEnded = true
             holdGesture.delegate = context.coordinator
             gestureMask.addGestureRecognizer(holdGesture)
 
@@ -253,7 +236,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             overlay.addSubview(badge)
             NSLayoutConstraint.activate([
                 badge.centerXAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.centerXAnchor),
-                badge.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor, constant: 14),
+                badge.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor, constant: 12),
             ])
             context.coordinator.holdSpeedBadgeView = badge
             context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: false)
@@ -379,7 +362,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
+            false
         }
 
         // MARK: AVPlayerViewControllerDelegate

@@ -20,6 +20,8 @@ struct VideoDetailContent: View {
     @ObservedObject private var interaction: VideoInteractionService
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
+    @State private var mountedTabs: Set<Tab> = [.intro]
+    @StateObject private var scrollContexts = VideoDetailScrollContexts()
     @State private var detailScrollOffset: CGFloat = 0
     @State private var toastWork: DispatchWorkItem?
     @State private var toast: String?
@@ -43,7 +45,7 @@ struct VideoDetailContent: View {
         self._interaction = ObservedObject(wrappedValue: interactionService)
     }
 
-    enum Tab: String, CaseIterable, Identifiable {
+    enum Tab: String, CaseIterable, Identifiable, Hashable {
         case intro = "简介"
         case replies = "评论"
         case related = "相关"
@@ -70,12 +72,18 @@ struct VideoDetailContent: View {
                         tabs: Tab.allCases,
                         selection: $tab,
                         onReselectCurrentTab: {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                                proxy.scrollTo(topAnchorID, anchor: .top)
-                            }
+                            proxy.interruptingScrollTo(
+                                topAnchorID(for: tab),
+                                anchor: .top,
+                                context: scrollContexts.context(for: tab),
+                                animation: .spring(response: 0.28, dampingFraction: 0.88)
+                            )
                         }
                     )
                 }
+        }
+        .onChange(of: tab) { newValue in
+            mountedTabs.insert(newValue)
         }
         .task(id: "\(item.aid):\(item.bvid)") {
             let stat = vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0)
@@ -140,10 +148,28 @@ struct VideoDetailContent: View {
 
     @ViewBuilder
     private var scrollContent: some View {
+        ZStack(alignment: .top) {
+            ForEach(Tab.allCases) { targetTab in
+                if mountedTabs.contains(targetTab) || tab == targetTab {
+                    tabScrollContent(for: targetTab)
+                        .opacity(tab == targetTab ? 1 : 0)
+                        .allowsHitTesting(tab == targetTab)
+                        .accessibilityHidden(tab != targetTab)
+                        .zIndex(tab == targetTab ? 1 : 0)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private func tabScrollContent(for targetTab: Tab) -> some View {
         if #available(iOS 18.0, *) {
             ScrollView {
-                Color.clear.frame(height: 0).id(topAnchorID)
-                contentColumn
+                InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
+                    .frame(width: 0, height: 0)
+                Color.clear.frame(height: 0).id(topAnchorID(for: targetTab))
+                contentColumn(for: targetTab)
             }
             .refreshable {
                 await refreshMetadata()
@@ -152,10 +178,13 @@ struct VideoDetailContent: View {
             .onScrollGeometryChange(for: CGFloat.self) { geo in
                 geo.contentOffset.y
             } action: { _, newValue in
+                guard tab == targetTab else { return }
                 handleDetailScrollOffsetChange(newValue)
             }
         } else {
             ScrollView {
+                InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
+                    .frame(width: 0, height: 0)
                 // Top sentinel that reports its position in the named
                 // coordinate space. As the user scrolls down, `minY`
                 // becomes negative; we feed `-minY` into
@@ -166,29 +195,30 @@ struct VideoDetailContent: View {
                     Color.clear
                         .preference(
                             key: DetailScrollOffsetPreferenceKey.self,
-                            value: -geo.frame(in: .named("video-detail-scroll")).minY
+                            value: -geo.frame(in: .named(scrollCoordinateSpaceName(for: targetTab))).minY
                         )
                 }
                 .frame(height: 1)
-                .id(topAnchorID)
-                contentColumn
+                .id(topAnchorID(for: targetTab))
+                contentColumn(for: targetTab)
             }
             .refreshable {
                 await refreshMetadata()
             }
-            .coordinateSpace(name: "video-detail-scroll")
+            .coordinateSpace(name: scrollCoordinateSpaceName(for: targetTab))
             .scrollIndicators(.hidden)
             .onPreferenceChange(DetailScrollOffsetPreferenceKey.self) { value in
+                guard tab == targetTab else { return }
                 handleDetailScrollOffsetChange(value)
             }
         }
     }
 
     @ViewBuilder
-    private var contentColumn: some View {
+    private func contentColumn(for targetTab: Tab) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Group {
-                switch tab {
+                switch targetTab {
                 case .intro:
                     introBody
                 case .replies:
@@ -212,6 +242,14 @@ struct VideoDetailContent: View {
             .padding(.bottom, Self.floatingControlsReservedBottomInset)
         }
         .padding(.top, 12)
+    }
+
+    private func topAnchorID(for targetTab: Tab) -> String {
+        "\(topAnchorID)-\(targetTab.rawValue)"
+    }
+
+    private func scrollCoordinateSpaceName(for targetTab: Tab) -> String {
+        "video-detail-scroll-\(targetTab.rawValue)"
     }
 
     @ViewBuilder
@@ -359,6 +397,19 @@ private struct DetailScrollOffsetPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private final class VideoDetailScrollContexts: ObservableObject {
+    private var contexts: [VideoDetailContent.Tab: InterruptibleScrollContext] = [:]
+
+    func context(for tab: VideoDetailContent.Tab) -> InterruptibleScrollContext {
+        if let existing = contexts[tab] {
+            return existing
+        }
+        let context = InterruptibleScrollContext()
+        contexts[tab] = context
+        return context
     }
 }
 
@@ -536,4 +587,3 @@ private struct PlayerDetailFloatingTabsBackground: View {
         }
     }
 }
-

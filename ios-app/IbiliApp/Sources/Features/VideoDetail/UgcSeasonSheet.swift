@@ -20,11 +20,14 @@ struct UgcSeasonSheet: View {
     let onPick: (_ aid: Int64, _ bvid: String, _ cid: Int64) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var scrollContext = InterruptibleScrollContext()
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
+                    InterruptibleScrollCapture(context: scrollContext)
+                        .frame(width: 0, height: 0)
                     LazyVStack(spacing: 0) {
                         ForEach(Array(season.sections.enumerated()), id: \.element.id) { si, section in
                             if season.sections.count > 1 {
@@ -93,9 +96,12 @@ struct UgcSeasonSheet: View {
 
     private func scrollToCurrent(_ proxy: ScrollViewProxy) {
         guard currentCid != 0 else { return }
-        withAnimation(.easeInOut(duration: 0.25)) {
-            proxy.scrollTo(currentCid, anchor: .center)
-        }
+        proxy.interruptingScrollTo(
+            currentCid,
+            anchor: .center,
+            context: scrollContext,
+            animation: .easeInOut(duration: 0.25)
+        )
     }
 }
 
@@ -166,4 +172,3 @@ private struct EpisodeRow: View {
         .background(isCurrent ? IbiliTheme.accent.opacity(0.06) : .clear)
     }
 }
-
