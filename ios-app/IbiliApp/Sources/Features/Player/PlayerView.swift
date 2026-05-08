@@ -1896,6 +1896,8 @@ struct PlayerView: View {
     @State private var danmakuHintWork: DispatchWorkItem?
     @State private var deferredDetailMountWork: DispatchWorkItem?
     @State private var shouldMountDetailContent = false
+    @State private var pendingDanmakuLoadKey: String?
+    @State private var loadedDanmakuKey: String?
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -2098,21 +2100,28 @@ struct PlayerView: View {
             }
 
             loadedMediaKey = mediaLoadKey
-            async let video: Void = vm.load(item: item,
-                                            preferredQn: Int64(settings.resolvedPreferredVideoQn()),
-                                            preferredAudioQn: Int64(settings.preferredAudioQn),
-                                            fastLoad: settings.fastLoad,
-                                            cdnSelection: settings.cdnService.rawValue,
-                                            cacheVariant: settings.playbackCacheVariantKey())
-            async let danmaku: Void = loadDanmaku()
-            _ = await (video, danmaku)
+            loadedDanmakuKey = nil
+            pendingDanmakuLoadKey = mediaLoadKey
+            await vm.load(item: item,
+                          preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                          preferredAudioQn: Int64(settings.preferredAudioQn),
+                          fastLoad: settings.fastLoad,
+                          cdnSelection: settings.cdnService.rawValue,
+                          cacheVariant: settings.playbackCacheVariantKey())
             vm.handle(.interfaceActivated)
+        }
+        .onChange(of: vm.isVideoReady) { ready in
+            guard ready else { return }
+            loadPendingDanmakuIfNeeded()
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer {
                 vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
                 danmaku.attach(p)
                 vm.handle(.interfaceActivated)
+                if vm.isVideoReady {
+                    loadPendingDanmakuIfNeeded()
+                }
             }
         }
         .onChange(of: settings.cdnService.rawValue) { _ in
@@ -2322,6 +2331,16 @@ struct PlayerView: View {
                 "cid": String(item.cid),
             ])
         }
+    }
+
+    private func loadPendingDanmakuIfNeeded() {
+        guard let key = pendingDanmakuLoadKey,
+              key == mediaLoadKey,
+              loadedDanmakuKey != key else {
+            return
+        }
+        loadedDanmakuKey = key
+        Task { await loadDanmaku() }
     }
 
     private func scheduleDeferredDetailMount(for key: String) {

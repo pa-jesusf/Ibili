@@ -11,6 +11,13 @@ enum HLSPlaylistBuilder {
 
     /// Reasonable default if we cannot derive a real bandwidth value.
     private static let fallbackBandwidth: Int = 2_000_000
+    /// Extremely long videos can expose tens of thousands of fMP4
+    /// references in `sidx`. Emitting every reference as an HLS segment
+    /// creates a huge VOD playlist that AVPlayer parses before it can
+    /// show the first frame. Merge adjacent byte-range references into
+    /// ~60-second chunks so startup cost stays bounded while preserving
+    /// byte-range passthrough and seekability.
+    private static let targetMergedSegmentDurationSec: Double = 60
 
     /// Master playlist:
     /// * one video variant
@@ -144,9 +151,13 @@ enum HLSPlaylistBuilder {
     /// `segmentPath` is the proxy URL (relative or absolute) used both for
     /// `EXT-X-MAP` and for each fragment line.
     static func makeMedia(probe: ISOBMFF.Probe, segmentPath: String, targetDurationOverride: Int? = nil) -> String {
+        let mediaEntries = mergedMediaEntries(for: probe)
+        let measuredTargetDuration = mediaEntries
+            .map { Double($0.durationTicks) / Double(probe.index.timescale) }
+            .max() ?? probe.index.targetDurationSec
         let target = max(
             1,
-            Int(probe.index.targetDurationSec.rounded(.up)),
+            Int(measuredTargetDuration.rounded(.up)),
             targetDurationOverride ?? 0
         )
         var lines: [String] = [
@@ -158,7 +169,7 @@ enum HLSPlaylistBuilder {
             "#EXT-X-MEDIA-SEQUENCE:0",
             #"#EXT-X-MAP:URI="\#(segmentPath)",BYTERANGE="\#(probe.initSegment.length)@\#(probe.initSegment.offset)""#,
         ]
-        for entry in probe.index.entries {
+        for entry in mediaEntries {
             let dur = String(format: "%.6f", Double(entry.durationTicks) / Double(probe.index.timescale))
             lines.append("#EXTINF:\(dur),")
             lines.append("#EXT-X-BYTERANGE:\(entry.length)@\(entry.offset)")
@@ -166,6 +177,46 @@ enum HLSPlaylistBuilder {
         }
         lines.append("#EXT-X-ENDLIST")
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func mergedMediaEntries(for probe: ISOBMFF.Probe) -> [ISOBMFF.SegmentIndexEntry] {
+        let entries = probe.index.entries
+        guard entries.count > 1, probe.index.timescale > 0 else { return entries }
+        let targetTicks = UInt64((targetMergedSegmentDurationSec * Double(probe.index.timescale)).rounded())
+        guard targetTicks > 0 else { return entries }
+
+        var merged: [ISOBMFF.SegmentIndexEntry] = []
+        merged.reserveCapacity(max(1, entries.count / 6))
+        var currentOffset = entries[0].offset
+        var currentLength = entries[0].length
+        var currentDuration = entries[0].durationTicks
+        var expectedNextOffset = entries[0].offset + entries[0].length
+
+        for entry in entries.dropFirst() {
+            let isContiguous = entry.offset == expectedNextOffset
+            if isContiguous, currentDuration < targetTicks {
+                currentLength += entry.length
+                currentDuration += entry.durationTicks
+                expectedNextOffset = entry.offset + entry.length
+                continue
+            }
+            merged.append(ISOBMFF.SegmentIndexEntry(
+                offset: currentOffset,
+                length: currentLength,
+                durationTicks: currentDuration
+            ))
+            currentOffset = entry.offset
+            currentLength = entry.length
+            currentDuration = entry.durationTicks
+            expectedNextOffset = entry.offset + entry.length
+        }
+
+        merged.append(ISOBMFF.SegmentIndexEntry(
+            offset: currentOffset,
+            length: currentLength,
+            durationTicks: currentDuration
+        ))
+        return merged
     }
 }
 

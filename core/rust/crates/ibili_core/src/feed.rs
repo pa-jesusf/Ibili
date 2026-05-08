@@ -72,7 +72,7 @@ struct WebFeedRawItem {
     #[serde(default)] duration: i64,
     #[serde(default)] pubdate: i64,
     #[serde(default)] owner: Option<WebFeedOwner>,
-    #[serde(default)] stat: WebFeedStat,
+    #[serde(default)] stat: Option<WebFeedStat>,
 }
 
 #[derive(Deserialize, Default)]
@@ -213,6 +213,7 @@ impl Core {
             .filter(|i| i.id != 0)
             .map(|i| {
                 let author = i.owner.map(|owner| owner.name).unwrap_or_default();
+                let stat = i.stat.unwrap_or_default();
                 FeedItem {
                     aid: i.id,
                     bvid: i.bvid,
@@ -221,8 +222,8 @@ impl Core {
                     cover: ensure_https(i.pic),
                     author,
                     duration_sec: i.duration,
-                    play: i.stat.view,
-                    danmaku: i.stat.danmaku,
+                    play: stat.view,
+                    danmaku: stat.danmaku,
                     pubdate: i.pubdate,
                 }
             })
