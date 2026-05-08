@@ -162,7 +162,6 @@ final class AppSettings: ObservableObject {
     /// once it finishes preparing.
     @AppStorage("ibili.player.fastLoad") var fastLoad: Bool = false
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
-    @AppStorage("ibili.player.cdnSpeedTest") var cdnSpeedTest: Bool = true
 
     /// Whether the video detail page displays the canonical BV id or
     /// the legacy `av<aid>` form. Mirrors the upstream toggle.
