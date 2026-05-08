@@ -1,9 +1,8 @@
 import Foundation
 
 /// Search result type tabs above the result grid. Mirrors PiliPlus
-/// `SearchType` enum but only `.video` actually fetches in this MVP;
-/// the other cases render an "敬请期待" placeholder so the UI stays
-/// honest about what's implemented.
+/// `SearchType` enum. `.video` and `.live` are wired today; the other
+/// cases render an "敬请期待" placeholder so the UI stays honest.
 enum SearchResultType: String, CaseIterable, Identifiable {
     case video    // 视频
     case bangumi  // 番剧
@@ -25,7 +24,7 @@ enum SearchResultType: String, CaseIterable, Identifiable {
         }
     }
 
-    var isImplemented: Bool { self == .video }
+    var isImplemented: Bool { self == .video || self == .live }
 }
 
 /// Sort order for video search. Values match upstream `order=` query

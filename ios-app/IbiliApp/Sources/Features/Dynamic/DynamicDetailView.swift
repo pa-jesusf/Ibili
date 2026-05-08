@@ -35,6 +35,7 @@ struct DynamicDetailView: View {
                     kind: item.kind,
                     contentWidth: contentWidth,
                     onPlayVideo: openVideo,
+                    onOpenLive: openLive,
                     onTapImage: { idx in preview = .init(urls: item.images.map(\.url), index: idx) }
                 )
 
@@ -43,6 +44,7 @@ struct DynamicDetailView: View {
                         orig: orig,
                         contentWidth: contentWidth - 20,
                         onPlayVideo: openOrigVideo,
+                        onOpenLive: openOrigLive,
                         onTapImage: { idx in preview = .init(urls: orig.images.map(\.url), index: idx) }
                     )
                 }
@@ -215,7 +217,7 @@ struct DynamicDetailView: View {
     private func refOf(_ x: DynamicItemDTO) -> DynamicItemRefDTO {
         DynamicItemRefDTO(idStr: x.idStr, kind: x.kind, author: x.author,
                           stat: x.stat, text: x.text,
-                          video: x.video, images: x.images)
+                          video: x.video, live: x.live, images: x.images)
     }
 
     private func openVideo() {
@@ -234,6 +236,26 @@ struct DynamicDetailView: View {
             title: v.title, cover: v.cover, author: item.orig?.author.name ?? "",
             durationSec: 0, play: 0, danmaku: 0
         ))
+    }
+
+    private func openLive() {
+        guard let live = item.live, live.isOpenable else { return }
+        router.openLive(
+            roomID: live.roomID,
+            title: live.title,
+            cover: live.cover,
+            anchorName: item.author.name
+        )
+    }
+
+    private func openOrigLive() {
+        guard let orig = item.orig, let live = orig.live, live.isOpenable else { return }
+        router.openLive(
+            roomID: live.roomID,
+            title: live.title,
+            cover: live.cover,
+            anchorName: orig.author.name
+        )
     }
 }
 
@@ -269,13 +291,18 @@ private struct DetailBody: View {
     let kind: DynamicKindDTO
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
+    let onOpenLive: () -> Void
     let onTapImage: (Int) -> Void
 
     var body: some View {
         switch kind {
-        case .video, .pgc, .live:
+        case .video, .pgc:
             if let v = item.video {
                 detailVideoTile(v)
+            }
+        case .live:
+            if let live = item.live {
+                detailLiveTile(live)
             }
         case .draw:
             detailGrid(item.images)
@@ -286,6 +313,47 @@ private struct DetailBody: View {
         case .word, .forward, .unsupported:
             EmptyView()
         }
+    }
+
+    private func detailLiveTile(_ live: DynamicLiveDTO) -> some View {
+        let h = max(1, contentWidth * 9 / 16)
+        return Button(action: onOpenLive) {
+            ZStack(alignment: .bottomLeading) {
+                RemoteImage(url: live.cover, contentMode: .fill,
+                            targetPointSize: CGSize(width: contentWidth, height: h), quality: 85)
+                    .frame(width: contentWidth, height: h)
+                    .clipped()
+                LinearGradient(
+                    colors: [.black.opacity(0), .black.opacity(0.62)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(live.title)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    HStack(spacing: 8) {
+                        if !live.areaName.isEmpty { Text(live.areaName) }
+                        if !live.watchedLabel.isEmpty { Text(live.watchedLabel) }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.86))
+                }
+                .padding(12)
+                Text(live.liveStatus == 1 ? "LIVE" : "直播")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(live.liveStatus == 1 ? IbiliTheme.accent : .gray))
+                    .padding(10)
+                    .frame(width: contentWidth, height: h, alignment: .topLeading)
+            }
+            .frame(width: contentWidth, height: h)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private func detailVideoTile(_ v: DynamicVideoDTO) -> some View {
@@ -366,6 +434,7 @@ private struct DetailForwardPanel: View {
     let orig: DynamicItemRefDTO
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
+    let onOpenLive: () -> Void
     let onTapImage: (Int) -> Void
 
     var body: some View {
@@ -385,7 +454,9 @@ private struct DetailForwardPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             DetailBody(item: orig, kind: orig.kind, contentWidth: contentWidth,
-                       onPlayVideo: onPlayVideo, onTapImage: onTapImage)
+                       onPlayVideo: onPlayVideo,
+                       onOpenLive: onOpenLive,
+                       onTapImage: onTapImage)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)

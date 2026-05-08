@@ -66,20 +66,10 @@ struct SearchResultsView: View {
 
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                         ForEach(vm.results) { item in
-                            Button {
-                                router.open(feedItem(from: item))
-                            } label: {
-                                SearchResultCardView(
-                                    item: item,
-                                    cardWidth: cardW,
-                                    imageQuality: settings.resolvedImageQuality(),
-                                    meta: settings.searchCardMeta
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .onAppear {
-                                prefetchCovers(around: item, cardWidth: cardW)
-                            }
+                            resultButton(for: item, cardWidth: cardW)
+                                .onAppear {
+                                    prefetchCovers(around: item, cardWidth: cardW)
+                                }
                         }
                     }
                     .padding(.horizontal, hPad)
@@ -162,13 +152,52 @@ struct SearchResultsView: View {
         }
     }
 
-    private func prefetchCovers(around item: SearchVideoItemDTO, cardWidth: CGFloat) {
+    @ViewBuilder
+    private func resultButton(for item: SearchResultItem, cardWidth: CGFloat) -> some View {
+        switch item {
+        case .video(let video):
+            Button {
+                router.open(feedItem(from: video))
+            } label: {
+                SearchResultCardView(
+                    item: video,
+                    cardWidth: cardWidth,
+                    imageQuality: settings.resolvedImageQuality(),
+                    meta: settings.searchCardMeta
+                )
+            }
+            .buttonStyle(.plain)
+        case .live(let live):
+            Button {
+                router.openLive(
+                    roomID: live.roomID,
+                    title: live.title,
+                    cover: live.cover,
+                    anchorName: live.uname
+                )
+            } label: {
+                SearchLiveResultCardView(
+                    item: live,
+                    cardWidth: cardWidth,
+                    imageQuality: settings.resolvedImageQuality()
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func prefetchCovers(around item: SearchResultItem, cardWidth: CGFloat) {
         let lookahead = 18
         guard let idx = vm.results.firstIndex(where: { $0.id == item.id }) else { return }
         let start = min(idx + 1, vm.results.count)
         let end = min(start + lookahead, vm.results.count)
         guard start < end else { return }
-        let covers = vm.results[start..<end].map(\.cover)
+        let covers = vm.results[start..<end].map { result in
+            switch result {
+            case .video(let video): return video.cover
+            case .live(let live): return live.cover
+            }
+        }
         let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
         CoverImagePrefetcher.shared.prefetch(covers,
                                              targetPointSize: size,

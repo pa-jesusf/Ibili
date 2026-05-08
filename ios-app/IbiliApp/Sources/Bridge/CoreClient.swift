@@ -171,6 +171,21 @@ public final class CoreClient: @unchecked Sendable {
         return try call("feed.popular", args: A(pn: pn, ps: ps), decoding: FeedPageDTO.self)
     }
 
+    public func liveFeed(page: Int64 = 1) throws -> LiveFeedPageDTO {
+        struct A: Encodable { let page: Int64 }
+        return try call("live.feed", args: A(page: page), decoding: LiveFeedPageDTO.self)
+    }
+
+    public func liveRoomInfo(roomID: Int64) throws -> LiveRoomInfoDTO {
+        struct A: Encodable { let room_id: Int64 }
+        return try call("live.room_info", args: A(room_id: roomID), decoding: LiveRoomInfoDTO.self)
+    }
+
+    public func livePlayUrl(roomID: Int64, qn: Int64 = 0) throws -> LivePlayUrlDTO {
+        struct A: Encodable { let room_id: Int64; let qn: Int64 }
+        return try call("live.playurl", args: A(room_id: roomID, qn: qn), decoding: LivePlayUrlDTO.self)
+    }
+
     public func playUrl(aid: Int64, cid: Int64, qn: Int64 = 0, audioQn: Int64 = 0) throws -> PlayUrlDTO {
         struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64; let audio_qn: Int64 }
         return try call("video.playurl", args: A(aid: aid, cid: cid, qn: qn, audio_qn: audioQn), decoding: PlayUrlDTO.self)
@@ -240,6 +255,21 @@ public final class CoreClient: @unchecked Sendable {
                 tids: tids
             ),
             decoding: SearchVideoPageDTO.self
+        )
+    }
+
+    public func searchLive(
+        keyword: String,
+        page: Int64 = 1
+    ) throws -> SearchLivePageDTO {
+        struct A: Encodable {
+            let keyword: String
+            let page: Int64
+        }
+        return try call(
+            "search.live",
+            args: A(keyword: keyword, page: page),
+            decoding: SearchLivePageDTO.self
         )
     }
 
@@ -476,6 +506,11 @@ public final class CoreClient: @unchecked Sendable {
         return try call("user.card", args: A(mid: mid), decoding: UserCardDTO.self)
     }
 
+    public func userLive(mid: Int64) throws -> UserLiveRoomDTO {
+        struct A: Encodable { let mid: Int64 }
+        return try call("user.live", args: A(mid: mid), decoding: UserLiveRoomDTO.self)
+    }
+
     /// Watch history. `max` and `viewAt` are the cursor returned by
     /// the previous page; pass 0 for both on the first call.
     public func userHistory(max: Int64 = 0, viewAt: Int64 = 0) throws -> HistoryPageDTO {
@@ -573,5 +608,4 @@ private struct AnyEncodable: Encodable {
     }
     func encode(to encoder: Encoder) throws { try _encode(encoder) }
 }
-
 

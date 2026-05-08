@@ -18,6 +18,7 @@ use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
 
 const URL_USER_CARD: &str = "https://api.bilibili.com/x/web-interface/card";
+const URL_SPACE_APP: &str = "https://app.bilibili.com/x/v2/space";
 const URL_HISTORY_CURSOR: &str = "https://api.bilibili.com/x/web-interface/history/cursor";
 const URL_FAV_RESOURCE_LIST: &str = "https://api.bilibili.com/x/v3/fav/resource/list";
 const URL_FAV_PGC_LIST: &str = "https://api.bilibili.com/x/space/bangumi/follow/list";
@@ -50,6 +51,16 @@ pub struct UserCard {
     pub vip_status: i64,
     /// 大会员标签文案，如 "年度大会员"。空字符串表示无。
     pub vip_label: String,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct UserLiveRoom {
+    pub room_id: i64,
+    pub live_status: i64,
+    pub title: String,
+    pub cover: String,
+    pub online: i64,
+    pub url: String,
 }
 
 /// A single watch-history entry. We only keep video-type entries
@@ -201,6 +212,33 @@ impl Core {
             vip_type: vip.kind.unwrap_or(0),
             vip_status: vip.status.unwrap_or(0),
             vip_label: vip.label.and_then(|l| l.text).unwrap_or_default(),
+        })
+    }
+
+    pub fn user_live(&self, mid: i64) -> CoreResult<UserLiveRoom> {
+        if mid <= 0 {
+            return Err(CoreError::InvalidArgument("mid required".into()));
+        }
+        let params: Vec<(String, String)> = vec![
+            ("build".into(), "8430300".into()),
+            ("version".into(), "8.43.0".into()),
+            ("c_locale".into(), "zh_CN".into()),
+            ("channel".into(), "master".into()),
+            ("mobi_app".into(), "android".into()),
+            ("platform".into(), "android".into()),
+            ("s_locale".into(), "zh_CN".into()),
+            ("statistics".into(), r#"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#.into()),
+            ("vmid".into(), mid.to_string()),
+        ];
+        let raw: SpaceLiveWire = self.http.get_android_app(URL_SPACE_APP, &params)?;
+        let live = raw.live.unwrap_or_default();
+        Ok(UserLiveRoom {
+            room_id: live.roomid.unwrap_or(0),
+            live_status: live.live_status.unwrap_or(0),
+            title: live.title.unwrap_or_default(),
+            cover: live.cover.unwrap_or_default(),
+            online: live.online.unwrap_or(0),
+            url: live.url.unwrap_or_default(),
         })
     }
 
@@ -471,6 +509,21 @@ struct UserCardVip {
 #[derive(Default, Deserialize)]
 struct UserCardVipLabel {
     #[serde(default)] text: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct SpaceLiveWire {
+    #[serde(default)] live: Option<UserLiveRoomWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct UserLiveRoomWire {
+    #[serde(default, rename = "liveStatus")] live_status: Option<i64>,
+    #[serde(default)] title: Option<String>,
+    #[serde(default)] cover: Option<String>,
+    #[serde(default)] online: Option<i64>,
+    #[serde(default)] roomid: Option<i64>,
+    #[serde(default)] url: Option<String>,
 }
 
 #[derive(Default, Deserialize)]

@@ -3,25 +3,35 @@ import SwiftUI
 
 /// Drives the Search screen state machine: holds the current query,
 /// tracks which `SearchResultType` tab is active, owns the paginated
-/// list of video results, and exposes simple page navigation entry
+/// list of paginated results, and exposes simple page navigation entry
 /// points.
 ///
 /// Implementation notes:
-/// * Only `.video` results are fetched; other tabs flip the UI state
-///   but produce zero results since the upstream endpoints aren't
-///   wired yet.
+/// * `.video` and `.live` are implemented. Video keeps the full filter
+///   surface; live ignores video-only filters.
 /// * Pagination is explicit. Calling `submit` always restarts from
 ///   `page = 1`; users move with previous/next controls instead of
 ///   scroll-triggered infinite loading.
 @MainActor
 final class SearchViewModel: ObservableObject {
     @Published var query: String = ""
-    @Published var selectedType: SearchResultType = .video
+    @Published var selectedType: SearchResultType = .video {
+        didSet {
+            guard oldValue != selectedType else { return }
+            guard hasSubmittedQuery, query == submittedQuery, selectedType.isImplemented else { return }
+            results = []
+            page = 0
+            totalResults = 0
+            hasMore = true
+            errorText = nil
+            Task { await fetchPage(1) }
+        }
+    }
     @Published var selectedCategory: SearchCategory? = nil
     @Published var order: SearchOrder = .totalrank
     @Published var durationFilter: SearchDuration = .any
 
-    @Published private(set) var results: [SearchVideoItemDTO] = []
+    @Published private(set) var results: [SearchResultItem] = []
     @Published private(set) var page: Int64 = 0
     @Published private(set) var hasMore: Bool = false
     @Published private(set) var totalResults: Int64 = 0
@@ -101,9 +111,7 @@ final class SearchViewModel: ObservableObject {
     // MARK: - Private
 
     private func fetchPage(_ targetPage: Int64) async {
-        // Only video search is implemented for now. Other tabs simply
-        // surface an empty state with no error.
-        guard selectedType == .video else {
+        guard selectedType.isImplemented else {
             isLoading = false
             hasMore = false
             return
@@ -112,30 +120,71 @@ final class SearchViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let order = order == .totalrank ? nil : order.rawValue
-        let durationParam = durationFilter == .any ? nil : durationFilter.rawValue
-        let tids = selectedCategory?.tids
         let queryCopy = query
+        let typeCopy = selectedType
 
         do {
-            let page = try await Task.detached(priority: .userInitiated) { [client] in
-                try client.searchVideo(
-                    keyword: queryCopy,
-                    page: targetPage,
-                    order: order,
-                    duration: durationParam,
-                    tids: tids
-                )
-            }.value
+            let pageData: SearchPageResult
+            switch typeCopy {
+            case .video:
+                let order = order == .totalrank ? nil : order.rawValue
+                let durationParam = durationFilter == .any ? nil : durationFilter.rawValue
+                let tids = selectedCategory?.tids
+                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                    let page = try client.searchVideo(
+                        keyword: queryCopy,
+                        page: targetPage,
+                        order: order,
+                        duration: durationParam,
+                        tids: tids
+                    )
+                    return SearchPageResult(
+                        items: page.items.map(SearchResultItem.video),
+                        numResults: page.numResults,
+                        numPages: page.numPages
+                    )
+                }.value
+            case .live:
+                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                    let page = try client.searchLive(keyword: queryCopy, page: targetPage)
+                    return SearchPageResult(
+                        items: page.items.map(SearchResultItem.live),
+                        numResults: page.numResults,
+                        numPages: page.numPages
+                    )
+                }.value
+            case .bangumi, .movie, .user, .article:
+                return
+            }
             // Guard against late callbacks for a stale query.
-            guard queryCopy == self.query else { return }
+            guard queryCopy == self.query, typeCopy == self.selectedType else { return }
             self.page = targetPage
-            self.results = page.items
-            self.totalResults = page.numResults
-            self.hasMore = targetPage < page.numPages && !page.items.isEmpty
+            self.results = pageData.items
+            self.totalResults = pageData.numResults
+            self.hasMore = targetPage < pageData.numPages && !pageData.items.isEmpty
         } catch {
             errorText = (error as NSError).localizedDescription
             hasMore = false
         }
     }
+}
+
+enum SearchResultItem: Identifiable, Hashable {
+    case video(SearchVideoItemDTO)
+    case live(SearchLiveItemDTO)
+
+    var id: String {
+        switch self {
+        case .video(let item):
+            return "video-\(item.id)"
+        case .live(let item):
+            return "live-\(item.id)"
+        }
+    }
+}
+
+private struct SearchPageResult {
+    let items: [SearchResultItem]
+    let numResults: Int64
+    let numPages: Int64
 }

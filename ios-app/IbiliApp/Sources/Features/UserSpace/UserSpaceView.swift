@@ -137,7 +137,29 @@ struct UserSpaceView: View {
                         quality: 90)
                 .frame(width: 96, height: 96)
                 .clipShape(Circle())
-                .overlay(Circle().stroke(.white.opacity(0.1), lineWidth: 0.5))
+                .overlay(Circle().stroke(vm.userLive?.isLive == true ? IbiliTheme.accent : .white.opacity(0.1),
+                                         lineWidth: vm.userLive?.isLive == true ? 3 : 0.5))
+                .overlay(alignment: .bottom) {
+                    if vm.userLive?.isLive == true {
+                        Text("LIVE")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(IbiliTheme.accent))
+                            .offset(y: 8)
+                    }
+                }
+                .contentShape(Circle())
+                .onTapGesture {
+                    guard let live = vm.userLive, live.isLive else { return }
+                    router.openLive(
+                        roomID: live.roomID,
+                        title: live.title,
+                        cover: live.cover,
+                        anchorName: vm.card?.name ?? ""
+                    )
+                }
                 .padding(.top, 4)
             Text(vm.card?.name ?? "—")
                 .font(.title3.weight(.bold))
@@ -361,6 +383,7 @@ private struct GlassCapsuleModifier: ViewModifier {
 @MainActor
 final class UserSpaceViewModel: ObservableObject {
     @Published var card: UserCardDTO?
+    @Published var userLive: UserLiveRoomDTO?
     @Published var isFollowed = false
     @Published var followBusy = false
 
@@ -389,10 +412,14 @@ final class UserSpaceViewModel: ObservableObject {
     }
 
     func loadHeader(mid: Int64) async {
-        let result: UserCardDTO? = await Task.detached {
+        async let cardResult: UserCardDTO? = Task.detached {
             try? CoreClient.shared.userCard(mid: mid)
         }.value
-        self.card = result
+        async let liveResult: UserLiveRoomDTO? = Task.detached {
+            try? CoreClient.shared.userLive(mid: mid)
+        }.value
+        self.card = await cardResult
+        self.userLive = await liveResult
     }
 
     func toggleFollow(mid: Int64) async {

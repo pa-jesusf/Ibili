@@ -47,6 +47,52 @@ pub struct FeedPage {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct LiveFeedItem {
+    pub room_id: i64,
+    pub uid: i64,
+    pub title: String,
+    pub cover: String,
+    pub system_cover: String,
+    pub uname: String,
+    pub face: String,
+    pub area_name: String,
+    pub watched_label: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LiveFeedPage {
+    pub items: Vec<LiveFeedItem>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LiveQuality {
+    pub qn: i64,
+    pub label: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LiveRoomInfo {
+    pub room_id: i64,
+    pub uid: i64,
+    pub title: String,
+    pub cover: String,
+    pub anchor_name: String,
+    pub anchor_face: String,
+    pub watched_label: String,
+    pub live_status: i64,
+    pub live_time: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LivePlayUrl {
+    pub url: String,
+    pub quality: i64,
+    pub accept_quality: Vec<LiveQuality>,
+    pub live_status: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct PlayUrl {
     pub url: String,
     pub audio_url: Option<String>,
@@ -178,6 +224,25 @@ pub struct SearchVideoItem {
 #[derive(Debug, Serialize, Clone)]
 pub struct SearchVideoPage {
     pub items: Vec<SearchVideoItem>,
+    pub num_results: i64,
+    pub num_pages: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchLiveItem {
+    pub room_id: i64,
+    pub uid: i64,
+    pub title: String,
+    pub cover: String,
+    pub uname: String,
+    pub face: String,
+    pub online: i64,
+    pub area_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchLivePage {
+    pub items: Vec<SearchLiveItem>,
     pub num_results: i64,
     pub num_pages: i64,
 }

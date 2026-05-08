@@ -68,6 +68,16 @@ pub struct DynamicVideo {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct DynamicLive {
+    pub room_id: i64,
+    pub title: String,
+    pub cover: String,
+    pub area_name: String,
+    pub watched_label: String,
+    pub live_status: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct DynamicImage {
     pub url: String,
     pub width: i64,
@@ -86,6 +96,8 @@ pub struct DynamicItem {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video: Option<DynamicVideo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<DynamicLive>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<DynamicImage>,
     /// `oid` to pass to the comment API for this dynamic. Comes from
@@ -237,6 +249,7 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
     let major = dynamic_mod.major.unwrap_or_default();
     let mut text = dynamic_mod.desc.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
     let mut video: Option<DynamicVideo> = None;
+    let mut live_item: Option<DynamicLive> = None;
     let mut images: Vec<DynamicImage> = Vec::new();
 
     // Order matters: opus → archive → draw → article fallbacks.
@@ -295,14 +308,7 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         });
     }
     if let Some(live) = major.live_rcmd.or(major.live) {
-        video = Some(DynamicVideo {
-            aid: 0,
-            bvid: String::new(),
-            title: live.title.unwrap_or_default(),
-            cover: live.cover.unwrap_or_default(),
-            duration_label: "直播中".into(),
-            stat_label: live.area.unwrap_or_default(),
-        });
+        live_item = live.into_dynamic_live();
     }
 
     let orig = w.orig.and_then(|b| flatten_dynamic_item(*b)).map(Box::new);
@@ -322,6 +328,7 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         stat,
         text,
         video,
+        live: live_item,
         images,
         comment_id,
         comment_type,
@@ -447,9 +454,71 @@ struct DynPgcWire {
 
 #[derive(Default, Deserialize)]
 struct DynLiveWire {
+    #[serde(default, deserialize_with = "lenient_i64")] id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")] live_state: Option<i64>,
     #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")] cover: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")] desc_first: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")] content: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")] area: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")] area_name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")] room_id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")] live_status: Option<i64>,
+    #[serde(default)] watched_show: Option<DynWatchedShowWire>,
+}
+
+impl DynLiveWire {
+    fn into_dynamic_live(self) -> Option<DynamicLive> {
+        if let Some(content) = self.content.as_deref() {
+            if let Ok(root) = serde_json::from_str::<DynLiveContentWire>(content) {
+                if let Some(info) = root.live_play_info {
+                    let room_id = info.room_id.unwrap_or(0);
+                    if room_id > 0 {
+                        return Some(DynamicLive {
+                            room_id,
+                            title: info.title.unwrap_or_default(),
+                            cover: info.cover.unwrap_or_default(),
+                            area_name: info.area_name.unwrap_or_default(),
+                            watched_label: info.watched_show.and_then(|w| w.text_large).unwrap_or_default(),
+                            live_status: info.live_status.unwrap_or(0),
+                        });
+                    }
+                }
+            }
+        }
+        let room_id = self.room_id.or(self.id).unwrap_or(0);
+        if room_id <= 0 {
+            return None;
+        }
+        Some(DynamicLive {
+            room_id,
+            title: self.title.unwrap_or_default(),
+            cover: self.cover.unwrap_or_default(),
+            area_name: self.area_name.or(self.area).or(self.desc_first).unwrap_or_default(),
+            watched_label: self.watched_show.and_then(|w| w.text_large).unwrap_or_default(),
+            live_status: self.live_status.or(self.live_state).unwrap_or(0),
+        })
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct DynLiveContentWire {
+    #[serde(default)] live_play_info: Option<DynLivePlayInfoWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct DynLivePlayInfoWire {
+    #[serde(default, deserialize_with = "lenient_i64")] room_id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")] live_status: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")] cover: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")] area_name: Option<String>,
+    #[serde(default)] watched_show: Option<DynWatchedShowWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct DynWatchedShowWire {
+    #[serde(default, deserialize_with = "lenient_string")] text_large: Option<String>,
 }
 
 #[derive(Default, Deserialize)]

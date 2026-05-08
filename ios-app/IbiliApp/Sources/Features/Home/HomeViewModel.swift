@@ -3,6 +3,7 @@ import SwiftUI
 enum HomeFeedSection: String, CaseIterable, Identifiable {
     case recommend
     case hot
+    case live
 
     var id: Self { self }
 
@@ -10,6 +11,7 @@ enum HomeFeedSection: String, CaseIterable, Identifiable {
         switch self {
         case .recommend: return "推荐"
         case .hot: return "热门"
+        case .live: return "直播"
         }
     }
 }
@@ -57,6 +59,8 @@ final class HomeViewModel: ObservableObject {
             await loadRecommend(reset: reset)
         case .hot:
             await loadHot(reset: reset)
+        case .live:
+            break
         }
 
         isLoading = false
@@ -124,6 +128,63 @@ final class HomeViewModel: ObservableObject {
         guard !reset else { return incoming }
         let existing = Set(items.map(FeedIdentity.init))
         return incoming.filter { !existing.contains(FeedIdentity($0)) }
+    }
+}
+
+@MainActor
+final class LiveHomeViewModel: ObservableObject {
+    @Published var items: [LiveFeedItemDTO] = []
+    @Published var isLoading = false
+    @Published var isEnd = false
+    @Published var errorText: String?
+
+    private var page: Int64 = 1
+
+    func loadInitial() async {
+        guard items.isEmpty else { return }
+        await load(reset: true)
+    }
+
+    func refresh() async {
+        await load(reset: true)
+    }
+
+    func loadMore() async {
+        guard !isLoading, !isEnd else { return }
+        await load(reset: false)
+    }
+
+    private func load(reset: Bool) async {
+        isLoading = true
+        errorText = nil
+        if reset {
+            isEnd = false
+            page = 1
+        }
+        let targetPage = page
+        do {
+            let response = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.liveFeed(page: targetPage)
+            }.value
+            let fresh = mergeFresh(response.items, reset: reset)
+            if reset {
+                items = fresh
+            } else {
+                items.append(contentsOf: fresh)
+            }
+            page = targetPage + 1
+            isEnd = !response.hasMore || fresh.isEmpty
+        } catch {
+            errorText = error.localizedDescription
+            isEnd = false
+        }
+        isLoading = false
+    }
+
+    private func mergeFresh(_ incoming: [LiveFeedItemDTO], reset: Bool) -> [LiveFeedItemDTO] {
+        guard !reset else { return incoming }
+        let existing = Set(items.map(\.roomID))
+        return incoming.filter { !existing.contains($0.roomID) }
     }
 }
 

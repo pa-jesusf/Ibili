@@ -5,7 +5,7 @@
 //! the existing `HttpClient::get_signed_web` machinery.
 
 use crate::Core;
-use crate::dto::{SearchVideoItem, SearchVideoPage};
+use crate::dto::{SearchLiveItem, SearchLivePage, SearchVideoItem, SearchVideoPage};
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
 use serde::Deserialize;
@@ -53,6 +53,13 @@ struct SearchTypeItem {
     #[serde(default)] like: i64,
     #[serde(default)] pubdate: i64,
     #[serde(default)] senddate: i64,
+    #[serde(default)] uid: i64,
+    #[serde(default)] uname: String,
+    #[serde(default)] uface: String,
+    #[serde(default)] cover: String,
+    #[serde(default)] online: i64,
+    #[serde(default)] roomid: i64,
+    #[serde(default)] cate_name: String,
 }
 
 impl Core {
@@ -129,6 +136,62 @@ impl Core {
             .collect();
         let num_pages = if raw.num_pages > 0 { raw.num_pages } else { raw.pages };
         Ok(SearchVideoPage {
+            items,
+            num_results: raw.num_results,
+            num_pages,
+        })
+    }
+
+    pub fn search_live(
+        &self,
+        keyword: &str,
+        page: i64,
+    ) -> CoreResult<SearchLivePage> {
+        let key = self.fetch_wbi_key_for_search()?;
+        let params: Vec<(String, String)> = vec![
+            ("search_type".into(), "live_room".into()),
+            ("keyword".into(), keyword.to_string()),
+            ("page".into(), page.max(1).to_string()),
+            ("page_size".into(), "20".into()),
+            ("platform".into(), "pc".into()),
+            ("web_location".into(), "1430654".into()),
+        ];
+        let keyword_encoded = keyword.replace(' ', "%20");
+        let raw: SearchTypeRoot = self
+            .http
+            .get_signed_web_with_headers(
+                URL_SEARCH_TYPE,
+                params,
+                &key,
+                &[
+                    ("Origin", "https://search.bilibili.com".to_string()),
+                    ("Referer", format!(
+                        "https://search.bilibili.com/live?keyword={}",
+                        keyword_encoded
+                    )),
+                ],
+            )?;
+        if raw.v_voucher.is_some() {
+            return Err(CoreError::Api { code: -352, msg: "触发搜索风控，请稍后再试".into() });
+        }
+        let items = raw
+            .result
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| SearchLiveItem {
+                room_id: r.roomid,
+                uid: r.uid,
+                title: strip_em_tags(&r.title),
+                cover: ensure_https(if r.cover.is_empty() { r.pic } else { r.cover }),
+                uname: r.uname,
+                face: ensure_https(r.uface),
+                online: r.online,
+                area_name: strip_em_tags(&r.cate_name),
+            })
+            .filter(|item| item.room_id > 0)
+            .collect();
+        let num_pages = if raw.num_pages > 0 { raw.num_pages } else { raw.pages };
+        Ok(SearchLivePage {
             items,
             num_results: raw.num_results,
             num_pages,

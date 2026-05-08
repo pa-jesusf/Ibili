@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Matches PiliPlus `Constants.userAgent` (android_hd/TV User-Agent).
 pub const UA_TV: &str = "Mozilla/5.0 BiliDroid/2.0.1 (bbcallen@gmail.com) os/android model/android_hd mobi_app/android_hd build/2001100 channel/master innerVer/2001100 osVer/15 network/2";
+pub const UA_ANDROID_APP: &str = "Mozilla/5.0 BiliDroid/8.43.0 (bbcallen@gmail.com) os/android model/android mobi_app/android build/8430300 channel/master innerVer/8430300 osVer/15 network/2";
 pub const UA_WEB: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15";
 
 /// Headers PiliPlus attaches to every app endpoint call.
@@ -23,6 +24,31 @@ fn app_headers() -> reqwest::header::HeaderMap {
         ("x-bili-aurora-zone", ""),
         ("bili-http-engine", "cronet"),
         ("buvid", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFFinfoc"),
+    ];
+    for (k, v) in pairs {
+        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+            h.insert(name, val);
+        }
+    }
+    h
+}
+
+/// Headers PiliPlus attaches to Android app endpoints (`mobi_app=android`).
+fn android_app_headers() -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+    let mut h = HeaderMap::new();
+    let pairs: &[(&str, &str)] = &[
+        ("User-Agent", UA_ANDROID_APP),
+        ("env", "prod"),
+        ("app-key", "android"),
+        ("x-bili-trace-id", "11111111111111111111111111111111:1111111111111111:0:0"),
+        ("x-bili-aurora-eid", ""),
+        ("x-bili-aurora-zone", ""),
+        ("bili-http-engine", "cronet"),
+        ("buvid", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFFinfoc"),
+        ("fp_local", "1111111111111111111111111111111111111111111111111111111111111111"),
+        ("fp_remote", "1111111111111111111111111111111111111111111111111111111111111111"),
+        ("session_id", "11111111"),
     ];
     for (k, v) in pairs {
         if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
@@ -90,6 +116,31 @@ impl HttpClient {
         let resp = self.client.get(url)
             .headers(app_headers())
             .query(&params)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
+    pub fn get_signed_android_app<T: DeserializeOwned>(
+        &self, url: &str, mut params: Vec<(String, String)>,
+    ) -> CoreResult<T> {
+        crate::signer::AppSigner::sign(&mut params);
+        let resp = self.client.get(url)
+            .headers(android_app_headers())
+            .query(&params)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
+    pub fn get_android_app<T: DeserializeOwned>(
+        &self, url: &str, params: &[(String, String)],
+    ) -> CoreResult<T> {
+        let resp = self.client.get(url)
+            .headers(android_app_headers())
+            .query(params)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;

@@ -11,6 +11,7 @@ pub mod http;
 pub mod session;
 pub mod auth;
 pub mod feed;
+pub mod live;
 pub mod video;
 pub mod danmaku;
 pub mod cdn;

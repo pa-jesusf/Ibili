@@ -32,6 +32,46 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
+    struct LiveRoute: Hashable, Identifiable {
+        let id: UUID
+        let roomID: Int64
+        let title: String
+        let cover: String
+        let anchorName: String
+
+        init(
+            id: UUID = UUID(),
+            roomID: Int64,
+            title: String = "",
+            cover: String = "",
+            anchorName: String = ""
+        ) {
+            self.id = id
+            self.roomID = roomID
+            self.title = title
+            self.cover = cover
+            self.anchorName = anchorName
+        }
+
+        func replacingMetadata(title: String, cover: String, anchorName: String) -> Self {
+            Self(
+                id: id,
+                roomID: roomID,
+                title: title,
+                cover: cover,
+                anchorName: anchorName
+            )
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(id)
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id
+        }
+    }
+
     struct UserSpaceRoute: Hashable, Identifiable {
         let id: UUID
         let mid: Int64
@@ -54,12 +94,15 @@ final class DeepLinkRouter: ObservableObject {
 
     enum SessionRoute: Hashable, Identifiable {
         case player(PlayerRoute)
+        case live(LiveRoute)
         case userSpace(UserSpaceRoute)
         case dynamicDetail(DynamicDetailRoute)
 
         var id: UUID {
             switch self {
             case .player(let route):
+                return route.id
+            case .live(let route):
                 return route.id
             case .userSpace(let route):
                 return route.id
@@ -72,14 +115,43 @@ final class DeepLinkRouter: ObservableObject {
             guard case .player(let route) = self else { return nil }
             return route
         }
+
+        var liveRoute: LiveRoute? {
+            guard case .live(let route) = self else { return nil }
+            return route
+        }
+    }
+
+    enum RootRoute: Hashable, Identifiable {
+        case player(PlayerRoute)
+        case live(LiveRoute)
+
+        var id: UUID {
+            switch self {
+            case .player(let route):
+                return route.id
+            case .live(let route):
+                return route.id
+            }
+        }
+
+        var playerRoute: PlayerRoute? {
+            guard case .player(let route) = self else { return nil }
+            return route
+        }
+
+        var liveRoute: LiveRoute? {
+            guard case .live(let route) = self else { return nil }
+            return route
+        }
     }
 
     struct SessionSnapshot {
-        var pending: PlayerRoute?
+        var pending: RootRoute?
         var path: [SessionRoute]
     }
 
-    @Published var pending: PlayerRoute?
+    @Published var pending: RootRoute?
     /// Navigation path inside the active player session. The root
     /// player is rendered when `pending != nil`; subsequent pushes
     /// (related video tap, season episode, user-space-tap-then-play)
@@ -97,7 +169,7 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     var currentRoute: PlayerRoute? {
-        path.reversed().compactMap(\.playerRoute).first ?? pending
+        path.reversed().compactMap(\.playerRoute).first ?? pending?.playerRoute
     }
 
     var currentItem: FeedItemDTO? {
@@ -115,7 +187,7 @@ final class DeepLinkRouter: ObservableObject {
     func open(_ item: FeedItemDTO, mode: OpenMode = .push) {
         guard pending != nil else {
             path.removeAll()
-            pending = PlayerRoute(item: item)
+            pending = .player(PlayerRoute(item: item))
             return
         }
 
@@ -127,6 +199,32 @@ final class DeepLinkRouter: ObservableObject {
             path.append(.player(PlayerRoute(item: item)))
         case .replaceCurrent:
             replaceCurrentPlayer(with: item)
+        }
+    }
+
+    func openLive(
+        roomID: Int64,
+        title: String = "",
+        cover: String = "",
+        anchorName: String = "",
+        mode: OpenMode = .push
+    ) {
+        guard roomID > 0 else { return }
+        let route = LiveRoute(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
+        guard pending != nil else {
+            path.removeAll()
+            pending = .live(route)
+            return
+        }
+
+        switch mode {
+        case .push:
+            if revealCurrentLiveIfNeeded(roomID: roomID) {
+                return
+            }
+            path.append(.live(route))
+        case .replaceCurrent:
+            replaceCurrentLive(with: route)
         }
     }
 
@@ -151,7 +249,7 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     func containsRoute(id: UUID) -> Bool {
-        pending?.id == id || playerPath.contains { $0.id == id }
+        pending?.id == id || path.contains { $0.id == id }
     }
 
     /// Returns `.handled` if the URL was an ibili scheme and we routed
@@ -169,6 +267,11 @@ final class DeepLinkRouter: ObservableObject {
         case "av":
             if let aid = Int64(path) {
                 open(makeShell(aid: aid))
+            }
+            return .handled
+        case "live":
+            if let roomID = Int64(path) {
+                openLive(roomID: roomID)
             }
             return .handled
         default:
@@ -221,6 +324,37 @@ final class DeepLinkRouter: ObservableObject {
             return
         }
 
-        pending = pending?.replacingItem(item) ?? PlayerRoute(item: item)
+        if let pendingPlayer = pending?.playerRoute {
+            pending = .player(pendingPlayer.replacingItem(item))
+        } else {
+            pending = .player(PlayerRoute(item: item))
+        }
+    }
+
+    private func revealCurrentLiveIfNeeded(roomID: Int64) -> Bool {
+        let currentLive = path.reversed().compactMap(\.liveRoute).first ?? pending?.liveRoute
+        guard currentLive?.roomID == roomID else { return false }
+
+        if let lastLiveIndex = path.lastIndex(where: { $0.liveRoute != nil }) {
+            let trailingIndex = path.index(after: lastLiveIndex)
+            if trailingIndex < path.endIndex {
+                path.removeSubrange(trailingIndex..<path.endIndex)
+            }
+            return true
+        }
+
+        if !path.isEmpty {
+            path.removeAll()
+        }
+        return true
+    }
+
+    private func replaceCurrentLive(with route: LiveRoute) {
+        if let lastLiveIndex = path.lastIndex(where: { $0.liveRoute != nil }) {
+            path[lastLiveIndex] = .live(route)
+            return
+        }
+
+        pending = .live(route)
     }
 }

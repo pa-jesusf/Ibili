@@ -98,6 +98,17 @@ struct PopularArgs {
 }
 
 #[derive(Deserialize)]
+struct LiveFeedArgs {
+    #[serde(default = "default_one_i64")] page: i64,
+}
+
+#[derive(Deserialize)]
+struct LiveRoomArgs {
+    room_id: i64,
+    #[serde(default)] qn: i64,
+}
+
+#[derive(Deserialize)]
 struct PlayurlArgs { aid: i64, cid: i64, #[serde(default = "default_qn")] qn: i64, #[serde(default)] audio_qn: i64 }
 fn default_qn() -> i64 { 0 }
 
@@ -235,6 +246,12 @@ struct SearchVideoArgs {
 fn default_search_page() -> i64 { 1 }
 
 #[derive(Deserialize)]
+struct SearchLiveArgs {
+    keyword: String,
+    #[serde(default = "default_search_page")] page: i64,
+}
+
+#[derive(Deserialize)]
 struct MidArgs { mid: i64 }
 #[derive(Deserialize)]
 struct VmidPageArgs { vmid: i64, #[serde(default = "default_one_i64")] pn: i64 }
@@ -307,6 +324,18 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "feed.popular" => {
             let a: PopularArgs = serde_json::from_value(args).unwrap_or(PopularArgs { pn: 1, ps: 20 });
             to_value(c.inner.feed_popular(a.pn, a.ps)?)
+        }
+        "live.feed" => {
+            let a: LiveFeedArgs = serde_json::from_value(args).unwrap_or(LiveFeedArgs { page: 1 });
+            to_value(c.inner.live_feed(a.page)?)
+        }
+        "live.room_info" => {
+            let a: LiveRoomArgs = serde_json::from_value(args)?;
+            to_value(c.inner.live_room_info(a.room_id)?)
+        }
+        "live.playurl" => {
+            let a: LiveRoomArgs = serde_json::from_value(args)?;
+            to_value(c.inner.live_playurl(a.room_id, a.qn)?)
         }
         "video.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
@@ -445,9 +474,17 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                 a.tids,
             )?)
         }
+        "search.live" => {
+            let a: SearchLiveArgs = serde_json::from_value(args)?;
+            to_value(c.inner.search_live(&a.keyword, a.page)?)
+        }
         "user.card" => {
             let a: MidArgs = serde_json::from_value(args)?;
             to_value(c.inner.user_card(a.mid)?)
+        }
+        "user.live" => {
+            let a: MidArgs = serde_json::from_value(args)?;
+            to_value(c.inner.user_live(a.mid)?)
         }
         "user.history" => {
             let a: HistoryCursorArgs = serde_json::from_value(args).unwrap_or(HistoryCursorArgs { max: 0, view_at: 0 });

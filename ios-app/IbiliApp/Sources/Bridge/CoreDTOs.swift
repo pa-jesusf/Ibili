@@ -120,6 +120,79 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Live
+
+public struct LiveFeedItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { roomID }
+    public let roomID: Int64
+    public let uid: Int64
+    public let title: String
+    public let cover: String
+    public let systemCover: String
+    public let uname: String
+    public let face: String
+    public let areaName: String
+    public let watchedLabel: String
+
+    enum CodingKeys: String, CodingKey {
+        case uid, title, cover, uname, face
+        case roomID = "room_id"
+        case systemCover = "system_cover"
+        case areaName = "area_name"
+        case watchedLabel = "watched_label"
+    }
+}
+
+public struct LiveFeedPageDTO: Decodable {
+    public let items: [LiveFeedItemDTO]
+    public let hasMore: Bool
+    enum CodingKeys: String, CodingKey {
+        case items
+        case hasMore = "has_more"
+    }
+}
+
+public struct LiveQualityDTO: Decodable, Hashable, Identifiable {
+    public var id: Int64 { qn }
+    public let qn: Int64
+    public let label: String
+}
+
+public struct LiveRoomInfoDTO: Decodable, Hashable {
+    public let roomID: Int64
+    public let uid: Int64
+    public let title: String
+    public let cover: String
+    public let anchorName: String
+    public let anchorFace: String
+    public let watchedLabel: String
+    public let liveStatus: Int64
+    public let liveTime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case uid, title, cover
+        case roomID = "room_id"
+        case anchorName = "anchor_name"
+        case anchorFace = "anchor_face"
+        case watchedLabel = "watched_label"
+        case liveStatus = "live_status"
+        case liveTime = "live_time"
+    }
+}
+
+public struct LivePlayUrlDTO: Decodable {
+    public let url: String
+    public let quality: Int64
+    public let acceptQuality: [LiveQualityDTO]
+    public let liveStatus: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case url, quality
+        case acceptQuality = "accept_quality"
+        case liveStatus = "live_status"
+    }
+}
+
 public struct PlayUrlDTO: Decodable {
     public let url: String
     public let audioUrl: String?
@@ -366,6 +439,35 @@ public struct SearchVideoItemDTO: Decodable, Identifiable, Hashable {
 
 public struct SearchVideoPageDTO: Decodable {
     public let items: [SearchVideoItemDTO]
+    public let numResults: Int64
+    public let numPages: Int64
+    enum CodingKeys: String, CodingKey {
+        case items
+        case numResults = "num_results"
+        case numPages = "num_pages"
+    }
+}
+
+public struct SearchLiveItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { roomID }
+    public let roomID: Int64
+    public let uid: Int64
+    public let title: String
+    public let cover: String
+    public let uname: String
+    public let face: String
+    public let online: Int64
+    public let areaName: String
+
+    enum CodingKeys: String, CodingKey {
+        case uid, title, cover, uname, face, online
+        case roomID = "room_id"
+        case areaName = "area_name"
+    }
+}
+
+public struct SearchLivePageDTO: Decodable {
+    public let items: [SearchLiveItemDTO]
     public let numResults: Int64
     public let numPages: Int64
     enum CodingKeys: String, CodingKey {
@@ -785,6 +887,25 @@ public struct UserCardDTO: Decodable, Hashable {
     }
 }
 
+public struct UserLiveRoomDTO: Decodable, Hashable {
+    public let roomID: Int64
+    public let liveStatus: Int64
+    public let title: String
+    public let cover: String
+    public let online: Int64
+    public let url: String
+
+    public var isLive: Bool {
+        liveStatus == 1 && roomID > 0
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case title, cover, online, url
+        case roomID = "room_id"
+        case liveStatus = "live_status"
+    }
+}
+
 public struct HistoryItemDTO: Decodable, Identifiable, Hashable {
     public var id: Int64 { aid }
     public let aid: Int64
@@ -938,6 +1059,27 @@ public struct DynamicVideoDTO: Decodable, Hashable {
     }
 }
 
+public struct DynamicLiveDTO: Decodable, Hashable {
+    public let roomID: Int64
+    public let title: String
+    public let cover: String
+    public let areaName: String
+    public let watchedLabel: String
+    public let liveStatus: Int64
+
+    public var isOpenable: Bool {
+        roomID > 0
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case title, cover
+        case roomID = "room_id"
+        case areaName = "area_name"
+        case watchedLabel = "watched_label"
+        case liveStatus = "live_status"
+    }
+}
+
 public struct DynamicImageDTO: Decodable, Hashable {
     public let url: String
     public let width: Int64
@@ -952,6 +1094,7 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
     public let stat: DynamicStatDTO
     public let text: String
     public let video: DynamicVideoDTO?
+    public let live: DynamicLiveDTO?
     public let images: [DynamicImageDTO]
     public let commentId: Int64
     public let commentType: Int32
@@ -960,7 +1103,7 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
     public let orig: DynamicItemRefDTO?
 
     enum CodingKeys: String, CodingKey {
-        case kind, author, stat, text, video, images, orig
+        case kind, author, stat, text, video, live, images, orig
         case idStr = "id_str"
         case commentId = "comment_id"
         case commentType = "comment_type"
@@ -974,6 +1117,7 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
         stat = (try? c.decode(DynamicStatDTO.self, forKey: .stat)) ?? DynamicStatDTO(like: 0, comment: 0, forward: 0)
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
         video = try? c.decodeIfPresent(DynamicVideoDTO.self, forKey: .video)
+        live = try? c.decodeIfPresent(DynamicLiveDTO.self, forKey: .live)
         images = (try? c.decodeIfPresent([DynamicImageDTO].self, forKey: .images)) ?? []
         commentId = (try? c.decode(Int64.self, forKey: .commentId)) ?? 0
         commentType = (try? c.decode(Int32.self, forKey: .commentType)) ?? 0
@@ -991,10 +1135,11 @@ public struct DynamicItemRefDTO: Decodable, Hashable {
     public let stat: DynamicStatDTO
     public let text: String
     public let video: DynamicVideoDTO?
+    public let live: DynamicLiveDTO?
     public let images: [DynamicImageDTO]
 
     enum CodingKeys: String, CodingKey {
-        case kind, author, stat, text, video, images
+        case kind, author, stat, text, video, live, images
         case idStr = "id_str"
     }
 
@@ -1006,6 +1151,7 @@ public struct DynamicItemRefDTO: Decodable, Hashable {
         stat = (try? c.decode(DynamicStatDTO.self, forKey: .stat)) ?? DynamicStatDTO(like: 0, comment: 0, forward: 0)
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
         video = try? c.decodeIfPresent(DynamicVideoDTO.self, forKey: .video)
+        live = try? c.decodeIfPresent(DynamicLiveDTO.self, forKey: .live)
         images = (try? c.decodeIfPresent([DynamicImageDTO].self, forKey: .images)) ?? []
     }
 
@@ -1014,13 +1160,14 @@ public struct DynamicItemRefDTO: Decodable, Hashable {
     /// type for shared body rendering.
     public init(idStr: String, kind: DynamicKindDTO, author: DynamicAuthorDTO,
                 stat: DynamicStatDTO, text: String,
-                video: DynamicVideoDTO?, images: [DynamicImageDTO]) {
+                video: DynamicVideoDTO?, live: DynamicLiveDTO?, images: [DynamicImageDTO]) {
         self.idStr = idStr
         self.kind = kind
         self.author = author
         self.stat = stat
         self.text = text
         self.video = video
+        self.live = live
         self.images = images
     }
 }

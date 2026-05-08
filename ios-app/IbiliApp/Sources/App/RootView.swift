@@ -109,7 +109,7 @@ private struct DeepLinkPlayerHost: View {
         NavigationStack(path: $router.path) {
             Group {
                 if let route = router.pending {
-                    playerDestination(for: route)
+                    rootDestination(for: route)
                         .id(route.id)
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
@@ -237,7 +237,7 @@ private struct DeepLinkPlayerHost: View {
     }
 
     private func syncPlayerSessions() {
-        PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending, stack: router.playerPath)
+        PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
     }
 
     @ViewBuilder
@@ -246,10 +246,23 @@ private struct DeepLinkPlayerHost: View {
         case .player(let playerRoute):
             playerDestination(for: playerRoute)
                 .id(playerRoute.id)
+        case .live(let liveRoute):
+            liveDestination(for: liveRoute)
+                .id(liveRoute.id)
         case .userSpace(let userSpaceRoute):
             UserSpaceView(mid: userSpaceRoute.mid)
         case .dynamicDetail(let detailRoute):
             DynamicDetailView(item: detailRoute.item)
+        }
+    }
+
+    @ViewBuilder
+    private func rootDestination(for route: DeepLinkRouter.RootRoute) -> some View {
+        switch route {
+        case .player(let playerRoute):
+            playerDestination(for: playerRoute)
+        case .live(let liveRoute):
+            liveDestination(for: liveRoute)
         }
     }
 
@@ -267,9 +280,16 @@ private struct DeepLinkPlayerHost: View {
         .tint(.white)
     }
 
+    private func liveDestination(for route: DeepLinkRouter.LiveRoute) -> some View {
+        LiveRoomView(route: route)
+            .tint(.white)
+    }
+
     private var isAnyAreaPlayerSwipeBackEnabled: Bool {
         guard router.pending != nil, !isRootDismissInFlight else { return false }
-        return router.path.isEmpty || router.path.last?.playerRoute != nil
+        return router.path.isEmpty
+            || router.path.last?.playerRoute != nil
+            || router.path.last?.liveRoute != nil
     }
 
     private func handleAnyAreaSwipeBackChanged(_ translationX: CGFloat) {

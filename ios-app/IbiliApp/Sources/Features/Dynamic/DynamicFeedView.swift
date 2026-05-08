@@ -52,6 +52,7 @@ enum DynamicFeedScope: String, CaseIterable, Identifiable {
 enum DynamicTapAction {
     /// Pure video uploads: jump straight to the player overlay.
     case playVideo(aid: Int64, bvid: String, title: String, cover: String)
+    case openLive(roomID: Int64, title: String, cover: String, anchorName: String)
     /// Anything else (image post / forward / article / live / word):
     /// open the secondary detail page so the user can read the full
     /// text, browse images, and engage with the comment thread.
@@ -61,6 +62,14 @@ enum DynamicTapAction {
 private func classify(_ item: DynamicItemDTO) -> DynamicTapAction {
     if item.kind == .video, let v = item.video, !(v.bvid.isEmpty && v.aid == 0) {
         return .playVideo(aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+    }
+    if item.kind == .live, let live = item.live, live.isOpenable {
+        return .openLive(
+            roomID: live.roomID,
+            title: live.title,
+            cover: live.cover,
+            anchorName: item.author.name
+        )
     }
     return .openDetail
 }
@@ -251,6 +260,7 @@ struct DynamicItemCard: View {
                 kind: item.kind,
                 contentWidth: DynamicLayout.contentWidth,
                 onPlayVideo: openCardVideo,
+                onOpenLive: openCardLive,
                 onTapImage: { idx in preview = ImagePreviewState(urls: item.images.map(\.url), index: idx) }
             )
 
@@ -259,6 +269,7 @@ struct DynamicItemCard: View {
                     orig: orig,
                     contentWidth: DynamicLayout.contentWidth - 20,
                     onPlayVideo: openOrigVideo,
+                    onOpenLive: openOrigLive,
                     onTapImage: { idx in preview = ImagePreviewState(urls: orig.images.map(\.url), index: idx) },
                     onOpenOrigDetail: openOrigDetail
                 )
@@ -289,6 +300,8 @@ struct DynamicItemCard: View {
             )
             if let onOpenVideo { onOpenVideo(dto) }
             else { router.open(dto) }
+        case .openLive(let roomID, let title, let cover, let anchorName):
+            router.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
         case .openDetail:
             onOpenDetail?(item)
         }
@@ -316,6 +329,26 @@ struct DynamicItemCard: View {
         }
     }
 
+    private func openCardLive() {
+        guard let live = item.live, live.isOpenable else { return }
+        router.openLive(
+            roomID: live.roomID,
+            title: live.title,
+            cover: live.cover,
+            anchorName: item.author.name
+        )
+    }
+
+    private func openOrigLive() {
+        guard let orig = item.orig, let live = orig.live, live.isOpenable else { return }
+        router.openLive(
+            roomID: live.roomID,
+            title: live.title,
+            cover: live.cover,
+            anchorName: orig.author.name
+        )
+    }
+
     private func openOrigDetail() {
         onOpenDetail?(item)
     }
@@ -324,7 +357,7 @@ struct DynamicItemCard: View {
         DynamicItemRefDTO(
             idStr: item.idStr, kind: item.kind, author: item.author,
             stat: item.stat, text: item.text,
-            video: item.video, images: item.images
+            video: item.video, live: item.live, images: item.images
         )
     }
 }
@@ -394,14 +427,20 @@ private struct DynamicBody: View {
     let kind: DynamicKindDTO
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
+    let onOpenLive: () -> Void
     let onTapImage: (Int) -> Void
 
     var body: some View {
         switch kind {
-        case .video, .pgc, .live:
+        case .video, .pgc:
             if let v = item.video {
-                DynamicVideoTile(video: v, contentWidth: contentWidth, isLive: kind == .live)
+                DynamicVideoTile(video: v, contentWidth: contentWidth)
                     .onTapGesture { onPlayVideo() }
+            }
+        case .live:
+            if let live = item.live {
+                DynamicLiveTile(live: live, contentWidth: contentWidth)
+                    .onTapGesture { onOpenLive() }
             }
         case .draw:
             DynamicImagesGrid(images: item.images, contentWidth: contentWidth, onTap: onTapImage)
@@ -412,6 +451,62 @@ private struct DynamicBody: View {
         case .word, .forward, .unsupported:
             EmptyView()
         }
+    }
+}
+
+private struct DynamicLiveTile: View {
+    let live: DynamicLiveDTO
+    let contentWidth: CGFloat
+
+    var body: some View {
+        let h = max(1, contentWidth * 9 / 16)
+        ZStack(alignment: .bottomLeading) {
+            RemoteImage(url: live.cover,
+                        contentMode: .fill,
+                        targetPointSize: CGSize(width: contentWidth, height: h),
+                        quality: 80)
+                .frame(width: contentWidth, height: h)
+                .clipped()
+            LinearGradient(
+                colors: [.black.opacity(0.0), .black.opacity(0.62)],
+                startPoint: .center, endPoint: .bottom
+            )
+            .frame(width: contentWidth, height: h)
+            .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(live.title)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    if !live.areaName.isEmpty {
+                        Text(live.areaName)
+                    }
+                    Spacer(minLength: 0)
+                    if !live.watchedLabel.isEmpty {
+                        Text(live.watchedLabel)
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .background(Capsule().fill(.black.opacity(0.5)))
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.85))
+            }
+            .padding(10)
+            .frame(width: contentWidth, alignment: .leading)
+            HStack {
+                Text(live.liveStatus == 1 ? "LIVE" : "直播")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(live.liveStatus == 1 ? IbiliTheme.accent : .gray))
+                Spacer(minLength: 0)
+            }
+            .padding(8)
+            .frame(width: contentWidth, height: h, alignment: .topLeading)
+        }
+        .frame(width: contentWidth, height: h)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -568,6 +663,7 @@ private struct DynamicForwardPanel: View {
     let orig: DynamicItemRefDTO
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
+    let onOpenLive: () -> Void
     let onTapImage: (Int) -> Void
     let onOpenOrigDetail: () -> Void
 
@@ -597,6 +693,7 @@ private struct DynamicForwardPanel: View {
             DynamicBody(item: orig, kind: orig.kind,
                         contentWidth: contentWidth,
                         onPlayVideo: onPlayVideo,
+                        onOpenLive: onOpenLive,
                         onTapImage: onTapImage)
 
             if orig.kind == .unsupported {
