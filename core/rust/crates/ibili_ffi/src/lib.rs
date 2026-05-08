@@ -88,8 +88,16 @@ fn dispatch(
 struct PollArgs { auth_code: String }
 
 #[derive(Deserialize)]
-struct FeedArgs { #[serde(default)] idx: i64, #[serde(default = "default_ps")] ps: i64 }
+struct FeedArgs {
+    #[serde(default)]
+    idx: i64,
+    #[serde(default = "default_ps")]
+    ps: i64,
+    #[serde(default = "default_recommend_source")]
+    source: String,
+}
 fn default_ps() -> i64 { 20 }
+fn default_recommend_source() -> String { "web".into() }
 
 #[derive(Deserialize)]
 struct PopularArgs {
@@ -335,8 +343,12 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             to_value(c.inner.auth_tv_qr_poll(&a.auth_code)?)
         }
         "feed.home" => {
-            let a: FeedArgs = serde_json::from_value(args).unwrap_or(FeedArgs { idx: 0, ps: 20 });
-            to_value(c.inner.feed_home(a.idx, a.ps)?)
+            let a: FeedArgs = serde_json::from_value(args).unwrap_or(FeedArgs {
+                idx: 0,
+                ps: 20,
+                source: default_recommend_source(),
+            });
+            to_value(c.inner.feed_home_with_source(a.idx, a.ps, &a.source)?)
         }
         "feed.popular" => {
             let a: PopularArgs = serde_json::from_value(args).unwrap_or(PopularArgs { pn: 1, ps: 20 });

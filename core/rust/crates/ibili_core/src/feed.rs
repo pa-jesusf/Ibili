@@ -1,10 +1,13 @@
 use crate::Core;
 use crate::dto::{FeedItem, FeedPage};
 use crate::error::{CoreError, CoreResult};
+use crate::signer::WbiKey;
 use serde::Deserialize;
 
 const URL_FEED_INDEX: &str = "https://app.bilibili.com/x/v2/feed/index";
+const URL_FEED_RCMD_WEB: &str = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd";
 const URL_FEED_POPULAR: &str = "https://api.bilibili.com/x/web-interface/popular";
+const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 /// `Constants.statistics` from upstream PiliPlus.
 const STATISTICS: &str = r#"{"appId":5,"platform":3,"version":"2.0.1","abtest":""}"#;
 
@@ -50,6 +53,40 @@ struct PlayerArgs {
     #[serde(default)] aid: i64,
     #[serde(default)] cid: i64,
     #[serde(default)] duration: i64,
+}
+
+#[derive(Deserialize)]
+struct WebFeedRoot {
+    #[serde(default)]
+    item: Vec<WebFeedRawItem>,
+}
+
+#[derive(Deserialize)]
+struct WebFeedRawItem {
+    #[serde(default)] id: i64,
+    #[serde(default)] bvid: String,
+    #[serde(default)] cid: i64,
+    #[serde(default)] goto: String,
+    #[serde(default)] pic: String,
+    #[serde(default)] title: String,
+    #[serde(default)] duration: i64,
+    #[serde(default)] pubdate: i64,
+    #[serde(default)] owner: Option<WebFeedOwner>,
+    #[serde(default)] stat: WebFeedStat,
+}
+
+#[derive(Deserialize, Default)]
+struct WebFeedOwner {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize, Default)]
+struct WebFeedStat {
+    #[serde(default)]
+    view: i64,
+    #[serde(default)]
+    danmaku: i64,
 }
 
 #[derive(Deserialize)]
@@ -118,10 +155,84 @@ fn parse_stat_text(raw: &str) -> i64 {
     (base * multiplier) as i64
 }
 
+#[derive(Deserialize)]
+struct NavData {
+    wbi_img: NavWbiImage,
+}
+
+#[derive(Deserialize)]
+struct NavWbiImage {
+    img_url: String,
+    sub_url: String,
+}
+
+/// Bilibili sometimes returns covers as `//i0.hdslb.com/...` (scheme-relative)
+/// or with `http://`; force HTTPS so the iOS image loader stays on ATS-safe URLs.
+fn ensure_https(raw: String) -> String {
+    if raw.starts_with("//") {
+        format!("https:{}", raw)
+    } else if let Some(rest) = raw.strip_prefix("http://") {
+        format!("https://{}", rest)
+    } else {
+        raw
+    }
+}
+
 impl Core {
+    /// Default to upstream PiliPlus's web recommendation path
+    /// (`VideoHttp.rcmdVideoList`).
+    pub fn feed_home(&self, fresh_idx: i64, ps: i64) -> CoreResult<FeedPage> {
+        self.feed_home_with_source(fresh_idx, ps, "web")
+    }
+
+    pub fn feed_home_with_source(&self, fresh_idx: i64, ps: i64, source: &str) -> CoreResult<FeedPage> {
+        match source {
+            "app" => self.feed_home_app(fresh_idx, ps),
+            _ => self.feed_home_web(fresh_idx, ps),
+        }
+    }
+
+    /// Mirrors `VideoHttp.rcmdVideoList` from upstream PiliPlus
+    /// (`/x/web-interface/wbi/index/top/feed/rcmd`).
+    fn feed_home_web(&self, fresh_idx: i64, ps: i64) -> CoreResult<FeedPage> {
+        let key = self.fetch_wbi_key_for_feed()?;
+        let fresh_idx = fresh_idx.max(0);
+        let ps = ps.max(1);
+        let params = vec![
+            ("version".into(), "1".into()),
+            ("feed_version".into(), "V8".into()),
+            ("homepage_ver".into(), "1".into()),
+            ("ps".into(), ps.to_string()),
+            ("fresh_idx".into(), fresh_idx.to_string()),
+            ("brush".into(), fresh_idx.to_string()),
+            ("fresh_type".into(), "4".into()),
+        ];
+        let raw: WebFeedRoot = self.http.get_signed_web(URL_FEED_RCMD_WEB, params, &key)?;
+        let items = raw.item.into_iter()
+            .filter(|i| i.goto == "av")
+            .filter(|i| i.id != 0)
+            .map(|i| {
+                let author = i.owner.map(|owner| owner.name).unwrap_or_default();
+                FeedItem {
+                    aid: i.id,
+                    bvid: i.bvid,
+                    cid: i.cid,
+                    title: i.title,
+                    cover: ensure_https(i.pic),
+                    author,
+                    duration_sec: i.duration,
+                    play: i.stat.view,
+                    danmaku: i.stat.danmaku,
+                    pubdate: i.pubdate,
+                }
+            })
+            .collect();
+        Ok(FeedPage { items })
+    }
+
     /// Mirrors `VideoHttp.rcmdVideoListApp` from upstream PiliPlus
-    /// (`lib/http/video.dart`).
-    pub fn feed_home(&self, fresh_idx: i64, _ps: i64) -> CoreResult<FeedPage> {
+    /// (`/x/v2/feed/index`).
+    fn feed_home_app(&self, fresh_idx: i64, _ps: i64) -> CoreResult<FeedPage> {
         let access_key = self.session.read().access_key()
             .ok_or(CoreError::AuthRequired)?;
         let pull = if fresh_idx == 0 { "true" } else { "false" };
@@ -180,6 +291,11 @@ impl Core {
             })
             .collect();
         Ok(FeedPage { items })
+    }
+
+    fn fetch_wbi_key_for_feed(&self) -> CoreResult<WbiKey> {
+        let nav: NavData = self.http.get_web(URL_NAV, &[])?;
+        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
     }
 
     /// Mirrors PiliPlus `VideoHttp.hotVideoList`

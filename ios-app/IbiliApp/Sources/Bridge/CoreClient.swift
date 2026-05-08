@@ -161,9 +161,9 @@ public final class CoreClient: @unchecked Sendable {
         try call("auth.tv_qr.poll", args: ["auth_code": authCode], decoding: TvQrPollDTO.self)
     }
 
-    public func feedHome(idx: Int64 = 0, ps: Int64 = 20) throws -> FeedPageDTO {
-        struct A: Encodable { let idx: Int64; let ps: Int64 }
-        return try call("feed.home", args: A(idx: idx, ps: ps), decoding: FeedPageDTO.self)
+    public func feedHome(idx: Int64 = 0, ps: Int64 = 20, source: String = "web") throws -> FeedPageDTO {
+        struct A: Encodable { let idx: Int64; let ps: Int64; let source: String }
+        return try call("feed.home", args: A(idx: idx, ps: ps, source: source), decoding: FeedPageDTO.self)
     }
 
     public func feedPopular(pn: Int64 = 1, ps: Int64 = 20) throws -> FeedPageDTO {

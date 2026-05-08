@@ -26,26 +26,31 @@ final class HomeViewModel: ObservableObject {
 
     private var idx: Int64 = 0
     private var page: Int64 = 1
+    private var loadedRecommendSource: HomeRecommendSource?
 
     init(section: HomeFeedSection) {
         self.section = section
     }
 
-    func loadInitial() async {
+    func loadInitial(recommendSource: HomeRecommendSource = .web) async {
+        if section == .recommend, loadedRecommendSource != nil, loadedRecommendSource != recommendSource {
+            await load(reset: true, recommendSource: recommendSource)
+            return
+        }
         guard items.isEmpty else { return }
-        await load(reset: true)
+        await load(reset: true, recommendSource: recommendSource)
     }
 
-    func refresh() async {
-        await load(reset: true)
+    func refresh(recommendSource: HomeRecommendSource = .web) async {
+        await load(reset: true, recommendSource: recommendSource)
     }
 
-    func loadMore() async {
+    func loadMore(recommendSource: HomeRecommendSource = .web) async {
         guard !isLoading, !isEnd else { return }
-        await load(reset: false)
+        await load(reset: false, recommendSource: recommendSource)
     }
 
-    private func load(reset: Bool) async {
+    private func load(reset: Bool, recommendSource: HomeRecommendSource) async {
         isLoading = true
         errorText = nil
         if reset {
@@ -56,7 +61,7 @@ final class HomeViewModel: ObservableObject {
 
         switch section {
         case .recommend:
-            await loadRecommend(reset: reset)
+            await loadRecommend(reset: reset, source: recommendSource)
         case .hot:
             await loadHot(reset: reset)
         case .live:
@@ -66,31 +71,48 @@ final class HomeViewModel: ObservableObject {
         isLoading = false
     }
 
-    private func loadRecommend(reset: Bool) async {
-        let targetIdx: Int64 = reset ? 0 : idx
+    private func loadRecommend(reset: Bool, source: HomeRecommendSource) async {
+        let targetIdx: Int64 = {
+            switch source {
+            case .web:
+                return reset ? 0 : page
+            case .app:
+                return reset ? 0 : idx
+            }
+        }()
+        let sourceRaw = source.rawValue
         AppLog.info("home", reset ? "开始加载首页推荐" : "开始加载更多首页推荐", metadata: [
             "idx": String(targetIdx),
             "section": section.rawValue,
+            "source": sourceRaw,
         ])
         do {
-            let page = try await Task.detached {
-                try CoreClient.shared.feedHome(idx: targetIdx, ps: 20)
+            let response = try await Task.detached {
+                try CoreClient.shared.feedHome(idx: targetIdx, ps: 20, source: sourceRaw)
             }.value
-            let fresh = mergeFresh(page.items, reset: reset)
+            let fresh = mergeFresh(response.items, reset: reset)
             if reset { items = fresh }
             else { items.append(contentsOf: fresh) }
-            idx = page.items.last?.aid ?? idx
+            switch source {
+            case .web:
+                page = targetIdx + 1
+            case .app:
+                idx = response.items.last?.aid ?? idx
+            }
+            loadedRecommendSource = source
             isEnd = fresh.isEmpty
             AppLog.info("home", reset ? "首页推荐加载成功" : "首页推荐追加成功", metadata: [
                 "count": String(fresh.count),
                 "nextIdx": String(idx),
                 "section": section.rawValue,
+                "source": sourceRaw,
             ])
         } catch {
             errorText = error.localizedDescription
             AppLog.error("home", reset ? "首页推荐加载失败" : "首页推荐追加失败", error: error, metadata: [
                 "idx": String(targetIdx),
                 "section": section.rawValue,
+                "source": sourceRaw,
             ])
         }
     }

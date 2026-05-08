@@ -60,7 +60,7 @@ final class VideoDetailViewModel: ObservableObject {
         defer { isLoadingMoreRelated = false }
         let idx = feedFreshIdx
         let page = await Task.detached(priority: .utility) {
-            (try? CoreClient.shared.feedHome(idx: idx, ps: 12))
+            (try? CoreClient.shared.feedHome(idx: idx, ps: 12, source: "web"))
         }.value
         guard let page else {
             relatedIsEnd = true

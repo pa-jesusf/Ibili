@@ -81,6 +81,21 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("推荐来源", selection: Binding(
+                    get: { settings.homeRecommendSource },
+                    set: { settings.homeRecommendSource = $0 }
+                )) {
+                    ForEach(HomeRecommendSource.allCases) { source in
+                        Text(source.label).tag(source)
+                    }
+                }
+            } header: {
+                Text("首页推荐")
+            } footer: {
+                Text(settings.homeRecommendSource.detail)
+            }
+
+            Section {
                 Picker("封面清晰度", selection: $settings.imageQualityRaw) {
                     ForEach(qualityOptions, id: \.value) { opt in
                         Text(opt.label).tag(opt.value)

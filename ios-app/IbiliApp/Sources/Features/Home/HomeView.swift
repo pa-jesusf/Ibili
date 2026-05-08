@@ -73,9 +73,18 @@ private struct HomeFeedPage: View {
     @Environment(\.horizontalSizeClass) private var hSizeClass
 
     var body: some View {
+        let recommendSource = settings.homeRecommendSource
         feedGrid
-        .task(id: vm.section) { await vm.loadInitial() }
-        .refreshable { await vm.refresh() }
+        .task(id: vm.section) {
+            await vm.loadInitial(recommendSource: recommendSource)
+        }
+        .refreshable {
+            await vm.refresh(recommendSource: recommendSource)
+        }
+        .onChange(of: settings.homeRecommendSource.rawValue) { _ in
+            guard vm.section == .recommend else { return }
+            Task { await vm.refresh(recommendSource: settings.homeRecommendSource) }
+        }
     }
 
     private var feedGrid: some View {
@@ -112,7 +121,7 @@ private struct HomeFeedPage: View {
                     VStack(spacing: 12) {
                         Image(systemName: "wifi.exclamationmark").font(.largeTitle)
                         Text(err).multilineTextAlignment(.center).foregroundStyle(.secondary)
-                        Button("重试") { Task { await vm.refresh() } }
+                        Button("重试") { Task { await vm.refresh(recommendSource: settings.homeRecommendSource) } }
                             .buttonStyle(.borderedProminent).tint(IbiliTheme.accent)
                     }
                     .frame(maxWidth: .infinity)
@@ -139,7 +148,7 @@ private struct HomeFeedPage: View {
                                 prefetch.cardAppeared(item, allItems: vm.items)
                                 prefetchCovers(around: item, cardWidth: cardW)
                                 if !vm.isEnd, item.aid == vm.items.last?.aid {
-                                    Task { await vm.loadMore() }
+                                    Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
                                 }
                             }
                             .onDisappear { prefetch.cardDisappeared(item) }

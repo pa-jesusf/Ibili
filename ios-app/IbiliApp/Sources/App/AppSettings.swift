@@ -32,6 +32,30 @@ enum FeedCardStat: String, CaseIterable, Identifiable {
     }
 }
 
+/// Recommendation source for the Home "推荐" tab. Mirrors upstream
+/// PiliPlus's app/web recommendation switch, but defaults to web so
+/// the home feed works without requiring app-endpoint auth.
+enum HomeRecommendSource: String, CaseIterable, Identifiable, Sendable {
+    case web
+    case app
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .web: return "Web 推荐"
+        case .app: return "App 推荐"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .web: return "默认。使用网页端推荐流，冷启动更稳定。"
+        case .app: return "使用 app 端推荐流，更接近移动端推荐。"
+        }
+    }
+}
+
 /// CDN selection for Bilibili media URLs. Names mirror upstream PiliPlus's
 /// `CDNService` enum; `auto` keeps Bilibili's returned candidates and lets
 /// our HLS proxy pick the fastest reachable host with its startup Range race.
@@ -162,6 +186,7 @@ final class AppSettings: ObservableObject {
     /// once it finishes preparing.
     @AppStorage("ibili.player.fastLoad") var fastLoad: Bool = false
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
+    @AppStorage("ibili.home.recommendSource") private var homeRecommendSourceRaw: String = HomeRecommendSource.web.rawValue
 
     /// Whether the video detail page displays the canonical BV id or
     /// the legacy `av<aid>` form. Mirrors the upstream toggle.
@@ -174,6 +199,11 @@ final class AppSettings: ObservableObject {
     var cdnService: MediaCDNService {
         get { MediaCDNService(rawValue: cdnServiceRaw) ?? .auto }
         set { cdnServiceRaw = newValue.rawValue }
+    }
+
+    var homeRecommendSource: HomeRecommendSource {
+        get { HomeRecommendSource(rawValue: homeRecommendSourceRaw) ?? .web }
+        set { homeRecommendSourceRaw = newValue.rawValue }
     }
 
     func playbackCacheVariantKey() -> String {
