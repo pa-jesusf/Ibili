@@ -4,6 +4,7 @@ import UIKit
 struct HomeView: View {
     @State private var section: HomeFeedSection = .recommend
     @State private var headerCollapseProgress: CGFloat = 0
+    @State private var switcherCollapseProgress: CGFloat = 0
     @StateObject private var recommendVM: HomeViewModel
     @StateObject private var hotVM: HomeViewModel
     @StateObject private var liveVM = LiveHomeViewModel()
@@ -21,6 +22,7 @@ struct HomeView: View {
                 HomeFeedPage(
                     section: $section,
                     collapseProgress: $headerCollapseProgress,
+                    switcherProgress: $switcherCollapseProgress,
                     vm: activeViewModel,
                     prefetch: prefetch
                 )
@@ -28,6 +30,7 @@ struct HomeView: View {
                 HomeLiveFeedPage(
                     section: $section,
                     collapseProgress: $headerCollapseProgress,
+                    switcherProgress: $switcherCollapseProgress,
                     vm: liveVM
                 )
             }
@@ -41,7 +44,8 @@ struct HomeView: View {
                 tabs: Array(HomeFeedSection.allCases),
                 title: { $0.title },
                 selection: $section,
-                collapseProgress: headerCollapseProgress
+                collapseProgress: switcherCollapseProgress,
+                positionProgress: headerCollapseProgress
             )
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -60,6 +64,7 @@ struct HomeView: View {
 private struct HomeFeedPage: View {
     @Binding var section: HomeFeedSection
     @Binding var collapseProgress: CGFloat
+    @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: HomeViewModel
     let prefetch: FeedPrefetchCoordinator
 
@@ -156,12 +161,25 @@ private struct HomeFeedPage: View {
                 }
             }
             .coordinateSpace(name: "home-feed-scroll")
-            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
+            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
             .modifier(ProMotionScrollHint())
             .onAppear {
-                prefetch.update(preferredQn: Int64(settings.resolvedPreferredVideoQn()))
+                prefetch.update(
+                    preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                    cdnSelection: settings.cdnService.rawValue
+                )
+            }
+            .onChange(of: settings.cdnService.rawValue) { _ in
+                updatePrefetchSettings()
             }
         }
+    }
+
+    private func updatePrefetchSettings() {
+        prefetch.update(
+            preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+            cdnSelection: settings.cdnService.rawValue
+        )
     }
 
     /// Pre-warm cover images ahead of the user's scroll position so
@@ -183,6 +201,7 @@ private struct HomeFeedPage: View {
 private struct HomeLiveFeedPage: View {
     @Binding var section: HomeFeedSection
     @Binding var collapseProgress: CGFloat
+    @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: LiveHomeViewModel
 
     @EnvironmentObject private var settings: AppSettings
@@ -270,7 +289,7 @@ private struct HomeLiveFeedPage: View {
                 }
             }
             .coordinateSpace(name: "home-feed-scroll")
-            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
+            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
             .modifier(ProMotionScrollHint())
         }
         .task { await vm.loadInitial() }

@@ -181,9 +181,13 @@ public final class CoreClient: @unchecked Sendable {
         return try call("live.room_info", args: A(room_id: roomID), decoding: LiveRoomInfoDTO.self)
     }
 
-    public func livePlayUrl(roomID: Int64, qn: Int64 = 0) throws -> LivePlayUrlDTO {
-        struct A: Encodable { let room_id: Int64; let qn: Int64 }
-        return try call("live.playurl", args: A(room_id: roomID, qn: qn), decoding: LivePlayUrlDTO.self)
+    public func livePlayUrl(roomID: Int64, qn: Int64 = 0, cdn: String = "auto") throws -> LivePlayUrlDTO {
+        struct A: Encodable { let room_id: Int64; let qn: Int64; let cdn: String }
+        return try call(
+            "live.playurl",
+            args: A(room_id: roomID, qn: qn, cdn: cdn),
+            decoding: LivePlayUrlDTO.self
+        )
     }
 
     public func liveDanmakuInfo(roomID: Int64) throws -> LiveDanmakuInfoDTO {
@@ -219,9 +223,31 @@ public final class CoreClient: @unchecked Sendable {
         ))
     }
 
-    public func playUrl(aid: Int64, cid: Int64, qn: Int64 = 0, audioQn: Int64 = 0) throws -> PlayUrlDTO {
-        struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64; let audio_qn: Int64 }
-        return try call("video.playurl", args: A(aid: aid, cid: cid, qn: qn, audio_qn: audioQn), decoding: PlayUrlDTO.self)
+    public func playUrl(
+        aid: Int64,
+        cid: Int64,
+        qn: Int64 = 0,
+        audioQn: Int64 = 0,
+        cdn: String = "auto"
+    ) throws -> PlayUrlDTO {
+        struct A: Encodable {
+            let aid: Int64
+            let cid: Int64
+            let qn: Int64
+            let audio_qn: Int64
+            let cdn: String
+        }
+        return try call(
+            "video.playurl",
+            args: A(
+                aid: aid,
+                cid: cid,
+                qn: qn,
+                audio_qn: audioQn,
+                cdn: cdn
+            ),
+            decoding: PlayUrlDTO.self
+        )
     }
 
     public func playUrlTV(aid: Int64, cid: Int64, qn: Int64 = 0) throws -> PlayUrlDTO {

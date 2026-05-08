@@ -16,6 +16,52 @@ pub const DEFAULT_CDN_HOST: &str = "upos-sz-mirrorali.bilivideo.com";
 
 const PROXY_TF: &str = "proxy-tf-all-ws.bilivideo.com";
 
+/// Resolve the user-facing CDN selection used by the iOS settings screen.
+/// Names mirror upstream PiliPlus's `CDNService` enum so future upstream
+/// comparisons stay straightforward. `auto`, `baseUrl`, and `backupUrl` keep
+/// the server-provided hosts; the iOS HLS proxy still races those candidates
+/// at playback startup.
+pub fn cdn_host_for_selection(selection: &str) -> Option<&'static str> {
+    match selection {
+        "ali" => Some("upos-sz-mirrorali.bilivideo.com"),
+        "alib" => Some("upos-sz-mirroralib.bilivideo.com"),
+        "alio1" => Some("upos-sz-mirroralio1.bilivideo.com"),
+        "cos" => Some("upos-sz-mirrorcos.bilivideo.com"),
+        "cosb" => Some("upos-sz-mirrorcosb.bilivideo.com"),
+        "coso1" => Some("upos-sz-mirrorcoso1.bilivideo.com"),
+        "hw" => Some("upos-sz-mirrorhw.bilivideo.com"),
+        "hwb" => Some("upos-sz-mirrorhwb.bilivideo.com"),
+        "hwo1" => Some("upos-sz-mirrorhwo1.bilivideo.com"),
+        "hw_08c" => Some("upos-sz-mirror08c.bilivideo.com"),
+        "hw_08h" => Some("upos-sz-mirror08h.bilivideo.com"),
+        "hw_08ct" => Some("upos-sz-mirror08ct.bilivideo.com"),
+        "tf_hw" => Some("upos-tf-all-hw.bilivideo.com"),
+        "tf_tx" => Some("upos-tf-all-tx.bilivideo.com"),
+        "akamai" => Some("upos-hz-mirrorakam.akamaized.net"),
+        "aliov" => Some("upos-sz-mirroraliov.bilivideo.com"),
+        "cosov" => Some("upos-sz-mirrorcosov.bilivideo.com"),
+        "hwov" => Some("upos-sz-mirrorhwov.bilivideo.com"),
+        "hk_bcache" => Some("cn-hk-eq-bcache-01.bilivideo.com"),
+        _ => None,
+    }
+}
+
+pub fn rank_urls_for_selection(
+    urls: &[String],
+    selection: &str,
+) -> Vec<String> {
+    let selection = if selection.trim().is_empty() {
+        "auto"
+    } else {
+        selection.trim()
+    };
+    let host = match selection {
+        "auto" | "baseUrl" | "backupUrl" => None,
+        other => cdn_host_for_selection(other),
+    };
+    rank_urls(urls, host)
+}
+
 // Original Dart regex uses `(?!302)` lookahead which the `regex` crate does
 // not support. We split detection into a host extractor + host predicate.
 static UPGCXCODE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -76,19 +122,12 @@ fn host_is_mirror(host: &str) -> bool {
 ///
 /// * `default_host` — upos host to rewrite mirror URLs to. `None` keeps
 ///   the original host (equivalent to upstream's `CDNService.baseUrl`).
-/// * `is_audio` + `disable_audio_cdn` — when true, audio URLs are returned
-///   as-is without host rewriting (mirrors upstream's `disableAudioCDN`).
-pub fn rank_urls(
-    urls: &[String],
-    default_host: Option<&str>,
-    is_audio: bool,
-    disable_audio_cdn: bool,
-) -> Vec<String> {
+pub fn rank_urls(urls: &[String], default_host: Option<&str>) -> Vec<String> {
     if urls.is_empty() {
         return Vec::new();
     }
 
-    let preferred = pick_preferred(urls, default_host, is_audio, disable_audio_cdn);
+    let preferred = pick_preferred(urls, default_host);
 
     let mut out: Vec<String> = Vec::with_capacity(urls.len() + 1);
     if let Some(p) = preferred {
@@ -106,8 +145,6 @@ pub fn rank_urls(
 fn pick_preferred(
     urls: &[String],
     default_host: Option<&str>,
-    is_audio: bool,
-    disable_audio_cdn: bool,
 ) -> Option<String> {
     if default_host.is_none() {
         return urls.first().cloned();
@@ -144,9 +181,6 @@ fn pick_preferred(
                 continue;
             }
 
-            if is_audio && disable_audio_cdn {
-                return Some(url.clone());
-            }
             return Some(replace_host(&parsed, host));
         }
 
@@ -218,7 +252,7 @@ mod tests {
         let urls = vec![
             "https://upos-sz-mirrorhw.bilivideo.com/upgcxcode/aa/bb/cc.mp4?os=hw".to_string(),
         ];
-        let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST), false, false);
+        let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST));
         assert_eq!(
             ranked[0],
             "https://upos-sz-mirrorali.bilivideo.com/upgcxcode/aa/bb/cc.mp4?os=hw"
@@ -233,29 +267,19 @@ mod tests {
             "https://upos-sz-mirrorhw.bilivideo.com/upgcxcode/aa/bb/cc.mp4?os=mcdn".to_string(),
             "https://1.2.3.4:8080/v1/resource/xx.mp4".to_string(),
         ];
-        let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST), false, false);
+        let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST));
         // mcdn os=mcdn → treated as mcdn_upgcxcode → host rewritten
         assert!(ranked[0].starts_with("https://upos-sz-mirrorali.bilivideo.com/"));
     }
 
-    #[test]
-    fn audio_disable_cdn_keeps_original() {
-        let urls = vec![
-            "https://upos-sz-mirrorhw.bilivideo.com/upgcxcode/aa/bb/cc.m4s".to_string(),
-        ];
-        let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST), true, true);
-        assert_eq!(ranked[0], urls[0]);
-    }
-
-    #[test]
     fn empty_input_returns_empty() {
-        assert!(rank_urls(&[], Some(DEFAULT_CDN_HOST), false, false).is_empty());
+        assert!(rank_urls(&[], Some(DEFAULT_CDN_HOST)).is_empty());
     }
 
     #[test]
     fn falls_back_to_proxy_tf_for_mcdn_only() {
         let urls = vec!["https://1.2.3.4:8080/v1/resource/xx.mp4".to_string()];
-        let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST), false, false);
+        let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST));
         assert!(ranked[0].starts_with("https://proxy-tf-all-ws.bilivideo.com/?url="));
     }
 }

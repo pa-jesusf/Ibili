@@ -88,6 +88,7 @@ private func openVideo(_ router: DeepLinkRouter, aid: Int64, bvid: String, title
 struct DynamicFeedView: View {
     @State private var scope: DynamicFeedScope = .all
     @State private var headerCollapseProgress: CGFloat = 0
+    @State private var switcherCollapseProgress: CGFloat = 0
     @StateObject private var allVM: DynamicFeedViewModel
     @StateObject private var videoVM: DynamicFeedViewModel
     @EnvironmentObject private var router: DeepLinkRouter
@@ -103,6 +104,7 @@ struct DynamicFeedView: View {
         DynamicFeedPage(
             scope: $scope,
             collapseProgress: $headerCollapseProgress,
+            switcherProgress: $switcherCollapseProgress,
             vm: activeViewModel,
             emptyTitle: scope.emptyTitle,
             emptyMessage: scope.emptyMessage,
@@ -123,7 +125,8 @@ struct DynamicFeedView: View {
                 tabs: Array(DynamicFeedScope.allCases),
                 title: { $0.title },
                 selection: $scope,
-                collapseProgress: headerCollapseProgress
+                collapseProgress: switcherCollapseProgress,
+                positionProgress: headerCollapseProgress
             )
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -158,6 +161,7 @@ struct DynamicFeedView: View {
 private struct DynamicFeedPage: View {
     @Binding var scope: DynamicFeedScope
     @Binding var collapseProgress: CGFloat
+    @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: DynamicFeedViewModel
     let emptyTitle: String
     let emptyMessage: String
@@ -210,7 +214,7 @@ private struct DynamicFeedPage: View {
             }
         }
         .coordinateSpace(name: "dynamic-feed-scroll")
-        .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress))
+        .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
         .modifier(ProMotionScrollHint())
         .scrollContentBackground(.hidden)
         .task(id: vm.scope) { await vm.loadInitial() }

@@ -79,7 +79,7 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
     let tabs: [Tab]
     let title: (Tab) -> String
     @Binding var selection: Tab
-    /// 0 -> expanded segmented control, 1 -> compact one-tap switcher.
+    /// 0 -> expanded segmented control, 1 -> compact menu switcher.
     var collapseProgress: CGFloat = 0
 
     @Namespace private var selectedSegment
@@ -87,33 +87,33 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
     private var expandedWidth: CGFloat {
         max(158, CGFloat(tabs.count) * 79)
     }
-    private var compactWidth: CGFloat {
-        max(72, min(92, CGFloat(title(selection).count) * 15 + 36))
-    }
     private let controlHeight: CGFloat = 40
+    private let compactDiameter: CGFloat = 44
 
     private var compactProgress: CGFloat {
         let p = min(1, max(0, collapseProgress))
-        return min(1, max(0, (p - 0.28) / 0.72))
+        return min(1, max(0, (p - 0.12) / 0.28))
     }
 
     var body: some View {
         let compact = compactProgress
+        let containerHeight = max(controlHeight, compactDiameter)
 
         ZStack(alignment: .trailing) {
             expandedControl
                 .frame(width: expandedWidth, height: controlHeight)
-                .scaleEffect(1 - compact * 0.12, anchor: .trailing)
+                .scaleEffect(1 - compact * 0.08, anchor: .trailing)
                 .opacity(1 - compact)
-                .allowsHitTesting(compact < 0.55)
+                .allowsHitTesting(compact < 0.35)
 
-            compactToggle
-                .frame(width: compactWidth, height: controlHeight)
-                .scaleEffect(0.76 + compact * 0.24, anchor: .trailing)
+            compactMenu
+                .frame(width: compactDiameter, height: compactDiameter)
+                .scaleEffect(0.84 + compact * 0.16, anchor: .trailing)
                 .opacity(compact)
-                .allowsHitTesting(compact > 0.45)
+                .allowsHitTesting(compact > 0.35)
         }
-        .frame(width: expandedWidth, height: controlHeight, alignment: .trailing)
+        .frame(width: expandedWidth, height: containerHeight, alignment: .trailing)
+        .animation(.spring(response: 0.24, dampingFraction: 0.86), value: compactProgress)
     }
 
     private var expandedControl: some View {
@@ -153,41 +153,34 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
         .buttonStyle(NavSegmentPressButtonStyle())
     }
 
-    private var compactToggle: some View {
-        Button {
-            advanceSelection()
-        } label: {
-            HStack(spacing: 4) {
-                Text(title(selection))
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Image(systemName: "chevron.forward")
-                    .font(.system(size: 10, weight: .bold))
-                    .imageScale(.small)
+    private var compactMenu: some View {
+        Menu {
+            ForEach(tabs) { tab in
+                Button {
+                    select(tab)
+                } label: {
+                    Label(title(tab), systemImage: tab == selection ? "checkmark" : "circle")
+                }
             }
+        } label: {
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 17, weight: .semibold))
+                .imageScale(.medium)
             .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Capsule())
+                .frame(width: compactDiameter, height: compactDiameter)
+                .contentShape(Circle())
         }
-        .buttonStyle(NavSegmentPressButtonStyle())
-        .background(FeedCompactGlassCapsule())
+        .buttonStyle(.plain)
+        .background(FeedCompactGlassCircle())
         .shadow(color: .black.opacity(0.20), radius: 14, x: 0, y: 8)
-        .accessibilityLabel("切换到\(title(nextSelection ?? selection))")
+        .accessibilityLabel("切换分区，当前\(title(selection))")
     }
 
-    private func advanceSelection() {
-        guard let nextSelection else { return }
+    private func select(_ tab: Tab) {
+        guard tab != selection else { return }
         withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-            selection = nextSelection
+            selection = tab
         }
-    }
-
-    private var nextSelection: Tab? {
-        guard let currentIndex = tabs.firstIndex(where: { $0 == selection }) else { return tabs.first }
-        let candidateIndex = tabs.index(after: currentIndex)
-        let nextIndex = candidateIndex == tabs.endIndex ? tabs.startIndex : candidateIndex
-        return tabs[nextIndex]
     }
 }
 
@@ -241,19 +234,59 @@ enum FeedSegmentedHeaderMetrics {
 /// versions keep the existing `GeometryReader`/`PreferenceKey` path.
 struct ScrollOffsetCollapseDriver: ViewModifier {
     @Binding var progress: CGFloat
+    /// Optional, direction-aware progress for the floating tab switcher.
+    /// The header still follows absolute scroll offset, while the switcher
+    /// can expand immediately when the user scrolls back toward the top.
+    var switcherProgress: Binding<CGFloat>? = nil
+
+    @State private var lastObservedOffset: CGFloat?
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content.onScrollGeometryChange(for: CGFloat.self) { geo in
                 geo.contentOffset.y
             } action: { _, newValue in
-                progress = min(max(newValue / 16, 0), 1)
+                updateProgress(offset: newValue)
             }
         } else {
             content
                 .onPreferenceChange(ScrollHeaderOffsetPreferenceKey.self) { minY in
-                    progress = min(max(-minY / 16, 0), 1)
+                    updateProgress(offset: -minY)
                 }
+        }
+    }
+
+    private func updateProgress(offset rawOffset: CGFloat) {
+        let offset = max(rawOffset, 0)
+        let absoluteProgress = min(max(offset / 16, 0), 1)
+        progress = absoluteProgress
+        updateSwitcherProgress(offset: offset, absoluteProgress: absoluteProgress)
+    }
+
+    private func updateSwitcherProgress(offset: CGFloat, absoluteProgress: CGFloat) {
+        guard let switcherProgress else {
+            lastObservedOffset = offset
+            return
+        }
+
+        defer { lastObservedOffset = offset }
+
+        if absoluteProgress < 0.08 {
+            switcherProgress.wrappedValue = absoluteProgress
+            return
+        }
+
+        guard let lastObservedOffset else {
+            switcherProgress.wrappedValue = absoluteProgress
+            return
+        }
+
+        let delta = offset - lastObservedOffset
+        let directionThreshold: CGFloat = 0.8
+        if delta < -directionThreshold {
+            switcherProgress.wrappedValue = 0
+        } else if delta > directionThreshold {
+            switcherProgress.wrappedValue = 1
         }
     }
 }
@@ -288,17 +321,19 @@ private struct FeedSelectedGlassPill: View {
     }
 }
 
-private struct FeedCompactGlassCapsule: View {
+private struct FeedCompactGlassCircle: View {
     var body: some View {
         if #available(iOS 26.0, *) {
-            Capsule()
-                .fill(IbiliTheme.accent.opacity(0.20))
-                .glassEffect(.regular, in: Capsule())
-                .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 0.5))
+            Circle()
+                .fill(.regularMaterial)
+                .glassEffect(.regular, in: Circle())
+                .overlay(Circle().fill(IbiliTheme.accent.opacity(0.10)))
+                .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 0.5))
         } else {
-            Capsule()
-                .fill(IbiliTheme.accent.opacity(0.78))
-                .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
+            Circle()
+                .fill(.regularMaterial)
+                .overlay(Circle().fill(IbiliTheme.accent.opacity(0.18)))
+                .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 0.5))
         }
     }
 }
@@ -437,10 +472,12 @@ struct FeedFloatingSegmentedControlOverlay<Tab: Hashable & Identifiable>: View {
     @Binding var selection: Tab
     /// 0 → fully expanded (large title), 1 → fully collapsed (inline).
     let collapseProgress: CGFloat
+    var positionProgress: CGFloat? = nil
 
     var body: some View {
         let p = min(1, max(0, collapseProgress))
-        let topPad: CGFloat = 52 - p * 35
+        let position = min(1, max(0, positionProgress ?? p))
+        let topPad: CGFloat = 52 - position * 41
 
         NavigationTrailingSegmentedControl(
             tabs: tabs,

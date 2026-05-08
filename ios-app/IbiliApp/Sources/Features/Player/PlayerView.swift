@@ -86,6 +86,8 @@ final class PlayerViewModel: ObservableObject {
     private var lastPreferredQn: Int64 = 0
     private var lastPreferredAudioQn: Int64 = 0
     private var lastFastLoad: Bool = false
+    private var cdnSelection: String = MediaCDNService.auto.rawValue
+    private var playbackCacheVariant: String = AppSettings.shared.playbackCacheVariantKey()
     /// Number of automatic recovery attempts the view-model has issued
     /// for the current `(aid, cid)`. Reset to zero in `load(...)`.
     /// Cap of 1 keeps us from looping when the upstream playurl itself
@@ -181,7 +183,14 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func load(item: FeedItemDTO, preferredQn: Int64, preferredAudioQn: Int64 = 0, fastLoad: Bool) async {
+    func load(
+        item: FeedItemDTO,
+        preferredQn: Int64,
+        preferredAudioQn: Int64 = 0,
+        fastLoad: Bool,
+        cdnSelection: String = MediaCDNService.auto.rawValue,
+        cacheVariant: String = MediaCDNService.auto.rawValue
+    ) async {
         // Some entry points (notably the search results grid) hand us
         // a `FeedItemDTO` with `cid == 0` because the upstream
         // search-by-type endpoint omits cids. Resolve it via the view
@@ -215,6 +224,8 @@ final class PlayerViewModel: ObservableObject {
         lastPreferredQn = preferredQn
         lastPreferredAudioQn = preferredAudioQn
         lastFastLoad = fastLoad
+        self.cdnSelection = cdnSelection
+        playbackCacheVariant = cacheVariant
         autoReloadAttempts = 0
         if !isSameVideo {
             blockedQns.removeAll()
@@ -252,13 +263,15 @@ final class PlayerViewModel: ObservableObject {
             "cid": String(item.cid),
             "preferredQn": String(preferredQn),
             "fastLoad": String(fastLoad),
+            "cdn": cdnSelection,
         ])
         do {
             let discoveryQnTarget = max(preferredQn, discoveryQn)
             let initial: PlayUrlDTO
             if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                        cid: item.cid,
-                                                       qn: discoveryQnTarget) {
+                                                       qn: discoveryQnTarget,
+                                                       cdn: cdnSelection) {
                 initial = warm
                 rememberPlayURL(warm)
             } else {
@@ -274,7 +287,8 @@ final class PlayerViewModel: ObservableObject {
                 info = initial
             } else if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                                 cid: item.cid,
-                                                                qn: targetQn) {
+                                                                qn: targetQn,
+                                                                cdn: cdnSelection) {
                 info = warm
                 rememberPlayURL(warm)
             } else {
@@ -304,7 +318,8 @@ final class PlayerViewModel: ObservableObject {
                 let loInfo: PlayUrlDTO
                 if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                             cid: item.cid,
-                                                            qn: lowestQn) {
+                                                            qn: lowestQn,
+                                                            cdn: cdnSelection) {
                     loInfo = warm
                     rememberPlayURL(warm)
                 } else {
@@ -484,7 +499,9 @@ final class PlayerViewModel: ObservableObject {
         await load(item: item,
                preferredQn: lastPreferredQn,
                preferredAudioQn: lastPreferredAudioQn,
-               fastLoad: lastFastLoad)
+               fastLoad: lastFastLoad,
+               cdnSelection: cdnSelection,
+               cacheVariant: playbackCacheVariant)
         // `load(...)` zeroes the counter; preserve our caller's tally
         // so a chain of failed reloads cannot loop indefinitely.
         autoReloadAttempts = max(autoReloadAttempts, priorAttempts)
@@ -1329,7 +1346,11 @@ final class PlayerViewModel: ObservableObject {
                     self.refreshSystemMediaSession()
                 case .failed:
                     let detail = item.error?.localizedDescription ?? "unknown"
-                    self.pageCache.removePlayURL(qn: self.currentQn, audioQn: self.currentAudioQn)
+                    self.pageCache.removePlayURL(
+                        qn: self.currentQn,
+                        audioQn: self.currentAudioQn,
+                        variant: self.playbackCacheVariant
+                    )
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
                         "detail": detail,
                     ])
@@ -1378,7 +1399,7 @@ final class PlayerViewModel: ObservableObject {
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
         if self.aid == aid,
            self.cid == cid,
-           let cached = pageCache.playURL(qn: qn, audioQn: audioQn) {
+           let cached = pageCache.playURL(qn: qn, audioQn: audioQn, variant: playbackCacheVariant) {
             AppLog.debug("player", "命中播放页缓存的播放地址", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
@@ -1387,15 +1408,22 @@ final class PlayerViewModel: ObservableObject {
             ])
             return cached
         }
+        let cdnSelection = self.cdnSelection
         let info = try await Task.detached {
-            try CoreClient.shared.playUrl(aid: aid, cid: cid, qn: qn, audioQn: audioQn)
+            try CoreClient.shared.playUrl(
+                aid: aid,
+                cid: cid,
+                qn: qn,
+                audioQn: audioQn,
+                cdn: cdnSelection
+            )
         }.value
         rememberPlayURL(info)
         return info
     }
 
     private func rememberPlayURL(_ info: PlayUrlDTO) {
-        pageCache.storePlayURL(info)
+        pageCache.storePlayURL(info, variant: playbackCacheVariant)
     }
 
     private func currentPlaybackTimeForRecovery() -> CMTime {
@@ -1418,7 +1446,7 @@ final class PlayerViewModel: ObservableObject {
     private func recoverPlaybackFromPageCacheIfPossible(trigger: String) async -> Bool {
         guard !isRecoveringPlaybackFromPageCache else { return true }
         guard currentQn > 0,
-              let info = pageCache.playURL(qn: currentQn, audioQn: currentAudioQn) else {
+              let info = pageCache.playURL(qn: currentQn, audioQn: currentAudioQn, variant: playbackCacheVariant) else {
             AppLog.debug("player", "播放页缓存未命中，无法直接恢复播放源", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
@@ -1496,7 +1524,7 @@ final class PlayerViewModel: ObservableObject {
             ])
             return true
         } catch {
-            pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality)
+            pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality, variant: playbackCacheVariant)
             AppLog.warning("player", "播放页缓存恢复失败，已回退到常规重载路径", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
@@ -2073,7 +2101,9 @@ struct PlayerView: View {
             async let video: Void = vm.load(item: item,
                                             preferredQn: Int64(settings.resolvedPreferredVideoQn()),
                                             preferredAudioQn: Int64(settings.preferredAudioQn),
-                                            fastLoad: settings.fastLoad)
+                                            fastLoad: settings.fastLoad,
+                                            cdnSelection: settings.cdnService.rawValue,
+                                            cacheVariant: settings.playbackCacheVariantKey())
             async let danmaku: Void = loadDanmaku()
             _ = await (video, danmaku)
             vm.handle(.interfaceActivated)
@@ -2084,6 +2114,9 @@ struct PlayerView: View {
                 danmaku.attach(p)
                 vm.handle(.interfaceActivated)
             }
+        }
+        .onChange(of: settings.cdnService.rawValue) { _ in
+            PlayUrlPrefetcher.shared.clear()
         }
         .onChange(of: settings.audioGainDb) { _ in
             vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())

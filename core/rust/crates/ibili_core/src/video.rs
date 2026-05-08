@@ -1,5 +1,5 @@
 use crate::Core;
-use crate::cdn::{rank_urls, DEFAULT_CDN_HOST};
+use crate::cdn::rank_urls_for_selection;
 use crate::dto::PlayUrl;
 use crate::dto::{
     RelatedVideoItem, UgcSeason, UgcSeasonEpisode, UgcSeasonSection, VideoDescNode, VideoHonor,
@@ -214,12 +214,23 @@ impl Core {
     }
 
     pub fn video_playurl_with_audio(&self, aid: i64, cid: i64, qn: i64, audio_qn: i64) -> CoreResult<PlayUrl> {
-        match self.video_playurl_web_with_audio(aid, cid, qn, audio_qn) {
+        self.video_playurl_with_audio_options(aid, cid, qn, audio_qn, "auto")
+    }
+
+    pub fn video_playurl_with_audio_options(
+        &self,
+        aid: i64,
+        cid: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<PlayUrl> {
+        match self.video_playurl_web_with_audio(aid, cid, qn, audio_qn, cdn_selection) {
             Ok(play) => Ok(play),
             Err(web_err) => {
                 let web_msg = format!("wbi/playurl failed → fell back to tv_durl: {web_err}");
                 eprintln!("[ibili_core] {web_msg}");
-                match self.video_playurl_tv(aid, cid, qn) {
+                match self.video_playurl_tv_with_options(aid, cid, qn, cdn_selection) {
                     Ok(mut play) => {
                         // Embed the web-path failure into the response so
                         // iOS log viewer can show the real cause without
@@ -239,7 +250,14 @@ impl Core {
         self.video_playurl_tv(aid, cid, qn)
     }
 
-    fn video_playurl_web_with_audio(&self, aid: i64, cid: i64, qn: i64, audio_qn: i64) -> CoreResult<PlayUrl> {
+    fn video_playurl_web_with_audio(
+        &self,
+        aid: i64,
+        cid: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<PlayUrl> {
         let qn = if qn <= 0 { 80 } else { qn };
         let wbi_key = self.fetch_wbi_key()?;
         let params = vec![
@@ -255,11 +273,21 @@ impl Core {
             ("web_location".into(), "1315873".into()),
         ];
         let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
-        build_playurl_from_web_response(response, qn, audio_qn)
+        build_playurl_from_web_response(response, qn, audio_qn, cdn_selection)
     }
 
     /// Mirrors `VideoHttp.tvPlayUrl` from upstream PiliPlus.
     fn video_playurl_tv(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
+        self.video_playurl_tv_with_options(aid, cid, qn, "auto")
+    }
+
+    fn video_playurl_tv_with_options(
+        &self,
+        aid: i64,
+        cid: i64,
+        qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<PlayUrl> {
         let access_key = self.session.read().access_key()
             .ok_or(CoreError::AuthRequired)?;
         let qn = if qn <= 0 { 80 } else { qn };
@@ -282,14 +310,20 @@ impl Core {
         let accept_description = r.accept_description.clone();
         let first = r.durl.into_iter().next()
             .ok_or_else(|| CoreError::Decode("empty durl".into()))?;
+        let ranked = rank_urls_for_selection(
+            &collect_candidates(&first.url, &first.backup_url),
+            cdn_selection,
+        );
+        let url = ranked.first().cloned().unwrap_or(first.url);
+        let backup_urls = ranked.into_iter().skip(1).collect::<Vec<_>>();
         Ok(PlayUrl {
-            url: first.url,
+            url,
             audio_url: None,
             format: r.format,
             stream_type: "tv_durl".into(),
             quality: r.quality,
             duration_ms: r.timelength,
-            backup_urls: first.backup_url,
+            backup_urls,
             audio_backup_urls: Vec::new(),
             accept_quality,
             accept_description,
@@ -351,7 +385,12 @@ impl DashAudio {
     }
 }
 
-fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, audio_qn: i64) -> CoreResult<PlayUrl> {
+fn build_playurl_from_web_response(
+    response: PlayUrlRoot,
+    requested_qn: i64,
+    audio_qn: i64,
+    cdn_selection: &str,
+) -> CoreResult<PlayUrl> {
     let accept_quality = if response.accept_quality.is_empty() {
         response.dash.as_ref()
             .map(|dash| collect_dash_qualities(&dash.video))
@@ -372,7 +411,7 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
             let (accept_audio_quality, accept_audio_description) = collect_audio_qualities(&all_audio);
             let audio = pick_audio_stream_by_quality(&all_audio, audio_qn);
             let video_candidates = collect_candidates(&video.base_url, &video.backup_url);
-            let video_ranked = rank_urls(&video_candidates, Some(DEFAULT_CDN_HOST), false, false);
+            let video_ranked = rank_urls_for_selection(&video_candidates, cdn_selection);
             if let Some(video_url) = video_ranked.first().cloned() {
                 let video_backups = video_ranked.into_iter().skip(1).collect::<Vec<_>>();
                 let video_codec = video.codecs.clone();
@@ -383,7 +422,7 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
                 let (audio_url, audio_backups, audio_codec, picked_audio_qn) = match audio {
                     Some(a) => {
                         let candidates = collect_candidates(&a.base_url, &a.backup_url);
-                        let ranked = rank_urls(&candidates, Some(DEFAULT_CDN_HOST), true, false);
+                        let ranked = rank_urls_for_selection(&candidates, cdn_selection);
                         let primary = ranked.first().cloned();
                         let backups = ranked.into_iter().skip(1).collect::<Vec<_>>();
                         (primary, backups, a.codecs.clone(), a.id)
@@ -421,14 +460,20 @@ fn build_playurl_from_web_response(response: PlayUrlRoot, requested_qn: i64, aud
 
     let first = response.durl.into_iter().next()
         .ok_or_else(|| CoreError::Decode("missing playable stream".into()))?;
+    let ranked = rank_urls_for_selection(
+        &collect_candidates(&first.url, &first.backup_url),
+        cdn_selection,
+    );
+    let url = ranked.first().cloned().unwrap_or(first.url);
+    let backup_urls = ranked.into_iter().skip(1).collect::<Vec<_>>();
     Ok(PlayUrl {
-        url: first.url,
+        url,
         audio_url: None,
         format: response.format,
         stream_type: "web_durl".into(),
         quality: response.quality,
         duration_ms: response.timelength,
-        backup_urls: first.backup_url,
+        backup_urls,
         audio_backup_urls: Vec::new(),
         accept_quality,
         accept_description,

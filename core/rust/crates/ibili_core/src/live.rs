@@ -4,6 +4,7 @@
 use serde::Deserialize;
 
 use crate::Core;
+use crate::cdn::cdn_host_for_selection;
 use crate::dto::{
     LiveDanmakuHistory, LiveDanmakuHost, LiveDanmakuInfo, LiveDanmakuMessage, LiveFeedItem,
     LiveFeedPage, LivePlayUrl, LiveQuality, LiveRoomInfo,
@@ -225,6 +226,10 @@ impl Core {
     }
 
     pub fn live_playurl(&self, room_id: i64, qn: i64) -> CoreResult<LivePlayUrl> {
+        self.live_playurl_with_cdn_selection(room_id, qn, "auto")
+    }
+
+    pub fn live_playurl_with_cdn_selection(&self, room_id: i64, qn: i64, cdn_selection: &str) -> CoreResult<LivePlayUrl> {
         if room_id <= 0 {
             return Err(CoreError::InvalidArgument("room_id required".into()));
         }
@@ -251,7 +256,7 @@ impl Core {
         if raw.live_status != 1 {
             return Err(CoreError::Api { code: -404, msg: "当前直播间未开播".into() });
         }
-        select_hls_playurl(raw)
+        select_hls_playurl(raw, cdn_selection)
     }
 
     pub fn live_danmaku_info(&self, room_id: i64) -> CoreResult<LiveDanmakuInfo> {
@@ -416,7 +421,8 @@ fn live_room_info_from_wire(room_id: i64, raw: RoomInfoH5Wire) -> LiveRoomInfo {
     }
 }
 
-fn select_hls_playurl(raw: RoomPlayInfoWire) -> CoreResult<LivePlayUrl> {
+fn select_hls_playurl(raw: RoomPlayInfoWire, cdn_selection: &str) -> CoreResult<LivePlayUrl> {
+    let cdn_host = live_cdn_host_for_selection(cdn_selection);
     let streams = raw.playurl_info
         .and_then(|i| i.playurl)
         .map(|p| p.stream)
@@ -440,7 +446,9 @@ fn select_hls_playurl(raw: RoomPlayInfoWire) -> CoreResult<LivePlayUrl> {
                     _ => 10,
                 };
                 let Some(url) = codec.url_info.first().map(|u| {
-                    let host = if u.host.is_empty() { "" } else { &u.host };
+                    let host = cdn_host.as_deref().unwrap_or_else(|| {
+                        if u.host.is_empty() { "" } else { &u.host }
+                    });
                     format!("{host}{}{}", codec.base_url, u.extra)
                 }) else {
                     continue;
@@ -471,6 +479,14 @@ fn select_hls_playurl(raw: RoomPlayInfoWire) -> CoreResult<LivePlayUrl> {
         accept_quality,
         live_status: raw.live_status,
     })
+}
+
+fn live_cdn_host_for_selection(selection: &str) -> Option<String> {
+    let selection = selection.trim();
+    match selection {
+        "" | "auto" | "baseUrl" | "backupUrl" => None,
+        other => cdn_host_for_selection(other).map(|host| format!("https://{host}")),
+    }
 }
 
 fn is_hls_candidate(url: &str, protocol_score: i32, format_score: i32) -> bool {

@@ -32,6 +32,64 @@ enum FeedCardStat: String, CaseIterable, Identifiable {
     }
 }
 
+/// CDN selection for Bilibili media URLs. Names mirror upstream PiliPlus's
+/// `CDNService` enum; `auto` keeps Bilibili's returned candidates and lets
+/// our HLS proxy pick the fastest reachable host with its startup Range race.
+enum MediaCDNService: String, CaseIterable, Identifiable, Sendable {
+    case auto
+    case baseUrl
+    case backupUrl
+    case ali
+    case alib
+    case alio1
+    case cos
+    case cosb
+    case coso1
+    case hw
+    case hwb
+    case hwo1
+    case hw_08c
+    case hw_08h
+    case hw_08ct
+    case tf_hw
+    case tf_tx
+    case akamai
+    case aliov
+    case cosov
+    case hwov
+    case hk_bcache
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: return "自动"
+        case .baseUrl: return "基础 URL"
+        case .backupUrl: return "备用 URL"
+        case .ali: return "ali（阿里云）"
+        case .alib: return "alib（阿里云）"
+        case .alio1: return "alio1（阿里云）"
+        case .cos: return "cos（腾讯云）"
+        case .cosb: return "cosb（腾讯云 VOD）"
+        case .coso1: return "coso1（腾讯云）"
+        case .hw: return "hw（华为云）"
+        case .hwb: return "hwb（华为云）"
+        case .hwo1: return "hwo1（华为云）"
+        case .hw_08c: return "08c（华为云）"
+        case .hw_08h: return "08h（华为云）"
+        case .hw_08ct: return "08ct（华为云）"
+        case .tf_hw: return "tf_hw（华为云）"
+        case .tf_tx: return "tf_tx（腾讯云）"
+        case .akamai: return "akamai（海外）"
+        case .aliov: return "aliov（阿里云海外）"
+        case .cosov: return "cosov（腾讯云海外）"
+        case .hwov: return "hwov（华为云海外）"
+        case .hk_bcache: return "hk_bcache（Bilibili 海外）"
+        }
+    }
+
+}
+
 /// Per-screen visibility config for video card meta. Pure value type so
 /// it can be diffed cheaply by SwiftUI when passed into card views.
 struct FeedCardMetaConfig: Equatable {
@@ -103,6 +161,8 @@ final class AppSettings: ObservableObject {
     /// won, the player seamlessly upgrades to the preferred quality
     /// once it finishes preparing.
     @AppStorage("ibili.player.fastLoad") var fastLoad: Bool = false
+    @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
+    @AppStorage("ibili.player.cdnSpeedTest") var cdnSpeedTest: Bool = true
 
     /// Whether the video detail page displays the canonical BV id or
     /// the legacy `av<aid>` form. Mirrors the upstream toggle.
@@ -110,6 +170,15 @@ final class AppSettings: ObservableObject {
     var videoIdDisplay: VideoIdDisplay {
         get { VideoIdDisplay(rawValue: videoIdDisplayRaw) ?? .bv }
         set { videoIdDisplayRaw = newValue.rawValue }
+    }
+
+    var cdnService: MediaCDNService {
+        get { MediaCDNService(rawValue: cdnServiceRaw) ?? .auto }
+        set { cdnServiceRaw = newValue.rawValue }
+    }
+
+    func playbackCacheVariantKey() -> String {
+        cdnService.rawValue
     }
 
     // MARK: - Feed-card meta visibility (per screen)

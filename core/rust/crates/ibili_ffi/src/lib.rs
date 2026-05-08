@@ -106,6 +106,7 @@ struct LiveFeedArgs {
 struct LiveRoomArgs {
     room_id: i64,
     #[serde(default)] qn: i64,
+    #[serde(default = "default_cdn_selection")] cdn: String,
 }
 
 #[derive(Deserialize)]
@@ -118,8 +119,15 @@ struct SendLiveDanmakuArgs {
 }
 
 #[derive(Deserialize)]
-struct PlayurlArgs { aid: i64, cid: i64, #[serde(default = "default_qn")] qn: i64, #[serde(default)] audio_qn: i64 }
+struct PlayurlArgs {
+    aid: i64,
+    cid: i64,
+    #[serde(default = "default_qn")] qn: i64,
+    #[serde(default)] audio_qn: i64,
+    #[serde(default = "default_cdn_selection")] cdn: String,
+}
 fn default_qn() -> i64 { 0 }
+fn default_cdn_selection() -> String { "auto".into() }
 
 #[derive(Deserialize)]
 struct DanmakuArgs {
@@ -344,7 +352,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "live.playurl" => {
             let a: LiveRoomArgs = serde_json::from_value(args)?;
-            to_value(c.inner.live_playurl(a.room_id, a.qn)?)
+            to_value(c.inner.live_playurl_with_cdn_selection(a.room_id, a.qn, &a.cdn)?)
         }
         "live.danmaku_info" => {
             let a: LiveRoomArgs = serde_json::from_value(args)?;
@@ -361,7 +369,13 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "video.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
-            to_value(c.inner.video_playurl_with_audio(a.aid, a.cid, a.qn, a.audio_qn)?)
+            to_value(c.inner.video_playurl_with_audio_options(
+                a.aid,
+                a.cid,
+                a.qn,
+                a.audio_qn,
+                &a.cdn,
+            )?)
         }
         "video.playurl.tv" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;

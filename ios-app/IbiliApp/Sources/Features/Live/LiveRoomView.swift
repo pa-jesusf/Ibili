@@ -38,6 +38,7 @@ final class LiveRoomViewModel: ObservableObject {
     @Published private(set) var currentQn: Int64 = 0
 
     private var roomID: Int64 = 0
+    private var cdnSelection: String = MediaCDNService.auto.rawValue
     private var playerTimeControlObservation: NSKeyValueObservation?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
@@ -50,10 +51,12 @@ final class LiveRoomViewModel: ObservableObject {
         }
     }
 
-    func load(route: DeepLinkRouter.LiveRoute) async {
+    func load(route: DeepLinkRouter.LiveRoute, cdnSelection: String = MediaCDNService.auto.rawValue) async {
         guard route.roomID > 0 else { return }
-        guard roomID != route.roomID || player == nil else { return }
+        let resolvedCdnSelection = cdnSelection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard roomID != route.roomID || self.cdnSelection != resolvedCdnSelection || player == nil else { return }
         roomID = route.roomID
+        self.cdnSelection = resolvedCdnSelection
         isLoading = true
         errorText = nil
         stopCurrentPlayer(releaseAudioSession: true)
@@ -64,8 +67,8 @@ final class LiveRoomViewModel: ObservableObject {
         info = fetchedInfo
 
         do {
-            let play = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.livePlayUrl(roomID: route.roomID)
+            let play = try await Task.detached(priority: .userInitiated) { [resolvedCdnSelection] in
+                try CoreClient.shared.livePlayUrl(roomID: route.roomID, cdn: resolvedCdnSelection)
             }.value
             configurePlayer(with: play, roomID: route.roomID)
         } catch {
@@ -74,13 +77,15 @@ final class LiveRoomViewModel: ObservableObject {
         isLoading = false
     }
 
-    func switchQuality(to qn: Int64) async {
+    func switchQuality(to qn: Int64, cdnSelection: String? = nil) async {
         guard roomID > 0, qn != currentQn else { return }
+        let resolvedCdnSelection = cdnSelection?.trimmingCharacters(in: .whitespacesAndNewlines) ?? self.cdnSelection
+        self.cdnSelection = resolvedCdnSelection
         isLoading = true
         errorText = nil
         do {
-            let play = try await Task.detached(priority: .userInitiated) { [roomID] in
-                try CoreClient.shared.livePlayUrl(roomID: roomID, qn: qn)
+            let play = try await Task.detached(priority: .userInitiated) { [roomID, resolvedCdnSelection] in
+                try CoreClient.shared.livePlayUrl(roomID: roomID, qn: qn, cdn: resolvedCdnSelection)
             }.value
             configurePlayer(with: play, roomID: roomID)
         } catch {
@@ -211,7 +216,7 @@ struct LiveRoomView: View {
             }
         }
         .task(id: route.roomID) {
-            await vm.load(route: route)
+            await vm.load(route: route, cdnSelection: settings.cdnService.rawValue)
         }
         .onChange(of: vm.player) { newPlayer in
             if let newPlayer {
@@ -225,7 +230,7 @@ struct LiveRoomView: View {
                 startDanmakuStreamIfNeeded()
                 vm.activatePlayback()
             } else {
-                Task { await vm.load(route: route) }
+                Task { await vm.load(route: route, cdnSelection: settings.cdnService.rawValue) }
             }
         }
         .onDisappear {
@@ -457,7 +462,7 @@ struct LiveRoomView: View {
         Menu {
             ForEach(vm.availableQualities) { quality in
                 Button {
-                    Task { await vm.switchQuality(to: quality.qn) }
+                    Task { await vm.switchQuality(to: quality.qn, cdnSelection: settings.cdnService.rawValue) }
                 } label: {
                     if quality.qn == vm.currentQn {
                         Label(quality.label, systemImage: "checkmark")

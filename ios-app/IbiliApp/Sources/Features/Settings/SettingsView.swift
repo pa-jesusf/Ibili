@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @StateObject private var cacheVM = ImageCacheViewModel()
+    @StateObject private var cdnSpeedVM = CDNSpeedTestViewModel()
 
     private let columnOptions: [(label: String, value: Int)] = [
         ("自动", 0), ("1 列", 1), ("2 列", 2), ("3 列", 3),
@@ -180,6 +181,26 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("快速加载", isOn: $settings.fastLoad)
+                Toggle("B站定向流量支持", isOn: .constant(true))
+                    .disabled(true)
+                Picker("CDN", selection: Binding(
+                    get: { settings.cdnService },
+                    set: {
+                        settings.cdnService = $0
+                        PlayUrlPrefetcher.shared.clear()
+                    }
+                )) {
+                    ForEach(MediaCDNService.allCases) { service in
+                        Text(service.label).tag(service)
+                    }
+                }
+                Toggle("CDN 测速", isOn: $settings.cdnSpeedTest)
+                if settings.cdnSpeedTest {
+                    CDNSpeedTestPanel(vm: cdnSpeedVM) { service in
+                        settings.cdnService = service
+                        PlayUrlPrefetcher.shared.clear()
+                    }
+                }
                 VStack(alignment: .leading) {
                     HStack {
                         Text("音量增益")
@@ -199,7 +220,7 @@ struct SettingsView: View {
             } header: {
                 Text("播放")
             } footer: {
-                Text("快速加载会同时加载最低画质与首选画质，高画质加载好后自动切换；音量增益按分贝衰减整体播放音量，可让视频与系统其他 app 在同一系统音量下听感一致")
+                Text("CDN 自动模式会保留 B 站返回的候选地址，并由播放器启动时的 Range 竞速选择最快可用源；手动 CDN 会优先改写到指定镜像。音频和直播跟随同一个 CDN 选择。")
             }
 
             Section {
@@ -350,6 +371,163 @@ final class ImageCacheViewModel: ObservableObject {
             self?.isClearing = false
             self?.refresh()
         }
+    }
+}
+
+private struct CDNSpeedTestPanel: View {
+    @ObservedObject var vm: CDNSpeedTestViewModel
+    var onPick: (MediaCDNService) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("测速结果")
+                Spacer()
+                Button {
+                    vm.start()
+                } label: {
+                    if vm.isTesting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("开始", systemImage: "speedometer")
+                    }
+                }
+                .disabled(vm.isTesting)
+            }
+
+            if let sample = vm.sampleTitle {
+                Text(sample)
+                    .font(.caption)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .lineLimit(1)
+            }
+
+            ForEach(MediaCDNService.allCases) { service in
+                Button {
+                    onPick(service)
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(service.label)
+                            .foregroundStyle(IbiliTheme.textPrimary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(vm.displayText(for: service))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(vm.resultColor(for: service))
+                            .lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+@MainActor
+final class CDNSpeedTestViewModel: ObservableObject {
+    @Published var isTesting = false
+    @Published var sampleTitle: String?
+    @Published private var results: [MediaCDNService: CDNSpeedResult] = [:]
+
+    private var task: Task<Void, Never>?
+    private let testServices = MediaCDNService.allCases.filter { $0 != .auto }
+
+    func start() {
+        guard !isTesting else { return }
+        task?.cancel()
+        results = Dictionary(uniqueKeysWithValues: testServices.map {
+            ($0, CDNSpeedResult.pending)
+        })
+        sampleTitle = "样本：BV1fK4y1t7hj"
+        isTesting = true
+        task = Task { [weak self] in
+            guard let self else { return }
+            await withTaskGroup(of: (MediaCDNService, CDNSpeedResult).self) { group in
+                for service in self.testServices {
+                    group.addTask {
+                        let result = await CDNSpeedTester.measure(service: service)
+                        return (service, result)
+                    }
+                }
+                for await (service, result) in group {
+                    await MainActor.run {
+                        self.results[service] = result
+                    }
+                }
+            }
+            await MainActor.run {
+                self.isTesting = false
+            }
+        }
+    }
+
+    func displayText(for service: MediaCDNService) -> String {
+        switch results[service] {
+        case nil:
+            return service == .auto ? "播放时竞速" : "未测速"
+        case .pending:
+            return "..."
+        case .success(let mbps, let ms):
+            return String(format: "%.2f MB/s · %d ms", mbps, ms)
+        case .failure(let message):
+            return message
+        }
+    }
+
+    func resultColor(for service: MediaCDNService) -> Color {
+        switch results[service] {
+        case .success:
+            return IbiliTheme.accent
+        case .failure:
+            return .red
+        case .pending:
+            return IbiliTheme.textSecondary
+        case nil:
+            return service == .auto ? IbiliTheme.accent : IbiliTheme.textSecondary
+        }
+    }
+}
+
+private enum CDNSpeedResult {
+    case pending
+    case success(mbPerSecond: Double, elapsedMs: Int)
+    case failure(String)
+}
+
+private enum CDNSpeedTester {
+    private static let sampleAid: Int64 = 170001
+    private static let sampleCid: Int64 = 196018899
+    private static let sampleQn: Int64 = 80
+    private static let probeRange: ClosedRange<UInt64> = 0...(1_048_575)
+
+    static func measure(service: MediaCDNService) async -> CDNSpeedResult {
+        do {
+            let play = try await Task.detached(priority: .utility) {
+                try CoreClient.shared.playUrl(
+                    aid: sampleAid,
+                    cid: sampleCid,
+                    qn: sampleQn,
+                    cdn: service.rawValue
+                )
+            }.value
+            let urls = ([play.url] + play.backupUrls).compactMap(URL.init(string:))
+            guard !urls.isEmpty else { return .failure("无地址") }
+            let start = CFAbsoluteTimeGetCurrent()
+            let race = try await ProxyURLLoader.shared.raceProbe(urls: urls, range: probeRange)
+            let elapsedMs = max(1, Int((CFAbsoluteTimeGetCurrent() - start) * 1000))
+            let mb = Double(race.data.count) / 1_048_576.0
+            let seconds = max(0.001, Double(elapsedMs) / 1000.0)
+            return .success(mbPerSecond: mb / seconds, elapsedMs: elapsedMs)
+        } catch {
+            return .failure(Self.shortError(error))
+        }
+    }
+
+    private static func shortError(_ error: Error) -> String {
+        let text = (error as NSError).localizedDescription
+        if text.count <= 16 { return text }
+        return String(text.prefix(16))
     }
 }
 }
