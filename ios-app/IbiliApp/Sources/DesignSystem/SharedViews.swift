@@ -5,12 +5,34 @@ import UIKit
 /// resolutions; UIKit will evict on memory pressure automatically.
 final class ImageCache {
     static let shared = ImageCache()
+    private static let storedURLUserInfoKey = "url"
+    static let didStoreImageNotification = Notification.Name("IbiliImageCacheDidStoreImage")
+
     let cache: NSCache<NSURL, UIImage> = {
         let c = NSCache<NSURL, UIImage>()
         c.countLimit = 256
         c.totalCostLimit = 64 * 1024 * 1024 // 64 MB
         return c
     }()
+
+    func image(for url: URL) -> UIImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    func store(_ image: UIImage, for url: URL, cost: Int) {
+        cache.setObject(image, forKey: url as NSURL, cost: cost)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: Self.didStoreImageNotification,
+                object: self,
+                userInfo: [Self.storedURLUserInfoKey: url]
+            )
+        }
+    }
+
+    static func storedURL(from notification: Notification) -> URL? {
+        notification.userInfo?[storedURLUserInfoKey] as? URL
+    }
 }
 
 /// Shared cover prefetcher for feed-like grids. It warms the same
@@ -28,7 +50,7 @@ final class CoverImagePrefetcher {
             let resolved = BiliImageURL.resized(raw, pointSize: targetPointSize, quality: quality)
             return URL(string: resolved)
         }
-        for url in urls where tasks[url] == nil && ImageCache.shared.cache.object(forKey: url as NSURL) == nil {
+        for url in urls where tasks[url] == nil && ImageCache.shared.image(for: url) == nil {
             if tasks.count >= maxConcurrent, let first = tasks.keys.first {
                 tasks[first]?.cancel()
                 tasks[first] = nil
@@ -40,7 +62,7 @@ final class CoverImagePrefetcher {
                 // CDN-warmup latency on subsequent feed scrolls.
                 if let cached = ImageDiskCache.shared.read(url),
                    let img = UIImage(data: cached) {
-                    ImageCache.shared.cache.setObject(img, forKey: url as NSURL, cost: cached.count)
+                    ImageCache.shared.store(img, for: url, cost: cached.count)
                     return
                 }
                 do {
@@ -48,7 +70,7 @@ final class CoverImagePrefetcher {
                     if Task.isCancelled { return }
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return }
                     guard let img = UIImage(data: data) else { return }
-                    ImageCache.shared.cache.setObject(img, forKey: url as NSURL, cost: data.count)
+                    ImageCache.shared.store(img, for: url, cost: data.count)
                     ImageDiskCache.shared.write(url, data: data)
                 } catch {
                     return
@@ -69,20 +91,22 @@ private final class RemoteImageLoader: ObservableObject {
     private var loadedURL: URL?
 
     func load(_ url: URL?) {
-        guard let url else { image = nil; return }
-        if loadedURL == url, image != nil { return }
-        loadedURL = url
-        if let cached = ImageCache.shared.cache.object(forKey: url as NSURL) {
-            image = cached
+        guard let url else {
+            task?.cancel()
+            loadedURL = nil
+            image = nil
             failed = false
             return
         }
+        if loadedURL == url, image != nil { return }
+        loadedURL = url
+        if loadFromMemoryCache(url) { return }
         // Disk-cache hit — decode + promote into memory cache so
         // subsequent reads stay cheap.
         if let diskData = ImageDiskCache.shared.read(url),
            let raw = UIImage(data: diskData) {
             let display = downsample(raw, to: url)
-            ImageCache.shared.cache.setObject(display, forKey: url as NSURL, cost: diskData.count)
+            ImageCache.shared.store(display, for: url, cost: diskData.count)
             image = display
             failed = false
             return
@@ -102,8 +126,7 @@ private final class RemoteImageLoader: ObservableObject {
                     }
                     if let img = UIImage(data: data) {
                         let display = downsample(img, to: url)
-                        ImageCache.shared.cache.setObject(display, forKey: url as NSURL,
-                                                         cost: data.count)
+                        ImageCache.shared.store(display, for: url, cost: data.count)
                         ImageDiskCache.shared.write(url, data: data)
                         await MainActor.run {
                             if self.loadedURL == url { self.image = display; self.failed = false }
@@ -121,7 +144,22 @@ private final class RemoteImageLoader: ObservableObject {
         }
     }
 
+    func useCachedImageIfAvailable(for url: URL?) {
+        guard let url, loadedURL == url, image == nil else { return }
+        if loadFromMemoryCache(url) {
+            task?.cancel()
+        }
+    }
+
     deinit { task?.cancel() }
+
+    @discardableResult
+    private func loadFromMemoryCache(_ url: URL) -> Bool {
+        guard let cached = ImageCache.shared.image(for: url) else { return false }
+        image = cached
+        failed = false
+        return true
+    }
 
     private nonisolated func downsample(_ image: UIImage, to url: URL) -> UIImage {
         let maxDim: CGFloat = UIScreen.main.bounds.width * UIScreen.main.scale
@@ -166,6 +204,11 @@ struct RemoteImage: View {
         }
         .onAppear { loader.load(resolvedURL) }
         .onChange(of: resolvedURL) { loader.load($0) }
+        .onReceive(NotificationCenter.default.publisher(for: ImageCache.didStoreImageNotification)) { notification in
+            let storedURL = ImageCache.storedURL(from: notification)
+            guard storedURL == resolvedURL else { return }
+            loader.useCachedImageIfAvailable(for: storedURL)
+        }
     }
 }
 

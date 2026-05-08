@@ -238,6 +238,7 @@ private struct DeepLinkPlayerHost: View {
 
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
+        LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
     }
 
     @ViewBuilder
@@ -281,7 +282,10 @@ private struct DeepLinkPlayerHost: View {
     }
 
     private func liveDestination(for route: DeepLinkRouter.LiveRoute) -> some View {
-        LiveRoomView(route: route)
+        LiveRoomView(
+            route: route,
+            vm: LiveRuntimeCoordinator.shared.viewModel(for: route.id)
+        )
             .tint(.white)
     }
 

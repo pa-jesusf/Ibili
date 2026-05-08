@@ -186,6 +186,39 @@ public final class CoreClient: @unchecked Sendable {
         return try call("live.playurl", args: A(room_id: roomID, qn: qn), decoding: LivePlayUrlDTO.self)
     }
 
+    public func liveDanmakuInfo(roomID: Int64) throws -> LiveDanmakuInfoDTO {
+        struct A: Encodable { let room_id: Int64 }
+        return try call("live.danmaku_info", args: A(room_id: roomID), decoding: LiveDanmakuInfoDTO.self)
+    }
+
+    public func liveDanmakuHistory(roomID: Int64) throws -> LiveDanmakuHistoryDTO {
+        struct A: Encodable { let room_id: Int64 }
+        return try call("live.danmaku_history", args: A(room_id: roomID), decoding: LiveDanmakuHistoryDTO.self)
+    }
+
+    public func sendLiveDanmaku(
+        roomID: Int64,
+        msg: String,
+        mode: Int32 = 1,
+        color: Int32 = 16_777_215,
+        fontsize: Int32 = 25
+    ) throws {
+        struct A: Encodable {
+            let room_id: Int64
+            let msg: String
+            let mode: Int32
+            let color: Int32
+            let fontsize: Int32
+        }
+        try callVoid("live.send_danmaku", args: A(
+            room_id: roomID,
+            msg: msg,
+            mode: mode,
+            color: color,
+            fontsize: fontsize
+        ))
+    }
+
     public func playUrl(aid: Int64, cid: Int64, qn: Int64 = 0, audioQn: Int64 = 0) throws -> PlayUrlDTO {
         struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64; let audio_qn: Int64 }
         return try call("video.playurl", args: A(aid: aid, cid: cid, qn: qn, audio_qn: audioQn), decoding: PlayUrlDTO.self)
@@ -608,4 +641,3 @@ private struct AnyEncodable: Encodable {
     }
     func encode(to encoder: Encoder) throws { try _encode(encoder) }
 }
-

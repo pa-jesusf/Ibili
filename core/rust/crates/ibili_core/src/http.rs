@@ -216,6 +216,32 @@ impl HttpClient {
         unwrap_envelope(body)
     }
 
+    pub fn get_web_with_headers<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        params: &[(String, String)],
+        extra_headers: &[(&str, String)],
+    ) -> CoreResult<T> {
+        use reqwest::header::{HeaderName, HeaderValue};
+        let mut req = self.client.get(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .query(params);
+        for (name, value) in extra_headers {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                req = req.header(name, value);
+            }
+        }
+        let resp = req
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
     /// POST to a web-flavoured endpoint with `application/x-www-form-urlencoded`
     /// body, attaching cookies from the shared jar (so SESSDATA / bili_jct
     /// authenticate the request). Used for write actions that require a CSRF
@@ -228,6 +254,37 @@ impl HttpClient {
             .header("User-Agent", UA_WEB)
             .header("Referer", "https://www.bilibili.com/")
             .form(form)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        unwrap_envelope(body)
+    }
+
+    /// POST a web form with query parameters and custom headers. Live
+    /// message submit keeps WBI auth in the query string and CSRF in the
+    /// form body, while requiring the live-room referer.
+    pub fn post_form_web_with_headers<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        query: &[(String, String)],
+        form: &[(String, String)],
+        extra_headers: &[(&str, String)],
+    ) -> CoreResult<T> {
+        use reqwest::header::{HeaderName, HeaderValue};
+        let mut req = self.client.post(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .query(query)
+            .form(form);
+        for (name, value) in extra_headers {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                req = req.header(name, value);
+            }
+        }
+        let resp = req
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;

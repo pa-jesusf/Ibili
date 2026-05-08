@@ -84,8 +84,12 @@ struct NavigationTrailingSegmentedControl<Tab: Hashable & Identifiable>: View {
 
     @Namespace private var selectedSegment
 
-    private let expandedWidth: CGFloat = 158
-    private let compactWidth: CGFloat = 72
+    private var expandedWidth: CGFloat {
+        max(158, CGFloat(tabs.count) * 79)
+    }
+    private var compactWidth: CGFloat {
+        max(72, min(92, CGFloat(title(selection).count) * 15 + 36))
+    }
     private let controlHeight: CGFloat = 40
 
     private var compactProgress: CGFloat {

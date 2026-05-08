@@ -109,6 +109,15 @@ struct LiveRoomArgs {
 }
 
 #[derive(Deserialize)]
+struct SendLiveDanmakuArgs {
+    room_id: i64,
+    msg: String,
+    #[serde(default = "default_dm_mode")] mode: i32,
+    #[serde(default = "default_dm_color")] color: i32,
+    #[serde(default = "default_dm_fontsize")] fontsize: i32,
+}
+
+#[derive(Deserialize)]
 struct PlayurlArgs { aid: i64, cid: i64, #[serde(default = "default_qn")] qn: i64, #[serde(default)] audio_qn: i64 }
 fn default_qn() -> i64 { 0 }
 
@@ -336,6 +345,19 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "live.playurl" => {
             let a: LiveRoomArgs = serde_json::from_value(args)?;
             to_value(c.inner.live_playurl(a.room_id, a.qn)?)
+        }
+        "live.danmaku_info" => {
+            let a: LiveRoomArgs = serde_json::from_value(args)?;
+            to_value(c.inner.live_danmaku_info(a.room_id)?)
+        }
+        "live.danmaku_history" => {
+            let a: LiveRoomArgs = serde_json::from_value(args)?;
+            to_value(c.inner.live_danmaku_history(a.room_id)?)
+        }
+        "live.send_danmaku" => {
+            let a: SendLiveDanmakuArgs = serde_json::from_value(args)?;
+            c.inner.send_live_danmaku(a.room_id, &a.msg, a.mode, a.color, a.fontsize)?;
+            Ok(Value::Object(Default::default()))
         }
         "video.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;

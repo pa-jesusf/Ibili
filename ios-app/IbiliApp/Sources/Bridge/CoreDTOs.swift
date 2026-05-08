@@ -193,6 +193,57 @@ public struct LivePlayUrlDTO: Decodable {
     }
 }
 
+public struct LiveDanmakuHostDTO: Decodable, Hashable {
+    public let host: String
+    public let port: Int64
+    public let wsPort: Int64
+    public let wssPort: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case host, port
+        case wsPort = "ws_port"
+        case wssPort = "wss_port"
+    }
+}
+
+public struct LiveDanmakuInfoDTO: Decodable {
+    public let token: String
+    public let hostList: [LiveDanmakuHostDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case token
+        case hostList = "host_list"
+    }
+}
+
+public struct LiveDanmakuMessageDTO: Decodable, Identifiable, Hashable {
+    public let id: String
+    public let uid: Int64
+    public let name: String
+    public let text: String
+    public let isSelf: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case uid
+        case name
+        case text
+        case isSelf = "is_self"
+    }
+
+    public init(id: String, uid: Int64, name: String, text: String, isSelf: Bool) {
+        self.id = id
+        self.uid = uid
+        self.name = name
+        self.text = text
+        self.isSelf = isSelf
+    }
+}
+
+public struct LiveDanmakuHistoryDTO: Decodable {
+    public let items: [LiveDanmakuMessageDTO]
+}
+
 public struct PlayUrlDTO: Decodable {
     public let url: String
     public let audioUrl: String?

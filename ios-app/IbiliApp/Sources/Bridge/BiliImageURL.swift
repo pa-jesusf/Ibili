@@ -14,17 +14,46 @@ enum BiliImageURL {
     /// `quality` is the optional Bilibili @q value (1-100). Pass `nil` for auto.
     static func resized(_ src: String, pointSize: CGSize, quality: Int? = nil) -> String {
         guard !src.isEmpty else { return src }
+        let normalized = normalizeScheme(src)
+        guard canAppendResizeSuffix(to: normalized) else { return normalized }
         let scale = max(UIScreen.main.scale, 2.0)
         let w = max(1, Int((pointSize.width * scale).rounded()))
         let h = max(1, Int((pointSize.height * scale).rounded()))
 
         // Strip an existing trailing `@...` suffix (PiliPlus's _thumbRegex equivalent).
-        let base = src.replacing(/@(?:\d+[a-z]_?)+(?:\.[a-zA-Z0-9]+)?$/, with: "")
-        let httpsBase = base.hasPrefix("http://") ? "https://" + base.dropFirst("http://".count) : base
+        let split = splitQuery(normalized)
+        let base = split.path.replacing(/@(?:\d+[a-z]_?)+(?:\.[a-zA-Z0-9]+)?$/, with: "")
 
         var suffix = "@\(w)w_\(h)h"
         if let q = quality, q > 0, q <= 100 { suffix += "_\(q)q" }
         suffix += ".webp"
-        return httpsBase + suffix
+        return base + suffix + split.query
+    }
+
+    private static func normalizeScheme(_ src: String) -> String {
+        if src.hasPrefix("//") {
+            return "https:" + src
+        }
+        if src.hasPrefix("http://") {
+            return "https://" + src.dropFirst("http://".count)
+        }
+        return src
+    }
+
+    private static func splitQuery(_ src: String) -> (path: String, query: String) {
+        guard let idx = src.firstIndex(of: "?") else { return (src, "") }
+        return (String(src[..<idx]), String(src[idx...]))
+    }
+
+    private static func canAppendResizeSuffix(to src: String) -> Bool {
+        guard let url = URL(string: src), let host = url.host?.lowercased() else {
+            return false
+        }
+        guard host.hasSuffix("hdslb.com") else { return false }
+        let path = url.path.lowercased()
+        return path.hasSuffix(".jpg")
+            || path.hasSuffix(".jpeg")
+            || path.hasSuffix(".png")
+            || path.hasSuffix(".webp")
     }
 }

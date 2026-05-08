@@ -4,13 +4,19 @@
 use serde::Deserialize;
 
 use crate::Core;
-use crate::dto::{LiveFeedItem, LiveFeedPage, LivePlayUrl, LiveQuality, LiveRoomInfo};
+use crate::dto::{
+    LiveDanmakuHistory, LiveDanmakuHost, LiveDanmakuInfo, LiveDanmakuMessage, LiveFeedItem,
+    LiveFeedPage, LivePlayUrl, LiveQuality, LiveRoomInfo,
+};
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
 
 const URL_LIVE_FEED: &str = "https://api.live.bilibili.com/xlive/app-interface/v2/index/feed";
 const URL_LIVE_PLAY_INFO: &str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
 const URL_LIVE_INFO_H5: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getH5InfoByRoom";
+const URL_LIVE_DM_INFO: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
+const URL_LIVE_DM_HISTORY: &str = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory";
+const URL_SEND_LIVE_MSG: &str = "https://api.live.bilibili.com/msg/send";
 const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 const STATISTICS_APP: &str = r#"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#;
 
@@ -132,6 +138,44 @@ struct LiveUrlInfoWire {
     #[serde(default)] extra: String,
 }
 
+#[derive(Default, Deserialize)]
+struct LiveDanmakuInfoWire {
+    #[serde(default)] token: String,
+    #[serde(default)] host_list: Vec<LiveDanmakuHostWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct LiveDanmakuHostWire {
+    #[serde(default)] host: String,
+    #[serde(default)] port: i64,
+    #[serde(default)] ws_port: i64,
+    #[serde(default)] wss_port: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct LiveDanmakuHistoryWire {
+    #[serde(default)] room: Vec<LiveHistoryDanmakuWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct LiveHistoryDanmakuWire {
+    #[serde(default, deserialize_with = "lenient_string")] id_str: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")] id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")] text: Option<String>,
+    #[serde(default)] user: Option<LiveHistoryUserWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct LiveHistoryUserWire {
+    #[serde(default, deserialize_with = "lenient_i64")] uid: Option<i64>,
+    #[serde(default)] base: Option<LiveHistoryUserBaseWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct LiveHistoryUserBaseWire {
+    #[serde(default, deserialize_with = "lenient_string")] name: Option<String>,
+}
+
 impl Core {
     pub fn live_feed(&self, page: i64) -> CoreResult<LiveFeedPage> {
         let access_key = self.session.read().access_key();
@@ -208,6 +252,126 @@ impl Core {
             return Err(CoreError::Api { code: -404, msg: "当前直播间未开播".into() });
         }
         select_hls_playurl(raw)
+    }
+
+    pub fn live_danmaku_info(&self, room_id: i64) -> CoreResult<LiveDanmakuInfo> {
+        if room_id <= 0 {
+            return Err(CoreError::InvalidArgument("room_id required".into()));
+        }
+        let key = self.fetch_wbi_key_for_live()?;
+        let raw: LiveDanmakuInfoWire = self.http.get_signed_web_with_headers(
+            URL_LIVE_DM_INFO,
+            vec![
+                ("id".into(), room_id.to_string()),
+                ("web_location".into(), "444.8".into()),
+            ],
+            &key,
+            &[("Referer", format!("https://live.bilibili.com/{room_id}"))],
+        )?;
+        Ok(LiveDanmakuInfo {
+            token: raw.token,
+            host_list: raw.host_list
+                .into_iter()
+                .filter(|h| !h.host.is_empty())
+                .map(|h| LiveDanmakuHost {
+                    host: h.host,
+                    port: h.port,
+                    ws_port: h.ws_port,
+                    wss_port: h.wss_port,
+                })
+                .collect(),
+        })
+    }
+
+    pub fn live_danmaku_history(&self, room_id: i64) -> CoreResult<LiveDanmakuHistory> {
+        if room_id <= 0 {
+            return Err(CoreError::InvalidArgument("room_id required".into()));
+        }
+        let raw: LiveDanmakuHistoryWire = self.http.get_web_with_headers(
+            URL_LIVE_DM_HISTORY,
+            &[("roomid".into(), room_id.to_string())],
+            &[("Referer", format!("https://live.bilibili.com/{room_id}"))],
+        )?;
+        let self_mid = self.session.read().snapshot().mid;
+        let mut items = Vec::with_capacity(raw.room.len());
+        for (idx, item) in raw.room.into_iter().enumerate() {
+            let text = item.text.unwrap_or_default().trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            let user = item.user.unwrap_or_default();
+            let uid = user.uid.unwrap_or(0);
+            let name = user
+                .base
+                .and_then(|base| base.name)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let id = item
+                .id_str
+                .filter(|s| !s.is_empty())
+                .or_else(|| item.id.filter(|id| *id > 0).map(|id| id.to_string()))
+                .unwrap_or_else(|| format!("history-{room_id}-{idx}"));
+            items.push(LiveDanmakuMessage {
+                id,
+                uid,
+                name,
+                text,
+                is_self: self_mid > 0 && uid == self_mid,
+            });
+        }
+        Ok(LiveDanmakuHistory { items })
+    }
+
+    pub fn send_live_danmaku(
+        &self,
+        room_id: i64,
+        msg: &str,
+        mode: i32,
+        color: i32,
+        fontsize: i32,
+    ) -> CoreResult<()> {
+        if room_id <= 0 {
+            return Err(CoreError::InvalidArgument("room_id required".into()));
+        }
+        let trimmed = msg.trim();
+        if trimmed.is_empty() {
+            return Err(CoreError::InvalidArgument("msg required".into()));
+        }
+        let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        let key = self.fetch_wbi_key_for_live()?;
+        let mut query = vec![("web_location".into(), "444.8".into())];
+        crate::signer::WbiSigner::sign(&mut query, &key);
+        let rnd = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let params: Vec<(String, String)> = vec![
+            ("bubble".into(), "0".into()),
+            ("msg".into(), trimmed.to_string()),
+            ("color".into(), color.to_string()),
+            ("mode".into(), mode.to_string()),
+            ("room_type".into(), "0".into()),
+            ("jumpfrom".into(), "0".into()),
+            ("reply_mid".into(), "0".into()),
+            ("reply_attr".into(), "0".into()),
+            ("replay_dmid".into(), String::new()),
+            ("statistics".into(), r#"{"appId":100,"platform":5}"#.into()),
+            ("reply_type".into(), "0".into()),
+            ("reply_uname".into(), String::new()),
+            ("fontsize".into(), fontsize.to_string()),
+            ("rnd".into(), rnd.to_string()),
+            ("roomid".into(), room_id.to_string()),
+            ("csrf".into(), csrf.clone()),
+            ("csrf_token".into(), csrf),
+        ];
+        let _: serde_json::Value = self.http.post_form_web_with_headers(
+            URL_SEND_LIVE_MSG,
+            &query,
+            &params,
+            &[("Referer", format!("https://live.bilibili.com/{room_id}"))],
+        )?;
+        Ok(())
     }
 
     fn fetch_wbi_key_for_live(&self) -> CoreResult<WbiKey> {
@@ -336,4 +500,31 @@ fn ensure_https(raw: String) -> String {
     } else {
         raw
     }
+}
+
+fn lenient_string<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::Bool(b)) => Some(b.to_string()),
+        _ => None,
+    })
+}
+
+fn lenient_i64<'de, D>(de: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(Value::String(s)) => s.parse().ok(),
+        _ => None,
+    })
 }

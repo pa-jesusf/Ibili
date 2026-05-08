@@ -93,6 +93,34 @@ pub struct LivePlayUrl {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct LiveDanmakuHost {
+    pub host: String,
+    pub port: i64,
+    pub ws_port: i64,
+    pub wss_port: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LiveDanmakuInfo {
+    pub token: String,
+    pub host_list: Vec<LiveDanmakuHost>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LiveDanmakuMessage {
+    pub id: String,
+    pub uid: i64,
+    pub name: String,
+    pub text: String,
+    pub is_self: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LiveDanmakuHistory {
+    pub items: Vec<LiveDanmakuMessage>,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct PlayUrl {
     pub url: String,
     pub audio_url: Option<String>,

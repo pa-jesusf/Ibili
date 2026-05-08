@@ -180,6 +180,10 @@ final class DeepLinkRouter: ObservableObject {
         path.compactMap(\.playerRoute)
     }
 
+    var livePath: [LiveRoute] {
+        path.compactMap(\.liveRoute)
+    }
+
     var snapshot: SessionSnapshot {
         SessionSnapshot(pending: pending, path: path)
     }
