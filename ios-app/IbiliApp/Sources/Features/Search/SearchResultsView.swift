@@ -213,6 +213,17 @@ struct SearchResultsView: View {
                 SearchUserResultCardView(item: user, cardWidth: cardWidth)
             }
             .buttonStyle(.plain)
+        case .article(let article):
+            Button {
+                router.openArticle(id: String(article.id), kind: "read")
+            } label: {
+                SearchArticleResultCardView(
+                    item: article,
+                    cardWidth: cardWidth,
+                    imageQuality: settings.resolvedImageQuality()
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -227,6 +238,7 @@ struct SearchResultsView: View {
             case .video(let video): return video.cover
             case .live(let live): return live.cover
             case .user(let user): return user.face
+            case .article(let article): return article.cover
             }
         }
         let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())

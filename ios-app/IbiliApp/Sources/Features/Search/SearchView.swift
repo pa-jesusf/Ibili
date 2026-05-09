@@ -61,7 +61,7 @@ struct SearchView: View {
         if vm.hasSubmittedQuery,
            !vm.submittedQuery.isEmpty,
            vm.query == vm.submittedQuery,
-           vm.selectedType == .video {
+           vm.selectedType.hasFilters {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     isFiltersSheetPresented = true

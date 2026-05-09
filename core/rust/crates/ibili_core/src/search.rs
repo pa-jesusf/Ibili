@@ -5,8 +5,8 @@
 //! the existing `HttpClient::get_signed_web` machinery.
 
 use crate::dto::{
-    SearchLiveItem, SearchLivePage, SearchUserItem, SearchUserPage, SearchVideoItem,
-    SearchVideoPage,
+    SearchArticleItem, SearchArticlePage, SearchLiveItem, SearchLivePage, SearchUserItem,
+    SearchUserPage, SearchVideoItem, SearchVideoPage,
 };
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
@@ -103,6 +103,20 @@ struct SearchTypeItem {
     official_verify: Option<SearchOfficialVerify>,
     #[serde(default, deserialize_with = "null_as_default")]
     verify_info: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    id: i64,
+    #[serde(default, deserialize_with = "string_vec_or_empty")]
+    image_urls: Vec<String>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    desc: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    category_name: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    view: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    reply: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub_time: i64,
 }
 
 #[derive(Deserialize, Default)]
@@ -256,8 +270,19 @@ impl Core {
     }
 
     pub fn search_user(&self, keyword: &str, page: i64) -> CoreResult<SearchUserPage> {
+        self.search_user_with_filters(keyword, page, None, None, None)
+    }
+
+    pub fn search_user_with_filters(
+        &self,
+        keyword: &str,
+        page: i64,
+        order: Option<&str>,
+        order_sort: Option<i64>,
+        user_type: Option<i64>,
+    ) -> CoreResult<SearchUserPage> {
         let key = self.fetch_wbi_key_for_search()?;
-        let params: Vec<(String, String)> = vec![
+        let mut params: Vec<(String, String)> = vec![
             ("search_type".into(), "bili_user".into()),
             ("keyword".into(), keyword.to_string()),
             ("page".into(), page.max(1).to_string()),
@@ -265,6 +290,19 @@ impl Core {
             ("platform".into(), "pc".into()),
             ("web_location".into(), "1430654".into()),
         ];
+        if let Some(o) = order {
+            if !o.is_empty() {
+                params.push(("order".into(), o.to_string()));
+            }
+        }
+        if let Some(sort) = order_sort {
+            params.push(("order_sort".into(), sort.to_string()));
+        }
+        if let Some(user_type) = user_type {
+            if user_type > 0 {
+                params.push(("user_type".into(), user_type.to_string()));
+            }
+        }
         let keyword_encoded = keyword.replace(' ', "%20");
         let raw: SearchTypeRoot = self.http.get_signed_web_with_headers(
             URL_SEARCH_TYPE,
@@ -321,6 +359,80 @@ impl Core {
         })
     }
 
+    pub fn search_article(
+        &self,
+        keyword: &str,
+        page: i64,
+        order: Option<&str>,
+        category_id: Option<i64>,
+    ) -> CoreResult<SearchArticlePage> {
+        let key = self.fetch_wbi_key_for_search()?;
+        let mut params: Vec<(String, String)> = vec![
+            ("search_type".into(), "article".into()),
+            ("keyword".into(), keyword.to_string()),
+            ("page".into(), page.max(1).to_string()),
+            ("page_size".into(), "20".into()),
+            ("platform".into(), "pc".into()),
+            ("web_location".into(), "1430654".into()),
+        ];
+        if let Some(o) = order {
+            if !o.is_empty() {
+                params.push(("order".into(), o.to_string()));
+            }
+        }
+        if let Some(category_id) = category_id {
+            if category_id > 0 {
+                params.push(("category_id".into(), category_id.to_string()));
+            }
+        }
+        let keyword_encoded = keyword.replace(' ', "%20");
+        let raw: SearchTypeRoot = self.http.get_signed_web_with_headers(
+            URL_SEARCH_TYPE,
+            params,
+            &key,
+            &[
+                ("Origin", "https://search.bilibili.com".to_string()),
+                (
+                    "Referer",
+                    format!(
+                        "https://search.bilibili.com/article?keyword={}",
+                        keyword_encoded
+                    ),
+                ),
+            ],
+        )?;
+        if raw.v_voucher.is_some() {
+            return Err(CoreError::Api {
+                code: -352,
+                msg: "触发搜索风控，请稍后再试".into(),
+            });
+        }
+        let num_pages = resolve_num_pages(&raw);
+        let items = raw
+            .result
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| SearchArticleItem {
+                id: r.id,
+                title: strip_em_tags(&r.title),
+                desc: strip_em_tags(&r.desc),
+                cover: ensure_https(r.image_urls.into_iter().next().unwrap_or_else(|| r.pic)),
+                mid: r.mid,
+                category_name: strip_em_tags(&r.category_name),
+                view: r.view,
+                like: r.like,
+                reply: r.reply,
+                pub_time: r.pub_time,
+            })
+            .filter(|item| item.id > 0)
+            .collect();
+        Ok(SearchArticlePage {
+            items,
+            num_results: raw.num_results,
+            num_pages,
+        })
+    }
+
     fn fetch_wbi_key_for_search(&self) -> CoreResult<WbiKey> {
         let nav: NavData = self.http.get_web(URL_NAV, &[])?;
         Ok(WbiKey::from_urls(
@@ -348,6 +460,26 @@ where
     T: Default + serde::Deserialize<'de>,
 {
     Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
+}
+
+fn string_vec_or_empty<'de, D>(de: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                Value::String(s) => Some(s),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::String(s)) if !s.is_empty() => vec![s],
+        _ => Vec::new(),
+    })
 }
 
 /// Bilibili search returns titles wrapped in `<em class="keyword">…</em>`

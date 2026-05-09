@@ -21,6 +21,7 @@ pub mod interaction;
 pub mod packaging;
 pub mod user_space;
 pub mod dynamic;
+pub mod article;
 
 use std::sync::Arc;
 

@@ -92,11 +92,24 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
+    struct ArticleRoute: Hashable, Identifiable {
+        let id: UUID
+        let articleID: String
+        let kind: String
+
+        init(id: UUID = UUID(), articleID: String, kind: String) {
+            self.id = id
+            self.articleID = articleID
+            self.kind = kind
+        }
+    }
+
     enum SessionRoute: Hashable, Identifiable {
         case player(PlayerRoute)
         case live(LiveRoute)
         case userSpace(UserSpaceRoute)
         case dynamicDetail(DynamicDetailRoute)
+        case article(ArticleRoute)
 
         var id: UUID {
             switch self {
@@ -107,6 +120,8 @@ final class DeepLinkRouter: ObservableObject {
             case .userSpace(let route):
                 return route.id
             case .dynamicDetail(let route):
+                return route.id
+            case .article(let route):
                 return route.id
             }
         }
@@ -125,12 +140,15 @@ final class DeepLinkRouter: ObservableObject {
     enum RootRoute: Hashable, Identifiable {
         case player(PlayerRoute)
         case live(LiveRoute)
+        case article(ArticleRoute)
 
         var id: UUID {
             switch self {
             case .player(let route):
                 return route.id
             case .live(let route):
+                return route.id
+            case .article(let route):
                 return route.id
             }
         }
@@ -245,6 +263,20 @@ final class DeepLinkRouter: ObservableObject {
         path.append(.dynamicDetail(DynamicDetailRoute(item: item)))
     }
 
+    func openArticle(id: String, kind: String = "read") {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let normalizedKind = kind == "opus" ? "opus" : "read"
+        let route = ArticleRoute(articleID: trimmed, kind: normalizedKind)
+        guard pending != nil, !isClosingRootSession else {
+            path.removeAll()
+            isClosingRootSession = false
+            pending = .article(route)
+            return
+        }
+        path.append(.article(route))
+    }
+
     func closeSession() {
         path.removeAll()
         pending = nil
@@ -291,9 +323,35 @@ final class DeepLinkRouter: ObservableObject {
                 openLive(roomID: roomID)
             }
             return .handled
+        case "article":
+            let components = url.pathComponents.filter { $0 != "/" }
+            if components.count >= 2 {
+                openArticle(id: components[1], kind: components[0])
+            }
+            return .handled
+        case "space", "user":
+            if let mid = Int64(path) {
+                openUserSpace(mid: mid)
+            }
+            return .handled
+        case "cv", "read":
+            if let cvid = Self.extractFirstNumber(from: path) {
+                openArticle(id: cvid, kind: "read")
+            }
+            return .handled
+        case "opus":
+            if let opusID = Self.extractFirstNumber(from: path) {
+                openArticle(id: opusID, kind: "opus")
+            }
+            return .handled
         default:
             return .handled
         }
+    }
+
+    private static func extractFirstNumber(from raw: String) -> String? {
+        guard let range = raw.range(of: #"\d+"#, options: .regularExpression) else { return nil }
+        return String(raw[range])
     }
 
     private func makeShell(aid: Int64 = 0, bvid: String = "") -> FeedItemDTO {

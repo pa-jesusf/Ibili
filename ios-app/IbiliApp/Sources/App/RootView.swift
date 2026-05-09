@@ -255,7 +255,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case nil:
+        case .article, nil:
             break
         }
     }
@@ -266,7 +266,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, nil:
+        case .userSpace, .dynamicDetail, .article, nil:
             break
         }
     }
@@ -284,6 +284,8 @@ private struct DeepLinkPlayerHost: View {
             UserSpaceView(mid: userSpaceRoute.mid)
         case .dynamicDetail(let detailRoute):
             DynamicDetailView(item: detailRoute.item)
+        case .article(let articleRoute):
+            ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
         }
     }
 
@@ -294,6 +296,8 @@ private struct DeepLinkPlayerHost: View {
             playerDestination(for: playerRoute)
         case .live(let liveRoute):
             liveDestination(for: liveRoute)
+        case .article(let articleRoute):
+            ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
         }
     }
 

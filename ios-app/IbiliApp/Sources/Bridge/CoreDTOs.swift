@@ -581,6 +581,123 @@ public struct SearchUserPageDTO: Decodable {
     }
 }
 
+public struct SearchArticleItemDTO: Decodable, Identifiable, Hashable {
+    public let id: Int64
+    public let title: String
+    public let desc: String
+    public let cover: String
+    public let mid: Int64
+    public let categoryName: String
+    public let view: Int64
+    public let like: Int64
+    public let reply: Int64
+    public let pubTime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, desc, cover, mid, view, like, reply
+        case categoryName = "category_name"
+        case pubTime = "pub_time"
+    }
+}
+
+public struct SearchArticlePageDTO: Decodable {
+    public let items: [SearchArticleItemDTO]
+    public let numResults: Int64
+    public let numPages: Int64
+    enum CodingKeys: String, CodingKey {
+        case items
+        case numResults = "num_results"
+        case numPages = "num_pages"
+    }
+}
+
+// MARK: - Article / opus
+
+public struct ArticleDetailDTO: Decodable, Hashable {
+    public let id: String
+    public let kind: String
+    public let title: String
+    public let summary: String
+    public let cover: String
+    public let author: ArticleAuthorDTO
+    public let stat: ArticleStatDTO
+    public let pubTs: Int64
+    public let commentId: Int64
+    public let commentType: Int32
+    public let dynId: String
+    public let url: String
+    public let blocks: [ArticleBlockDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, summary, cover, author, stat, url, blocks
+        case pubTs = "pub_ts"
+        case commentId = "comment_id"
+        case commentType = "comment_type"
+        case dynId = "dyn_id"
+    }
+}
+
+public struct ArticleAuthorDTO: Decodable, Hashable {
+    public let mid: Int64
+    public let name: String
+    public let face: String
+}
+
+public struct ArticleStatDTO: Decodable, Hashable {
+    public let view: Int64
+    public let like: Int64
+    public let reply: Int64
+    public let favorite: Int64
+    public let share: Int64
+}
+
+public struct ArticleImageDTO: Decodable, Hashable {
+    public let url: String
+    public let width: Int64
+    public let height: Int64
+}
+
+public struct ArticleLinkCardDTO: Decodable, Hashable {
+    public let title: String
+    public let subtitle: String
+    public let cover: String
+    public let url: String
+}
+
+public struct ArticleBlockDTO: Decodable, Hashable, Identifiable {
+    public var id: Int { hashValue }
+    public let kind: String
+    public let text: String
+    public let richText: [ArticleRichNodeDTO]
+    public let images: [ArticleImageDTO]
+    public let linkCard: ArticleLinkCardDTO?
+    public let codeLang: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind, text, images
+        case richText = "rich_text"
+        case linkCard = "link_card"
+        case codeLang = "code_lang"
+    }
+}
+
+public struct ArticleRichNodeDTO: Decodable, Hashable, Identifiable {
+    public var id: Int { hashValue }
+    public let text: String
+    public let url: String
+    public let kind: String
+    public let rid: String
+    public let emojiURL: String
+    public let bold: Bool
+    public let italic: Bool
+    public let strikethrough: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case text, url, kind, rid, bold, italic, strikethrough
+        case emojiURL = "emoji_url"
+    }
+}
+
 // MARK: - Video detail (full view)
 
 public struct VideoStatDTO: Decodable, Hashable {
@@ -1184,6 +1301,24 @@ public struct DynamicLiveDTO: Decodable, Hashable {
     }
 }
 
+public struct DynamicArticleDTO: Decodable, Hashable {
+    public let id: String
+    public let kind: String
+    public let title: String
+    public let summary: String
+    public let cover: String
+    public let jumpURL: String
+    public let commentId: Int64
+    public let commentType: Int32
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, summary, cover
+        case jumpURL = "jump_url"
+        case commentId = "comment_id"
+        case commentType = "comment_type"
+    }
+}
+
 public struct DynamicImageDTO: Decodable, Hashable {
     public let url: String
     public let width: Int64
@@ -1199,6 +1334,7 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
     public let text: String
     public let video: DynamicVideoDTO?
     public let live: DynamicLiveDTO?
+    public let article: DynamicArticleDTO?
     public let images: [DynamicImageDTO]
     public let commentId: Int64
     public let commentType: Int32
@@ -1207,7 +1343,7 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
     public let orig: DynamicItemRefDTO?
 
     enum CodingKeys: String, CodingKey {
-        case kind, author, stat, text, video, live, images, orig
+        case kind, author, stat, text, video, live, article, images, orig
         case idStr = "id_str"
         case commentId = "comment_id"
         case commentType = "comment_type"
@@ -1222,6 +1358,7 @@ public struct DynamicItemDTO: Decodable, Identifiable, Hashable {
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
         video = try? c.decodeIfPresent(DynamicVideoDTO.self, forKey: .video)
         live = try? c.decodeIfPresent(DynamicLiveDTO.self, forKey: .live)
+        article = try? c.decodeIfPresent(DynamicArticleDTO.self, forKey: .article)
         images = (try? c.decodeIfPresent([DynamicImageDTO].self, forKey: .images)) ?? []
         commentId = (try? c.decode(Int64.self, forKey: .commentId)) ?? 0
         commentType = (try? c.decode(Int32.self, forKey: .commentType)) ?? 0
@@ -1240,10 +1377,11 @@ public struct DynamicItemRefDTO: Decodable, Hashable {
     public let text: String
     public let video: DynamicVideoDTO?
     public let live: DynamicLiveDTO?
+    public let article: DynamicArticleDTO?
     public let images: [DynamicImageDTO]
 
     enum CodingKeys: String, CodingKey {
-        case kind, author, stat, text, video, live, images
+        case kind, author, stat, text, video, live, article, images
         case idStr = "id_str"
     }
 
@@ -1256,6 +1394,7 @@ public struct DynamicItemRefDTO: Decodable, Hashable {
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
         video = try? c.decodeIfPresent(DynamicVideoDTO.self, forKey: .video)
         live = try? c.decodeIfPresent(DynamicLiveDTO.self, forKey: .live)
+        article = try? c.decodeIfPresent(DynamicArticleDTO.self, forKey: .article)
         images = (try? c.decodeIfPresent([DynamicImageDTO].self, forKey: .images)) ?? []
     }
 
@@ -1264,7 +1403,8 @@ public struct DynamicItemRefDTO: Decodable, Hashable {
     /// type for shared body rendering.
     public init(idStr: String, kind: DynamicKindDTO, author: DynamicAuthorDTO,
                 stat: DynamicStatDTO, text: String,
-                video: DynamicVideoDTO?, live: DynamicLiveDTO?, images: [DynamicImageDTO]) {
+                video: DynamicVideoDTO?, live: DynamicLiveDTO?, article: DynamicArticleDTO? = nil,
+                images: [DynamicImageDTO]) {
         self.idStr = idStr
         self.kind = kind
         self.author = author
@@ -1272,6 +1412,7 @@ public struct DynamicItemRefDTO: Decodable, Hashable {
         self.text = text
         self.video = video
         self.live = live
+        self.article = article
         self.images = images
     }
 }

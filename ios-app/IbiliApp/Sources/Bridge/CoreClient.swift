@@ -339,16 +339,41 @@ public final class CoreClient: @unchecked Sendable {
 
     public func searchUser(
         keyword: String,
-        page: Int64 = 1
+        page: Int64 = 1,
+        order: String? = nil,
+        orderSort: Int64? = nil,
+        userType: Int64? = nil
     ) throws -> SearchUserPageDTO {
         struct A: Encodable {
             let keyword: String
             let page: Int64
+            let order: String?
+            let order_sort: Int64?
+            let user_type: Int64?
         }
         return try call(
             "search.user",
-            args: A(keyword: keyword, page: page),
+            args: A(keyword: keyword, page: page, order: order, order_sort: orderSort, user_type: userType),
             decoding: SearchUserPageDTO.self
+        )
+    }
+
+    public func searchArticle(
+        keyword: String,
+        page: Int64 = 1,
+        order: String? = nil,
+        categoryID: Int64? = nil
+    ) throws -> SearchArticlePageDTO {
+        struct A: Encodable {
+            let keyword: String
+            let page: Int64
+            let order: String?
+            let category_id: Int64?
+        }
+        return try call(
+            "search.article",
+            args: A(keyword: keyword, page: page, order: order, category_id: categoryID),
+            decoding: SearchArticlePageDTO.self
         )
     }
 
@@ -646,6 +671,18 @@ public final class CoreClient: @unchecked Sendable {
     public func dynamicLike(dynamicId: String, action: Int32 = 1) throws {
         struct A: Encodable { let dynamic_id: String; let action: Int32 }
         try callVoid("dynamic.like", args: A(dynamic_id: dynamicId, action: action))
+    }
+
+    // MARK: - Article / opus
+
+    public func articleRead(cvid: Int64) throws -> ArticleDetailDTO {
+        struct A: Encodable { let cvid: Int64 }
+        return try call("article.read", args: A(cvid: cvid), decoding: ArticleDetailDTO.self)
+    }
+
+    public func articleOpus(id: String) throws -> ArticleDetailDTO {
+        struct A: Encodable { let id: String }
+        return try call("article.opus", args: A(id: id), decoding: ArticleDetailDTO.self)
     }
 
     // MARK: - User space (per-uploader page)

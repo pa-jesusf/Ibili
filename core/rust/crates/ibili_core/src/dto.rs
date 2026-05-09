@@ -302,6 +302,27 @@ pub struct SearchUserPage {
     pub num_pages: i64,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchArticleItem {
+    pub id: i64,
+    pub title: String,
+    pub desc: String,
+    pub cover: String,
+    pub mid: i64,
+    pub category_name: String,
+    pub view: i64,
+    pub like: i64,
+    pub reply: i64,
+    pub pub_time: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchArticlePage {
+    pub items: Vec<SearchArticleItem>,
+    pub num_results: i64,
+    pub num_pages: i64,
+}
+
 // ---------- Video detail (view/full) ----------
 
 /// Full video detail surface, mirrored from

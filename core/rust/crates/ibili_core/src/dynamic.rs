@@ -78,6 +78,18 @@ pub struct DynamicLive {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct DynamicArticle {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub cover: String,
+    pub jump_url: String,
+    pub comment_id: i64,
+    pub comment_type: i32,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct DynamicImage {
     pub url: String,
     pub width: i64,
@@ -98,6 +110,8 @@ pub struct DynamicItem {
     pub video: Option<DynamicVideo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<DynamicLive>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub article: Option<DynamicArticle>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<DynamicImage>,
     /// `oid` to pass to the comment API for this dynamic. Comes from
@@ -250,10 +264,12 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
     let mut text = dynamic_mod.desc.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
     let mut video: Option<DynamicVideo> = None;
     let mut live_item: Option<DynamicLive> = None;
+    let mut article: Option<DynamicArticle> = None;
     let mut images: Vec<DynamicImage> = Vec::new();
 
     // Order matters: opus → archive → draw → article fallbacks.
     if let Some(opus) = major.opus {
+        let summary_text = opus.summary.as_ref().and_then(|s| s.text.clone()).unwrap_or_default();
         if let Some(s) = opus.summary.and_then(|s| s.text) {
             if text.is_empty() { text = s; }
         }
@@ -266,6 +282,16 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
                 });
             }
         }
+        article = Some(DynamicArticle {
+            id: extract_article_id(w.id_str.as_deref(), ""),
+            kind: "opus".into(),
+            title: text.clone(),
+            summary: summary_text,
+            cover: images.first().map(|p| p.url.clone()).unwrap_or_default(),
+            jump_url: w.id_str.as_deref().map(|id| format!("https://www.bilibili.com/opus/{id}")).unwrap_or_default(),
+            comment_id: 0,
+            comment_type: 17,
+        });
     }
     if let Some(arc) = major.archive {
         let stat_label = arc.stat.unwrap_or_default();
@@ -290,12 +316,24 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         }
     }
     if let Some(art) = major.article {
-        if text.is_empty() { text = art.title.unwrap_or_default(); }
+        let title = art.title.unwrap_or_default();
+        if text.is_empty() { text = title.clone(); }
+        let first_cover = art.covers.as_ref().and_then(|c| c.first()).cloned().unwrap_or_default();
         if let Some(covers) = art.covers {
             for url in covers {
                 images.push(DynamicImage { url, width: 0, height: 0 });
             }
         }
+        article = Some(DynamicArticle {
+            id: extract_article_id(w.id_str.as_deref(), ""),
+            kind: "read".into(),
+            title,
+            summary: text.clone(),
+            cover: first_cover,
+            jump_url: String::new(),
+            comment_id: 0,
+            comment_type: 12,
+        });
     }
     if let Some(pgc) = major.pgc {
         video = Some(DynamicVideo {
@@ -320,6 +358,16 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let comment_type = basic.comment_type.unwrap_or(0);
+    if let Some(article) = article.as_mut() {
+        article.comment_id = comment_id;
+        article.comment_type = comment_type;
+        if article.id.is_empty() {
+            article.id = comment_id.to_string();
+        }
+        if article.kind == "read" && article.jump_url.is_empty() && article.id != "0" {
+            article.jump_url = format!("https://www.bilibili.com/read/cv{}", article.id);
+        }
+    }
 
     Some(DynamicItem {
         id_str: w.id_str.unwrap_or_default(),
@@ -329,11 +377,19 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         text,
         video,
         live: live_item,
+        article,
         images,
         comment_id,
         comment_type,
         orig,
     })
+}
+
+fn extract_article_id(dynamic_id: Option<&str>, fallback: &str) -> String {
+    dynamic_id
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 // MARK: - Wire (lifted, narrowed)

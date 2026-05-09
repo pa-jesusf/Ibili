@@ -53,6 +53,7 @@ enum DynamicTapAction {
     /// Pure video uploads: jump straight to the player overlay.
     case playVideo(aid: Int64, bvid: String, title: String, cover: String)
     case openLive(roomID: Int64, title: String, cover: String, anchorName: String)
+    case openArticle(id: String, kind: String)
     /// Anything else (image post / forward / article / live / word):
     /// open the secondary detail page so the user can read the full
     /// text, browse images, and engage with the comment thread.
@@ -70,6 +71,9 @@ private func classify(_ item: DynamicItemDTO) -> DynamicTapAction {
             cover: live.cover,
             anchorName: item.author.name
         )
+    }
+    if item.kind == .article, let article = item.article, !article.id.isEmpty {
+        return .openArticle(id: article.id, kind: article.kind)
     }
     return .openDetail
 }
@@ -265,6 +269,7 @@ struct DynamicItemCard: View {
                 contentWidth: DynamicLayout.contentWidth,
                 onPlayVideo: openCardVideo,
                 onOpenLive: openCardLive,
+                onOpenArticle: openCardArticle,
                 onTapImage: { idx in preview = ImagePreviewState(urls: item.images.map(\.url), index: idx) }
             )
 
@@ -274,6 +279,7 @@ struct DynamicItemCard: View {
                     contentWidth: DynamicLayout.contentWidth - 20,
                     onPlayVideo: openOrigVideo,
                     onOpenLive: openOrigLive,
+                    onOpenArticle: openOrigArticle,
                     onTapImage: { idx in preview = ImagePreviewState(urls: orig.images.map(\.url), index: idx) },
                     onOpenOrigDetail: openOrigDetail
                 )
@@ -306,6 +312,8 @@ struct DynamicItemCard: View {
             else { router.open(dto) }
         case .openLive(let roomID, let title, let cover, let anchorName):
             router.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
+        case .openArticle(let id, let kind):
+            router.openArticle(id: id, kind: kind)
         case .openDetail:
             onOpenDetail?(item)
         }
@@ -353,6 +361,16 @@ struct DynamicItemCard: View {
         )
     }
 
+    private func openCardArticle() {
+        guard let article = item.article, !article.id.isEmpty else { return }
+        router.openArticle(id: article.id, kind: article.kind)
+    }
+
+    private func openOrigArticle() {
+        guard let article = item.orig?.article, !article.id.isEmpty else { return }
+        router.openArticle(id: article.id, kind: article.kind)
+    }
+
     private func openOrigDetail() {
         onOpenDetail?(item)
     }
@@ -361,7 +379,7 @@ struct DynamicItemCard: View {
         DynamicItemRefDTO(
             idStr: item.idStr, kind: item.kind, author: item.author,
             stat: item.stat, text: item.text,
-            video: item.video, live: item.live, images: item.images
+            video: item.video, live: item.live, article: item.article, images: item.images
         )
     }
 }
@@ -432,6 +450,7 @@ private struct DynamicBody: View {
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
     let onOpenLive: () -> Void
+    let onOpenArticle: () -> Void
     let onTapImage: (Int) -> Void
 
     var body: some View {
@@ -449,8 +468,9 @@ private struct DynamicBody: View {
         case .draw:
             DynamicImagesGrid(images: item.images, contentWidth: contentWidth, onTap: onTapImage)
         case .article:
-            if let v = item.video {
-                ArticleBanner(cover: v.cover, title: v.title, contentWidth: contentWidth)
+            if let article = item.article {
+                ArticleBanner(article: article, contentWidth: contentWidth)
+                    .onTapGesture { onOpenArticle() }
             }
         case .word, .forward, .unsupported:
             EmptyView()
@@ -575,28 +595,39 @@ private struct DynamicVideoTile: View {
 }
 
 private struct ArticleBanner: View {
-    let cover: String
-    let title: String
+    let article: DynamicArticleDTO
     let contentWidth: CGFloat
 
     var body: some View {
-        let h = max(1, contentWidth * 9 / 16)
-        VStack(alignment: .leading, spacing: 6) {
-            if !cover.isEmpty {
-                RemoteImage(url: cover, contentMode: .fill,
-                            targetPointSize: CGSize(width: contentWidth, height: h), quality: 80)
-                    .frame(width: contentWidth, height: h)
+        let coverWidth: CGFloat = 92
+        HStack(spacing: 10) {
+            if !article.cover.isEmpty {
+                RemoteImage(url: article.cover, contentMode: .fill,
+                            targetPointSize: CGSize(width: coverWidth, height: coverWidth * 0.72), quality: 78)
+                    .frame(width: coverWidth, height: coverWidth * 0.72)
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            if !title.isEmpty {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 5) {
+                Label("专栏", systemImage: "doc.text")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(IbiliTheme.accent)
+                Text(article.title.isEmpty ? article.summary : article.title)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(IbiliTheme.textPrimary)
                     .lineLimit(2)
+                if !article.summary.isEmpty && article.summary != article.title {
+                    Text(article.summary)
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .lineLimit(2)
+                }
             }
+            Spacer(minLength: 0)
         }
+        .padding(10)
         .frame(width: contentWidth, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.12)))
     }
 }
 
@@ -668,6 +699,7 @@ private struct DynamicForwardPanel: View {
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
     let onOpenLive: () -> Void
+    let onOpenArticle: () -> Void
     let onTapImage: (Int) -> Void
     let onOpenOrigDetail: () -> Void
 
@@ -698,6 +730,7 @@ private struct DynamicForwardPanel: View {
                         contentWidth: contentWidth,
                         onPlayVideo: onPlayVideo,
                         onOpenLive: onOpenLive,
+                        onOpenArticle: onOpenArticle,
                         onTapImage: onTapImage)
 
             if orig.kind == .unsupported {

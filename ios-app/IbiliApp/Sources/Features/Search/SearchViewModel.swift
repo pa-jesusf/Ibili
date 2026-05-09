@@ -7,8 +7,8 @@ import SwiftUI
 /// points.
 ///
 /// Implementation notes:
-/// * `.video`, `.user`, and `.live` are implemented. Video keeps the
-///   full filter surface; user/live ignore video-only filters.
+/// * `.video`, `.user`, `.live`, and `.article` are implemented. Video keeps the
+///   full filter surface; user/live/article ignore video-only filters.
 /// * Pagination is explicit. Calling `submit` always restarts from
 ///   `page = 1`; users move with previous/next controls instead of
 ///   scroll-triggered infinite loading.
@@ -30,6 +30,10 @@ final class SearchViewModel: ObservableObject {
     @Published var selectedCategory: SearchCategory? = nil
     @Published var order: SearchOrder = .totalrank
     @Published var durationFilter: SearchDuration = .any
+    @Published var userOrder: SearchUserOrder = .defaultOrder
+    @Published var userKind: SearchUserKind = .all
+    @Published var articleOrder: SearchArticleOrder = .totalrank
+    @Published var articleZone: SearchArticleZone = .all
 
     @Published private(set) var results: [SearchResultItem] = []
     @Published private(set) var page: Int64 = 0
@@ -122,14 +126,21 @@ final class SearchViewModel: ObservableObject {
 
         let queryCopy = query
         let typeCopy = selectedType
+        let videoOrderCopy = order
+        let durationCopy = durationFilter
+        let categoryCopy = selectedCategory
+        let userOrderCopy = userOrder
+        let userKindCopy = userKind
+        let articleOrderCopy = articleOrder
+        let articleZoneCopy = articleZone
 
         do {
             let pageData: SearchPageResult
             switch typeCopy {
             case .video:
-                let order = order == .totalrank ? nil : order.rawValue
-                let durationParam = durationFilter == .any ? nil : durationFilter.rawValue
-                let tids = selectedCategory?.tids
+                let order = videoOrderCopy == .totalrank ? nil : videoOrderCopy.rawValue
+                let durationParam = durationCopy == .any ? nil : durationCopy.rawValue
+                let tids = categoryCopy?.tids
                 pageData = try await Task.detached(priority: .userInitiated) { [client] in
                     let page = try client.searchVideo(
                         keyword: queryCopy,
@@ -155,14 +166,34 @@ final class SearchViewModel: ObservableObject {
                 }.value
             case .user:
                 pageData = try await Task.detached(priority: .userInitiated) { [client] in
-                    let page = try client.searchUser(keyword: queryCopy, page: targetPage)
+                    let page = try client.searchUser(
+                        keyword: queryCopy,
+                        page: targetPage,
+                        order: userOrderCopy.order,
+                        orderSort: userOrderCopy.orderSort,
+                        userType: userKindCopy.parameter
+                    )
                     return SearchPageResult(
                         items: page.items.map(SearchResultItem.user),
                         numResults: page.numResults,
                         numPages: page.numPages
                     )
                 }.value
-            case .bangumi, .movie, .article:
+            case .article:
+                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                    let page = try client.searchArticle(
+                        keyword: queryCopy,
+                        page: targetPage,
+                        order: articleOrderCopy.rawValue,
+                        categoryID: articleZoneCopy.categoryID
+                    )
+                    return SearchPageResult(
+                        items: page.items.map(SearchResultItem.article),
+                        numResults: page.numResults,
+                        numPages: page.numPages
+                    )
+                }.value
+            case .bangumi, .movie:
                 return
             }
             // Guard against late callbacks for a stale query.
@@ -182,6 +213,7 @@ enum SearchResultItem: Identifiable, Hashable {
     case video(SearchVideoItemDTO)
     case live(SearchLiveItemDTO)
     case user(SearchUserItemDTO)
+    case article(SearchArticleItemDTO)
 
     var id: String {
         switch self {
@@ -191,6 +223,8 @@ enum SearchResultItem: Identifiable, Hashable {
             return "live-\(item.id)"
         case .user(let item):
             return "user-\(item.id)"
+        case .article(let item):
+            return "article-\(item.id)"
         }
     }
 }

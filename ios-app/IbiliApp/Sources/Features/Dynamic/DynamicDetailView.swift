@@ -36,6 +36,7 @@ struct DynamicDetailView: View {
                     contentWidth: contentWidth,
                     onPlayVideo: openVideo,
                     onOpenLive: openLive,
+                    onOpenArticle: openArticle,
                     onTapImage: { idx in preview = .init(urls: item.images.map(\.url), index: idx) }
                 )
 
@@ -45,6 +46,7 @@ struct DynamicDetailView: View {
                         contentWidth: contentWidth - 20,
                         onPlayVideo: openOrigVideo,
                         onOpenLive: openOrigLive,
+                        onOpenArticle: openOrigArticle,
                         onTapImage: { idx in preview = .init(urls: orig.images.map(\.url), index: idx) }
                     )
                 }
@@ -217,7 +219,7 @@ struct DynamicDetailView: View {
     private func refOf(_ x: DynamicItemDTO) -> DynamicItemRefDTO {
         DynamicItemRefDTO(idStr: x.idStr, kind: x.kind, author: x.author,
                           stat: x.stat, text: x.text,
-                          video: x.video, live: x.live, images: x.images)
+                          video: x.video, live: x.live, article: x.article, images: x.images)
     }
 
     private func openVideo() {
@@ -257,6 +259,16 @@ struct DynamicDetailView: View {
             anchorName: orig.author.name
         )
     }
+
+    private func openArticle() {
+        guard let article = item.article, !article.id.isEmpty else { return }
+        router.openArticle(id: article.id, kind: article.kind)
+    }
+
+    private func openOrigArticle() {
+        guard let article = item.orig?.article, !article.id.isEmpty else { return }
+        router.openArticle(id: article.id, kind: article.kind)
+    }
 }
 
 private struct DynamicDetailPreviewState: Identifiable {
@@ -292,6 +304,7 @@ private struct DetailBody: View {
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
     let onOpenLive: () -> Void
+    let onOpenArticle: () -> Void
     let onTapImage: (Int) -> Void
 
     var body: some View {
@@ -307,8 +320,8 @@ private struct DetailBody: View {
         case .draw:
             detailGrid(item.images)
         case .article:
-            if let v = item.video {
-                detailArticle(v)
+            if let article = item.article {
+                detailArticle(article)
             }
         case .word, .forward, .unsupported:
             EmptyView()
@@ -374,20 +387,37 @@ private struct DetailBody: View {
         .buttonStyle(.plain)
     }
 
-    private func detailArticle(_ v: DynamicVideoDTO) -> some View {
-        let h = max(1, contentWidth * 9 / 16)
-        return VStack(alignment: .leading, spacing: 6) {
-            if !v.cover.isEmpty {
-                RemoteImage(url: v.cover, contentMode: .fill,
-                            targetPointSize: CGSize(width: contentWidth, height: h), quality: 85)
-                    .frame(width: contentWidth, height: h)
+    private func detailArticle(_ article: DynamicArticleDTO) -> some View {
+        return Button(action: onOpenArticle) {
+            HStack(spacing: 10) {
+                if !article.cover.isEmpty {
+                    RemoteImage(url: article.cover, contentMode: .fill,
+                                targetPointSize: CGSize(width: 110, height: 78), quality: 82)
+                    .frame(width: 110, height: 78)
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("专栏", systemImage: "doc.text")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(IbiliTheme.accent)
+                    Text(article.title.isEmpty ? article.summary : article.title)
+                        .font(.headline)
+                        .foregroundStyle(IbiliTheme.textPrimary)
+                        .lineLimit(2)
+                    if !article.summary.isEmpty && article.summary != article.title {
+                        Text(article.summary)
+                            .font(.caption)
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 0)
             }
-            if !v.title.isEmpty {
-                Text(v.title).font(.headline).foregroundStyle(IbiliTheme.textPrimary)
-            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(IbiliTheme.surface))
         }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -435,6 +465,7 @@ private struct DetailForwardPanel: View {
     let contentWidth: CGFloat
     let onPlayVideo: () -> Void
     let onOpenLive: () -> Void
+    let onOpenArticle: () -> Void
     let onTapImage: (Int) -> Void
 
     var body: some View {
@@ -456,6 +487,7 @@ private struct DetailForwardPanel: View {
             DetailBody(item: orig, kind: orig.kind, contentWidth: contentWidth,
                        onPlayVideo: onPlayVideo,
                        onOpenLive: onOpenLive,
+                       onOpenArticle: onOpenArticle,
                        onTapImage: onTapImage)
         }
         .padding(10)

@@ -392,6 +392,33 @@ struct SearchUserArgs {
     keyword: String,
     #[serde(default = "default_search_page")]
     page: i64,
+    #[serde(default)]
+    order: Option<String>,
+    #[serde(default)]
+    order_sort: Option<i64>,
+    #[serde(default)]
+    user_type: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct SearchArticleArgs {
+    keyword: String,
+    #[serde(default = "default_search_page")]
+    page: i64,
+    #[serde(default)]
+    order: Option<String>,
+    #[serde(default)]
+    category_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ArticleReadArgs {
+    cvid: i64,
+}
+
+#[derive(Deserialize)]
+struct ArticleOpusArgs {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -690,7 +717,30 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "search.user" => {
             let a: SearchUserArgs = serde_json::from_value(args)?;
-            to_value(c.inner.search_user(&a.keyword, a.page)?)
+            to_value(c.inner.search_user_with_filters(
+                &a.keyword,
+                a.page,
+                a.order.as_deref(),
+                a.order_sort,
+                a.user_type,
+            )?)
+        }
+        "search.article" => {
+            let a: SearchArticleArgs = serde_json::from_value(args)?;
+            to_value(c.inner.search_article(
+                &a.keyword,
+                a.page,
+                a.order.as_deref(),
+                a.category_id,
+            )?)
+        }
+        "article.read" => {
+            let a: ArticleReadArgs = serde_json::from_value(args)?;
+            to_value(c.inner.article_read_detail(a.cvid)?)
+        }
+        "article.opus" => {
+            let a: ArticleOpusArgs = serde_json::from_value(args)?;
+            to_value(c.inner.article_opus_detail(&a.id)?)
         }
         "user.card" => {
             let a: MidArgs = serde_json::from_value(args)?;

@@ -170,6 +170,13 @@ struct RichReplyText: View {
             }
             if matched { continue }
 
+            if let detected = detectInlineLink(chars: chars, start: i) {
+                if !buf.isEmpty { out.append(.text(buf)); buf.removeAll() }
+                out.append(.link(detected.label, detected.url))
+                i = detected.end
+                continue
+            }
+
             buf.append(chars[i])
             i += 1
         }
@@ -180,23 +187,30 @@ struct RichReplyText: View {
     /// Translate the upstream `pc_url` into our internal `ibili://` scheme
     /// when possible, so the OpenURLAction handler can route in-app.
     private func mapJumpURL(keyword: String, raw: String) -> String {
-        // BV / av detection — server keyword usually IS the BV id.
-        if keyword.hasPrefix("BV") || keyword.hasPrefix("bv") {
-            return "ibili://bv/\(keyword)"
-        }
-        if keyword.lowercased().hasPrefix("av") {
-            return "ibili://av/\(keyword.dropFirst(2))"
-        }
-        // Try to recover BV id from the pc_url.
-        if let bv = Self.extractBV(from: raw) {
-            return "ibili://bv/\(bv)"
-        }
-        return raw.isEmpty ? "about:blank" : raw
+        LinkRouter.mapToInternalURL(raw, keyword: keyword)
     }
 
-    private static func extractBV(from url: String) -> String? {
-        guard let r = url.range(of: #"BV[0-9A-Za-z]{10}"#, options: .regularExpression) else { return nil }
-        return String(url[r])
+    private func detectInlineLink(chars: [Character], start: Int) -> (label: String, url: String, end: Int)? {
+        let remaining = String(chars[start...])
+        let patterns = [
+            #"^BV[0-9A-Za-z]{10}"#,
+            #"(?i)^av\d+"#,
+            #"(?i)^cv\d+"#,
+            #"(?i)^opus\d+"#,
+            #"^https?://[^\s\u{3000}]+"#,
+            #"^www\.[^\s\u{3000}]+"#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+            guard let match = regex.firstMatch(in: remaining, range: range),
+                  match.range.location == 0,
+                  let swiftRange = Range(match.range, in: remaining) else { continue }
+            let label = String(remaining[swiftRange])
+            let rawURL = label.hasPrefix("www.") ? "https://\(label)" : label
+            return (label, LinkRouter.mapToInternalURL(rawURL, keyword: label), start + label.count)
+        }
+        return nil
     }
 
     private func emoteSize(for token: String) -> CGFloat {
