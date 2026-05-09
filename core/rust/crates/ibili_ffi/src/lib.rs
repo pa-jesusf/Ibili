@@ -144,6 +144,12 @@ struct DanmakuArgs {
 }
 
 #[derive(Deserialize)]
+struct DanmakuSegmentArgs {
+    cid: i64,
+    segment_index: i64,
+}
+
+#[derive(Deserialize)]
 struct VideoViewArgs {
     #[serde(default)] aid: i64,
     #[serde(default)] bvid: String,
@@ -396,6 +402,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "danmaku.list" => {
             let a: DanmakuArgs = serde_json::from_value(args)?;
             to_value(c.inner.danmaku_list(a.cid, a.duration_sec)?)
+        }
+        "danmaku.segment" => {
+            let a: DanmakuSegmentArgs = serde_json::from_value(args)?;
+            to_value(c.inner.danmaku_segment(a.cid, a.segment_index)?)
         }
         "video.view_cid" => {
             let a: VideoViewArgs = serde_json::from_value(args)?;

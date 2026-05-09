@@ -76,23 +76,59 @@ impl Core {
         self.danmaku_xml_list(cid)
     }
 
+    pub fn danmaku_segment(&self, cid: i64, segment_index: i64) -> CoreResult<DanmakuTrack> {
+        let segment_index = segment_index.max(1);
+        match self.danmaku_segmented_segment(cid, segment_index) {
+            Ok(track) => Ok(track),
+            Err(err) => {
+                eprintln!(
+                    "[ibili_core] segmented danmaku failed for cid={cid}, segment_index={segment_index}; falling back to XML window: {err}"
+                );
+                let start = (segment_index - 1) * SEGMENT_LENGTH_SEC;
+                let end = start + SEGMENT_LENGTH_SEC;
+                let mut items = self.danmaku_xml_list(cid)?.items;
+                items.retain(|item| {
+                    let t = item.time_sec as i64;
+                    t >= start && t < end
+                });
+                Ok(DanmakuTrack { items })
+            }
+        }
+    }
+
     fn danmaku_segmented_list(&self, cid: i64, duration_sec: i64) -> CoreResult<DanmakuTrack> {
         let segment_count = segment_count_for_duration(duration_sec);
-        let self_mid_hash = current_mid_hash(self);
         let mut items = Vec::new();
 
         for segment_index in 1..=segment_count {
-            let params = [
-                ("type".to_string(), "1".to_string()),
-                ("oid".to_string(), cid.to_string()),
-                ("segment_index".to_string(), segment_index.to_string()),
-            ];
-            let bytes = self.http.get_bytes_web(URL_DANMAKU_SEG, &params)?;
-            let reply = DmSegMobileReplyWire::decode(bytes.as_slice())
-                .map_err(|e| CoreError::Decode(format!("dm seg decode: {e}")))?;
-            items.extend(reply.elems.into_iter().map(|elem| build_segment_item(elem, self_mid_hash.as_deref())));
+            items.extend(self.danmaku_segmented_segment(cid, segment_index)?.items);
         }
 
+        items.sort_by(|lhs, rhs| lhs.time_sec.total_cmp(&rhs.time_sec));
+        Ok(DanmakuTrack { items })
+    }
+
+    fn danmaku_segmented_segment(&self, cid: i64, segment_index: i64) -> CoreResult<DanmakuTrack> {
+        if cid <= 0 {
+            return Err(CoreError::InvalidArgument("cid must be positive".into()));
+        }
+        if segment_index <= 0 {
+            return Err(CoreError::InvalidArgument("segment_index must be positive".into()));
+        }
+
+        let params = [
+            ("type".to_string(), "1".to_string()),
+            ("oid".to_string(), cid.to_string()),
+            ("segment_index".to_string(), segment_index.to_string()),
+        ];
+        let bytes = self.http.get_bytes_web(URL_DANMAKU_SEG, &params)?;
+        let reply = DmSegMobileReplyWire::decode(bytes.as_slice())
+            .map_err(|e| CoreError::Decode(format!("dm seg decode: {e}")))?;
+        let self_mid_hash = current_mid_hash(self);
+        let mut items: Vec<DanmakuItem> = reply.elems
+            .into_iter()
+            .map(|elem| build_segment_item(elem, self_mid_hash.as_deref()))
+            .collect();
         items.sort_by(|lhs, rhs| lhs.time_sec.total_cmp(&rhs.time_sec));
         Ok(DanmakuTrack { items })
     }

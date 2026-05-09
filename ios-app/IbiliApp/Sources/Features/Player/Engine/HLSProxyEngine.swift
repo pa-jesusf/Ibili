@@ -58,6 +58,10 @@ final class HLSProxyEngine: PlaybackEngine {
             audioCandidates: audioOrdered,
             videoProbe: video.probe,
             audioProbe: audio?.probe,
+            videoHeadCache: video.race.data,
+            audioHeadCache: audio?.race.data,
+            videoTotalBytes: video.race.totalBytes,
+            audioTotalBytes: audio?.race.totalBytes,
             videoBandwidthHint: nil,
             videoCodec: source.videoCodec,
             audioCodec: audio == nil ? "" : source.audioCodec,
@@ -80,6 +84,7 @@ final class HLSProxyEngine: PlaybackEngine {
             "videoOpenMs": String(video.race.winnerElapsedMs),
             "videoRaceMs": String(video.race.raceMs),
             "videoFragments": String(video.probe.index.entries.count),
+            "videoPlaylistOutputEntries": String(HLSPlaylistBuilder.plannedMediaEntryCount(probe: video.probe)),
             "videoAttempts": video.race.attempts.joined(separator: " | "),
             "proxyToken": token,
         ]
@@ -88,10 +93,12 @@ final class HLSProxyEngine: PlaybackEngine {
             summary["audioOpenMs"] = String(audio.race.winnerElapsedMs)
             summary["audioRaceMs"] = String(audio.race.raceMs)
             summary["audioFragments"] = String(audio.probe.index.entries.count)
+            summary["audioPlaylistOutputEntries"] = String(HLSPlaylistBuilder.plannedMediaEntryCount(probe: audio.probe))
             summary["audioAttempts"] = audio.race.attempts.joined(separator: " | ")
         } else {
             summary["audioCdn"] = "-"
             summary["audioOpenMs"] = "-"
+            summary["audioPlaylistOutputEntries"] = "0"
             summary["audioAttempts"] = "-"
         }
         return EnginePreparation(
@@ -161,6 +168,7 @@ final class HLSProxyEngine: PlaybackEngine {
                     winnerElapsedMs: race.winnerElapsedMs,
                     raceMs: race.raceMs,
                     data: extended.data,
+                    totalBytes: extended.totalBytes,
                     attempts: race.attempts
                 )
                 return ProbeOutcome(race: widerRace, probe: probe)

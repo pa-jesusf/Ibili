@@ -58,7 +58,7 @@ final class ProxyURLLoader: @unchecked Sendable {
         struct Outcome: Sendable {
             let url: URL
             let elapsedMs: Int
-            let result: Result<Data, Error>
+            let result: Result<RangeResponse, Error>
         }
         let raceStart = CFAbsoluteTimeGetCurrent()
         return try await withThrowingTaskGroup(of: Outcome.self) { group in
@@ -68,7 +68,7 @@ final class ProxyURLLoader: @unchecked Sendable {
                     do {
                         let resp = try await self!.fetch(url: url, range: range)
                         let elapsed = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
-                        return Outcome(url: url, elapsedMs: elapsed, result: .success(resp.data))
+                        return Outcome(url: url, elapsedMs: elapsed, result: .success(resp))
                     } catch {
                         let elapsed = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
                         return Outcome(url: url, elapsedMs: elapsed, result: .failure(error))
@@ -79,14 +79,15 @@ final class ProxyURLLoader: @unchecked Sendable {
             var errors: [Error] = []
             while let outcome = try await group.next() {
                 switch outcome.result {
-                case .success(let data):
+                case .success(let response):
                     attempts.append("\(outcome.url.host ?? "?") \(outcome.elapsedMs)ms ok")
                     group.cancelAll()
                     let raceMs = Int((CFAbsoluteTimeGetCurrent() - raceStart) * 1000)
                     return ProbeRaceOutcome(winnerURL: outcome.url,
                                             winnerElapsedMs: outcome.elapsedMs,
                                             raceMs: raceMs,
-                                            data: data,
+                                            data: response.data,
+                                            totalBytes: response.totalBytes,
                                             attempts: attempts)
                 case .failure(let err):
                     let detail = Self.debugSummary(of: err)
@@ -120,6 +121,7 @@ struct ProbeRaceOutcome {
     let winnerElapsedMs: Int
     let raceMs: Int
     let data: Data
+    let totalBytes: Int64?
     let attempts: [String]
 }
 

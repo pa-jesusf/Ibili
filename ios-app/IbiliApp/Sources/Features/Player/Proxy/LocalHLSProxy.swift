@@ -21,12 +21,17 @@ final class LocalHLSProxy: @unchecked Sendable {
     static let shared = LocalHLSProxy()
     private static let maxDiagnosticsExports = 5
     private static let listenerHealthcheckTimeout: TimeInterval = 0.2
+    private static let startupCacheLimitBytes = 24 * 1024 * 1024
 
     struct Source {
         let videoCandidates: [URL]
         let audioCandidates: [URL]
         let videoProbe: ISOBMFF.Probe
         let audioProbe: ISOBMFF.Probe?
+        let videoHeadCache: Data?
+        let audioHeadCache: Data?
+        let videoTotalBytes: Int64?
+        let audioTotalBytes: Int64?
         let videoBandwidthHint: Int?
         let videoCodec: String
         let audioCodec: String
@@ -55,6 +60,297 @@ final class LocalHLSProxy: @unchecked Sendable {
         }
     }
 
+    private enum TrackLabel: String {
+        case video
+        case audio
+    }
+
+    private struct StartupCacheKey: Hashable {
+        let track: TrackLabel
+        let lower: UInt64
+        let upper: UInt64
+    }
+
+    private final class InflightFetch {
+        let task: Task<ProxyURLLoader.RangeResponse, Error>
+
+        init(task: Task<ProxyURLLoader.RangeResponse, Error>) {
+            self.task = task
+        }
+    }
+
+    private final class RuntimeSource: @unchecked Sendable {
+        let source: Source
+        let masterPlaylist: String
+        let videoPlaylist: String
+        let audioPlaylist: String?
+        let sharedMediaTargetDuration: Int
+        let videoOutputEntries: Int
+        let audioOutputEntries: Int
+        let videoTotalBytes: Int64?
+        let audioTotalBytes: Int64?
+        private let videoStartupRanges: Set<StartupCacheKey>
+        private let audioStartupRanges: Set<StartupCacheKey>
+        private let cacheLock = OSAllocatedUnfairLock<StartupCacheState>(initialState: StartupCacheState())
+
+        init(source: Source) {
+            self.source = source
+            self.videoTotalBytes = source.videoTotalBytes
+            self.audioTotalBytes = source.audioTotalBytes
+            self.sharedMediaTargetDuration = Self.sharedTargetDuration(
+                videoProbe: source.videoProbe,
+                audioProbe: source.audioProbe
+            )
+            self.masterPlaylist = HLSPlaylistBuilder.makeMaster(
+                videoBandwidthHint: source.videoBandwidthHint,
+                videoProbe: source.videoProbe,
+                audioProbe: source.audioProbe,
+                videoMediaPath: "video.m3u8",
+                audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8",
+                videoCodec: source.videoCodec,
+                audioCodec: source.audioCodec,
+                videoResolutionHint: source.videoResolutionHint,
+                videoRangeHint: source.videoRangeHint,
+                frameRateHint: source.videoFrameRateHint
+            )
+            let videoPlan = HLSPlaylistBuilder.makeMediaPlan(
+                probe: source.videoProbe,
+                targetDurationOverride: sharedMediaTargetDuration
+            )
+            self.videoStartupRanges = Self.startupRanges(
+                track: .video,
+                probe: source.videoProbe,
+                entries: videoPlan.entries
+            )
+            self.videoPlaylist = HLSPlaylistBuilder.makeMedia(
+                probe: source.videoProbe,
+                segmentPath: "v.seg",
+                targetDurationOverride: sharedMediaTargetDuration
+            )
+            self.videoOutputEntries = videoPlan.entries.count
+            if let audioProbe = source.audioProbe {
+                let audioPlan = HLSPlaylistBuilder.makeMediaPlan(
+                    probe: audioProbe,
+                    targetDurationOverride: sharedMediaTargetDuration
+                )
+                self.audioStartupRanges = Self.startupRanges(
+                    track: .audio,
+                    probe: audioProbe,
+                    entries: audioPlan.entries
+                )
+                self.audioPlaylist = HLSPlaylistBuilder.makeMedia(
+                    probe: audioProbe,
+                    segmentPath: "a.seg",
+                    targetDurationOverride: sharedMediaTargetDuration
+                )
+                self.audioOutputEntries = audioPlan.entries.count
+            } else {
+                self.audioStartupRanges = []
+                self.audioPlaylist = nil
+                self.audioOutputEntries = 0
+            }
+        }
+
+        func cached(track: TrackLabel, range: ClosedRange<UInt64>) -> Data? {
+            let key = StartupCacheKey(track: track, lower: range.lowerBound, upper: range.upperBound)
+            return cacheLock.withLock { $0.cache[key] }
+        }
+
+        func seedHeadCache(track: TrackLabel, data: Data?) {
+            guard let data, !data.isEmpty else { return }
+            let key = StartupCacheKey(track: track, lower: 0, upper: UInt64(data.count - 1))
+            cacheLock.withLock { state in
+                state.insert(data, for: key, limit: LocalHLSProxy.startupCacheLimitBytes)
+            }
+        }
+
+        func cachedSliceFromHead(track: TrackLabel, range: ClosedRange<UInt64>) -> Data? {
+            cacheLock.withLock { state -> Data? in
+                for (key, data) in state.cache where key.track == track && key.lower <= range.lowerBound && key.upper >= range.upperBound {
+                    let start = Int(range.lowerBound - key.lower)
+                    let endExclusive = Int(range.upperBound - key.lower + 1)
+                    guard start >= 0, endExclusive <= data.count, start < endExclusive else { continue }
+                    return data.subdata(in: start..<endExclusive)
+                }
+                return nil
+            }
+        }
+
+        func fetchCachedOrInflight(track: TrackLabel,
+                                   range: ClosedRange<UInt64>,
+                                   candidates: [URL],
+                                   label: String) async throws -> ProxyURLLoader.RangeResponse {
+            let key = StartupCacheKey(track: track, lower: range.lowerBound, upper: range.upperBound)
+            if let data = cached(track: track, range: range) ?? cachedSliceFromHead(track: track, range: range) {
+                AppLog.debug("player", "HLS 代理启动缓存命中", metadata: [
+                    "label": label,
+                    "range": "\(range.lowerBound)-\(range.upperBound)",
+                    "bytes": String(data.count),
+                ])
+                return ProxyURLLoader.RangeResponse(data: data, totalBytes: nil, statusCode: 206)
+            }
+
+            let inflight = cacheLock.withLock { state -> InflightFetch in
+                if let existing = state.inflight[key] {
+                    return existing
+                }
+                let task = Task {
+                    try await Self.fetchWithFailover(candidates: candidates, range: range, label: label)
+                }
+                let fetch = InflightFetch(task: task)
+                state.inflight[key] = fetch
+                return fetch
+            }
+
+            do {
+                let response = try await inflight.task.value
+                cacheLock.withLock { state in
+                    state.inflight[key] = nil
+                    if shouldRetainStartupRange(track: track, range: range),
+                       response.data.count <= LocalHLSProxy.startupCacheLimitBytes {
+                        state.insert(response.data, for: key, limit: LocalHLSProxy.startupCacheLimitBytes)
+                    }
+                }
+                return response
+            } catch {
+                cacheLock.withLock { $0.inflight[key] = nil }
+                throw error
+            }
+        }
+
+        func prewarmStartupSegments() {
+            seedHeadCache(track: .video, data: source.videoHeadCache)
+            seedHeadCache(track: .audio, data: source.audioHeadCache)
+            prewarm(track: .video,
+                    probe: source.videoProbe,
+                    candidates: source.videoCandidates,
+                    label: "video")
+            if let audioProbe = source.audioProbe, !source.audioCandidates.isEmpty {
+                prewarm(track: .audio,
+                        probe: audioProbe,
+                        candidates: source.audioCandidates,
+                        label: "audio")
+            }
+        }
+
+        private func prewarm(track: TrackLabel,
+                             probe: ISOBMFF.Probe,
+                             candidates: [URL],
+                             label: String) {
+            var ranges = [probe.initSegment.range]
+            if let first = HLSPlaylistBuilder.makeMediaPlan(
+                probe: probe,
+                targetDurationOverride: sharedMediaTargetDuration
+            ).entries.first?.range {
+                ranges.append(first)
+            }
+            for range in ranges {
+                Task.detached(priority: .utility) { [weak self] in
+                    guard let self else { return }
+                    do {
+                        _ = try await self.fetchCachedOrInflight(
+                            track: track,
+                            range: range,
+                            candidates: candidates,
+                            label: label
+                        )
+                        AppLog.debug("player", "HLS 代理启动段预热完成", metadata: [
+                            "label": label,
+                            "range": "\(range.lowerBound)-\(range.upperBound)",
+                        ])
+                    } catch {
+                        AppLog.warning("player", "HLS 代理启动段预热失败", metadata: [
+                            "label": label,
+                            "range": "\(range.lowerBound)-\(range.upperBound)",
+                            "error": ProxyURLLoader.debugSummary(of: error),
+                        ])
+                    }
+                }
+            }
+        }
+
+        private func shouldRetainStartupRange(track: TrackLabel, range: ClosedRange<UInt64>) -> Bool {
+            let key = StartupCacheKey(track: track, lower: range.lowerBound, upper: range.upperBound)
+            switch track {
+            case .video: return videoStartupRanges.contains(key)
+            case .audio: return audioStartupRanges.contains(key)
+            }
+        }
+
+        func totalBytes(for track: TrackLabel) -> Int64? {
+            switch track {
+            case .video: return videoTotalBytes
+            case .audio: return audioTotalBytes
+            }
+        }
+
+        private static func fetchWithFailover(candidates: [URL],
+                                              range: ClosedRange<UInt64>,
+                                              label: String) async throws -> ProxyURLLoader.RangeResponse {
+            var lastError: Error?
+            for url in candidates {
+                do {
+                    return try await ProxyURLLoader.shared.fetch(url: url, range: range)
+                } catch {
+                    lastError = error
+                    AppLog.warning("player", "HLS 代理 segment 失败重试", metadata: [
+                        "label": label,
+                        "host": url.host ?? "?",
+                        "range": "\(range.lowerBound)-\(range.upperBound)",
+                        "error": ProxyURLLoader.debugSummary(of: error),
+                    ])
+                }
+            }
+            throw lastError ?? ProxyLoaderError.allCandidatesFailed
+        }
+
+        private static func sharedTargetDuration(videoProbe: ISOBMFF.Probe, audioProbe: ISOBMFF.Probe?) -> Int {
+            let videoTarget = HLSPlaylistBuilder.plannedMediaTargetDuration(probe: videoProbe)
+            let audioTarget = audioProbe.map { HLSPlaylistBuilder.plannedMediaTargetDuration(probe: $0) } ?? 0
+            return max(1, videoTarget, audioTarget)
+        }
+
+        private static func startupRanges(track: TrackLabel,
+                                          probe: ISOBMFF.Probe,
+                                          entries: [ISOBMFF.SegmentIndexEntry]) -> Set<StartupCacheKey> {
+            var keys: Set<StartupCacheKey> = [
+                StartupCacheKey(track: track,
+                                lower: probe.initSegment.range.lowerBound,
+                                upper: probe.initSegment.range.upperBound)
+            ]
+            if let first = entries.first {
+                keys.insert(StartupCacheKey(track: track,
+                                           lower: first.range.lowerBound,
+                                           upper: first.range.upperBound))
+            }
+            return keys
+        }
+    }
+
+    private struct StartupCacheState {
+        var cache: [StartupCacheKey: Data] = [:]
+        var order: [StartupCacheKey] = []
+        var totalBytes: Int = 0
+        var inflight: [StartupCacheKey: InflightFetch] = [:]
+
+        mutating func insert(_ data: Data, for key: StartupCacheKey, limit: Int) {
+            if let old = cache[key] {
+                totalBytes -= old.count
+                order.removeAll { $0 == key }
+            }
+            guard data.count <= limit else { return }
+            cache[key] = data
+            order.append(key)
+            totalBytes += data.count
+            while totalBytes > limit, let oldest = order.first {
+                order.removeFirst()
+                if let removed = cache.removeValue(forKey: oldest) {
+                    totalBytes -= removed.count
+                }
+            }
+        }
+    }
+
     private let queue = DispatchQueue(label: "ibili.hls.proxy", qos: .userInitiated)
     private let healthCheckQueue = DispatchQueue(label: "ibili.hls.proxy.healthcheck", qos: .userInitiated)
     private var listener: NWListener?
@@ -65,7 +361,7 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     private struct State {
         var port: UInt16 = 0
-        var sources: [String: Source] = [:]
+        var sources: [String: RuntimeSource] = [:]
         /// `true` between the listener's `.ready` event and the next
         /// `.failed` / `.cancelled` event. iOS will tear the listener
         /// down once the app has been suspended in the background long
@@ -124,7 +420,19 @@ final class LocalHLSProxy: @unchecked Sendable {
     /// Idempotent: re-registering the same `token` overwrites the prior entry.
     func register(token: String, source: Source) throws -> URL {
         try ensureRunning()
-        let port = state.withLock { s -> UInt16 in s.sources[token] = source; return s.port }
+        let runtime = RuntimeSource(source: source)
+        let port = state.withLock { s -> UInt16 in s.sources[token] = runtime; return s.port }
+        runtime.prewarmStartupSegments()
+        AppLog.info("player", "HLS 代理 source 已注册", metadata: [
+            "token": token,
+            "videoFragments": String(source.videoProbe.index.entries.count),
+            "audioFragments": String(source.audioProbe?.index.entries.count ?? 0),
+            "videoPlaylistOutputEntries": String(runtime.videoOutputEntries),
+            "audioPlaylistOutputEntries": String(runtime.audioOutputEntries),
+            "targetDuration": String(runtime.sharedMediaTargetDuration),
+            "videoHeadCacheBytes": String(source.videoHeadCache?.count ?? 0),
+            "audioHeadCacheBytes": String(source.audioHeadCache?.count ?? 0),
+        ])
         guard let url = URL(string: "http://127.0.0.1:\(port)/play/\(token)/master.m3u8") else {
             throw ProxyServerError.invalidServerURL
         }
@@ -142,36 +450,22 @@ final class LocalHLSProxy: @unchecked Sendable {
         state.withLock { $0.sources.removeAll() }
     }
 
-    private func lookupSource(token: String) -> Source? {
+    private func lookupSource(token: String) -> RuntimeSource? {
         state.withLock { $0.sources[token] }
     }
 
     func exportDiagnostics(token: String, reason: String) async -> URL? {
-        guard let source = lookupSource(token: token) else {
+        guard let runtime = lookupSource(token: token) else {
             AppLog.warning("player", "HLS 诊断导出失败：token 不存在", metadata: ["token": token])
             return nil
         }
+        let source = runtime.source
         do {
             let dir = try makeDiagnosticsDirectory(token: token)
-            let master = HLSPlaylistBuilder.makeMaster(
-                videoBandwidthHint: source.videoBandwidthHint,
-                videoProbe: source.videoProbe,
-                audioProbe: source.audioProbe,
-                videoMediaPath: "video.m3u8",
-                audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8",
-                videoCodec: source.videoCodec,
-                audioCodec: source.audioCodec,
-                videoResolutionHint: source.videoResolutionHint,
-                videoRangeHint: source.videoRangeHint,
-                frameRateHint: source.videoFrameRateHint
-            )
-            try write(master, to: dir.appendingPathComponent("master.m3u8"))
-            let mediaTargetDuration = sharedTargetDuration(videoProbe: source.videoProbe, audioProbe: source.audioProbe)
-            try write(HLSPlaylistBuilder.makeMedia(probe: source.videoProbe, segmentPath: "v.seg", targetDurationOverride: mediaTargetDuration),
-                      to: dir.appendingPathComponent("video.m3u8"))
-            if let audioProbe = source.audioProbe {
-                try write(HLSPlaylistBuilder.makeMedia(probe: audioProbe, segmentPath: "a.seg", targetDurationOverride: mediaTargetDuration),
-                          to: dir.appendingPathComponent("audio.m3u8"))
+            try write(runtime.masterPlaylist, to: dir.appendingPathComponent("master.m3u8"))
+            try write(runtime.videoPlaylist, to: dir.appendingPathComponent("video.m3u8"))
+            if let audioPlaylist = runtime.audioPlaylist {
+                try write(audioPlaylist, to: dir.appendingPathComponent("audio.m3u8"))
             }
 
             var exported: [String: String] = [:]
@@ -203,6 +497,11 @@ final class LocalHLSProxy: @unchecked Sendable {
                 "audioFirstFragmentRange": source.audioProbe?.index.entries.first.map { rangeDescription($0.range) } ?? "-",
                 "videoFragmentCount": source.videoProbe.index.entries.count,
                 "audioFragmentCount": source.audioProbe?.index.entries.count ?? 0,
+                "videoPlaylistOutputEntries": runtime.videoOutputEntries,
+                "audioPlaylistOutputEntries": runtime.audioOutputEntries,
+                "playlistTargetDuration": runtime.sharedMediaTargetDuration,
+                "videoTotalBytes": runtime.videoTotalBytes.map(String.init) ?? "-",
+                "audioTotalBytes": runtime.audioTotalBytes.map(String.init) ?? "-",
                 "exported": exported,
             ]
             if let videoCodec = source.authoringVideoCodec {
@@ -583,31 +882,25 @@ final class LocalHLSProxy: @unchecked Sendable {
         case "master.m3u8":
             serveMasterPlaylist(source: source, conn: conn)
         case "video.m3u8":
-            serveMediaPlaylist(
-                probe: source.videoProbe,
-                segmentPath: "v.seg",
-                targetDurationOverride: sharedTargetDuration(videoProbe: source.videoProbe, audioProbe: source.audioProbe),
-                conn: conn
-            )
+            serveMediaPlaylist(body: source.videoPlaylist, conn: conn)
         case "audio.m3u8":
-            if let probe = source.audioProbe {
-                serveMediaPlaylist(
-                    probe: probe,
-                    segmentPath: "a.seg",
-                    targetDurationOverride: sharedTargetDuration(videoProbe: source.videoProbe, audioProbe: source.audioProbe),
-                    conn: conn
-                )
+            if let body = source.audioPlaylist {
+                serveMediaPlaylist(body: body, conn: conn)
             } else {
                 respondError(conn: conn, status: 404, body: "No audio track")
             }
         case "v.seg":
-            await serveSegment(candidates: source.videoCandidates,
+            await serveSegment(source: source,
+                               track: .video,
+                               candidates: source.source.videoCandidates,
                                request: request,
                                conn: conn,
                                label: "video")
         case "a.seg":
-            if !source.audioCandidates.isEmpty {
-                await serveSegment(candidates: source.audioCandidates,
+            if !source.source.audioCandidates.isEmpty {
+                await serveSegment(source: source,
+                                   track: .audio,
+                                   candidates: source.source.audioCandidates,
                                    request: request,
                                    conn: conn,
                                    label: "audio")
@@ -621,43 +914,19 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     // MARK: - Playlist routes
 
-    private func serveMasterPlaylist(source: Source, conn: NWConnection) {
-        let body = HLSPlaylistBuilder.makeMaster(
-            videoBandwidthHint: source.videoBandwidthHint,
-            videoProbe: source.videoProbe,
-            audioProbe: source.audioProbe,
-            videoMediaPath: "video.m3u8",
-            audioMediaPath: source.audioProbe == nil ? nil : "audio.m3u8",
-            videoCodec: source.videoCodec,
-            audioCodec: source.audioCodec,
-            videoResolutionHint: source.videoResolutionHint,
-            videoRangeHint: source.videoRangeHint,
-            frameRateHint: source.videoFrameRateHint
-        )
-        respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
+    private func serveMasterPlaylist(source: RuntimeSource, conn: NWConnection) {
+        respondText(conn: conn, body: source.masterPlaylist, contentType: "application/vnd.apple.mpegurl")
     }
 
-    private func serveMediaPlaylist(probe: ISOBMFF.Probe,
-                                    segmentPath: String,
-                                    targetDurationOverride: Int? = nil,
-                                    conn: NWConnection) {
-        let body = HLSPlaylistBuilder.makeMedia(
-            probe: probe,
-            segmentPath: segmentPath,
-            targetDurationOverride: targetDurationOverride
-        )
+    private func serveMediaPlaylist(body: String, conn: NWConnection) {
         respondText(conn: conn, body: body, contentType: "application/vnd.apple.mpegurl")
-    }
-
-    private func sharedTargetDuration(videoProbe: ISOBMFF.Probe, audioProbe: ISOBMFF.Probe?) -> Int {
-        let videoTarget = Int(videoProbe.index.targetDurationSec.rounded(.up))
-        let audioTarget = Int(audioProbe?.index.targetDurationSec.rounded(.up) ?? 0)
-        return max(1, videoTarget, audioTarget)
     }
 
     // MARK: - Segment route (with CDN failover)
 
-    private func serveSegment(candidates: [URL],
+    private func serveSegment(source: RuntimeSource,
+                              track: TrackLabel,
+                              candidates: [URL],
                               request: HTTPRequestHead,
                               conn: NWConnection,
                               label: String) async {
@@ -665,31 +934,25 @@ final class LocalHLSProxy: @unchecked Sendable {
             respondError(conn: conn, status: 416, body: "Range required")
             return
         }
-        var lastError: Error?
-        for url in candidates {
-            do {
-                let resp = try await ProxyURLLoader.shared.fetch(url: url, range: range)
-                respondBinary(conn: conn,
-                              status: 206,
-                              body: resp.data,
-                              contentType: "video/mp4",
-                              extraHeaders: [
-                                "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound)/\(resp.totalBytes.map(String.init) ?? "*")",
-                                "Accept-Ranges": "bytes",
-                              ])
-                return
-            } catch {
-                lastError = error
-                AppLog.warning("player", "HLS 代理 segment 失败重试", metadata: [
-                    "label": label,
-                    "host": url.host ?? "?",
-                    "range": "\(range.lowerBound)-\(range.upperBound)",
-                    "error": ProxyURLLoader.debugSummary(of: error),
-                ])
-            }
+        do {
+            let resp = try await source.fetchCachedOrInflight(
+                track: track,
+                range: range,
+                candidates: candidates,
+                label: label
+            )
+            respondBinary(conn: conn,
+                          status: 206,
+                          body: resp.data,
+                          contentType: "video/mp4",
+                          extraHeaders: [
+                            "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound)/\(resp.totalBytes.map(String.init) ?? source.totalBytes(for: track).map(String.init) ?? "*")",
+                            "Accept-Ranges": "bytes",
+                          ])
+        } catch {
+            let detail = ProxyURLLoader.debugSummary(of: error)
+            respondError(conn: conn, status: 502, body: "Upstream failed: \(detail)")
         }
-        let detail = lastError.map { ProxyURLLoader.debugSummary(of: $0) } ?? "no candidates"
-        respondError(conn: conn, status: 502, body: "Upstream failed: \(detail)")
     }
 
     // MARK: - Response writers

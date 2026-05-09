@@ -278,6 +278,11 @@ public final class CoreClient: @unchecked Sendable {
         return try call("danmaku.list", args: A(cid: cid, duration_sec: durationSec), decoding: DanmakuTrackDTO.self)
     }
 
+    public func danmakuSegment(cid: Int64, segmentIndex: Int64) throws -> DanmakuTrackDTO {
+        struct A: Encodable { let cid: Int64; let segment_index: Int64 }
+        return try call("danmaku.segment", args: A(cid: cid, segment_index: segmentIndex), decoding: DanmakuTrackDTO.self)
+    }
+
     /// Resolve the canonical playback `cid` for a `bvid` via
     /// `/x/web-interface/view`. Used when navigating from the search
     /// results screen, where the search-by-type endpoint does not

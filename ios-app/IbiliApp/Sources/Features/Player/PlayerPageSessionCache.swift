@@ -14,10 +14,12 @@ final class PlayerPageSessionCache {
 
     private var playURLs: [PlayerPagePlayURLKey: PlayUrlDTO] = [:]
     private var danmakuTracks: [Int64: [DanmakuItemDTO]] = [:]
+    private var danmakuSegments: [Int64: [Int64: [DanmakuItemDTO]]] = [:]
 
     func clearMediaData() {
         playURLs.removeAll()
         danmakuTracks.removeAll()
+        danmakuSegments.removeAll()
         interactionService.resetForNextItem()
     }
 
@@ -50,5 +52,15 @@ final class PlayerPageSessionCache {
 
     func danmaku(for cid: Int64) -> [DanmakuItemDTO]? {
         danmakuTracks[cid]
+    }
+
+    func storeDanmakuSegment(_ items: [DanmakuItemDTO], cid: Int64, segmentIndex: Int64) {
+        var segments = danmakuSegments[cid] ?? [:]
+        segments[segmentIndex] = items
+        danmakuSegments[cid] = segments
+    }
+
+    func danmakuSegment(cid: Int64, segmentIndex: Int64) -> [DanmakuItemDTO]? {
+        danmakuSegments[cid]?[segmentIndex]
     }
 }

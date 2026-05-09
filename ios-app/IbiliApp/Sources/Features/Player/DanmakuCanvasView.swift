@@ -207,6 +207,18 @@ final class DanmakuCanvasView: UIView {
         rebuildTrack()
     }
 
+    func mergeItems(_ items: [DanmakuItemDTO]) {
+        guard !items.isEmpty else { return }
+        let sortedItems = items.sorted { $0.timeSec < $1.timeSec }
+        sourceItems = Self.mergingSortedDanmaku(sourceItems, with: sortedItems)
+        let previousTime = currentPlaybackTime
+        all = Self.mergingSortedDanmaku(all, with: sortedItems.filter(shouldInclude))
+        cursor = lowerBound(of: Float(previousTime))
+        currentPlaybackTime = previousTime
+        lastTime = previousTime
+        needsRedraw = true
+    }
+
     /// Inject a single live item at the current playhead and schedule
     /// it for immediate display. Used by the local-echo path after the
     /// user successfully sends their own danmaku — saves a full track
@@ -251,6 +263,36 @@ final class DanmakuCanvasView: UIView {
         textCache.removeAllObjects()
         specialTextCache.removeAllObjects()
         needsRedraw = true
+    }
+
+    private static func mergingSortedDanmaku(_ lhs: [DanmakuItemDTO],
+                                             with rhs: [DanmakuItemDTO]) -> [DanmakuItemDTO] {
+        var merged: [DanmakuItemDTO] = []
+        merged.reserveCapacity(lhs.count + rhs.count)
+        var i = 0
+        var j = 0
+        var seen = Set<String>()
+
+        func key(_ item: DanmakuItemDTO) -> String {
+            "\(item.timeSec)|\(item.mode)|\(item.color)|\(item.fontSize)|\(item.midHash)|\(item.text)"
+        }
+
+        func appendIfNeeded(_ item: DanmakuItemDTO) {
+            if seen.insert(key(item)).inserted {
+                merged.append(item)
+            }
+        }
+
+        while i < lhs.count || j < rhs.count {
+            if j >= rhs.count || (i < lhs.count && lhs[i].timeSec <= rhs[j].timeSec) {
+                appendIfNeeded(lhs[i])
+                i += 1
+            } else {
+                appendIfNeeded(rhs[j])
+                j += 1
+            }
+        }
+        return merged
     }
 
     private func shouldInclude(_ item: DanmakuItemDTO) -> Bool {

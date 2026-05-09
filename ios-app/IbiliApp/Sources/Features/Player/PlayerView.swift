@@ -1873,6 +1873,8 @@ fileprivate enum WarmPlayerError: Error {
 
 struct PlayerView: View {
     private static let deferredDetailMountDelay: TimeInterval = 0.24
+    private static let danmakuSegmentLengthSec: Double = 6 * 60
+    private static let longDanmakuDurationThresholdSec: Int64 = 2 * 60 * 60
 
     let item: FeedItemDTO
     @StateObject private var vm: PlayerViewModel
@@ -1898,6 +1900,11 @@ struct PlayerView: View {
     @State private var shouldMountDetailContent = false
     @State private var pendingDanmakuLoadKey: String?
     @State private var loadedDanmakuKey: String?
+    @State private var danmakuLoadedSegments: Set<Int64> = []
+    @State private var danmakuSegmentLoadTasks: [Int64: Task<Void, Never>] = [:]
+    @State private var danmakuTimeObserver: Any?
+    @State private var danmakuTimeObserverPlayer: AVPlayer?
+    @State private var danmakuTimeJumpObserver: NSObjectProtocol?
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -2102,6 +2109,7 @@ struct PlayerView: View {
             loadedMediaKey = mediaLoadKey
             loadedDanmakuKey = nil
             pendingDanmakuLoadKey = mediaLoadKey
+            resetDanmakuSegmentLoading()
             await vm.load(item: item,
                           preferredQn: Int64(settings.resolvedPreferredVideoQn()),
                           preferredAudioQn: Int64(settings.preferredAudioQn),
@@ -2112,16 +2120,22 @@ struct PlayerView: View {
         }
         .onChange(of: vm.isVideoReady) { ready in
             guard ready else { return }
+            if let p = vm.player {
+                configureDanmakuSegmentObserver(for: p)
+            }
             loadPendingDanmakuIfNeeded()
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer {
                 vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
                 danmaku.attach(p)
+                configureDanmakuSegmentObserver(for: p)
                 vm.handle(.interfaceActivated)
                 if vm.isVideoReady {
                     loadPendingDanmakuIfNeeded()
                 }
+            } else {
+                clearDanmakuTimeObserver()
             }
         }
         .onChange(of: settings.cdnService.rawValue) { _ in
@@ -2174,6 +2188,10 @@ struct PlayerView: View {
                 viewModel: vm,
                 danmaku: danmaku
             )
+            if !presentationState.isFullscreenPresentationActive {
+                clearDanmakuTimeObserver()
+                cancelDanmakuSegmentTasks()
+            }
         }
         .onChange(of: settings.danmakuEnabled) { newValue in
             // Surface a one-shot reminder the first few times the user
@@ -2302,6 +2320,16 @@ struct PlayerView: View {
             } else {
                 resolvedItem = try await resolvePlayableItemIfNeeded(item)
             }
+            guard !usesSegmentedDanmaku(resolvedItem) else {
+                await MainActor.run {
+                    if let p = vm.player {
+                        danmaku.attach(p)
+                        configureDanmakuSegmentObserver(for: p)
+                    }
+                    scheduleDanmakuSegmentsAroundCurrentTime(for: resolvedItem)
+                }
+                return
+            }
             if let cachedItems = vm.pageCache.danmaku(for: resolvedItem.cid) {
                 danmaku.setItems(cachedItems)
                 if let p = vm.player { danmaku.attach(p) }
@@ -2341,6 +2369,132 @@ struct PlayerView: View {
         }
         loadedDanmakuKey = key
         Task { await loadDanmaku() }
+    }
+
+    private func usesSegmentedDanmaku(_ item: FeedItemDTO) -> Bool {
+        item.durationSec >= Self.longDanmakuDurationThresholdSec
+    }
+
+    private func configureDanmakuSegmentObserver(for player: AVPlayer) {
+        clearDanmakuTimeObserver()
+        let interval = CMTime(seconds: 8, preferredTimescale: 600)
+        danmakuTimeObserverPlayer = player
+        danmakuTimeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak vm] time in
+            guard let current = vm?.currentFeedItem else { return }
+            Task { @MainActor in
+                guard current.cid == self.vm.currentCid,
+                      self.usesSegmentedDanmaku(current),
+                      self.loadedDanmakuKey == self.mediaLoadKey else { return }
+                let seconds = time.seconds.isFinite ? max(0, time.seconds) : 0
+                self.scheduleDanmakuSegments(around: seconds, for: current)
+            }
+        }
+        danmakuTimeJumpObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemTimeJumped,
+            object: player.currentItem,
+            queue: .main
+        ) { [weak vm] _ in
+            guard let current = vm?.currentFeedItem else { return }
+            Task { @MainActor in
+                guard current.cid == self.vm.currentCid,
+                      self.usesSegmentedDanmaku(current),
+                      self.loadedDanmakuKey == self.mediaLoadKey else { return }
+                self.scheduleDanmakuSegmentsAroundCurrentTime(for: current)
+            }
+        }
+    }
+
+    private func clearDanmakuTimeObserver() {
+        if let observer = danmakuTimeObserver, let player = danmakuTimeObserverPlayer {
+            player.removeTimeObserver(observer)
+        }
+        danmakuTimeObserver = nil
+        danmakuTimeObserverPlayer = nil
+        if let observer = danmakuTimeJumpObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        danmakuTimeJumpObserver = nil
+    }
+
+    private func resetDanmakuSegmentLoading() {
+        cancelDanmakuSegmentTasks()
+        danmakuLoadedSegments.removeAll()
+    }
+
+    private func cancelDanmakuSegmentTasks() {
+        danmakuSegmentLoadTasks.values.forEach { $0.cancel() }
+        danmakuSegmentLoadTasks.removeAll()
+    }
+
+    private func scheduleDanmakuSegmentsAroundCurrentTime(for item: FeedItemDTO) {
+        let seconds = vm.player?.currentTime().seconds ?? 0
+        scheduleDanmakuSegments(around: seconds.isFinite ? max(0, seconds) : 0, for: item)
+    }
+
+    private func scheduleDanmakuSegments(around seconds: Double, for item: FeedItemDTO) {
+        guard usesSegmentedDanmaku(item), item.cid > 0 else { return }
+        let current = danmakuSegmentIndex(for: seconds)
+        loadDanmakuSegment(current, for: item)
+        let maxSegment = max(Int64(1), Int64(ceil(Double(item.durationSec) / Self.danmakuSegmentLengthSec)))
+        if current < maxSegment {
+            loadDanmakuSegment(current + 1, for: item)
+        }
+    }
+
+    private func danmakuSegmentIndex(for seconds: Double) -> Int64 {
+        max(1, Int64(floor(seconds / Self.danmakuSegmentLengthSec)) + 1)
+    }
+
+    private func loadDanmakuSegment(_ segmentIndex: Int64, for item: FeedItemDTO) {
+        guard segmentIndex > 0,
+              !danmakuLoadedSegments.contains(segmentIndex),
+              danmakuSegmentLoadTasks[segmentIndex] == nil else {
+            return
+        }
+        if let cached = vm.pageCache.danmakuSegment(cid: item.cid, segmentIndex: segmentIndex) {
+            danmakuLoadedSegments.insert(segmentIndex)
+            danmaku.mergeItems(cached)
+            if let p = vm.player { danmaku.attach(p) }
+            return
+        }
+
+        let key = mediaLoadKey
+        let cid = item.cid
+        danmakuSegmentLoadTasks[segmentIndex] = Task {
+            do {
+                AppLog.info("danmaku", "开始加载分段弹幕", metadata: [
+                    "cid": String(cid),
+                    "segment": String(segmentIndex),
+                ])
+                let sortedItems = try await Task.detached(priority: .utility) {
+                    try CoreClient.shared.danmakuSegment(cid: cid, segmentIndex: segmentIndex)
+                        .items
+                        .sorted { $0.timeSec < $1.timeSec }
+                }.value
+                await MainActor.run {
+                    guard key == mediaLoadKey, cid == vm.currentCid else { return }
+                    danmakuSegmentLoadTasks[segmentIndex] = nil
+                    danmakuLoadedSegments.insert(segmentIndex)
+                    vm.pageCache.storeDanmakuSegment(sortedItems, cid: cid, segmentIndex: segmentIndex)
+                    danmaku.mergeItems(sortedItems)
+                    if let p = vm.player { danmaku.attach(p) }
+                    AppLog.info("danmaku", "分段弹幕加载完成", metadata: [
+                        "cid": String(cid),
+                        "segment": String(segmentIndex),
+                        "count": String(sortedItems.count),
+                    ])
+                }
+            } catch {
+                await MainActor.run {
+                    guard key == mediaLoadKey else { return }
+                    danmakuSegmentLoadTasks[segmentIndex] = nil
+                    AppLog.error("danmaku", "分段弹幕加载失败", error: error, metadata: [
+                        "cid": String(cid),
+                        "segment": String(segmentIndex),
+                    ])
+                }
+            }
+        }
     }
 
     private func scheduleDeferredDetailMount(for key: String) {
