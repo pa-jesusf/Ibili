@@ -81,7 +81,9 @@ struct ImagePreviewSheet: View {
                     index: $index,
                     screenSize: proxy.size,
                     originalIndexes: originalIndexes,
-                    pageZoomed: $pageZoomed
+                    pageZoomed: $pageZoomed,
+                    dismissDrag: $dismissDrag,
+                    onDismiss: { dismiss() }
                 ) { image, i in
                     ZoomablePreviewPage(
                         image: image,
@@ -170,45 +172,6 @@ struct ImagePreviewSheet: View {
             didEnterGestureShield = false
             ModalGestureShield.leave()
         }
-        // High-priority gesture so we win over `TabView`'s page swipe
-        // ONLY when the user is clearly dragging downward. We require
-        // the vertical translation to dominate horizontally before
-        // claiming the gesture, otherwise left/right page swipes are
-        // forwarded to the underlying `TabView`.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12)
-                .onChanged { v in
-                    guard !pageZoomed else { return }
-                    let dx = abs(v.translation.width)
-                    let dy = v.translation.height
-                    // Vertical-dominant downward drag only; ignore
-                    // anything that looks remotely like a page flip.
-                    guard dy > 0, dy > dx * 1.4 else {
-                        dismissDrag = 0
-                        return
-                    }
-                    dismissDrag = dy
-                }
-                .onEnded { v in
-                    guard !pageZoomed else { return }
-                    let dx = abs(v.translation.width)
-                    let dy = v.translation.height
-                    let isVertical = dy > dx * 1.4
-                    if isVertical, dy > 120 || v.predictedEndTranslation.height > 240 {
-                        // Animate back to neutral while dismissing so
-                        // the close transition feels continuous with
-                        // the drag.
-                        dismiss()
-                        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.86, blendDuration: 0)) {
-                            dismissDrag = 0
-                        }
-                    } else {
-                        withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86, blendDuration: 0)) {
-                            dismissDrag = 0
-                        }
-                    }
-                }
-        )
     }
 
     // MARK: - Save
@@ -268,6 +231,8 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
     let screenSize: CGSize
     let originalIndexes: Set<Int>
     @Binding var pageZoomed: Bool
+    @Binding var dismissDrag: CGFloat
+    let onDismiss: () -> Void
     let page: (CommentImagePreviewItem, Int) -> Page
 
     func makeCoordinator() -> Coordinator {
@@ -282,6 +247,7 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
         vc.dataSource = context.coordinator
         vc.delegate = context.coordinator
         context.coordinator.configureScrollViews(in: vc.view)
+        context.coordinator.installVerticalDismissPan(on: vc.view)
         if let initial = context.coordinator.controller(at: index) {
             vc.setViewControllers([initial], direction: .forward, animated: false)
         }
@@ -291,6 +257,7 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIPageViewController, context: Context) {
         context.coordinator.parent = self
         context.coordinator.configureScrollViews(in: vc.view)
+        context.coordinator.installVerticalDismissPan(on: vc.view)
         context.coordinator.reloadVisiblePageIfNeeded(in: vc)
         guard context.coordinator.visibleIndex != index,
               let target = context.coordinator.controller(at: index) else { return }
@@ -303,11 +270,13 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
         var parent: ImagePreviewPager
         var visibleIndex: Int
         var isProgrammaticUpdate = false
         private var controllers: [Int: UIViewController] = [:]
+        private weak var verticalPanTarget: UIView?
+        private weak var verticalDismissPan: UIPanGestureRecognizer?
 
         init(parent: ImagePreviewPager) {
             self.parent = parent
@@ -323,6 +292,21 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
                 scrollView.delaysContentTouches = false
                 scrollView.canCancelContentTouches = true
             }
+        }
+
+        func installVerticalDismissPan(on root: UIView) {
+            guard verticalPanTarget !== root else { return }
+            if let verticalDismissPan, let verticalPanTarget {
+                verticalPanTarget.removeGestureRecognizer(verticalDismissPan)
+            }
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(handleVerticalDismissPan(_:)))
+            pan.cancelsTouchesInView = false
+            pan.delaysTouchesBegan = false
+            pan.delaysTouchesEnded = false
+            pan.delegate = self
+            root.addGestureRecognizer(pan)
+            verticalPanTarget = root
+            verticalDismissPan = pan
         }
 
         func controller(at index: Int) -> UIViewController? {
@@ -380,6 +364,51 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
         private func index(of controller: UIViewController) -> Int? {
             controllers.first(where: { $0.value === controller })?.key
         }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === verticalDismissPan,
+                  !parent.pageZoomed,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return velocity.y > 120 && abs(velocity.y) > abs(velocity.x) * 1.4
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            gestureRecognizer === verticalDismissPan
+        }
+
+        @objc private func handleVerticalDismissPan(_ recognizer: UIPanGestureRecognizer) {
+            guard !parent.pageZoomed else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            let velocity = recognizer.velocity(in: recognizer.view)
+            switch recognizer.state {
+            case .changed:
+                let dx = abs(translation.x)
+                let dy = translation.y
+                guard dy > 0, dy > dx * 1.4 else {
+                    parent.dismissDrag = 0
+                    return
+                }
+                parent.dismissDrag = dy
+            case .ended:
+                let dx = abs(translation.x)
+                let dy = translation.y
+                let shouldDismiss = dy > 120 && dy > dx * 1.4 || velocity.y > 900
+                if shouldDismiss {
+                    parent.onDismiss()
+                }
+                withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86, blendDuration: 0)) {
+                    parent.dismissDrag = 0
+                }
+            case .cancelled, .failed:
+                withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86, blendDuration: 0)) {
+                    parent.dismissDrag = 0
+                }
+            default:
+                break
+            }
+        }
     }
 }
 
@@ -405,7 +434,7 @@ private struct ZoomablePreviewPage: View {
 
     var body: some View {
         let total = scale * pinch
-        ProgressivePreviewImage(
+        let imageView = ProgressivePreviewImage(
             image: image,
             screenSize: screenSize,
             showsOriginal: showsOriginal
@@ -422,16 +451,6 @@ private struct ZoomablePreviewPage: View {
                         isZoomed = next > 1.01
                     }
             )
-            .simultaneousGesture(
-                DragGesture()
-                    .updating($drag) { v, s, _ in if scale > 1.01 { s = v.translation } }
-                    .onEnded { v in
-                        if scale > 1.01 {
-                            offset.width += v.translation.width
-                            offset.height += v.translation.height
-                        }
-                    }
-            )
             .onTapGesture(count: 2) {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
                     if scale > 1.01 {
@@ -445,12 +464,28 @@ private struct ZoomablePreviewPage: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onChange(of: showsOriginal) { _ in
-                resetZoom()
+        Group {
+            if scale > 1.01 {
+                imageView.simultaneousGesture(
+                    DragGesture()
+                        .updating($drag) { value, state, _ in
+                            state = value.translation
+                        }
+                        .onEnded { value in
+                            offset.width += value.translation.width
+                            offset.height += value.translation.height
+                        }
+                )
+            } else {
+                imageView
             }
-            .onDisappear {
-                resetZoom()
-            }
+        }
+        .onChange(of: showsOriginal) { _ in
+            resetZoom()
+        }
+        .onDisappear {
+            resetZoom()
+        }
     }
 
     private func resetZoom() {
