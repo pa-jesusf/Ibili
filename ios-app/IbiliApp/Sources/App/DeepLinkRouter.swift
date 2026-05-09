@@ -162,6 +162,7 @@ final class DeepLinkRouter: ObservableObject {
     /// through `open(_:mode:)` so the navigation semantics stay
     /// uniform across every entry point.
     @Published var path: [SessionRoute] = []
+    @Published private(set) var isClosingRootSession = false
 
     enum OpenMode {
         case push
@@ -189,8 +190,9 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     func open(_ item: FeedItemDTO, mode: OpenMode = .push) {
-        guard pending != nil else {
+        guard pending != nil, !isClosingRootSession else {
             path.removeAll()
+            isClosingRootSession = false
             pending = .player(PlayerRoute(item: item))
             return
         }
@@ -215,8 +217,9 @@ final class DeepLinkRouter: ObservableObject {
     ) {
         guard roomID > 0 else { return }
         let route = LiveRoute(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
-        guard pending != nil else {
+        guard pending != nil, !isClosingRootSession else {
             path.removeAll()
+            isClosingRootSession = false
             pending = .live(route)
             return
         }
@@ -245,11 +248,21 @@ final class DeepLinkRouter: ObservableObject {
     func closeSession() {
         path.removeAll()
         pending = nil
+        isClosingRootSession = false
     }
 
     func restore(_ snapshot: SessionSnapshot) {
+        isClosingRootSession = false
         pending = snapshot.pending
         path = snapshot.path
+    }
+
+    func beginRootSessionDismissal() {
+        isClosingRootSession = true
+    }
+
+    func cancelRootSessionDismissal() {
+        isClosingRootSession = false
     }
 
     func containsRoute(id: UUID) -> Bool {

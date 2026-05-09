@@ -44,7 +44,8 @@ final class PlayerRuntimeCoordinator {
         if let pictureInPictureRouteID {
             retainedIDs.insert(pictureInPictureRouteID)
         }
-        for (routeID, viewModel) in viewModels where !retainedIDs.contains(routeID) {
+        let staleSessions = viewModels.filter { !retainedIDs.contains($0.key) }
+        for (routeID, viewModel) in staleSessions {
             viewModel.teardown()
             viewModels.removeValue(forKey: routeID)
         }

@@ -19,7 +19,8 @@ final class LiveRuntimeCoordinator {
 
     func retainSessions(root: DeepLinkRouter.LiveRoute?, stack: [DeepLinkRouter.LiveRoute]) {
         let retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
-        for (routeID, viewModel) in viewModels where !retainedIDs.contains(routeID) {
+        let staleSessions = viewModels.filter { !retainedIDs.contains($0.key) }
+        for (routeID, viewModel) in staleSessions {
             viewModel.teardown()
             viewModels.removeValue(forKey: routeID)
         }
@@ -40,6 +41,7 @@ final class LiveRoomViewModel: ObservableObject {
     private var roomID: Int64 = 0
     private var cdnSelection: String = MediaCDNService.auto.rawValue
     private var playerTimeControlObservation: NSKeyValueObservation?
+    private var loadGeneration: UInt64 = 0
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -55,6 +57,8 @@ final class LiveRoomViewModel: ObservableObject {
         guard route.roomID > 0 else { return }
         let resolvedCdnSelection = cdnSelection.trimmingCharacters(in: .whitespacesAndNewlines)
         guard roomID != route.roomID || self.cdnSelection != resolvedCdnSelection || player == nil else { return }
+        loadGeneration &+= 1
+        let generation = loadGeneration
         roomID = route.roomID
         self.cdnSelection = resolvedCdnSelection
         isLoading = true
@@ -64,22 +68,30 @@ final class LiveRoomViewModel: ObservableObject {
         let fetchedInfo: LiveRoomInfoDTO? = await Task.detached {
             try? CoreClient.shared.liveRoomInfo(roomID: route.roomID)
         }.value
+        guard isCurrentLoad(generation, roomID: route.roomID) else { return }
         info = fetchedInfo
 
         do {
             let play = try await Task.detached(priority: .userInitiated) { [resolvedCdnSelection] in
                 try CoreClient.shared.livePlayUrl(roomID: route.roomID, cdn: resolvedCdnSelection)
             }.value
+            guard isCurrentLoad(generation, roomID: route.roomID) else { return }
             configurePlayer(with: play, roomID: route.roomID)
         } catch {
+            guard isCurrentLoad(generation, roomID: route.roomID) else { return }
             errorText = (error as NSError).localizedDescription
         }
-        isLoading = false
+        if isCurrentLoad(generation, roomID: route.roomID) {
+            isLoading = false
+        }
     }
 
     func switchQuality(to qn: Int64, cdnSelection: String? = nil) async {
         guard roomID > 0, qn != currentQn else { return }
         let resolvedCdnSelection = cdnSelection?.trimmingCharacters(in: .whitespacesAndNewlines) ?? self.cdnSelection
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let targetRoomID = roomID
         self.cdnSelection = resolvedCdnSelection
         isLoading = true
         errorText = nil
@@ -87,14 +99,19 @@ final class LiveRoomViewModel: ObservableObject {
             let play = try await Task.detached(priority: .userInitiated) { [roomID, resolvedCdnSelection] in
                 try CoreClient.shared.livePlayUrl(roomID: roomID, qn: qn, cdn: resolvedCdnSelection)
             }.value
-            configurePlayer(with: play, roomID: roomID)
+            guard isCurrentLoad(generation, roomID: targetRoomID) else { return }
+            configurePlayer(with: play, roomID: targetRoomID)
         } catch {
+            guard isCurrentLoad(generation, roomID: targetRoomID) else { return }
             errorText = (error as NSError).localizedDescription
         }
-        isLoading = false
+        if isCurrentLoad(generation, roomID: targetRoomID) {
+            isLoading = false
+        }
     }
 
     func teardown() {
+        loadGeneration &+= 1
         stopCurrentPlayer(releaseAudioSession: true)
     }
 
@@ -156,6 +173,10 @@ final class LiveRoomViewModel: ObservableObject {
             }
         }
     }
+
+    private func isCurrentLoad(_ generation: UInt64, roomID: Int64) -> Bool {
+        loadGeneration == generation && self.roomID == roomID
+    }
 }
 
 struct LiveRoomView: View {
@@ -169,6 +190,7 @@ struct LiveRoomView: View {
     @State private var danmakuMessages: [LiveDanmakuMessageDTO] = []
     @State private var loadedDanmakuListRoomID: Int64 = 0
     @State private var isFullscreen = false
+    @State private var lifecycleGeneration: UInt64 = 0
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var settings: AppSettings
 
@@ -235,9 +257,8 @@ struct LiveRoomView: View {
         }
         .onDisappear {
             guard !isFullscreen else { return }
-            danmaku.detach()
-            danmakuStream?.close()
-            danmakuStream = nil
+            lifecycleGeneration &+= 1
+            stopDanmakuPipeline()
             vm.suspendPlayback()
         }
         .sheet(isPresented: $showDanmakuSheet) {
@@ -296,19 +317,29 @@ struct LiveRoomView: View {
 
     private func startDanmakuStreamIfNeeded() {
         guard vm.player != nil, danmakuStream == nil else { return }
+        let generation = lifecycleGeneration
         let selfMID = CoreClient.shared.sessionSnapshot().mid
         let stream = LiveDanmakuStream(roomID: route.roomID, selfMID: selfMID) { item, message in
+            guard generation == lifecycleGeneration else { return }
             danmaku.appendLive(item)
             appendDanmakuMessage(message)
         }
         danmakuStream = stream
         Task {
-            await loadDanmakuListIfNeeded()
+            guard generation == lifecycleGeneration else { return }
+            await loadDanmakuListIfNeeded(generation: generation)
+            guard generation == lifecycleGeneration else { return }
             await stream.start()
         }
     }
 
-    private func loadDanmakuListIfNeeded() async {
+    private func stopDanmakuPipeline() {
+        danmaku.detach()
+        danmakuStream?.close()
+        danmakuStream = nil
+    }
+
+    private func loadDanmakuListIfNeeded(generation: UInt64) async {
         guard loadedDanmakuListRoomID != route.roomID else { return }
         loadedDanmakuListRoomID = route.roomID
         do {
@@ -316,9 +347,11 @@ struct LiveRoomView: View {
                 try CoreClient.shared.liveDanmakuHistory(roomID: roomID)
                     .items
             }.value
+            guard generation == lifecycleGeneration else { return }
             guard !items.isEmpty else { return }
             appendDanmakuMessages(items)
         } catch {
+            guard generation == lifecycleGeneration else { return }
             AppLog.error("live", "直播历史弹幕加载失败", error: error, metadata: [
                 "roomID": String(route.roomID)
             ])

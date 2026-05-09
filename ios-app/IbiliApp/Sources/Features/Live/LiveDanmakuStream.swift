@@ -9,6 +9,7 @@ final class LiveDanmakuStream: NSObject, URLSessionWebSocketDelegate {
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var heartbeatTask: Task<Void, Never>?
+    private var startGeneration: UInt64 = 0
     private var isClosed = false
     private var sequence: Int32 = 1
 
@@ -24,11 +25,14 @@ final class LiveDanmakuStream: NSObject, URLSessionWebSocketDelegate {
 
     func start() async {
         close()
+        startGeneration &+= 1
+        let generation = startGeneration
         isClosed = false
         do {
             let info = try await Task.detached(priority: .utility) { [roomID] in
                 try CoreClient.shared.liveDanmakuInfo(roomID: roomID)
             }.value
+            guard !isClosed, generation == startGeneration else { return }
             guard let server = info.hostList.first(where: { $0.wssPort > 0 }) ?? info.hostList.first,
                   !server.host.isEmpty else {
                 return
@@ -58,6 +62,7 @@ final class LiveDanmakuStream: NSObject, URLSessionWebSocketDelegate {
     }
 
     func close() {
+        startGeneration &+= 1
         isClosed = true
         heartbeatTask?.cancel()
         heartbeatTask = nil

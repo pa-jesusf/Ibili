@@ -424,6 +424,7 @@ final class PlayerViewModel: ObservableObject {
             } else {
                 let prep = try await engine.makeItem(for: info)
                 guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
+                    prep.release()
                     AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
                         "aid": String(item.aid),
                         "cid": String(item.cid),
@@ -727,7 +728,10 @@ final class PlayerViewModel: ObservableObject {
             rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
-            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else {
+                prep.release()
+                return
+            }
             if let item = lastLoadedItem {
                 applyPresentationMetadata(to: prep.item, for: item)
             }
@@ -854,9 +858,12 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func observePlayerTimeControl(_ player: AVPlayer) {
-        playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
+        playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self, weak player] observedPlayer, _ in
             Task { @MainActor in
-                self?.handleObservedPlaybackState(player.timeControlStatus, observedPlayer: player)
+                guard let self,
+                      let player,
+                      self.player === player else { return }
+                self.handleObservedPlaybackState(observedPlayer.timeControlStatus, observedPlayer: observedPlayer)
             }
         }
     }
@@ -1647,7 +1654,10 @@ final class PlayerViewModel: ObservableObject {
             rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
-            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else {
+                prep.release()
+                return
+            }
             if let item = lastLoadedItem {
                 applyPresentationMetadata(to: prep.item, for: item)
             }

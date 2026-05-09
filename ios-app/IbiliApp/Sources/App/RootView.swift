@@ -136,7 +136,7 @@ private struct DeepLinkPlayerHost: View {
         .offset(x: offsetX)
         .allowsHitTesting(!isRootDismissInFlight)
         .onAppear {
-            cancelPendingDismiss()
+            cancelPendingDismiss(resetRouterDismissal: true)
             if router.pending != nil {
                 isRootDismissInFlight = false
             }
@@ -144,9 +144,10 @@ private struct DeepLinkPlayerHost: View {
             animateHostInIfNeeded(for: router.pending?.id)
         }
         .onChange(of: router.pending?.id) { newRouteID in
-            cancelPendingDismiss()
+            cancelPendingDismiss(resetRouterDismissal: true)
             if newRouteID != nil {
                 isRootDismissInFlight = false
+                router.cancelRootSessionDismissal()
                 animateHostInIfNeeded(for: newRouteID)
             } else {
                 animatedInRouteID = nil
@@ -154,9 +155,10 @@ private struct DeepLinkPlayerHost: View {
             syncPlayerSessions()
         }
         .onChange(of: router.path.map(\.id)) { _ in
-            cancelPendingDismiss()
+            cancelPendingDismiss(resetRouterDismissal: true)
             if router.pending != nil {
                 isRootDismissInFlight = false
+                router.cancelRootSessionDismissal()
             }
             syncPlayerSessions()
         }
@@ -176,7 +178,7 @@ private struct DeepLinkPlayerHost: View {
             .allowsHitTesting(false)
         }
         .onDisappear {
-            cancelPendingDismiss()
+            cancelPendingDismiss(resetRouterDismissal: true)
             isRootDismissInFlight = false
         }
     }
@@ -201,10 +203,11 @@ private struct DeepLinkPlayerHost: View {
         }
         let width = UIScreen.main.bounds.width
         isRootDismissInFlight = true
+        router.beginRootSessionDismissal()
         withAnimation(Self.slideSpring) {
             offsetX = width
         }
-        cancelPendingDismiss()
+        cancelPendingDismiss(resetRouterDismissal: false)
         let dismissingRouteID = router.pending?.id
         let work = DispatchWorkItem {
             guard router.pending?.id == dismissingRouteID,
@@ -221,9 +224,12 @@ private struct DeepLinkPlayerHost: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.34, execute: work)
     }
 
-    private func cancelPendingDismiss() {
+    private func cancelPendingDismiss(resetRouterDismissal: Bool) {
         pendingDismissWork?.cancel()
         pendingDismissWork = nil
+        if resetRouterDismissal, isRootDismissInFlight {
+            router.cancelRootSessionDismissal()
+        }
     }
 
     private func animateHostInIfNeeded(for routeID: UUID?) {
