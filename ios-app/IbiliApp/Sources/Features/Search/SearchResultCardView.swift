@@ -181,78 +181,22 @@ struct SearchPgcResultCardView: View {
     let cardWidth: CGFloat
     let imageQuality: Int?
 
-    private let cardCornerRadius: CGFloat = 10
-
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            ZStack(alignment: .topTrailing) {
-                RemoteImage(url: item.cover,
-                            contentMode: .fill,
-                            targetPointSize: CGSize(width: posterWidth, height: posterHeight),
-                            quality: imageQuality ?? 82)
-                    .frame(width: posterWidth, height: posterHeight)
-                    .clipped()
-                if !item.seasonTypeName.isEmpty {
-                    Text(item.seasonTypeName)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(.black.opacity(0.56)))
-                        .padding(6)
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text(item.title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(2)
-
-                if !item.score.isEmpty {
-                    Text("评分 \(item.score)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(IbiliTheme.accent)
-                }
-
-                let metaLine = [item.areas, item.styles, item.indexShow]
+        PgcPosterCardView(
+            data: PgcPosterCardData(
+                id: item.seasonID,
+                title: item.title,
+                cover: item.cover,
+                score: item.score,
+                primaryLine: [item.areas, item.styles].filter { !$0.isEmpty }.joined(separator: " · "),
+                secondaryLine: [item.indexShow, item.pubtime > 0 ? BiliFormat.relativeDate(item.pubtime) : ""]
                     .filter { !$0.isEmpty }
-                    .joined(separator: " · ")
-                if !metaLine.isEmpty {
-                    Text(metaLine)
-                        .font(.caption)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                        .lineLimit(2)
-                }
-
-                if item.pubtime > 0 {
-                    Text(BiliFormat.relativeDate(item.pubtime))
-                        .font(.caption2)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                }
-
-                if !item.desc.isEmpty {
-                    Text(item.desc)
-                        .font(.caption2)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, minHeight: posterHeight, alignment: .topLeading)
-        }
-        .padding(8)
-        .frame(width: cardWidth, alignment: .topLeading)
-        .background(IbiliTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
-    }
-
-    private var posterWidth: CGFloat {
-        max(74, min(104, cardWidth * 0.32))
-    }
-
-    private var posterHeight: CGFloat {
-        posterWidth * 4 / 3
+                    .joined(separator: " · "),
+                description: item.desc
+            ),
+            cardWidth: cardWidth,
+            imageQuality: imageQuality,
+            style: .detailed
+        )
     }
 }

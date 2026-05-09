@@ -681,12 +681,15 @@ public struct PgcEpisodeDTO: Decodable, Hashable, Identifiable {
     public let longTitle: String
     public let cover: String
     public let durationSec: Int64
+    public let pubTime: Int64
+    public let badge: String
 
     enum CodingKeys: String, CodingKey {
-        case aid, bvid, cid, title, cover
+        case aid, bvid, cid, title, cover, badge
         case epID = "ep_id"
         case longTitle = "long_title"
         case durationSec = "duration_sec"
+        case pubTime = "pub_time"
     }
 }
 
@@ -707,6 +710,11 @@ public struct PgcSeasonDTO: Decodable, Hashable {
     public let seasonTitle: String
     public let cover: String
     public let evaluate: String
+    public let subtitle: String
+    public let areas: [String]
+    public let actors: String
+    public let ratingScore: String
+    public let newEpDesc: String
     public let seasonType: Int64
     public let upMID: Int64
     public let upName: String
@@ -714,10 +722,12 @@ public struct PgcSeasonDTO: Decodable, Hashable {
     public let episodes: [PgcEpisodeDTO]
 
     enum CodingKeys: String, CodingKey {
-        case title, cover, evaluate, stat, episodes
+        case title, cover, evaluate, subtitle, areas, actors, stat, episodes
         case seasonID = "season_id"
         case mediaID = "media_id"
         case seasonTitle = "season_title"
+        case ratingScore = "rating_score"
+        case newEpDesc = "new_ep_desc"
         case seasonType = "season_type"
         case upMID = "up_mid"
         case upName = "up_name"
@@ -1309,14 +1319,21 @@ public struct BangumiFollowItemDTO: Decodable, Identifiable, Hashable {
     public let mediaId: Int64
     public let title: String
     public let cover: String
+    public let badge: String
+    public let renewalTime: String
     public let progress: String
     public let evaluate: String
     public let totalCount: Int64
+    public let isFinish: Int64
+    public let newEpIndexShow: String
     enum CodingKeys: String, CodingKey {
-        case title, cover, progress, evaluate
+        case title, cover, badge, progress, evaluate
         case seasonId = "season_id"
         case mediaId = "media_id"
+        case renewalTime = "renewal_time"
         case totalCount = "total_count"
+        case isFinish = "is_finish"
+        case newEpIndexShow = "new_ep_index_show"
     }
 }
 

@@ -15,6 +15,8 @@ import UIKit
 /// 7. Segmented tabs: 简介 / 评论 / 相关
 struct VideoDetailContent: View {
     let item: FeedItemDTO
+    let currentSeasonID: Int64
+    let currentEpisodeID: Int64
     @ObservedObject private var vm: VideoDetailViewModel
     private let commentListViewModel: CommentListViewModel
     @ObservedObject private var interaction: VideoInteractionService
@@ -28,6 +30,9 @@ struct VideoDetailContent: View {
     @State private var isRefreshingMetadata = false
     @State private var didTriggerUpwardRefreshSinceTop = false
     @State private var lastMetadataRefreshAt = Date.distantPast
+    @State private var pgcSeason: PgcSeasonDTO?
+    @State private var pgcLoading = false
+    @State private var pgcErrorText: String?
 
     private let topAnchorID = "videoDetailTop"
     private static let upwardRefreshTriggerOffset: CGFloat = 72
@@ -36,10 +41,14 @@ struct VideoDetailContent: View {
     private static let floatingControlsReservedBottomInset: CGFloat = 24
 
     init(item: FeedItemDTO,
+         currentSeasonID: Int64 = 0,
+         currentEpisodeID: Int64 = 0,
          detailViewModel: VideoDetailViewModel,
          commentListViewModel: CommentListViewModel,
          interactionService: VideoInteractionService) {
         self.item = item
+        self.currentSeasonID = currentSeasonID
+        self.currentEpisodeID = currentEpisodeID
         self._vm = ObservedObject(wrappedValue: detailViewModel)
         self.commentListViewModel = commentListViewModel
         self._interaction = ObservedObject(wrappedValue: interactionService)
@@ -63,13 +72,17 @@ struct VideoDetailContent: View {
         }
     }
 
+    private var visibleTabs: [Tab] {
+        item.isPGC ? [.intro, .replies] : Tab.allCases
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             scrollContent
                 .background(IbiliTheme.background)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     PlayerDetailFloatingControlCluster(
-                        tabs: Tab.allCases,
+                        tabs: visibleTabs,
                         selection: $tab,
                         onReselectCurrentTab: {
                             proxy.interruptingScrollTo(
@@ -85,7 +98,12 @@ struct VideoDetailContent: View {
         .onChange(of: tab) { newValue in
             mountedTabs.insert(newValue)
         }
-        .task(id: "\(item.isPGC ? "pgc" : "ugc"):\(item.aid):\(item.bvid):\(item.epID)") {
+        .onChange(of: visibleTabs) { tabs in
+            if !tabs.contains(tab) {
+                tab = tabs.first ?? .intro
+            }
+        }
+        .task(id: "\(item.isPGC ? "pgc" : "ugc"):\(item.aid):\(item.bvid):\(item.epID):\(currentSeasonID):\(currentEpisodeID)") {
             if item.isPGC {
                 interaction.reset(stat: VideoStatDTO(
                     view: item.play,
@@ -96,6 +114,7 @@ struct VideoDetailContent: View {
                     share: 0,
                     like: 0
                 ))
+                await loadPgcSeasonIfNeeded()
                 return
             }
             let stat = vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0)
@@ -161,7 +180,7 @@ struct VideoDetailContent: View {
     @ViewBuilder
     private var scrollContent: some View {
         ZStack(alignment: .top) {
-            ForEach(Tab.allCases) { targetTab in
+            ForEach(visibleTabs) { targetTab in
                 if mountedTabs.contains(targetTab) || tab == targetTab {
                     tabScrollContent(for: targetTab)
                         .opacity(tab == targetTab ? 1 : 0)
@@ -235,14 +254,15 @@ struct VideoDetailContent: View {
                     introBody
                 case .replies:
                     if item.isPGC {
-                        emptyPGCDetailText("番剧/影视评论后续接入")
+                        CommentListView(oid: pgcCommentOID, kind: pgcCommentKind, viewModel: commentListViewModel)
+                            .padding(.horizontal, 16)
                     } else {
                         CommentListView(oid: commentOID, viewModel: commentListViewModel)
                             .padding(.horizontal, 16)
                     }
                 case .related:
                     if item.isPGC {
-                        emptyPGCDetailText("番剧/影视相关推荐后续接入")
+                        EmptyView()
                     } else {
                         RelatedVideoList(
                             items: vm.related,
@@ -310,10 +330,7 @@ struct VideoDetailContent: View {
             }
 
             if item.isPGC {
-                Text("番剧/影视内容播放中")
-                    .font(.footnote)
-                    .foregroundStyle(IbiliTheme.textSecondary)
-                    .padding(.horizontal, 16)
+                pgcIntroBody
             } else if let v = vm.view, !v.desc.isEmpty || !v.descV2.isEmpty {
                 VideoDescriptionView(desc: v.desc, descV2: v.descV2)
                     .padding(.horizontal, 16)
@@ -365,16 +382,33 @@ struct VideoDetailContent: View {
         }
     }
 
-    private func emptyPGCDetailText(_ text: String) -> some View {
-        Text(text)
-            .font(.footnote)
-            .foregroundStyle(IbiliTheme.textSecondary)
-            .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+    @ViewBuilder
+    private var pgcIntroBody: some View {
+        if pgcLoading && pgcSeason == nil {
+            HStack { Spacer(); ProgressView(); Spacer() }
+                .padding(.vertical, 24)
+        } else if let pgcErrorText, pgcSeason == nil {
+            emptyState(title: "番剧详情加载失败", symbol: "exclamationmark.triangle", message: pgcErrorText)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        } else if let season = pgcSeason {
+            PgcSeasonIntroView(
+                season: season,
+                currentEpID: effectivePgcEpisodeID,
+                onPickEpisode: { episode in
+                    router.open(makePgcFeedItem(season: season, episode: episode), mode: .replaceCurrent)
+                }
+            )
             .padding(.horizontal, 16)
+        }
     }
 
     private func refreshMetadata(trigger: String = "pull-to-refresh") async {
-        guard !item.isPGC else { return }
+        if item.isPGC {
+            await loadPgcSeasonIfNeeded(force: true)
+            await commentListViewModel.refresh(oid: pgcCommentOID, kind: pgcCommentKind)
+            return
+        }
         guard !isRefreshingMetadata else { return }
         isRefreshingMetadata = true
         lastMetadataRefreshAt = Date()
@@ -404,6 +438,69 @@ struct VideoDetailContent: View {
         )
         async let commentsTask: Void = commentListViewModel.refresh(oid: resolvedAid)
         _ = await (hydrateTask, commentsTask)
+    }
+
+    private var effectivePgcSeasonID: Int64 {
+        currentSeasonID > 0 ? currentSeasonID : item.seasonID
+    }
+
+    private var effectivePgcEpisodeID: Int64 {
+        currentEpisodeID > 0 ? currentEpisodeID : item.epID
+    }
+
+    private var pgcCommentOID: Int64 {
+        item.aid > 0 ? item.aid : (pgcSeason?.episodes.first(where: { $0.epID == effectivePgcEpisodeID })?.aid ?? 0)
+    }
+
+    private var pgcCommentKind: Int32 {
+        1
+    }
+
+    private func loadPgcSeasonIfNeeded(force: Bool = false) async {
+        let seasonID = effectivePgcSeasonID
+        let epID = effectivePgcEpisodeID
+        guard seasonID > 0 || epID > 0 else { return }
+        if !force, let loaded = pgcSeason,
+           (seasonID <= 0 || loaded.seasonID == seasonID),
+           (epID <= 0 || loaded.episodes.contains(where: { $0.epID == epID })) {
+            return
+        }
+        pgcLoading = true
+        pgcErrorText = nil
+        defer { pgcLoading = false }
+        do {
+            let season = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
+            }.value
+            pgcSeason = season
+        } catch {
+            pgcErrorText = (error as NSError).localizedDescription
+            AppLog.error("player", "PGC 详情加载失败", error: error, metadata: [
+                "seasonID": String(seasonID),
+                "epID": String(epID),
+            ])
+        }
+    }
+
+    private func makePgcFeedItem(season: PgcSeasonDTO, episode: PgcEpisodeDTO) -> FeedItemDTO {
+        let seasonTitle = season.seasonTitle.isEmpty ? season.title : season.seasonTitle
+        let epTitle = episode.longTitle.isEmpty ? episode.title : episode.longTitle
+        let title = [seasonTitle, epTitle].filter { !$0.isEmpty }.joined(separator: " · ")
+        return FeedItemDTO(
+            aid: episode.aid,
+            bvid: episode.bvid,
+            cid: episode.cid,
+            title: title.isEmpty ? seasonTitle : title,
+            cover: episode.cover.isEmpty ? season.cover : episode.cover,
+            author: season.upName,
+            durationSec: episode.durationSec,
+            play: season.stat.view,
+            danmaku: season.stat.danmaku,
+            pubdate: episode.pubTime,
+            epID: episode.epID,
+            seasonID: season.seasonID,
+            isPGC: true
+        )
     }
 
     private func handleDetailScrollOffsetChange(_ newValue: CGFloat) {

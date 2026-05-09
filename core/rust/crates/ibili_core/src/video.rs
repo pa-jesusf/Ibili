@@ -69,6 +69,11 @@ struct PgcSeasonWire {
     #[serde(default, deserialize_with = "null_as_default")] season_title: String,
     #[serde(default, deserialize_with = "null_as_default")] cover: String,
     #[serde(default, deserialize_with = "null_as_default")] evaluate: String,
+    #[serde(default, deserialize_with = "null_as_default")] subtitle: String,
+    #[serde(default, deserialize_with = "null_as_default")] areas: Vec<PgcAreaWire>,
+    #[serde(default, deserialize_with = "null_as_default")] actors: String,
+    #[serde(default)] rating: Option<PgcRatingWire>,
+    #[serde(default)] new_ep: Option<PgcNewEpWire>,
     #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")] season_type: i64,
     #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<PgcEpisodeWire>,
     #[serde(default, deserialize_with = "null_as_default")] section: Vec<PgcSectionWire>,
@@ -79,6 +84,22 @@ struct PgcSeasonWire {
 #[derive(Default, Deserialize)]
 struct PgcSectionWire {
     #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<PgcEpisodeWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcAreaWire {
+    #[serde(default, deserialize_with = "null_as_default")] name: String,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcRatingWire {
+    #[serde(default, deserialize_with = "lenient_score_string")]
+    score: String,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcNewEpWire {
+    #[serde(default, deserialize_with = "null_as_default")] desc: String,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -93,6 +114,9 @@ struct PgcEpisodeWire {
     #[serde(default, deserialize_with = "null_as_default")] long_title: String,
     #[serde(default, deserialize_with = "null_as_default")] show_title: String,
     #[serde(default, deserialize_with = "lenient_i64_value")] duration: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] pub_time: i64,
+    #[serde(default, alias = "release_date", deserialize_with = "lenient_i64_value")] release_date: i64,
+    #[serde(default, deserialize_with = "null_as_default")] badge: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -218,6 +242,42 @@ where
     })
 }
 
+fn lenient_score_string<'de, D>(de: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                if i > 0 { i.to_string() } else { String::new() }
+            } else if let Some(f) = n.as_f64() {
+                if f > 0.0 {
+                    let mut s = format!("{:.1}", f);
+                    if s.ends_with(".0") {
+                        s.truncate(s.len() - 2);
+                    }
+                    s
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        }
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed == "0" || trimmed == "0.0" {
+                String::new()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        _ => String::new(),
+    })
+}
+
 fn prefer_non_empty(primary: String, secondary: String) -> String {
     if !primary.is_empty() { primary } else { secondary }
 }
@@ -289,6 +349,8 @@ impl PgcSeasonWire {
 
         let stat = self.stat.unwrap_or_default();
         let up_info = self.up_info.unwrap_or_default();
+        let rating_score = self.rating.map(|rating| rating.score).unwrap_or_default();
+        let new_ep_desc = self.new_ep.map(|ep| ep.desc).unwrap_or_default();
         PgcSeason {
             season_id: self.season_id,
             media_id: self.media_id,
@@ -296,6 +358,16 @@ impl PgcSeasonWire {
             season_title: self.season_title,
             cover: self.cover,
             evaluate: self.evaluate,
+            subtitle: self.subtitle,
+            areas: self
+                .areas
+                .into_iter()
+                .map(|area| area.name)
+                .filter(|name| !name.trim().is_empty())
+                .collect(),
+            actors: self.actors,
+            rating_score,
+            new_ep_desc,
             season_type: self.season_type,
             up_mid: up_info.mid,
             up_name: up_info.name,
@@ -329,6 +401,8 @@ impl PgcEpisodeWire {
             long_title: self.long_title,
             cover: self.cover,
             duration_sec: normalize_pgc_duration_sec(self.duration),
+            pub_time: if self.pub_time > 0 { self.pub_time } else { self.release_date },
+            badge: self.badge,
         }
     }
 }

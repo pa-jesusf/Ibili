@@ -116,10 +116,14 @@ pub struct BangumiFollowItem {
     pub media_id: i64,
     pub title: String,
     pub cover: String,
+    pub badge: String,
+    pub renewal_time: String,
     /// e.g. "看到第 5 话"
     pub progress: String,
     pub evaluate: String,
     pub total_count: i64,
+    pub is_finish: i64,
+    pub new_ep_index_show: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -341,9 +345,13 @@ impl Core {
             media_id: b.media_id.unwrap_or(0),
             title: b.title.unwrap_or_default(),
             cover: b.cover.unwrap_or_default(),
+            badge: b.badge.unwrap_or_default(),
+            renewal_time: b.renewal_time.unwrap_or_default(),
             progress: b.progress.unwrap_or_default(),
             evaluate: b.evaluate.unwrap_or_default(),
             total_count: b.total_count.unwrap_or(0),
+            is_finish: b.is_finish.unwrap_or(0),
+            new_ep_index_show: b.new_ep.and_then(|ep| ep.index_show).unwrap_or_default(),
         }).collect();
         // The endpoint's `total` is total entries across all pages;
         // `has_more` isn't returned, so we infer.
@@ -599,9 +607,18 @@ struct BangumiItemWire {
     #[serde(default)] media_id: Option<i64>,
     #[serde(default)] title: Option<String>,
     #[serde(default)] cover: Option<String>,
+    #[serde(default)] badge: Option<String>,
+    #[serde(default)] renewal_time: Option<String>,
     #[serde(default)] progress: Option<String>,
     #[serde(default)] evaluate: Option<String>,
     #[serde(default)] total_count: Option<i64>,
+    #[serde(default)] is_finish: Option<i64>,
+    #[serde(default)] new_ep: Option<BangumiNewEpWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct BangumiNewEpWire {
+    #[serde(default)] index_show: Option<String>,
 }
 
 #[derive(Default, Deserialize)]

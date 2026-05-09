@@ -374,6 +374,8 @@ pub struct PgcEpisode {
     pub long_title: String,
     pub cover: String,
     pub duration_sec: i64,
+    pub pub_time: i64,
+    pub badge: String,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -395,6 +397,11 @@ pub struct PgcSeason {
     pub season_title: String,
     pub cover: String,
     pub evaluate: String,
+    pub subtitle: String,
+    pub areas: Vec<String>,
+    pub actors: String,
+    pub rating_score: String,
+    pub new_ep_desc: String,
     pub season_type: i64,
     pub up_mid: i64,
     pub up_name: String,

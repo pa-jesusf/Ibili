@@ -351,6 +351,7 @@ final class FavoriteResourcesViewModel: ObservableObject {
 struct BangumiFollowListView: View {
     let mid: Int64
     @StateObject private var vm = BangumiFollowListViewModel()
+    @EnvironmentObject private var router: DeepLinkRouter
 
     var body: some View {
         Group {
@@ -362,7 +363,12 @@ struct BangumiFollowListView: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(vm.items) { item in
-                            BangumiRow(item: item)
+                            Button {
+                                router.openPgc(seasonID: item.seasonId)
+                            } label: {
+                                BangumiRow(item: item)
+                            }
+                            .buttonStyle(.plain)
                         }
                         if vm.isLoading { ProgressView().padding() }
                     }
@@ -381,38 +387,27 @@ private struct BangumiRow: View {
     let item: BangumiFollowItemDTO
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            RemoteImage(url: item.cover,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: 180, height: 240),
-                        quality: 75)
-                .frame(width: 90, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 6) {
-                Text(item.title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(2)
-                if !item.progress.isEmpty {
-                    Text(item.progress)
-                        .font(.caption)
-                        .foregroundStyle(IbiliTheme.accent)
-                }
-                if !item.evaluate.isEmpty {
-                    Text(item.evaluate)
-                        .font(.caption2)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                        .lineLimit(3)
-                }
-                Spacer(minLength: 0)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(IbiliTheme.surface)
+        PgcPosterCardView(
+            data: PgcPosterCardData(
+                id: item.seasonId,
+                title: item.title,
+                cover: item.cover,
+                primaryLine: followPrimaryLine,
+                secondaryLine: item.progress,
+                description: item.evaluate
+            ),
+            cardWidth: UIScreen.main.bounds.width - 24,
+            imageQuality: 78,
+            style: .compact
         )
+    }
+
+    private var followPrimaryLine: String {
+        let latest = item.newEpIndexShow.trimmingCharacters(in: .whitespacesAndNewlines)
+        let renewal = item.renewalTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !latest.isEmpty else { return renewal }
+        guard item.isFinish == 0, !renewal.isEmpty else { return latest }
+        return "\(latest) · \(renewal)"
     }
 }
 

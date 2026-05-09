@@ -591,6 +591,14 @@ final class PlayerViewModel: ObservableObject {
         lastLoadedItem
     }
 
+    var currentSeasonID: Int64 {
+        lastLoadedItem?.seasonID ?? 0
+    }
+
+    var currentEpisodeID: Int64 {
+        lastLoadedItem?.epID ?? 0
+    }
+
     var currentSessionID: PlayerSessionID {
         sessionID
     }
@@ -2201,6 +2209,8 @@ struct PlayerView: View {
 
             if shouldMountDetailContent {
                 VideoDetailContent(item: item,
+                                   currentSeasonID: vm.currentSeasonID,
+                                   currentEpisodeID: vm.currentEpisodeID,
                                    detailViewModel: vm.pageCache.detailViewModel,
                                    commentListViewModel: vm.pageCache.commentListViewModel,
                                    interactionService: vm.pageCache.interactionService)
