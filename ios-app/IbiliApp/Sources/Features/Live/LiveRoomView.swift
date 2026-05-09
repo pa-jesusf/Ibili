@@ -203,6 +203,8 @@ final class LiveRoomViewModel: ObservableObject {
         let item = AVPlayerItem(asset: asset)
         item.audioTimePitchAlgorithm = .spectral
         let nextPlayer = AVPlayer(playerItem: item)
+        nextPlayer.allowsExternalPlayback = true
+        nextPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
         nextPlayer.automaticallyWaitsToMinimizeStalling = true
         let previousPlayer = player
         playerTimeControlObservation?.invalidate()
@@ -281,6 +283,8 @@ struct LiveRoomView: View {
     @State private var showDanmakuSheet = false
     @State private var danmakuMessages: [LiveDanmakuMessageDTO] = []
     @State private var loadedDanmakuListRoomID: Int64 = 0
+    @State private var loadingDanmakuHistoryRoomID: Int64 = 0
+    @State private var isLoadingDanmakuHistory = false
     @State private var isFullscreen = false
     @State private var lifecycleGeneration: UInt64 = 0
     @EnvironmentObject private var router: DeepLinkRouter
@@ -330,7 +334,10 @@ struct LiveRoomView: View {
             }
         }
         .task(id: route.roomID) {
-            await vm.load(route: route, cdnSelection: settings.cdnService.rawValue)
+            let generation = lifecycleGeneration
+            async let historyTask: Void = loadDanmakuListIfNeeded(generation: generation)
+            async let playerTask: Void = vm.load(route: route, cdnSelection: settings.cdnService.rawValue)
+            _ = await (historyTask, playerTask)
         }
         .onChange(of: vm.player) { newPlayer in
             if let newPlayer {
@@ -421,6 +428,8 @@ struct LiveRoomView: View {
         Task {
             guard generation == lifecycleGeneration else { return }
             await loadDanmakuListIfNeeded(generation: generation)
+        }
+        Task {
             guard generation == lifecycleGeneration else { return }
             await stream.start()
         }
@@ -433,23 +442,35 @@ struct LiveRoomView: View {
         danmakuStream = nil
         danmakuMessages.removeAll()
         loadedDanmakuListRoomID = 0
+        loadingDanmakuHistoryRoomID = 0
+        isLoadingDanmakuHistory = false
     }
 
     private func loadDanmakuListIfNeeded(generation: UInt64) async {
-        guard loadedDanmakuListRoomID != route.roomID else { return }
-        loadedDanmakuListRoomID = route.roomID
+        let roomID = route.roomID
+        guard loadedDanmakuListRoomID != roomID,
+              loadingDanmakuHistoryRoomID != roomID else { return }
+        loadingDanmakuHistoryRoomID = roomID
+        isLoadingDanmakuHistory = true
+        defer {
+            if loadingDanmakuHistoryRoomID == roomID {
+                loadingDanmakuHistoryRoomID = 0
+                isLoadingDanmakuHistory = false
+            }
+        }
         do {
-            let items = try await Task.detached(priority: .utility) { [roomID = route.roomID] in
+            let items = try await Task.detached(priority: .utility) { [roomID] in
                 try CoreClient.shared.liveDanmakuHistory(roomID: roomID)
                     .items
             }.value
-            guard generation == lifecycleGeneration else { return }
+            guard generation == lifecycleGeneration, route.roomID == roomID else { return }
+            loadedDanmakuListRoomID = roomID
             guard !items.isEmpty else { return }
-            appendDanmakuMessages(items)
+            prependDanmakuHistoryMessages(items)
         } catch {
             guard generation == lifecycleGeneration else { return }
             AppLog.error("live", "直播历史弹幕加载失败", error: error, metadata: [
-                "roomID": String(route.roomID)
+                "roomID": String(roomID)
             ])
         }
     }
@@ -463,6 +484,22 @@ struct LiveRoomView: View {
         var seen = Set(danmakuMessages.map(\.id))
         var next = danmakuMessages
         for message in incoming where !message.text.isEmpty && seen.insert(message.id).inserted {
+            next.append(message)
+        }
+        if next.count > 1_000 {
+            next.removeFirst(next.count - 1_000)
+        }
+        danmakuMessages = next
+    }
+
+    private func prependDanmakuHistoryMessages(_ incoming: [LiveDanmakuMessageDTO]) {
+        guard !incoming.isEmpty else { return }
+        var seen = Set<String>()
+        var next: [LiveDanmakuMessageDTO] = []
+        for message in incoming where !message.text.isEmpty && seen.insert(message.id).inserted {
+            next.append(message)
+        }
+        for message in danmakuMessages where !message.text.isEmpty && seen.insert(message.id).inserted {
             next.append(message)
         }
         if next.count > 1_000 {
@@ -572,7 +609,7 @@ struct LiveRoomView: View {
             }
 
             if danmakuMessages.isEmpty {
-                Text(vm.player == nil && vm.errorText == nil ? "直播加载后会显示弹幕" : "暂无弹幕")
+                Text(isLoadingDanmakuHistory ? "正在加载历史弹幕" : (vm.player == nil && vm.errorText == nil ? "直播加载后会显示弹幕" : "暂无弹幕"))
                     .font(.subheadline)
                     .foregroundStyle(IbiliTheme.textSecondary)
                     .frame(maxWidth: .infinity, minHeight: 280, alignment: .center)

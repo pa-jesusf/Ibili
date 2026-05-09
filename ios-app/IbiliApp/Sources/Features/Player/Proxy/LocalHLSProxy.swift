@@ -2,10 +2,11 @@ import Foundation
 import Network
 import UIKit
 import os
+import Darwin
 
-/// In-process HTTP server bound to `127.0.0.1` that serves a tiny HLS view
-/// of B 站 DASH streams. Sized to one app instance — there is exactly one
-/// proxy and any number of registered playback tokens.
+/// In-process HTTP server that serves a tiny HLS view of B 站 DASH streams.
+/// Sized to one app instance — there is exactly one proxy and any number of
+/// registered playback tokens.
 ///
 /// Routes (`<token>` is registered via `register(...)`):
 /// * `GET /play/<token>/master.m3u8`  → master playlist
@@ -416,15 +417,20 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     // MARK: - Public API
 
-    /// Register a source and receive the `master.m3u8` URL on `127.0.0.1`.
+    /// Register a source and receive the `master.m3u8` URL. When the device
+    /// has a Wi-Fi/LAN address we publish that instead of loopback so AirPlay
+    /// receivers can fetch the same proxy playlist; otherwise we fall back to
+    /// `127.0.0.1` for ordinary on-device playback.
     /// Idempotent: re-registering the same `token` overwrites the prior entry.
     func register(token: String, source: Source) throws -> URL {
         try ensureRunning()
         let runtime = RuntimeSource(source: source)
         let port = state.withLock { s -> UInt16 in s.sources[token] = runtime; return s.port }
+        let playbackHost = Self.preferredPlaybackHost()
         runtime.prewarmStartupSegments()
         AppLog.info("player", "HLS 代理 source 已注册", metadata: [
             "token": token,
+            "host": playbackHost,
             "videoFragments": String(source.videoProbe.index.entries.count),
             "audioFragments": String(source.audioProbe?.index.entries.count ?? 0),
             "videoPlaylistOutputEntries": String(runtime.videoOutputEntries),
@@ -433,7 +439,7 @@ final class LocalHLSProxy: @unchecked Sendable {
             "videoHeadCacheBytes": String(source.videoHeadCache?.count ?? 0),
             "audioHeadCacheBytes": String(source.audioHeadCache?.count ?? 0),
         ])
-        guard let url = URL(string: "http://127.0.0.1:\(port)/play/\(token)/master.m3u8") else {
+        guard let url = URL(string: "http://\(playbackHost):\(port)/play/\(token)/master.m3u8") else {
             throw ProxyServerError.invalidServerURL
         }
         return url
@@ -826,6 +832,63 @@ final class LocalHLSProxy: @unchecked Sendable {
             self.listener = nil
             listener.cancel()
             throw ProxyServerError.startupTimedOut
+        }
+    }
+
+    private static func preferredPlaybackHost() -> String {
+        preferredLANIPv4Address() ?? "127.0.0.1"
+    }
+
+    private static func preferredLANIPv4Address() -> String? {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        defer { freeifaddrs(interfaces) }
+
+        var candidates: [(score: Int, address: String)] = []
+        var pointer: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = pointer {
+            defer { pointer = current.pointee.ifa_next }
+            let flags = current.pointee.ifa_flags
+            guard flags & UInt32(IFF_UP) != 0,
+                  flags & UInt32(IFF_LOOPBACK) == 0,
+                  let rawAddress = current.pointee.ifa_addr,
+                  rawAddress.pointee.sa_family == UInt8(AF_INET) else {
+                continue
+            }
+
+            let name = String(cString: current.pointee.ifa_name)
+            guard !name.hasPrefix("pdp_ip") else { continue }
+            guard let address = ipv4String(from: rawAddress),
+                  !address.isEmpty,
+                  address != "0.0.0.0" else { continue }
+
+            let score: Int
+            if name == "en0" {
+                score = 0
+            } else if name.hasPrefix("en") {
+                score = 1
+            } else if name.hasPrefix("bridge") {
+                score = 2
+            } else {
+                score = 3
+            }
+            candidates.append((score, address))
+        }
+
+        return candidates.sorted { lhs, rhs in
+            if lhs.score == rhs.score { return lhs.address < rhs.address }
+            return lhs.score < rhs.score
+        }.first?.address
+    }
+
+    private static func ipv4String(from address: UnsafeMutablePointer<sockaddr>) -> String? {
+        address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { pointer in
+            var sinAddr = pointer.pointee.sin_addr
+            var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            guard inet_ntop(AF_INET, &sinAddr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else {
+                return nil
+            }
+            return String(cString: buffer)
         }
     }
 

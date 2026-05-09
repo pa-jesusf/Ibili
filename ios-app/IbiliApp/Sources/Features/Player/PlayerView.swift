@@ -448,6 +448,7 @@ final class PlayerViewModel: ObservableObject {
                 self.currentQn = info.quality
                 self.prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
                 let player = AVPlayer(playerItem: prep.item)
+                configureExternalPlayback(for: player)
                 // Leave `automaticallyWaitsToMinimizeStalling` at its
                 // default (`true`). With our HLS proxy AVPlayer needs to
                 // fetch the master + media playlists and the init
@@ -688,6 +689,11 @@ final class PlayerViewModel: ObservableObject {
 
     var canRestorePlaybackAfterPresentation: Bool {
         !isClosing
+    }
+
+    private func configureExternalPlayback(for player: AVPlayer) {
+        player.allowsExternalPlayback = true
+        player.usesExternalPlaybackWhileExternalScreenIsActive = true
     }
 
     func backgroundContinuationRate(for player: AVPlayer) -> Float? {
@@ -1356,6 +1362,7 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         warm.player.isMuted = false
+        configureExternalPlayback(for: warm.player)
         itemStatusObservation = nil
         observeItemStatus(warm.preparation.item, generation: generation)
         activePreparation = warm.preparation
@@ -1405,6 +1412,7 @@ final class PlayerViewModel: ObservableObject {
         playerSwapOverlay?.beginCrossfade()
         itemStatusObservation = nil
         hiWarm.player.isMuted = false
+        configureExternalPlayback(for: hiWarm.player)
         observeItemStatus(hiWarm.preparation.item, generation: generation)
         activePreparation = hiWarm.preparation
         setPlayer(hiWarm.player)
@@ -1653,6 +1661,7 @@ final class PlayerViewModel: ObservableObject {
                 targetPlayer = existingPlayer
             } else {
                 targetPlayer = AVPlayer(playerItem: prep.item)
+                configureExternalPlayback(for: targetPlayer)
             }
 
             activePreparation = prep
