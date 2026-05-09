@@ -451,6 +451,14 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
             switch recognizer.state {
             case .began:
+                if PlayerSwipeBackGestureExclusions.contains(
+                    point: recognizer.location(in: recognizer.view),
+                    in: recognizer.view
+                ) {
+                    hasBegunSwipe = false
+                    parent.onCancelled()
+                    return
+                }
                 hasBegunSwipe = true
             case .changed:
                 guard hasBegunSwipe else { return }
@@ -474,6 +482,10 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
                   !ModalGestureShield.isActive,
                   let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
             guard !hasActivePresentedController(from: pan.view) else { return false }
+            guard !PlayerSwipeBackGestureExclusions.contains(
+                point: pan.location(in: pan.view),
+                in: pan.view
+            ) else { return false }
             let velocity = pan.velocity(in: pan.view)
             guard velocity.x > 180 else { return false }
             return abs(velocity.x) > abs(velocity.y) * 1.35
@@ -482,6 +494,9 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldReceive touch: UITouch) -> Bool {
             guard parent.isEnabled, !ModalGestureShield.isActive else { return false }
+            if PlayerSwipeBackGestureExclusions.contains(touch, in: gestureRecognizer.view) {
+                return false
+            }
             var view = touch.view
             while let current = view {
                 if current is UIControl {
@@ -499,7 +514,10 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
+            if PlayerSwipeBackGestureExclusions.isRegisteredOrDescendant(otherGestureRecognizer.view) {
+                return false
+            }
+            return true
         }
     }
 }

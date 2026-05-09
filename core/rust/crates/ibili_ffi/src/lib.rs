@@ -459,10 +459,26 @@ struct HistoryCursorArgs {
     view_at: i64,
 }
 #[derive(Deserialize)]
+struct HistorySearchArgs {
+    #[serde(default)]
+    keyword: String,
+    #[serde(default = "default_one_i64")]
+    pn: i64,
+}
+#[derive(Deserialize)]
 struct FavListArgs {
     media_id: i64,
     #[serde(default = "default_one_i64")]
     pn: i64,
+    #[serde(default)]
+    keyword: String,
+}
+#[derive(Deserialize)]
+struct WatchLaterListArgs {
+    #[serde(default = "default_one_i64")]
+    pn: i64,
+    #[serde(default)]
+    keyword: String,
 }
 #[derive(Deserialize)]
 struct BangumiListArgs {
@@ -795,9 +811,16 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                 serde_json::from_value(args).unwrap_or(HistoryCursorArgs { max: 0, view_at: 0 });
             to_value(c.inner.history_cursor(a.max, a.view_at)?)
         }
+        "user.history_search" => {
+            let a: HistorySearchArgs = serde_json::from_value(args).unwrap_or(HistorySearchArgs {
+                keyword: String::new(),
+                pn: 1,
+            });
+            to_value(c.inner.history_search(&a.keyword, a.pn)?)
+        }
         "user.fav_resources" => {
             let a: FavListArgs = serde_json::from_value(args)?;
-            to_value(c.inner.fav_resource_list(a.media_id, a.pn)?)
+            to_value(c.inner.fav_resource_list(a.media_id, a.pn, &a.keyword)?)
         }
         "user.bangumi_follow" => {
             let a: BangumiListArgs = serde_json::from_value(args)?;
@@ -806,7 +829,13 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                     .bangumi_follow_list(a.vmid, a.kind, a.status, a.pn)?,
             )
         }
-        "user.watchlater_list" => to_value(c.inner.watchlater_list()?),
+        "user.watchlater_list" => {
+            let a: WatchLaterListArgs = serde_json::from_value(args).unwrap_or(WatchLaterListArgs {
+                pn: 1,
+                keyword: String::new(),
+            });
+            to_value(c.inner.watchlater_list(a.pn, &a.keyword)?)
+        }
         "user.followings" => {
             let a: VmidPageArgs = serde_json::from_value(args)?;
             to_value(c.inner.relation_followings(a.vmid, a.pn)?)

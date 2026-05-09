@@ -18,6 +18,52 @@ private func pushVideo(
     ))
 }
 
+private func normalizedProfileSearchQuery(_ query: String) -> String {
+    query.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func profileFields(_ fields: [String], match query: String) -> Bool {
+    let trimmed = normalizedProfileSearchQuery(query)
+    guard !trimmed.isEmpty else { return true }
+    return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
+}
+
+private struct ProfileInlineSearchBar: View {
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(IbiliTheme.textSecondary)
+            TextField(placeholder, text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
+        )
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+}
+
 // MARK: - History
 
 /// 历史记录: cursor-paged list backed by `/x/web-interface/history/cursor`.
@@ -26,48 +72,76 @@ private func pushVideo(
 struct HistoryListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @StateObject private var vm = HistoryListViewModel()
+    @State private var searchText = ""
+    @State private var searchTask: Task<Void, Never>?
+
+    private var isSearching: Bool {
+        !normalizedProfileSearchQuery(searchText).isEmpty
+    }
+
+    private var displayedItems: [HistoryItemDTO] {
+        isSearching ? vm.searchItems : vm.items
+    }
+
+    private var displayedIsLoading: Bool {
+        isSearching ? vm.searchIsLoading : vm.isLoading
+    }
+
+    private var displayedIsEnd: Bool {
+        isSearching ? vm.searchIsEnd : vm.isEnd
+    }
 
     var body: some View {
-        Group {
-            if vm.items.isEmpty && vm.isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.items.isEmpty {
-                emptyState(title: "暂无观看记录", symbol: "clock")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                            Button {
-                                pushVideo(router,
-                                          aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                          title: item.title, cover: item.cover,
-                                          author: item.author, durationSec: item.durationSec)
-                            } label: {
-                                CompactVideoRow(
-                                    cover: item.cover,
-                                    title: item.title,
-                                    author: item.author,
-                                    durationSec: item.durationSec,
-                                    play: 0, danmaku: 0,
-                                    progress: progressFraction(item),
-                                    durationOverride: progressLabel(item)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal, 12)
-                            .onAppear {
-                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                    Task { await vm.loadMore() }
+        VStack(spacing: 0) {
+            ProfileInlineSearchBar(placeholder: "搜索历史记录", text: $searchText)
+            Group {
+                if displayedItems.isEmpty && displayedIsLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if displayedItems.isEmpty {
+                    emptyState(title: isSearching ? "没有搜索结果" : "暂无观看记录", symbol: "clock")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
+                                Button {
+                                    pushVideo(router,
+                                              aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                              title: item.title, cover: item.cover,
+                                              author: item.author, durationSec: item.durationSec)
+                                } label: {
+                                    CompactVideoRow(
+                                        cover: item.cover,
+                                        title: item.title,
+                                        author: item.author,
+                                        durationSec: item.durationSec,
+                                        play: 0, danmaku: 0,
+                                        progress: progressFraction(item),
+                                        durationOverride: progressLabel(item)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 12)
+                                .onAppear {
+                                    if !displayedIsEnd, index >= max(0, displayedItems.count - 3) {
+                                        Task {
+                                            if isSearching {
+                                                await vm.loadMoreSearch(keyword: normalizedProfileSearchQuery(searchText))
+                                            } else {
+                                                await vm.loadMore()
+                                            }
+                                        }
+                                    }
+                                }
+                                if index < displayedItems.count - 1 {
+                                    Divider().padding(.leading, 144)
                                 }
                             }
-                            if index < vm.items.count - 1 {
-                                Divider().padding(.leading, 144)
+                            if displayedIsLoading {
+                                ProgressView().padding()
+                            } else if displayedIsEnd {
+                                Text("已经到底了").font(.caption).foregroundStyle(.secondary).padding()
                             }
-                        }
-                        if vm.isLoading {
-                            ProgressView().padding()
-                        } else if vm.isEnd {
-                            Text("已经到底了").font(.caption).foregroundStyle(.secondary).padding()
                         }
                     }
                 }
@@ -77,6 +151,12 @@ struct HistoryListView: View {
         .navigationTitle("历史记录")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial() }
+        .onChange(of: searchText) { newValue in
+            scheduleSearch(newValue)
+        }
+        .onDisappear {
+            searchTask?.cancel()
+        }
     }
 
     private func progressFraction(_ item: HistoryItemDTO) -> Double {
@@ -92,6 +172,20 @@ struct HistoryListView: View {
         }
         return nil
     }
+
+    private func scheduleSearch(_ rawQuery: String) {
+        searchTask?.cancel()
+        let keyword = normalizedProfileSearchQuery(rawQuery)
+        guard !keyword.isEmpty else {
+            vm.clearSearch()
+            return
+        }
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await vm.search(keyword: keyword)
+        }
+    }
 }
 
 @MainActor
@@ -99,8 +193,13 @@ final class HistoryListViewModel: ObservableObject {
     @Published var items: [HistoryItemDTO] = []
     @Published var isLoading = false
     @Published var isEnd = false
+    @Published var searchItems: [HistoryItemDTO] = []
+    @Published var searchIsLoading = false
+    @Published var searchIsEnd = false
     private var nextMax: Int64 = 0
     private var nextViewAt: Int64 = 0
+    private var searchKeyword = ""
+    private var searchPage: Int64 = 1
 
     func loadInitial() async {
         guard items.isEmpty else { return }
@@ -131,6 +230,56 @@ final class HistoryListViewModel: ObservableObject {
             isEnd = true
         }
     }
+
+    func clearSearch() {
+        searchKeyword = ""
+        searchPage = 1
+        searchItems.removeAll()
+        searchIsLoading = false
+        searchIsEnd = false
+    }
+
+    func search(keyword: String) async {
+        guard !keyword.isEmpty else {
+            clearSearch()
+            return
+        }
+        if keyword != searchKeyword {
+            searchKeyword = keyword
+            searchPage = 1
+            searchItems.removeAll()
+            searchIsEnd = false
+        }
+        await fetchSearch(reset: true)
+    }
+
+    func loadMoreSearch(keyword: String) async {
+        guard keyword == searchKeyword, !keyword.isEmpty, !searchIsLoading, !searchIsEnd else { return }
+        await fetchSearch(reset: false)
+    }
+
+    private func fetchSearch(reset: Bool) async {
+        guard !searchKeyword.isEmpty, !searchIsLoading else { return }
+        if reset {
+            searchPage = 1
+            searchIsEnd = false
+        }
+        searchIsLoading = true
+        let keyword = searchKeyword
+        let pageNumber = searchPage
+        let page: HistoryPageDTO? = await Task.detached {
+            try? CoreClient.shared.userHistorySearch(keyword: keyword, page: pageNumber)
+        }.value
+        guard keyword == searchKeyword else { return }
+        searchIsLoading = false
+        guard let page else { searchIsEnd = true; return }
+        if reset { searchItems = page.items } else { searchItems.append(contentsOf: page.items) }
+        if page.nextMax > 0 {
+            searchPage = page.nextMax
+        } else {
+            searchIsEnd = true
+        }
+    }
 }
 
 // MARK: - Watch later
@@ -138,37 +287,50 @@ final class HistoryListViewModel: ObservableObject {
 struct WatchLaterListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @StateObject private var vm = WatchLaterListViewModel()
+    @State private var searchText = ""
+    @State private var searchTask: Task<Void, Never>?
+
+    private var isSearching: Bool {
+        !normalizedProfileSearchQuery(searchText).isEmpty
+    }
 
     var body: some View {
-        Group {
-            if vm.items.isEmpty && vm.isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.items.isEmpty {
-                emptyState(title: "稍后再看是空的", symbol: "list.bullet.rectangle.portrait",
-                           message: "在视频详情页点击「稍后再看」后即可在这里看到")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                            Button {
-                                pushVideo(router,
-                                          aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                          title: item.title, cover: item.cover,
-                                          author: item.author, durationSec: item.durationSec)
-                            } label: {
-                                CompactVideoRow(
-                                    cover: item.cover,
-                                    title: item.title,
-                                    author: item.author,
-                                    durationSec: item.durationSec,
-                                    play: 0, danmaku: 0,
-                                    progress: fraction(item)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal, 12)
-                            if index < vm.items.count - 1 {
-                                Divider().padding(.leading, 144)
+        VStack(spacing: 0) {
+            ProfileInlineSearchBar(placeholder: "搜索稍后再看", text: $searchText)
+            Group {
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if vm.items.isEmpty {
+                    emptyState(
+                        title: isSearching ? "没有搜索结果" : "稍后再看是空的",
+                        symbol: "list.bullet.rectangle.portrait",
+                        message: isSearching ? nil : "在视频详情页点击「稍后再看」后即可在这里看到"
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                                Button {
+                                    pushVideo(router,
+                                              aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                              title: item.title, cover: item.cover,
+                                              author: item.author, durationSec: item.durationSec)
+                                } label: {
+                                    CompactVideoRow(
+                                        cover: item.cover,
+                                        title: item.title,
+                                        author: item.author,
+                                        durationSec: item.durationSec,
+                                        play: 0, danmaku: 0,
+                                        progress: fraction(item)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 12)
+                                if index < vm.items.count - 1 {
+                                    Divider().padding(.leading, 144)
+                                }
                             }
                         }
                     }
@@ -179,13 +341,29 @@ struct WatchLaterListView: View {
         .navigationTitle("稍后再看")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
-        .refreshable { await vm.load(force: true) }
+        .refreshable { await vm.load(keyword: normalizedProfileSearchQuery(searchText), force: true) }
+        .onChange(of: searchText) { newValue in
+            scheduleSearch(newValue)
+        }
+        .onDisappear {
+            searchTask?.cancel()
+        }
     }
 
     private func fraction(_ item: WatchLaterItemDTO) -> Double {
         guard item.durationSec > 0, item.progressSec > 0 else { return 0 }
         if item.progressSec < 0 { return 1 }
         return min(1, Double(item.progressSec) / Double(item.durationSec))
+    }
+
+    private func scheduleSearch(_ rawQuery: String) {
+        searchTask?.cancel()
+        let keyword = normalizedProfileSearchQuery(rawQuery)
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: keyword.isEmpty ? 0 : 300_000_000)
+            guard !Task.isCancelled else { return }
+            await vm.load(keyword: keyword, force: true)
+        }
     }
 }
 
@@ -194,13 +372,18 @@ final class WatchLaterListViewModel: ObservableObject {
     @Published var items: [WatchLaterItemDTO] = []
     @Published var isLoading = false
     private var loaded = false
+    private var keyword = ""
 
-    func load(force: Bool = false) async {
-        if loaded && !force { return }
+    func load(keyword rawKeyword: String = "", force: Bool = false) async {
+        let nextKeyword = normalizedProfileSearchQuery(rawKeyword)
+        if loaded && !force && nextKeyword == keyword { return }
+        keyword = nextKeyword
         isLoading = true
+        let query = keyword
         let result: [WatchLaterItemDTO] = await Task.detached {
-            (try? CoreClient.shared.userWatchLaterList()) ?? []
+            (try? CoreClient.shared.userWatchLaterList(keyword: query)) ?? []
         }.value
+        guard query == keyword else { return }
         items = result
         isLoading = false
         loaded = true
@@ -213,35 +396,50 @@ struct FavoritesFolderListView: View {
     let mid: Int64
     @State private var folders: [FavFolderInfoDTO] = []
     @State private var isLoading = false
+    @State private var searchText = ""
+
+    private var filteredFolders: [FavFolderInfoDTO] {
+        let keyword = normalizedProfileSearchQuery(searchText)
+        guard !keyword.isEmpty else { return folders }
+        return folders.filter { profileFields([$0.title], match: keyword) }
+    }
+
+    private var isSearching: Bool {
+        !normalizedProfileSearchQuery(searchText).isEmpty
+    }
 
     var body: some View {
-        Group {
-            if folders.isEmpty && isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if folders.isEmpty {
-                emptyState(title: "暂无收藏夹", symbol: "star")
-            } else {
-                List {
-                    ForEach(folders) { folder in
-                        NavigationLink {
-                            FavoriteResourcesView(folderId: folder.id, title: folder.title)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "folder.fill")
-                                    .foregroundStyle(IbiliTheme.accent)
-                                    .frame(width: 28, height: 28)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(folder.title).font(.body)
-                                    Text("\(folder.mediaCount) 个内容")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            ProfileInlineSearchBar(placeholder: "搜索收藏夹", text: $searchText)
+            Group {
+                if folders.isEmpty && isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if filteredFolders.isEmpty {
+                    emptyState(title: isSearching ? "没有搜索结果" : "暂无收藏夹", symbol: "star")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(filteredFolders) { folder in
+                            NavigationLink {
+                                FavoriteResourcesView(folderId: folder.id, title: folder.title)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(IbiliTheme.accent)
+                                        .frame(width: 28, height: 28)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(folder.title).font(.body)
+                                        Text("\(folder.mediaCount) 个内容")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
                     }
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.insetGrouped)
-                .scrollContentBackground(.hidden)
             }
         }
         .background(IbiliTheme.background)
@@ -264,45 +462,60 @@ struct FavoriteResourcesView: View {
     let title: String
     @EnvironmentObject private var router: DeepLinkRouter
     @StateObject private var vm = FavoriteResourcesViewModel()
+    @State private var searchText = ""
+    @State private var searchTask: Task<Void, Never>?
+
+    private var isSearching: Bool {
+        !normalizedProfileSearchQuery(searchText).isEmpty
+    }
 
     var body: some View {
-        Group {
-            if vm.items.isEmpty && vm.isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.items.isEmpty {
-                emptyState(title: "收藏夹是空的", symbol: "star")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                            Button {
-                                pushVideo(router,
-                                          aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                          title: item.title, cover: item.cover,
-                                          author: item.author, durationSec: item.durationSec,
-                                          play: item.play, danmaku: item.danmaku)
-                            } label: {
-                                CompactVideoRow(
-                                    cover: item.cover,
-                                    title: item.title,
-                                    author: item.author,
-                                    durationSec: item.durationSec,
-                                    play: item.play,
-                                    danmaku: item.danmaku
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal, 12)
-                            .onAppear {
-                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                    Task { await vm.loadMore(folderId: folderId) }
+        VStack(spacing: 0) {
+            ProfileInlineSearchBar(placeholder: "搜索收藏夹内容", text: $searchText)
+            Group {
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if vm.items.isEmpty {
+                    emptyState(title: isSearching ? "没有搜索结果" : "收藏夹是空的", symbol: "star")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                                Button {
+                                    pushVideo(router,
+                                              aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                              title: item.title, cover: item.cover,
+                                              author: item.author, durationSec: item.durationSec,
+                                              play: item.play, danmaku: item.danmaku)
+                                } label: {
+                                    CompactVideoRow(
+                                        cover: item.cover,
+                                        title: item.title,
+                                        author: item.author,
+                                        durationSec: item.durationSec,
+                                        play: item.play,
+                                        danmaku: item.danmaku
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 12)
+                                .onAppear {
+                                    if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                        Task {
+                                            await vm.loadMore(
+                                                folderId: folderId,
+                                                keyword: normalizedProfileSearchQuery(searchText)
+                                            )
+                                        }
+                                    }
+                                }
+                                if index < vm.items.count - 1 {
+                                    Divider().padding(.leading, 144)
                                 }
                             }
-                            if index < vm.items.count - 1 {
-                                Divider().padding(.leading, 144)
-                            }
+                            if vm.isLoading { ProgressView().padding() }
                         }
-                        if vm.isLoading { ProgressView().padding() }
                     }
                 }
             }
@@ -311,6 +524,22 @@ struct FavoriteResourcesView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial(folderId: folderId) }
+        .onChange(of: searchText) { newValue in
+            scheduleSearch(newValue)
+        }
+        .onDisappear {
+            searchTask?.cancel()
+        }
+    }
+
+    private func scheduleSearch(_ rawQuery: String) {
+        searchTask?.cancel()
+        let keyword = normalizedProfileSearchQuery(rawQuery)
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: keyword.isEmpty ? 0 : 300_000_000)
+            guard !Task.isCancelled else { return }
+            await vm.search(folderId: folderId, keyword: keyword)
+        }
     }
 }
 
@@ -320,25 +549,38 @@ final class FavoriteResourcesViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var isEnd = false
     private var page: Int64 = 1
+    private var keyword = ""
 
     func loadInitial(folderId: Int64) async {
         guard items.isEmpty else { return }
         page = 1
         isEnd = false
-        await fetch(folderId: folderId)
+        await fetch(folderId: folderId, keyword: "")
     }
 
-    func loadMore(folderId: Int64) async {
+    func loadMore(folderId: Int64, keyword rawKeyword: String = "") async {
         guard !isLoading, !isEnd else { return }
-        await fetch(folderId: folderId)
+        await fetch(folderId: folderId, keyword: normalizedProfileSearchQuery(rawKeyword))
     }
 
-    private func fetch(folderId: Int64) async {
+    func search(folderId: Int64, keyword rawKeyword: String) async {
+        let nextKeyword = normalizedProfileSearchQuery(rawKeyword)
+        guard nextKeyword != keyword || page != 1 || !items.isEmpty else { return }
+        keyword = nextKeyword
+        page = 1
+        isEnd = false
+        items.removeAll()
+        await fetch(folderId: folderId, keyword: nextKeyword)
+    }
+
+    private func fetch(folderId: Int64, keyword query: String) async {
         isLoading = true
         let p = page
+        let expectedKeyword = query
         let result: FavResourcePageDTO? = await Task.detached {
-            try? CoreClient.shared.userFavResources(mediaId: folderId, page: p)
+            try? CoreClient.shared.userFavResources(mediaId: folderId, page: p, keyword: expectedKeyword)
         }.value
+        guard expectedKeyword == keyword else { return }
         isLoading = false
         guard let result else { isEnd = true; return }
         items.append(contentsOf: result.items)
@@ -352,27 +594,61 @@ struct BangumiFollowListView: View {
     let mid: Int64
     @StateObject private var vm = BangumiFollowListViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
+    @State private var searchText = ""
+
+    private var isSearching: Bool {
+        !normalizedProfileSearchQuery(searchText).isEmpty
+    }
+
+    private var displayedItems: [BangumiFollowItemDTO] {
+        let keyword = normalizedProfileSearchQuery(searchText)
+        guard !keyword.isEmpty else { return vm.items }
+        return vm.items.filter {
+            profileFields(
+                [
+                    $0.title,
+                    $0.progress,
+                    $0.evaluate,
+                    $0.newEpIndexShow,
+                    $0.renewalTime,
+                ],
+                match: keyword
+            )
+        }
+    }
 
     var body: some View {
-        Group {
-            if vm.items.isEmpty && vm.isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.items.isEmpty {
-                emptyState(title: "暂无追番", symbol: "tv")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(vm.items) { item in
-                            Button {
-                                router.openPgc(seasonID: item.seasonId)
-                            } label: {
-                                BangumiRow(item: item)
+        VStack(spacing: 0) {
+            ProfileInlineSearchBar(placeholder: "搜索我的追番", text: $searchText)
+            Group {
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if displayedItems.isEmpty {
+                    emptyState(title: isSearching ? "没有搜索结果" : "暂无追番", symbol: "tv")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(displayedItems) { item in
+                                Button {
+                                    router.openPgc(seasonID: item.seasonId)
+                                } label: {
+                                    BangumiRow(item: item)
+                                }
+                                .buttonStyle(.plain)
+                                .onAppear {
+                                    if isSearching,
+                                       displayedItems.last?.id == item.id,
+                                       !vm.isEnd,
+                                       displayedItems.count < 20 {
+                                        Task { await vm.loadMore(mid: mid) }
+                                    }
+                                }
                             }
-                            .buttonStyle(.plain)
+                            if vm.isLoading { ProgressView().padding() }
                         }
-                        if vm.isLoading { ProgressView().padding() }
+                        .padding(12)
                     }
-                    .padding(12)
                 }
             }
         }
@@ -380,6 +656,10 @@ struct BangumiFollowListView: View {
         .navigationTitle("我的追番")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial(mid: mid) }
+        .onChange(of: searchText) { newValue in
+            guard !normalizedProfileSearchQuery(newValue).isEmpty else { return }
+            Task { await vm.loadUntilSearchHasCandidates(mid: mid, keyword: newValue) }
+        }
     }
 }
 
@@ -421,10 +701,40 @@ final class BangumiFollowListViewModel: ObservableObject {
     func loadInitial(mid: Int64) async {
         guard items.isEmpty else { return }
         page = 1
+        isEnd = false
         await fetch(mid: mid)
     }
 
+    func loadMore(mid: Int64) async {
+        guard !isLoading, !isEnd else { return }
+        await fetch(mid: mid)
+    }
+
+    func loadUntilSearchHasCandidates(mid: Int64, keyword rawKeyword: String) async {
+        let keyword = normalizedProfileSearchQuery(rawKeyword)
+        guard !keyword.isEmpty else { return }
+        var attempts = 0
+        while !isEnd && attempts < 3 {
+            let matches = items.filter {
+                profileFields(
+                    [
+                        $0.title,
+                        $0.progress,
+                        $0.evaluate,
+                        $0.newEpIndexShow,
+                        $0.renewalTime,
+                    ],
+                    match: keyword
+                )
+            }
+            if matches.count >= 12 { return }
+            await loadMore(mid: mid)
+            attempts += 1
+        }
+    }
+
     private func fetch(mid: Int64) async {
+        guard !isLoading else { return }
         isLoading = true
         let p = page
         let result: BangumiFollowPageDTO? = await Task.detached {

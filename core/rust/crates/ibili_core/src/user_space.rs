@@ -20,6 +20,7 @@ use crate::signer::WbiKey;
 const URL_USER_CARD: &str = "https://api.bilibili.com/x/web-interface/card";
 const URL_SPACE_APP: &str = "https://app.bilibili.com/x/v2/space";
 const URL_HISTORY_CURSOR: &str = "https://api.bilibili.com/x/web-interface/history/cursor";
+const URL_HISTORY_SEARCH: &str = "https://api.bilibili.com/x/web-interface/history/search";
 const URL_FAV_RESOURCE_LIST: &str = "https://api.bilibili.com/x/v3/fav/resource/list";
 const URL_FAV_PGC_LIST: &str = "https://api.bilibili.com/x/space/bangumi/follow/list";
 const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/web";
@@ -261,27 +262,7 @@ impl Core {
         if view_at > 0 { params.push(("view_at".into(), view_at.to_string())); }
         let raw: HistoryWire = self.http.get_web(URL_HISTORY_CURSOR, &params)?;
         let cursor = raw.cursor.unwrap_or_default();
-        let items: Vec<HistoryItem> = raw.list.into_iter()
-            // Drop non-video rows (live, articles, etc.) so the screen
-            // doesn't try to push the player for unsupported types.
-            .filter(|r| r.history.as_ref().map(|h| h.business.as_deref() == Some("archive")).unwrap_or(false))
-            .filter_map(|r| {
-                let h = r.history.as_ref()?;
-                let aid = h.oid.unwrap_or(0);
-                if aid <= 0 { return None; }
-                Some(HistoryItem {
-                    aid,
-                    bvid: h.bvid.clone().unwrap_or_default(),
-                    cid: h.cid.unwrap_or(0),
-                    title: r.title.unwrap_or_default(),
-                    cover: r.cover.unwrap_or_default(),
-                    author: r.author_name.unwrap_or_default(),
-                    duration_sec: r.duration.unwrap_or(0),
-                    progress_sec: r.progress.unwrap_or(0),
-                    view_at: r.view_at.unwrap_or(0),
-                })
-            })
-            .collect();
+        let items = history_items_from_wire(raw.list);
         Ok(HistoryPage {
             items,
             next_max: cursor.max.unwrap_or(0),
@@ -289,9 +270,31 @@ impl Core {
         })
     }
 
+    /// `/x/web-interface/history/search`. Keyword search uses page
+    /// numbers rather than the cursor API. We still return `HistoryPage`
+    /// so the iOS layer can share row rendering and pagination logic.
+    pub fn history_search(&self, keyword: &str, pn: i64) -> CoreResult<HistoryPage> {
+        if self.session.read().access_key().is_none() {
+            return Ok(HistoryPage { items: vec![], next_max: 0, next_view_at: 0 });
+        }
+        let params: Vec<(String, String)> = vec![
+            ("pn".into(), pn.max(1).to_string()),
+            ("keyword".into(), keyword.trim().to_string()),
+            ("business".into(), "all".into()),
+        ];
+        let raw: HistoryWire = self.http.get_web(URL_HISTORY_SEARCH, &params)?;
+        let items = history_items_from_wire(raw.list);
+        let has_more = items.len() >= 20;
+        Ok(HistoryPage {
+            items,
+            next_max: if has_more { pn.max(1) + 1 } else { 0 },
+            next_view_at: 0,
+        })
+    }
+
     /// `/x/v3/fav/resource/list`. Lists video resources inside a
     /// favourite folder. `pn` is 1-based.
-    pub fn fav_resource_list(&self, media_id: i64, pn: i64) -> CoreResult<FavResourcePage> {
+    pub fn fav_resource_list(&self, media_id: i64, pn: i64, keyword: &str) -> CoreResult<FavResourcePage> {
         if self.session.read().access_key().is_none() {
             return Ok(FavResourcePage { items: vec![], has_more: false });
         }
@@ -299,8 +302,10 @@ impl Core {
             ("media_id".into(), media_id.to_string()),
             ("pn".into(), pn.max(1).to_string()),
             ("ps".into(), "20".into()),
+            ("keyword".into(), keyword.trim().to_string()),
             ("order".into(), "mtime".into()),
             ("type".into(), "0".into()),
+            ("tid".into(), "0".into()),
             ("platform".into(), "web".into()),
         ];
         let raw: FavListWire = self.http.get_web(URL_FAV_RESOURCE_LIST, &params)?;
@@ -361,11 +366,21 @@ impl Core {
     }
 
     /// Fetch the rich watch-later list (not just aids). Cookie-auth.
-    pub fn watchlater_list(&self) -> CoreResult<Vec<WatchLaterItem>> {
+    pub fn watchlater_list(&self, pn: i64, keyword: &str) -> CoreResult<Vec<WatchLaterItem>> {
         if self.session.read().access_key().is_none() {
             return Ok(Vec::new());
         }
-        let raw: WatchLaterFullWire = self.http.get_web(URL_WATCHLATER_LIST, &[])?;
+        let key = self.fetch_wbi_key_for_space()?;
+        let params: Vec<(String, String)> = vec![
+            ("pn".into(), pn.max(1).to_string()),
+            ("ps".into(), "20".into()),
+            ("viewed".into(), "0".into()),
+            ("key".into(), keyword.trim().to_string()),
+            ("asc".into(), "false".into()),
+            ("need_split".into(), "true".into()),
+            ("web_location".into(), "333.881".into()),
+        ];
+        let raw: WatchLaterFullWire = self.http.get_signed_web(URL_WATCHLATER_LIST, params, &key)?;
         Ok(raw.list.into_iter().map(|w| {
             let owner = w.owner.unwrap_or_default();
             WatchLaterItem {
@@ -663,6 +678,30 @@ where
     T: serde::Deserialize<'de>,
 {
     Ok(Option::<Vec<T>>::deserialize(de)?.unwrap_or_default())
+}
+
+fn history_items_from_wire(list: Vec<HistoryItemWire>) -> Vec<HistoryItem> {
+    list.into_iter()
+        // Drop non-video rows (live, articles, etc.) so the screen
+        // doesn't try to push the player for unsupported types.
+        .filter(|r| r.history.as_ref().map(|h| h.business.as_deref() == Some("archive")).unwrap_or(false))
+        .filter_map(|r| {
+            let h = r.history.as_ref()?;
+            let aid = h.oid.unwrap_or(0);
+            if aid <= 0 { return None; }
+            Some(HistoryItem {
+                aid,
+                bvid: h.bvid.clone().unwrap_or_default(),
+                cid: h.cid.unwrap_or(0),
+                title: r.title.unwrap_or_default(),
+                cover: r.cover.unwrap_or_default(),
+                author: r.author_name.unwrap_or_default(),
+                duration_sec: r.duration.unwrap_or(0),
+                progress_sec: r.progress.unwrap_or(0),
+                view_at: r.view_at.unwrap_or(0),
+            })
+        })
+        .collect()
 }
 
 // `_value_unused` keeps clippy from flagging the unused import when

@@ -120,6 +120,8 @@ struct PgcSeasonIntroView: View {
                     }
                     .padding(.vertical, 2)
                 }
+                .background(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: true))
+                .overlay(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: false))
                 .onAppear {
                     guard let id = currentEpisode?.epID else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -252,6 +254,8 @@ private struct PgcEpisodeSheet: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
+                    PlayerSwipeBackExclusionZone(includeEnclosingScrollView: true)
+                        .frame(height: 0)
                     InterruptibleScrollCapture(context: scrollContext)
                         .frame(width: 0, height: 0)
                     LazyVStack(spacing: 0) {

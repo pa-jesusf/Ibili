@@ -2497,11 +2497,7 @@ struct PlayerView: View {
             } else {
                 resolvedItem = try await resolvePlayableItemIfNeeded(item)
             }
-            guard !resolvedItem.isPGC else {
-                danmaku.clear()
-                if let p = vm.player { danmaku.attach(p) }
-                return
-            }
+            guard resolvedItem.cid > 0 else { return }
             guard !usesSegmentedDanmaku(resolvedItem) else {
                 await MainActor.run {
                     if let p = vm.player {
@@ -2523,6 +2519,7 @@ struct PlayerView: View {
             }
             AppLog.info("danmaku", "开始加载弹幕", metadata: [
                 "cid": String(resolvedItem.cid),
+                "isPGC": String(resolvedItem.isPGC),
             ])
             let sortedItems = try await Task.detached { [cid = resolvedItem.cid, durationSec = resolvedItem.durationSec] in
                 try CoreClient.shared.danmakuList(cid: cid, durationSec: durationSec)

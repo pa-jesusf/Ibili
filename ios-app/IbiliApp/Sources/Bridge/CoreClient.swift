@@ -684,10 +684,15 @@ public final class CoreClient: @unchecked Sendable {
         return try call("user.history", args: A(max: max, view_at: viewAt), decoding: HistoryPageDTO.self)
     }
 
+    public func userHistorySearch(keyword: String, page: Int64 = 1) throws -> HistoryPageDTO {
+        struct A: Encodable { let keyword: String; let pn: Int64 }
+        return try call("user.history_search", args: A(keyword: keyword, pn: page), decoding: HistoryPageDTO.self)
+    }
+
     /// Videos inside a favourite folder. `pn` is 1-based.
-    public func userFavResources(mediaId: Int64, page: Int64 = 1) throws -> FavResourcePageDTO {
-        struct A: Encodable { let media_id: Int64; let pn: Int64 }
-        return try call("user.fav_resources", args: A(media_id: mediaId, pn: page), decoding: FavResourcePageDTO.self)
+    public func userFavResources(mediaId: Int64, page: Int64 = 1, keyword: String = "") throws -> FavResourcePageDTO {
+        struct A: Encodable { let media_id: Int64; let pn: Int64; let keyword: String }
+        return try call("user.fav_resources", args: A(media_id: mediaId, pn: page, keyword: keyword), decoding: FavResourcePageDTO.self)
     }
 
     /// 番剧 / 影视 follow list. `kind` 1=bangumi, 2=cinema.
@@ -698,8 +703,9 @@ public final class CoreClient: @unchecked Sendable {
     }
 
     /// Rich watch-later list (title / cover / progress).
-    public func userWatchLaterList() throws -> [WatchLaterItemDTO] {
-        return try call("user.watchlater_list", decoding: [WatchLaterItemDTO].self)
+    public func userWatchLaterList(page: Int64 = 1, keyword: String = "") throws -> [WatchLaterItemDTO] {
+        struct A: Encodable { let pn: Int64; let keyword: String }
+        return try call("user.watchlater_list", args: A(pn: page, keyword: keyword), decoding: [WatchLaterItemDTO].self)
     }
 
     public func userFollowings(vmid: Int64, page: Int64 = 1) throws -> RelationPageDTO {
