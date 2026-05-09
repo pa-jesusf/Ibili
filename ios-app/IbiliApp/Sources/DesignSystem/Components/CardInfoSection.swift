@@ -40,7 +40,7 @@ struct CardInfoSection: View {
                     HStack(spacing: 4) {
                         Image(systemName: "person.fill")
                             .imageScale(.small)
-                            .foregroundStyle(IbiliTheme.textSecondary)
+                            .foregroundStyle(authorColor)
                         Text(author)
                             .lineLimit(1)
                             .foregroundStyle(authorColor)

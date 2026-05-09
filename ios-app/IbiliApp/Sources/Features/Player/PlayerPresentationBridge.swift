@@ -142,6 +142,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let canBeginTemporarySpeedBoost: () -> Bool
     let beginTemporarySpeedBoost: () -> Bool
     let endTemporarySpeedBoost: () -> Void
+    let canRestorePlaybackAfterPresentation: () -> Bool
     /// Called once, with the just-created AVPlayerViewController, so the
     /// SwiftUI parent can retain the native controller for lifecycle work.
     let onCreated: (AVPlayerViewController) -> Void
@@ -295,6 +296,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func prepareForDismantle(controller vc: AVPlayerViewController) {
             isDismantled = true
+            let playerWasAttached = vc.player != nil
             activeCrossfade?.removeFromSuperview()
             activeCrossfade = nil
             setHoldSpeedBadgeVisible(false, animated: false)
@@ -304,7 +306,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
             danmakuCanvas = nil
             transitionSnapshot = nil
             vc.delegate = nil
-            vc.player = nil
+            if playerWasAttached {
+                AppLog.debug("player", "AVKit 容器拆除时保留 player 绑定，等待会话延迟销毁", metadata: [
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+            }
         }
 
         // MARK: PlayerSwapOverlay
@@ -508,6 +514,14 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         private func restorePlaybackState(on vc: AVPlayerViewController, source: String) {
             guard !isDismantled else { return }
+            guard parent.canRestorePlaybackAfterPresentation() else {
+                AppLog.debug("player", "跳过 AVKit fullscreen 播放恢复", metadata: [
+                    "reason": "session-closing",
+                    "source": source,
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+                return
+            }
             guard let player = vc.player else {
                 AppLog.debug("player", "跳过 AVKit fullscreen 播放恢复", metadata: [
                     "reason": "vc-player-nil",

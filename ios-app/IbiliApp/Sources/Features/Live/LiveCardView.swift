@@ -28,7 +28,7 @@ struct LiveCardView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "person.fill")
                         .imageScale(.small)
-                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .foregroundStyle(item.isFollowed ? IbiliTheme.accent : IbiliTheme.textSecondary)
                     Text(item.uname)
                         .lineLimit(1)
                         .foregroundStyle(item.isFollowed ? IbiliTheme.accent : IbiliTheme.textSecondary)

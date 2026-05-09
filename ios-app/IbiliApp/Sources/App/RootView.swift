@@ -103,7 +103,7 @@ private struct DeepLinkPlayerHost: View {
         dampingFraction: 0.86,
         blendDuration: 0
     )
-    private static let hostReleaseGrace: TimeInterval = 0.28
+    private static let hostReleaseGrace: TimeInterval = 0.85
 
     var body: some View {
         NavigationStack(path: $router.path) {
@@ -467,6 +467,7 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard parent.isEnabled,
                   let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            guard !hasActivePresentedController(from: pan.view) else { return false }
             let velocity = pan.velocity(in: pan.view)
             guard velocity.x > 180 else { return false }
             return abs(velocity.x) > abs(velocity.y) * 1.35
@@ -483,6 +484,11 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
                 view = current.superview
             }
             return true
+        }
+
+        private func hasActivePresentedController(from view: UIView?) -> Bool {
+            guard let root = view?.window?.rootViewController else { return false }
+            return root.presentedViewController != nil
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

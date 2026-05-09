@@ -677,6 +677,10 @@ final class PlayerViewModel: ObservableObject {
     /// (only the originating session has this set).
     var isPictureInPictureActive: Bool { behaviorState.pictureInPictureIsActive }
 
+    var canRestorePlaybackAfterPresentation: Bool {
+        !isClosing
+    }
+
     func backgroundContinuationRate(for player: AVPlayer) -> Float? {
         guard !isClosing else { return nil }
         return behaviorState.backgroundContinuationRate(currentRate: player.rate,
@@ -2118,6 +2122,7 @@ struct PlayerView: View {
                         canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
                         beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
                         endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
+                        canRestorePlaybackAfterPresentation: { vm.canRestorePlaybackAfterPresentation },
                         onCreated: { vc in playerVCRef.vc = vc },
                         onPresentationEvent: handlePresentationEvent,
                         onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
