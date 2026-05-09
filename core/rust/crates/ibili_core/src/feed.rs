@@ -1,12 +1,14 @@
-use crate::Core;
 use crate::dto::{FeedItem, FeedPage};
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
+use crate::Core;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 const URL_FEED_INDEX: &str = "https://app.bilibili.com/x/v2/feed/index";
 const URL_FEED_RCMD_WEB: &str = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd";
 const URL_FEED_POPULAR: &str = "https://api.bilibili.com/x/web-interface/popular";
+const URL_RELATIONS: &str = "https://api.bilibili.com/x/relation/relations";
 const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 /// `Constants.statistics` from upstream PiliPlus.
 const STATISTICS: &str = r#"{"appId":5,"platform":3,"version":"2.0.1","abtest":""}"#;
@@ -19,40 +21,64 @@ struct FeedRoot {
 
 #[derive(Deserialize)]
 struct FeedRawItem {
-    #[serde(default)] card_goto: String,
-    #[serde(default)] goto: String,
-    #[serde(default)] bvid: String,
-    #[serde(default)] title: String,
-    #[serde(default)] cover: String,
-    #[serde(default)] cover_left_text_1: String,
-    #[serde(default)] cover_left_text_2: String,
-    #[serde(default)] args: FeedArgs,
-    #[serde(default)] mask: Option<MaskWrap>,
-    #[serde(default)] player_args: Option<PlayerArgs>,
-    #[serde(default)] ad_info: Option<serde_json::Value>,
+    #[serde(default)]
+    card_goto: String,
+    #[serde(default)]
+    goto: String,
+    #[serde(default)]
+    bvid: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    cover: String,
+    #[serde(default)]
+    cover_left_text_1: String,
+    #[serde(default)]
+    cover_left_text_2: String,
+    #[serde(default)]
+    args: FeedArgs,
+    #[serde(default)]
+    mask: Option<MaskWrap>,
+    #[serde(default)]
+    player_args: Option<PlayerArgs>,
+    #[serde(default)]
+    ad_info: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    rcmd_reason: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
 struct FeedArgs {
-    #[serde(default)] up_name: String,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    up_id: Option<i64>,
+    #[serde(default)]
+    up_name: String,
     /// Unix seconds. Some recommendation card variants include this;
     /// when absent we fall back to 0 and the iOS layer just hides the
     /// "投稿时间" line.
-    #[serde(default)] pubdate: i64,
+    #[serde(default)]
+    pubdate: i64,
 }
 
 #[derive(Deserialize, Default)]
 struct MaskWrap {
-    #[serde(default)] avatar: Option<Avatar>,
+    #[serde(default)]
+    avatar: Option<Avatar>,
 }
 #[derive(Deserialize, Default)]
-struct Avatar { #[serde(default)] text: String }
+struct Avatar {
+    #[serde(default)]
+    text: String,
+}
 
 #[derive(Deserialize, Default)]
 struct PlayerArgs {
-    #[serde(default)] aid: i64,
-    #[serde(default)] cid: i64,
-    #[serde(default)] duration: i64,
+    #[serde(default)]
+    aid: i64,
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    duration: i64,
 }
 
 #[derive(Deserialize)]
@@ -63,20 +89,34 @@ struct WebFeedRoot {
 
 #[derive(Deserialize)]
 struct WebFeedRawItem {
-    #[serde(default)] id: i64,
-    #[serde(default)] bvid: String,
-    #[serde(default)] cid: i64,
-    #[serde(default)] goto: String,
-    #[serde(default)] pic: String,
-    #[serde(default)] title: String,
-    #[serde(default)] duration: i64,
-    #[serde(default)] pubdate: i64,
-    #[serde(default)] owner: Option<WebFeedOwner>,
-    #[serde(default)] stat: Option<WebFeedStat>,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    bvid: String,
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    goto: String,
+    #[serde(default)]
+    pic: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    duration: i64,
+    #[serde(default)]
+    pubdate: i64,
+    #[serde(default)]
+    owner: Option<WebFeedOwner>,
+    #[serde(default)]
+    stat: Option<WebFeedStat>,
+    #[serde(default, deserialize_with = "lenient_bool")]
+    is_followed: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
 struct WebFeedOwner {
+    #[serde(default, deserialize_with = "lenient_i64")]
+    mid: Option<i64>,
     #[serde(default)]
     name: String,
 }
@@ -97,19 +137,30 @@ struct PopularRoot {
 
 #[derive(Deserialize)]
 struct PopularRawItem {
-    #[serde(default)] aid: i64,
-    #[serde(default)] cid: i64,
-    #[serde(default)] bvid: String,
-    #[serde(default)] title: String,
-    #[serde(default)] pic: String,
-    #[serde(default)] duration: i64,
-    #[serde(default)] pubdate: i64,
-    #[serde(default)] owner: PopularOwner,
-    #[serde(default)] stat: PopularStat,
+    #[serde(default)]
+    aid: i64,
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    bvid: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    pic: String,
+    #[serde(default)]
+    duration: i64,
+    #[serde(default)]
+    pubdate: i64,
+    #[serde(default)]
+    owner: PopularOwner,
+    #[serde(default)]
+    stat: PopularStat,
 }
 
 #[derive(Deserialize, Default)]
 struct PopularOwner {
+    #[serde(default, deserialize_with = "lenient_i64")]
+    mid: Option<i64>,
     #[serde(default)]
     name: String,
 }
@@ -120,6 +171,14 @@ struct PopularStat {
     view: i64,
     #[serde(default)]
     danmaku: i64,
+}
+
+#[derive(Deserialize)]
+struct RelationItem {
+    #[serde(default, deserialize_with = "lenient_i64")]
+    mid: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    attribute: Option<i64>,
 }
 
 fn parse_stat_text(raw: &str) -> i64 {
@@ -185,7 +244,12 @@ impl Core {
         self.feed_home_with_source(fresh_idx, ps, "web")
     }
 
-    pub fn feed_home_with_source(&self, fresh_idx: i64, ps: i64, source: &str) -> CoreResult<FeedPage> {
+    pub fn feed_home_with_source(
+        &self,
+        fresh_idx: i64,
+        ps: i64,
+        source: &str,
+    ) -> CoreResult<FeedPage> {
         match source {
             "app" => self.feed_home_app(fresh_idx, ps),
             _ => self.feed_home_web(fresh_idx, ps),
@@ -208,23 +272,27 @@ impl Core {
             ("fresh_type".into(), "4".into()),
         ];
         let raw: WebFeedRoot = self.http.get_signed_web(URL_FEED_RCMD_WEB, params, &key)?;
-        let items = raw.item.into_iter()
+        let items: Vec<FeedItem> = raw
+            .item
+            .into_iter()
             .filter(|i| i.goto == "av")
             .filter(|i| i.id != 0)
             .map(|i| {
-                let author = i.owner.map(|owner| owner.name).unwrap_or_default();
+                let owner = i.owner.unwrap_or_default();
                 let stat = i.stat.unwrap_or_default();
                 FeedItem {
                     aid: i.id,
                     bvid: i.bvid,
                     cid: i.cid,
+                    owner_mid: owner.mid.unwrap_or(0),
                     title: i.title,
                     cover: ensure_https(i.pic),
-                    author,
+                    author: owner.name,
                     duration_sec: i.duration,
                     play: stat.view,
                     danmaku: stat.danmaku,
                     pubdate: i.pubdate,
+                    is_followed: i.is_followed.unwrap_or(false),
                 }
             })
             .collect();
@@ -234,7 +302,10 @@ impl Core {
     /// Mirrors `VideoHttp.rcmdVideoListApp` from upstream PiliPlus
     /// (`/x/v2/feed/index`).
     fn feed_home_app(&self, fresh_idx: i64, _ps: i64) -> CoreResult<FeedPage> {
-        let access_key = self.session.read().access_key()
+        let access_key = self
+            .session
+            .read()
+            .access_key()
             .ok_or(CoreError::AuthRequired)?;
         let pull = if fresh_idx == 0 { "true" } else { "false" };
         let params = vec![
@@ -268,35 +339,49 @@ impl Core {
             ("voice_balance".into(), "0".into()),
         ];
         let raw: FeedRoot = self.http.get_signed_app(URL_FEED_INDEX, params)?;
-        let items = raw.items.into_iter()
+        let mut items: Vec<FeedItem> = raw
+            .items
+            .into_iter()
             // Match PiliPlus filtering: drop ads + non-video cards.
             .filter(|i| i.ad_info.is_none())
             .filter(|i| !matches!(i.card_goto.as_str(), "ad_av" | "ad_web_s" | "ad" | "banner"))
             .filter(|i| matches!(i.goto.as_str(), "av" | "bangumi") || i.card_goto == "av")
             .filter_map(|i| {
                 let pa = i.player_args.as_ref()?;
-                if pa.aid == 0 { return None; }
+                if pa.aid == 0 {
+                    return None;
+                }
                 Some(FeedItem {
                     aid: pa.aid,
                     bvid: i.bvid,
                     cid: pa.cid,
+                    owner_mid: i.args.up_id.unwrap_or(0),
                     title: i.title,
                     cover: i.cover,
-                    author: i.mask.as_ref().and_then(|m| m.avatar.as_ref()).map(|a| a.text.clone())
+                    author: i
+                        .mask
+                        .as_ref()
+                        .and_then(|m| m.avatar.as_ref())
+                        .map(|a| a.text.clone())
                         .unwrap_or_else(|| i.args.up_name.clone()),
                     duration_sec: pa.duration,
                     play: parse_stat_text(&i.cover_left_text_1),
                     danmaku: parse_stat_text(&i.cover_left_text_2),
                     pubdate: i.args.pubdate,
+                    is_followed: rcmd_reason_marks_followed(i.rcmd_reason.as_deref()),
                 })
             })
             .collect();
+        self.enrich_feed_follow_state(&mut items)?;
         Ok(FeedPage { items })
     }
 
     fn fetch_wbi_key_for_feed(&self) -> CoreResult<WbiKey> {
         let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+        Ok(WbiKey::from_urls(
+            &nav.wbi_img.img_url,
+            &nav.wbi_img.sub_url,
+        ))
     }
 
     /// Mirrors PiliPlus `VideoHttp.hotVideoList`
@@ -307,12 +392,15 @@ impl Core {
             ("ps".into(), ps.max(1).to_string()),
         ];
         let raw: PopularRoot = self.http.get_web(URL_FEED_POPULAR, &params)?;
-        let items = raw.list.into_iter()
+        let mut items: Vec<FeedItem> = raw
+            .list
+            .into_iter()
             .filter(|item| item.aid != 0)
             .map(|item| FeedItem {
                 aid: item.aid,
                 bvid: item.bvid,
                 cid: item.cid,
+                owner_mid: item.owner.mid.unwrap_or(0),
                 title: item.title,
                 cover: item.pic,
                 author: item.owner.name,
@@ -320,8 +408,111 @@ impl Core {
                 play: item.stat.view,
                 danmaku: item.stat.danmaku,
                 pubdate: item.pubdate,
+                is_followed: false,
             })
             .collect();
+        self.enrich_feed_follow_state(&mut items)?;
         Ok(FeedPage { items })
     }
+
+    fn enrich_feed_follow_state(&self, items: &mut [FeedItem]) -> CoreResult<()> {
+        let known: Vec<i64> = items
+            .iter()
+            .filter(|item| !item.is_followed)
+            .map(|item| item.owner_mid)
+            .filter(|mid| *mid > 0)
+            .collect();
+        let Ok(relation) = self.batch_relation_following(known) else {
+            return Ok(());
+        };
+        if relation.is_empty() {
+            return Ok(());
+        }
+        for item in items.iter_mut().filter(|item| !item.is_followed) {
+            item.is_followed = relation.get(&item.owner_mid).copied().unwrap_or(false);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn batch_relation_following(
+        &self,
+        mids: Vec<i64>,
+    ) -> CoreResult<HashMap<i64, bool>> {
+        if self.session.read().access_key().is_none() {
+            return Ok(HashMap::new());
+        }
+        let mut mids: Vec<i64> = mids.into_iter().filter(|mid| *mid > 0).collect();
+        mids.sort_unstable();
+        mids.dedup();
+        if mids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut out = HashMap::new();
+        for chunk in mids.chunks(50) {
+            let fids = chunk
+                .iter()
+                .map(|mid| mid.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let raw: HashMap<String, RelationItem> =
+                match self.http.get_web(URL_RELATIONS, &[("fids".into(), fids)]) {
+                    Ok(raw) => raw,
+                    Err(_) => continue,
+                };
+            for (key, item) in raw {
+                let mid = item.mid.or_else(|| key.parse().ok()).unwrap_or(0);
+                if mid <= 0 {
+                    continue;
+                }
+                out.insert(
+                    mid,
+                    relation_attribute_is_following(item.attribute.unwrap_or(0)),
+                );
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn rcmd_reason_marks_followed(reason: Option<&str>) -> bool {
+    matches!(reason.map(str::trim), Some("已关注" | "新关注"))
+}
+
+fn relation_attribute_is_following(attribute: i64) -> bool {
+    attribute & 2 != 0
+}
+
+fn lenient_string<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::Bool(b)) => Some(b.to_string()),
+        _ => None,
+    })
+}
+
+fn lenient_i64<'de, D>(de: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(Value::String(s)) => s.parse().ok(),
+        Some(Value::Bool(b)) => Some(if b { 1 } else { 0 }),
+        _ => None,
+    })
+}
+
+fn lenient_bool<'de, D>(de: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(lenient_i64(de)?.map(|v| v != 0))
 }

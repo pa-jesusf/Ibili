@@ -35,7 +35,8 @@ struct VideoCardView: View {
                 stats: FeedCardStats(danmaku: item.danmaku),
                 config: meta,
                 titleFont: .system(size: 15, weight: .medium),
-                showAuthorIcon: true
+                showAuthorIcon: true,
+                isAuthorFollowed: item.isFollowed
             )
             .padding(.horizontal, 8)
             .padding(.top, 8)

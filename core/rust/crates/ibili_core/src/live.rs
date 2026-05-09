@@ -3,7 +3,6 @@
 
 use serde::Deserialize;
 
-use crate::Core;
 use crate::cdn::cdn_host_for_selection;
 use crate::dto::{
     LiveDanmakuHistory, LiveDanmakuHost, LiveDanmakuInfo, LiveDanmakuMessage, LiveFeedItem,
@@ -11,10 +10,13 @@ use crate::dto::{
 };
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
+use crate::Core;
 
 const URL_LIVE_FEED: &str = "https://api.live.bilibili.com/xlive/app-interface/v2/index/feed";
-const URL_LIVE_PLAY_INFO: &str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
-const URL_LIVE_INFO_H5: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getH5InfoByRoom";
+const URL_LIVE_PLAY_INFO: &str =
+    "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
+const URL_LIVE_INFO_H5: &str =
+    "https://api.live.bilibili.com/xlive/web-room/v1/index/getH5InfoByRoom";
 const URL_LIVE_DM_INFO: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
 const URL_LIVE_DM_HISTORY: &str = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory";
 const URL_SEND_LIVE_MSG: &str = "https://api.live.bilibili.com/msg/send";
@@ -34,147 +36,208 @@ struct NavWbiImage {
 
 #[derive(Default, Deserialize)]
 struct LiveFeedWire {
-    #[serde(default)] card_list: Vec<LiveCardListWire>,
-    #[serde(default)] has_more: i64,
+    #[serde(default)]
+    card_list: Vec<LiveCardListWire>,
+    #[serde(default)]
+    has_more: i64,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveCardListWire {
-    #[serde(default)] card_type: String,
-    #[serde(default)] card_data: Option<LiveCardDataWire>,
+    #[serde(default)]
+    card_type: String,
+    #[serde(default)]
+    card_data: Option<LiveCardDataWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveCardDataWire {
-    #[serde(default)] small_card_v1: Option<LiveFeedItemWire>,
+    #[serde(default)]
+    small_card_v1: Option<LiveFeedItemWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveFeedItemWire {
-    #[serde(default)] roomid: Option<i64>,
-    #[serde(default)] id: Option<i64>,
-    #[serde(default)] uid: Option<i64>,
-    #[serde(default)] uname: Option<String>,
-    #[serde(default)] face: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] system_cover: Option<String>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] area_name: Option<String>,
-    #[serde(default)] watched_show: Option<WatchedShowWire>,
+    #[serde(default)]
+    roomid: Option<i64>,
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    uid: Option<i64>,
+    #[serde(default)]
+    uname: Option<String>,
+    #[serde(default)]
+    face: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    system_cover: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    area_name: Option<String>,
+    #[serde(default)]
+    watched_show: Option<WatchedShowWire>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    is_followed: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    is_follow: Option<i64>,
 }
 
 #[derive(Default, Deserialize, Clone)]
 struct WatchedShowWire {
-    #[serde(default)] text_large: Option<String>,
+    #[serde(default)]
+    text_large: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct RoomInfoH5Wire {
-    #[serde(default)] room_info: Option<RoomInfoWire>,
-    #[serde(default)] anchor_info: Option<AnchorInfoWire>,
-    #[serde(default)] watched_show: Option<WatchedShowWire>,
+    #[serde(default)]
+    room_info: Option<RoomInfoWire>,
+    #[serde(default)]
+    anchor_info: Option<AnchorInfoWire>,
+    #[serde(default)]
+    watched_show: Option<WatchedShowWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct RoomInfoWire {
-    #[serde(default)] room_id: Option<i64>,
-    #[serde(default)] uid: Option<i64>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] live_status: Option<i64>,
-    #[serde(default)] live_time: Option<i64>,
+    #[serde(default)]
+    room_id: Option<i64>,
+    #[serde(default)]
+    uid: Option<i64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    live_status: Option<i64>,
+    #[serde(default)]
+    live_time: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct AnchorInfoWire {
-    #[serde(default)] base_info: Option<AnchorBaseInfoWire>,
+    #[serde(default)]
+    base_info: Option<AnchorBaseInfoWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct AnchorBaseInfoWire {
-    #[serde(default)] uname: Option<String>,
-    #[serde(default)] face: Option<String>,
+    #[serde(default)]
+    uname: Option<String>,
+    #[serde(default)]
+    face: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct RoomPlayInfoWire {
-    #[serde(default)] live_status: i64,
-    #[serde(default)] playurl_info: Option<PlayurlInfoWire>,
+    #[serde(default)]
+    live_status: i64,
+    #[serde(default)]
+    playurl_info: Option<PlayurlInfoWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct PlayurlInfoWire {
-    #[serde(default)] playurl: Option<PlayurlWire>,
+    #[serde(default)]
+    playurl: Option<PlayurlWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct PlayurlWire {
-    #[serde(default)] stream: Vec<LiveStreamWire>,
+    #[serde(default)]
+    stream: Vec<LiveStreamWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveStreamWire {
-    #[serde(default)] protocol_name: String,
-    #[serde(default)] format: Vec<LiveFormatWire>,
+    #[serde(default)]
+    protocol_name: String,
+    #[serde(default)]
+    format: Vec<LiveFormatWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveFormatWire {
-    #[serde(default)] format_name: String,
-    #[serde(default)] codec: Vec<LiveCodecWire>,
+    #[serde(default)]
+    format_name: String,
+    #[serde(default)]
+    codec: Vec<LiveCodecWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveCodecWire {
-    #[serde(default)] codec_name: String,
-    #[serde(default)] current_qn: i64,
-    #[serde(default)] accept_qn: Vec<i64>,
-    #[serde(default)] base_url: String,
-    #[serde(default)] url_info: Vec<LiveUrlInfoWire>,
+    #[serde(default)]
+    codec_name: String,
+    #[serde(default)]
+    current_qn: i64,
+    #[serde(default)]
+    accept_qn: Vec<i64>,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    url_info: Vec<LiveUrlInfoWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveUrlInfoWire {
-    #[serde(default)] host: String,
-    #[serde(default)] extra: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    extra: String,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveDanmakuInfoWire {
-    #[serde(default)] token: String,
-    #[serde(default)] host_list: Vec<LiveDanmakuHostWire>,
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    host_list: Vec<LiveDanmakuHostWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveDanmakuHostWire {
-    #[serde(default)] host: String,
-    #[serde(default)] port: i64,
-    #[serde(default)] ws_port: i64,
-    #[serde(default)] wss_port: i64,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: i64,
+    #[serde(default)]
+    ws_port: i64,
+    #[serde(default)]
+    wss_port: i64,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveDanmakuHistoryWire {
-    #[serde(default)] room: Vec<LiveHistoryDanmakuWire>,
+    #[serde(default)]
+    room: Vec<LiveHistoryDanmakuWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveHistoryDanmakuWire {
-    #[serde(default, deserialize_with = "lenient_string")] id_str: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i64")] id: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_string")] text: Option<String>,
-    #[serde(default)] user: Option<LiveHistoryUserWire>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    id_str: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    text: Option<String>,
+    #[serde(default)]
+    user: Option<LiveHistoryUserWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveHistoryUserWire {
-    #[serde(default, deserialize_with = "lenient_i64")] uid: Option<i64>,
-    #[serde(default)] base: Option<LiveHistoryUserBaseWire>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    uid: Option<i64>,
+    #[serde(default)]
+    base: Option<LiveHistoryUserBaseWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct LiveHistoryUserBaseWire {
-    #[serde(default, deserialize_with = "lenient_string")] name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    name: Option<String>,
 }
 
 impl Core {
@@ -205,11 +268,14 @@ impl Core {
             params.push(("relation_page".into(), "1".into()));
         }
         let raw: LiveFeedWire = self.http.get_signed_android_app(URL_LIVE_FEED, params)?;
-        let items = raw.card_list.into_iter()
+        let mut items: Vec<LiveFeedItem> = raw
+            .card_list
+            .into_iter()
             .filter(|card| card.card_type == "small_card_v1")
             .filter_map(|card| card.card_data.and_then(|d| d.small_card_v1))
             .filter_map(live_feed_item_from_wire)
             .collect();
+        self.enrich_live_follow_state(&mut items)?;
         Ok(LiveFeedPage {
             items,
             has_more: raw.has_more != 0,
@@ -229,7 +295,12 @@ impl Core {
         self.live_playurl_with_cdn_selection(room_id, qn, "auto")
     }
 
-    pub fn live_playurl_with_cdn_selection(&self, room_id: i64, qn: i64, cdn_selection: &str) -> CoreResult<LivePlayUrl> {
+    pub fn live_playurl_with_cdn_selection(
+        &self,
+        room_id: i64,
+        qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<LivePlayUrl> {
         if room_id <= 0 {
             return Err(CoreError::InvalidArgument("room_id required".into()));
         }
@@ -254,7 +325,10 @@ impl Core {
             &[("Referer", format!("https://live.bilibili.com/{room_id}"))],
         )?;
         if raw.live_status != 1 {
-            return Err(CoreError::Api { code: -404, msg: "当前直播间未开播".into() });
+            return Err(CoreError::Api {
+                code: -404,
+                msg: "当前直播间未开播".into(),
+            });
         }
         select_hls_playurl(raw, cdn_selection)
     }
@@ -275,7 +349,8 @@ impl Core {
         )?;
         Ok(LiveDanmakuInfo {
             token: raw.token,
-            host_list: raw.host_list
+            host_list: raw
+                .host_list
                 .into_iter()
                 .filter(|h| !h.host.is_empty())
                 .map(|h| LiveDanmakuHost {
@@ -381,7 +456,29 @@ impl Core {
 
     fn fetch_wbi_key_for_live(&self) -> CoreResult<WbiKey> {
         let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+        Ok(WbiKey::from_urls(
+            &nav.wbi_img.img_url,
+            &nav.wbi_img.sub_url,
+        ))
+    }
+
+    fn enrich_live_follow_state(&self, items: &mut [LiveFeedItem]) -> CoreResult<()> {
+        let mids = items
+            .iter()
+            .filter(|item| !item.is_followed)
+            .map(|item| item.uid)
+            .filter(|mid| *mid > 0)
+            .collect();
+        let Ok(relation) = self.batch_relation_following(mids) else {
+            return Ok(());
+        };
+        if relation.is_empty() {
+            return Ok(());
+        }
+        for item in items.iter_mut().filter(|item| !item.is_followed) {
+            item.is_followed = relation.get(&item.uid).copied().unwrap_or(false);
+        }
+        Ok(())
     }
 }
 
@@ -401,13 +498,20 @@ fn live_feed_item_from_wire(w: LiveFeedItemWire) -> Option<LiveFeedItem> {
         uname: w.uname.unwrap_or_default(),
         face: ensure_https(w.face.unwrap_or_default()),
         area_name: w.area_name.unwrap_or_default(),
-        watched_label: w.watched_show.and_then(|s| s.text_large).unwrap_or_default(),
+        watched_label: w
+            .watched_show
+            .and_then(|s| s.text_large)
+            .unwrap_or_default(),
+        is_followed: w.is_followed.or(w.is_follow).unwrap_or(0) != 0,
     })
 }
 
 fn live_room_info_from_wire(room_id: i64, raw: RoomInfoH5Wire) -> LiveRoomInfo {
     let room = raw.room_info.unwrap_or_default();
-    let base = raw.anchor_info.and_then(|a| a.base_info).unwrap_or_default();
+    let base = raw
+        .anchor_info
+        .and_then(|a| a.base_info)
+        .unwrap_or_default();
     LiveRoomInfo {
         room_id: room.room_id.unwrap_or(room_id),
         uid: room.uid.unwrap_or(0),
@@ -415,7 +519,10 @@ fn live_room_info_from_wire(room_id: i64, raw: RoomInfoH5Wire) -> LiveRoomInfo {
         cover: ensure_https(room.cover.unwrap_or_default()),
         anchor_name: base.uname.unwrap_or_default(),
         anchor_face: ensure_https(base.face.unwrap_or_default()),
-        watched_label: raw.watched_show.and_then(|s| s.text_large).unwrap_or_default(),
+        watched_label: raw
+            .watched_show
+            .and_then(|s| s.text_large)
+            .unwrap_or_default(),
         live_status: room.live_status.unwrap_or(0),
         live_time: room.live_time.unwrap_or(0),
     }
@@ -423,7 +530,8 @@ fn live_room_info_from_wire(room_id: i64, raw: RoomInfoH5Wire) -> LiveRoomInfo {
 
 fn select_hls_playurl(raw: RoomPlayInfoWire, cdn_selection: &str) -> CoreResult<LivePlayUrl> {
     let cdn_host = live_cdn_host_for_selection(cdn_selection);
-    let streams = raw.playurl_info
+    let streams = raw
+        .playurl_info
         .and_then(|i| i.playurl)
         .map(|p| p.stream)
         .unwrap_or_default();
@@ -447,7 +555,11 @@ fn select_hls_playurl(raw: RoomPlayInfoWire, cdn_selection: &str) -> CoreResult<
                 };
                 let Some(url) = codec.url_info.first().map(|u| {
                     let host = cdn_host.as_deref().unwrap_or_else(|| {
-                        if u.host.is_empty() { "" } else { &u.host }
+                        if u.host.is_empty() {
+                            ""
+                        } else {
+                            &u.host
+                        }
                     });
                     format!("{host}{}{}", codec.base_url, u.extra)
                 }) else {
@@ -468,10 +580,17 @@ fn select_hls_playurl(raw: RoomPlayInfoWire, cdn_selection: &str) -> CoreResult<
         }
     }
     let Some((_, url, quality, accept_qn)) = best else {
-        return Err(CoreError::Api { code: -415, msg: "暂不支持该直播流格式".into() });
+        return Err(CoreError::Api {
+            code: -415,
+            msg: "暂不支持该直播流格式".into(),
+        });
     };
-    let accept_quality = accept_qn.into_iter()
-        .map(|qn| LiveQuality { qn, label: live_quality_label(qn).into() })
+    let accept_quality = accept_qn
+        .into_iter()
+        .map(|qn| LiveQuality {
+            qn,
+            label: live_quality_label(qn).into(),
+        })
         .collect();
     Ok(LivePlayUrl {
         url,
@@ -492,7 +611,10 @@ fn live_cdn_host_for_selection(selection: &str) -> Option<String> {
 fn is_hls_candidate(url: &str, protocol_score: i32, format_score: i32) -> bool {
     protocol_score == 0
         && format_score < 50
-        && (url.contains(".m3u8") || url.contains("/hls/") || url.contains("format=ts") || url.contains("format=fmp4"))
+        && (url.contains(".m3u8")
+            || url.contains("/hls/")
+            || url.contains("format=ts")
+            || url.contains("format=fmp4"))
 }
 
 fn live_quality_label(qn: i64) -> &'static str {

@@ -25,13 +25,15 @@ struct LiveCardView: View {
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, minHeight: 38, alignment: .topLeading)
 
-                Label {
-                    Text(item.uname).lineLimit(1)
-                } icon: {
-                    Image(systemName: "person.fill").imageScale(.small)
+                HStack(spacing: 4) {
+                    Image(systemName: "person.fill")
+                        .imageScale(.small)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                    Text(item.uname)
+                        .lineLimit(1)
+                        .foregroundStyle(item.isFollowed ? IbiliTheme.accent : IbiliTheme.textSecondary)
                 }
                 .font(.caption)
-                .foregroundStyle(IbiliTheme.textSecondary)
             }
             .padding(.horizontal, 8)
             .padding(.top, 8)

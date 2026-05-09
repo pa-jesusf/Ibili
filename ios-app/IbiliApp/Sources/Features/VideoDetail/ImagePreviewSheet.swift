@@ -2,14 +2,45 @@ import SwiftUI
 import UIKit
 import Photos
 
+struct CommentImagePreviewItem: Hashable {
+    let originalURL: String
+    let cachedThumbnailSide: CGFloat
+
+    init(originalURL: String, cachedThumbnailSide: CGFloat = 96) {
+        self.originalURL = originalURL
+        self.cachedThumbnailSide = cachedThumbnailSide
+    }
+
+    func withCachedThumbnailSide(_ side: CGFloat) -> CommentImagePreviewItem {
+        CommentImagePreviewItem(originalURL: originalURL, cachedThumbnailSide: side)
+    }
+
+    var normalizedOriginalURL: String {
+        BiliImageURL.original(originalURL)
+    }
+
+    func thumbnailURL() -> String {
+        BiliImageURL.resized(
+            originalURL,
+            pointSize: CGSize(width: cachedThumbnailSide, height: cachedThumbnailSide),
+            quality: 75
+        )
+    }
+
+    func displayURL(screenSize: CGSize) -> String {
+        BiliImageURL.resized(originalURL, pointSize: screenSize, quality: nil)
+    }
+}
+
 /// Full-screen image preview with pinch-to-zoom and save-to-album.
 /// Used by `ReplyPictureGrid` when a thumbnail is tapped.
 struct ImagePreviewSheet: View {
-    let urls: [String]
+    let images: [CommentImagePreviewItem]
     let initialIndex: Int
 
     @Environment(\.dismiss) private var dismiss
     @State private var index: Int
+    @State private var originalIndexes: Set<Int> = []
     @State private var saveStatus: String?
     @State private var saveStatusWork: DispatchWorkItem?
     /// Live vertical drag offset for swipe-to-dismiss. Only kicks in
@@ -18,10 +49,19 @@ struct ImagePreviewSheet: View {
     @State private var dismissDrag: CGFloat = 0
     @State private var pageZoomed = false
 
-    init(urls: [String], initialIndex: Int) {
-        self.urls = urls
+    private var safeIndex: Int {
+        guard !images.isEmpty else { return 0 }
+        return min(max(index, 0), images.count - 1)
+    }
+
+    init(images: [CommentImagePreviewItem], initialIndex: Int) {
+        self.images = images
         self.initialIndex = initialIndex
-        _index = State(initialValue: initialIndex)
+        _index = State(initialValue: min(max(0, initialIndex), max(0, images.count - 1)))
+    }
+
+    init(urls: [String], initialIndex: Int) {
+        self.init(images: urls.map { CommentImagePreviewItem(originalURL: $0) }, initialIndex: initialIndex)
     }
 
     var body: some View {
@@ -34,13 +74,25 @@ struct ImagePreviewSheet: View {
             Color.black.opacity(dimAlpha)
                 .ignoresSafeArea()
 
-            TabView(selection: $index) {
-                ForEach(Array(urls.enumerated()), id: \.offset) { i, u in
-                    ZoomablePreviewPage(url: u, isZoomed: $pageZoomed)
+            GeometryReader { proxy in
+                TabView(selection: $index) {
+                    ForEach(Array(images.enumerated()), id: \.offset) { i, image in
+                        ZoomablePreviewPage(
+                            image: image,
+                            screenSize: proxy.size,
+                            showsOriginal: originalIndexes.contains(i),
+                            isZoomed: $pageZoomed
+                        )
                         .tag(i)
+                        .onDisappear {
+                            if index != i {
+                                pageZoomed = false
+                            }
+                        }
+                    }
                 }
+                .tabViewStyle(.page(indexDisplayMode: .never))
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
             .offset(y: dismissDrag)
             .scaleEffect(max(0.85, 1.0 - dragMag / 1600))
             .animation(.interactiveSpring(response: 0.28, dampingFraction: 0.86, blendDuration: 0), value: dismissDrag)
@@ -57,7 +109,7 @@ struct ImagePreviewSheet: View {
                     }
                     .buttonStyle(GlassCircleButtonStyle())
                     Spacer()
-                    Text("\(index + 1) / \(urls.count)")
+                    Text("\(safeIndex + 1) / \(images.count)")
                         .font(.footnote.monospacedDigit())
                         .foregroundStyle(.white)
                         .padding(.horizontal, 12).padding(.vertical, 6)
@@ -76,6 +128,23 @@ struct ImagePreviewSheet: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
                 Spacer()
+                HStack(spacing: 10) {
+                    Button {
+                        originalIndexes.insert(safeIndex)
+                    } label: {
+                        Label(originalIndexes.contains(safeIndex) ? "已是原图" : "原图",
+                              systemImage: originalIndexes.contains(safeIndex) ? "checkmark.circle" : "photo.badge.magnifyingglass")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                    }
+                    .buttonStyle(.plain)
+                    .background(GlassCapsuleBackground())
+                    .disabled(originalIndexes.contains(safeIndex))
+                }
+                .padding(.bottom, saveStatus == nil ? 28 : 10)
+
                 if let m = saveStatus {
                     Text(m)
                         .font(.footnote)
@@ -132,8 +201,8 @@ struct ImagePreviewSheet: View {
     // MARK: - Save
 
     private func save() {
-        guard urls.indices.contains(index) else { return }
-        let urlString = urls[index]
+        guard images.indices.contains(safeIndex) else { return }
+        let urlString = images[safeIndex].normalizedOriginalURL
         Task.detached(priority: .userInitiated) {
             await downloadAndSave(urlString)
         }
@@ -181,7 +250,9 @@ struct ImagePreviewSheet: View {
 
 /// Single page that supports pinch-to-zoom on top of `RemoteImage`.
 private struct ZoomablePreviewPage: View {
-    let url: String
+    let image: CommentImagePreviewItem
+    let screenSize: CGSize
+    let showsOriginal: Bool
     /// Lifted so the parent sheet can suspend its swipe-to-dismiss
     /// gesture while the user is panning a zoomed-in image.
     @Binding var isZoomed: Bool
@@ -193,7 +264,11 @@ private struct ZoomablePreviewPage: View {
 
     var body: some View {
         let total = scale * pinch
-        RemoteImage(url: url, contentMode: .fit)
+        ProgressivePreviewImage(
+            image: image,
+            screenSize: screenSize,
+            showsOriginal: showsOriginal
+        )
             .scaleEffect(total)
             .offset(x: offset.width + drag.width, y: offset.height + drag.height)
             .gesture(
@@ -229,6 +304,159 @@ private struct ZoomablePreviewPage: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: showsOriginal) { _ in
+                resetZoom()
+            }
+            .onDisappear {
+                resetZoom()
+            }
+    }
+
+    private func resetZoom() {
+        scale = 1
+        offset = .zero
+        isZoomed = false
+    }
+}
+
+private struct ProgressivePreviewImage: View {
+    let image: CommentImagePreviewItem
+    let screenSize: CGSize
+    let showsOriginal: Bool
+
+    private var fallbackURL: URL? {
+        URL(string: image.thumbnailURL())
+    }
+
+    private var requestedURL: URL? {
+        let raw = showsOriginal
+            ? image.normalizedOriginalURL
+            : image.displayURL(screenSize: screenSize)
+        return URL(string: raw)
+    }
+
+    var body: some View {
+        CachedRemoteImage(
+            url: requestedURL,
+            fallbackURL: fallbackURL,
+            contentMode: .fit
+        )
+    }
+}
+
+@MainActor
+private final class CachedRemoteImageLoader: ObservableObject {
+    @Published var image: UIImage?
+    @Published var failed = false
+
+    private var task: Task<Void, Never>?
+    private var loadedURL: URL?
+
+    func load(url: URL?, fallbackURL: URL?) {
+        task?.cancel()
+        failed = false
+        loadedURL = url
+        image = cachedImage(for: url) ?? cachedImage(for: fallbackURL)
+
+        guard let url else { return }
+        if ImageCache.shared.image(for: url) != nil {
+            return
+        }
+
+        task = Task { [url] in
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if Task.isCancelled { return }
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+                guard let raw = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
+                let display = self.downsample(raw)
+                ImageCache.shared.store(display, for: url, cost: data.count)
+                ImageDiskCache.shared.write(url, data: data)
+                await MainActor.run {
+                    guard self.loadedURL == url else { return }
+                    self.image = display
+                    self.failed = false
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.loadedURL == url, self.image == nil else { return }
+                    self.failed = true
+                }
+            }
+        }
+    }
+
+    func useCachedImageIfAvailable(for url: URL?) {
+        guard let url, loadedURL == url, image == nil else { return }
+        image = cachedImage(for: url)
+    }
+
+    deinit { task?.cancel() }
+
+    private func cachedImage(for url: URL?) -> UIImage? {
+        guard let url else { return nil }
+        if let memory = ImageCache.shared.image(for: url) {
+            return memory
+        }
+        guard let data = ImageDiskCache.shared.read(url),
+              let raw = UIImage(data: data) else {
+            return nil
+        }
+        let display = downsample(raw)
+        ImageCache.shared.store(display, for: url, cost: data.count)
+        return display
+    }
+
+    private nonisolated func downsample(_ image: UIImage) -> UIImage {
+        let maxDim = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale * 1.5
+        let size = image.size
+        let scale = min(maxDim / max(size.width, 1), maxDim / max(size.height, 1))
+        guard scale < 0.9 else { return image }
+        let targetSize = CGSize(
+            width: (size.width * scale).rounded(),
+            height: (size.height * scale).rounded()
+        )
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+    }
+}
+
+private struct CachedRemoteImage: View {
+    let url: URL?
+    let fallbackURL: URL?
+    var contentMode: ContentMode = .fit
+
+    @StateObject private var loader = CachedRemoteImageLoader()
+
+    var body: some View {
+        ZStack {
+            if let image = loader.image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+                    .transition(.opacity.animation(.easeOut(duration: 0.16)))
+            } else if loader.failed {
+                Image(systemName: "photo")
+                    .font(.largeTitle)
+                    .foregroundStyle(.white.opacity(0.5))
+            } else {
+                ProgressView()
+                    .tint(.white)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { loader.load(url: url, fallbackURL: fallbackURL) }
+        .onChange(of: url) { loader.load(url: $0, fallbackURL: fallbackURL) }
+        .onChange(of: fallbackURL) { loader.load(url: url, fallbackURL: $0) }
+        .onReceive(NotificationCenter.default.publisher(for: ImageCache.didStoreImageNotification)) { notification in
+            let storedURL = ImageCache.storedURL(from: notification)
+            guard storedURL == url else { return }
+            loader.useCachedImageIfAvailable(for: storedURL)
+        }
     }
 }
 

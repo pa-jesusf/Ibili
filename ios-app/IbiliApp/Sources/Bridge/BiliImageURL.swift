@@ -9,6 +9,19 @@ import UIKit
 /// Either the size or the quality piece may be omitted. We always request
 /// `.webp` for bandwidth, with `_<q>q` only when the user pinned a quality.
 enum BiliImageURL {
+    static func normalized(_ src: String) -> String {
+        normalizeScheme(src)
+    }
+
+    static func original(_ src: String) -> String {
+        guard !src.isEmpty else { return src }
+        let normalized = normalizeScheme(src)
+        guard canAppendResizeSuffix(to: normalized) else { return normalized }
+        let split = splitQuery(normalized)
+        let base = split.path.replacing(/@(?:\d+[a-z]_?)+(?:\.[a-zA-Z0-9]+)?$/, with: "")
+        return base + split.query
+    }
+
     /// `pointSize` is in CSS/SwiftUI points; we multiply by screen scale to get
     /// physical pixels — the "fill the actual pixels" rule from upstream.
     /// `quality` is the optional Bilibili @q value (1-100). Pass `nil` for auto.

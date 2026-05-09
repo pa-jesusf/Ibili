@@ -18,7 +18,9 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
         author: item.author,
         durationSec: item.durationSec,
         play: item.play,
-        danmaku: item.danmaku
+        danmaku: item.danmaku,
+        pubdate: item.pubdate,
+        isFollowed: item.isFollowed
     )
 }
 

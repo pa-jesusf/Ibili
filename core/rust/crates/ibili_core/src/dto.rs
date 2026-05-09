@@ -32,6 +32,8 @@ pub struct FeedItem {
     pub aid: i64,
     pub bvid: String,
     pub cid: i64,
+    #[serde(skip_serializing)]
+    pub owner_mid: i64,
     pub title: String,
     pub cover: String,
     pub author: String,
@@ -41,6 +43,7 @@ pub struct FeedItem {
     /// Unix seconds. `0` when upstream did not provide a publish date
     /// for this card (the recommendation feed often omits it).
     pub pubdate: i64,
+    pub is_followed: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -59,6 +62,7 @@ pub struct LiveFeedItem {
     pub face: String,
     pub area_name: String,
     pub watched_label: String,
+    pub is_followed: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]

@@ -24,6 +24,7 @@ struct CardInfoSection: View {
     /// doesn't visually overpower the surrounding chrome.
     var titleFont: Font = .subheadline.weight(.medium)
     var showAuthorIcon: Bool = false
+    var isAuthorFollowed: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -36,18 +37,20 @@ struct CardInfoSection: View {
 
             if config.showAuthor {
                 if showAuthorIcon {
-                    Label {
-                        Text(author).lineLimit(1)
-                    } icon: {
-                        Image(systemName: "person.fill").imageScale(.small)
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.fill")
+                            .imageScale(.small)
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                        Text(author)
+                            .lineLimit(1)
+                            .foregroundStyle(authorColor)
                     }
                     .font(.caption)
-                    .foregroundStyle(IbiliTheme.textSecondary)
                 } else {
                     Text(author)
                         .font(.caption)
                         .lineLimit(1)
-                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .foregroundStyle(authorColor)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -92,5 +95,9 @@ struct CardInfoSection: View {
         case .danmaku: return stats.danmaku
         case .like: return stats.like
         }
+    }
+
+    private var authorColor: Color {
+        isAuthorFollowed ? IbiliTheme.accent : IbiliTheme.textSecondary
     }
 }

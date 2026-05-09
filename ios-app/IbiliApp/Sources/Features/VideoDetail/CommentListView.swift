@@ -320,9 +320,13 @@ struct CommentRow: View {
 /// 1 → single tile, 2 → side-by-side, 3+ → 3-column. Tapping any tile
 /// opens `ImagePreviewSheet` with pinch-zoom + save-to-album.
 struct ReplyPictureGrid: View {
-    let urls: [String]
+    private let rawURLs: [String]
 
     @State private var preview: PreviewSelection?
+
+    init(urls: [String]) {
+        rawURLs = urls
+    }
 
     private struct PreviewSelection: Identifiable {
         let id = UUID()
@@ -330,7 +334,7 @@ struct ReplyPictureGrid: View {
     }
 
     var body: some View {
-        let cols = urls.count == 1 ? 1 : (urls.count == 2 ? 2 : 3)
+        let cols = rawURLs.count == 1 ? 1 : (rawURLs.count == 2 ? 2 : 3)
         let screenWidth = UIScreen.main.bounds.width
         let spacing: CGFloat = 4
         let target = screenWidth * 0.6
@@ -342,11 +346,14 @@ struct ReplyPictureGrid: View {
             repeating: GridItem(.fixed(tileSide), spacing: spacing),
             count: cols
         )
+        let images = rawURLs.map {
+            CommentImagePreviewItem(originalURL: $0, cachedThumbnailSide: tileSide)
+        }
         HStack(spacing: 0) {
             LazyVGrid(columns: columns, spacing: spacing) {
-                ForEach(Array(urls.enumerated()), id: \.offset) { i, u in
+                ForEach(Array(images.enumerated()), id: \.offset) { i, image in
                     Button { preview = .init(index: i) } label: {
-                        RemoteImage(url: u,
+                        RemoteImage(url: image.originalURL,
                                     contentMode: .fill,
                                     targetPointSize: CGSize(width: tileSide, height: tileSide),
                                     quality: 75)
@@ -363,7 +370,7 @@ struct ReplyPictureGrid: View {
             Spacer(minLength: 0)
         }
         .fullScreenCover(item: $preview) { sel in
-            ImagePreviewSheet(urls: urls, initialIndex: sel.index)
+            ImagePreviewSheet(images: images, initialIndex: sel.index)
         }
     }
 }

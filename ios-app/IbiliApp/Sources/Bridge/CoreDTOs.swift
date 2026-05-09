@@ -84,10 +84,12 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
     /// Unix seconds. `0` when upstream did not provide a publish date —
     /// the recommendation feed often omits it, search always carries it.
     public let pubdate: Int64
+    public let isFollowed: Bool
 
     enum CodingKeys: String, CodingKey {
         case aid, bvid, cid, title, cover, author, play, danmaku, pubdate
         case durationSec = "duration_sec"
+        case isFollowed = "is_followed"
     }
 
     public init(from decoder: Decoder) throws {
@@ -102,6 +104,7 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
         play = try c.decodeIfPresent(Int64.self, forKey: .play) ?? 0
         danmaku = try c.decodeIfPresent(Int64.self, forKey: .danmaku) ?? 0
         pubdate = try c.decodeIfPresent(Int64.self, forKey: .pubdate) ?? 0
+        isFollowed = try c.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
     }
 
     /// Memberwise convenience init for synthetic feed items (related,
@@ -111,12 +114,14 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
     public init(
         aid: Int64, bvid: String, cid: Int64, title: String,
         cover: String, author: String, durationSec: Int64,
-        play: Int64, danmaku: Int64, pubdate: Int64 = 0
+        play: Int64, danmaku: Int64, pubdate: Int64 = 0,
+        isFollowed: Bool = false
     ) {
         self.aid = aid; self.bvid = bvid; self.cid = cid
         self.title = title; self.cover = cover; self.author = author
         self.durationSec = durationSec; self.play = play
         self.danmaku = danmaku; self.pubdate = pubdate
+        self.isFollowed = isFollowed
     }
 }
 
@@ -133,6 +138,7 @@ public struct LiveFeedItemDTO: Decodable, Identifiable, Hashable {
     public let face: String
     public let areaName: String
     public let watchedLabel: String
+    public let isFollowed: Bool
 
     enum CodingKeys: String, CodingKey {
         case uid, title, cover, uname, face
@@ -140,6 +146,21 @@ public struct LiveFeedItemDTO: Decodable, Identifiable, Hashable {
         case systemCover = "system_cover"
         case areaName = "area_name"
         case watchedLabel = "watched_label"
+        case isFollowed = "is_followed"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        roomID = try c.decodeIfPresent(Int64.self, forKey: .roomID) ?? 0
+        uid = try c.decodeIfPresent(Int64.self, forKey: .uid) ?? 0
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        cover = try c.decodeIfPresent(String.self, forKey: .cover) ?? ""
+        systemCover = try c.decodeIfPresent(String.self, forKey: .systemCover) ?? ""
+        uname = try c.decodeIfPresent(String.self, forKey: .uname) ?? ""
+        face = try c.decodeIfPresent(String.self, forKey: .face) ?? ""
+        areaName = try c.decodeIfPresent(String.self, forKey: .areaName) ?? ""
+        watchedLabel = try c.decodeIfPresent(String.self, forKey: .watchedLabel) ?? ""
+        isFollowed = try c.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
     }
 }
 
