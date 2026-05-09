@@ -337,6 +337,21 @@ public final class CoreClient: @unchecked Sendable {
         )
     }
 
+    public func searchUser(
+        keyword: String,
+        page: Int64 = 1
+    ) throws -> SearchUserPageDTO {
+        struct A: Encodable {
+            let keyword: String
+            let page: Int64
+        }
+        return try call(
+            "search.user",
+            args: A(keyword: keyword, page: page),
+            decoding: SearchUserPageDTO.self
+        )
+    }
+
     // MARK: - Video detail
 
     /// Fetch the full video detail (title, owner, stat, pages, ugc_season,

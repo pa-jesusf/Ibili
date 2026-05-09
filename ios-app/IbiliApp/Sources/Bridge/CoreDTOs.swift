@@ -528,6 +528,38 @@ public struct SearchLivePageDTO: Decodable {
     }
 }
 
+public struct SearchUserItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { mid }
+    public let mid: Int64
+    public let uname: String
+    public let face: String
+    public let sign: String
+    public let fans: Int64
+    public let videos: Int64
+    public let level: Int32
+    public let isLive: Bool
+    public let roomID: Int64
+    public let officialDesc: String
+
+    enum CodingKeys: String, CodingKey {
+        case mid, uname, face, sign, fans, videos, level
+        case isLive = "is_live"
+        case roomID = "room_id"
+        case officialDesc = "official_desc"
+    }
+}
+
+public struct SearchUserPageDTO: Decodable {
+    public let items: [SearchUserItemDTO]
+    public let numResults: Int64
+    public let numPages: Int64
+    enum CodingKeys: String, CodingKey {
+        case items
+        case numResults = "num_results"
+        case numPages = "num_pages"
+    }
+}
+
 // MARK: - Video detail (full view)
 
 public struct VideoStatDTO: Decodable, Hashable {

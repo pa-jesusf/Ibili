@@ -13,7 +13,9 @@ struct SearchResultsView: View {
     @State private var pageInputText: String = ""
     @State private var isPageInputPresented: Bool = false
     @State private var scrollID: UUID = UUID()
+    @State private var userSpaceMID: Int64?
     @StateObject private var scrollContext = InterruptibleScrollContext()
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
 
     var body: some View {
         Group {
@@ -32,11 +34,32 @@ struct SearchResultsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(IbiliTheme.background)
+        .background {
+            if !isInPlayerHostNavigation {
+                NavigationLink(
+                    isActive: Binding(
+                        get: { userSpaceMID != nil },
+                        set: { if !$0 { userSpaceMID = nil } }
+                    ),
+                    destination: {
+                        if let mid = userSpaceMID {
+                            UserSpaceView(mid: mid)
+                        }
+                    },
+                    label: { EmptyView() }
+                )
+                .opacity(0)
+                .allowsHitTesting(false)
+            }
+        }
     }
 
     private var resultsGrid: some View {
         GeometryReader { geo in
-            let cols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let preferredCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let cols = vm.selectedType == .user
+                ? (geo.size.width >= 760 ? 2 : 1)
+                : preferredCols
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
             let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
@@ -183,6 +206,13 @@ struct SearchResultsView: View {
                 )
             }
             .buttonStyle(.plain)
+        case .user(let user):
+            Button {
+                openUserSpace(mid: user.mid)
+            } label: {
+                SearchUserResultCardView(item: user, cardWidth: cardWidth)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -196,6 +226,7 @@ struct SearchResultsView: View {
             switch result {
             case .video(let video): return video.cover
             case .live(let live): return live.cover
+            case .user(let user): return user.face
             }
         }
         let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
@@ -237,5 +268,14 @@ struct SearchResultsView: View {
             danmaku: result.danmaku,
             pubdate: result.pubdate
         )
+    }
+
+    private func openUserSpace(mid: Int64) {
+        guard mid > 0 else { return }
+        if isInPlayerHostNavigation {
+            router.openUserSpace(mid: mid)
+        } else {
+            userSpaceMID = mid
+        }
     }
 }

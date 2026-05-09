@@ -119,6 +119,8 @@ final class PlayerViewModel: ObservableObject {
     private var transientPauseSuppressionContext: PlayerTransientPauseSuppressionContext?
     private var fullscreenPlaybackRecoveryWork: DispatchWorkItem?
     private var suppressedObservedPauseConfirmationWork: DispatchWorkItem?
+    private var isClosing = false
+    private var dismissalFadeTask: Task<Void, Never>?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -131,11 +133,16 @@ final class PlayerViewModel: ObservableObject {
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
             cancelSuppressedObservedPauseConfirmation()
             fullscreenPlaybackRecoveryWork?.cancel()
-            player?.pause()
+            dismissalFadeTask?.cancel()
             stopHeartbeat()
             itemStatusObservation = nil
             playerTimeControlObservation?.invalidate()
             playerTimeControlObservation = nil
+            if let player {
+                player.volume = 0
+                player.pause()
+                player.replaceCurrentItem(with: nil)
+            }
             activePreparation?.release()
             activePreparation = nil
             pendingUpgradeTask?.cancel()
@@ -191,6 +198,7 @@ final class PlayerViewModel: ObservableObject {
         cdnSelection: String = MediaCDNService.auto.rawValue,
         cacheVariant: String = MediaCDNService.auto.rawValue
     ) async {
+        guard !isClosing else { return }
         // Some entry points (notably the search results grid) hand us
         // a `FeedItemDTO` with `cid == 0` because the upstream
         // search-by-type endpoint omits cids. Resolve it via the view
@@ -200,10 +208,12 @@ final class PlayerViewModel: ObservableObject {
         do {
             item = try await resolvePlayableItemIfNeeded(item)
         } catch {
+            guard !isClosing else { return }
             isLoading = false
             errorText = "无法解析视频信息: \((error as NSError).localizedDescription)"
             return
         }
+        guard !isClosing else { return }
         if player != nil, aid == item.aid, cid == item.cid {
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
                 "aid": String(item.aid),
@@ -402,7 +412,7 @@ final class PlayerViewModel: ObservableObject {
                                 return
                             }
                             guard !Task.isCancelled,
-                                  self.loadGeneration == generation else {
+                                  self.isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
                                 hiWarm.stop()
                                 return
                             }
@@ -464,6 +474,7 @@ final class PlayerViewModel: ObservableObject {
                 }
             }
         } catch {
+            guard !isClosing else { return }
             errorText = error.localizedDescription
             AppLog.error("player", "播放器加载失败", error: error, metadata: [
                 "aid": String(item.aid),
@@ -480,7 +491,7 @@ final class PlayerViewModel: ObservableObject {
     /// the background and the existing AVPlayer can no longer pull from
     /// `127.0.0.1:<dead port>`.
     func reload() async {
-        guard let item = lastLoadedItem else { return }
+        guard !isClosing, let item = lastLoadedItem else { return }
         AppLog.info("player", "检测到本地代理失效，重新加载", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
@@ -490,9 +501,13 @@ final class PlayerViewModel: ObservableObject {
         let priorAttempts = autoReloadAttempts
         stopHeartbeat()
         suppressNextObservedPlaybackIntent(.pause)
-        player?.pause()
-        setPlayer(nil)
         itemStatusObservation = nil
+        if let player {
+            player.pause()
+            endTemporarySpeedBoost(on: player)
+            player.replaceCurrentItem(with: nil)
+        }
+        setPlayer(nil)
         activePreparation?.release()
         activePreparation = nil
         cancelPendingUpgrade()
@@ -503,6 +518,7 @@ final class PlayerViewModel: ObservableObject {
                fastLoad: lastFastLoad,
                cdnSelection: cdnSelection,
                cacheVariant: playbackCacheVariant)
+        guard !isClosing else { return }
         // `load(...)` zeroes the counter; preserve our caller's tally
         // so a chain of failed reloads cannot loop indefinitely.
         autoReloadAttempts = max(autoReloadAttempts, priorAttempts)
@@ -513,6 +529,7 @@ final class PlayerViewModel: ObservableObject {
     var isEngineAlive: Bool { HLSProxyEngine.shared.isAlive }
 
     func handle(_ event: PlayerSessionEvent) {
+        guard !isClosing || event == .interfaceDeactivated || event == .pictureInPictureChanged(false) else { return }
         switch event {
         case .interfaceActivated:
             PlayerPlaybackCoordinator.shared.activate(self)
@@ -595,6 +612,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     var currentElapsedPlaybackTime: TimeInterval? {
+        guard !isClosing else { return nil }
         guard let seconds = player?.currentTime().seconds,
               seconds.isFinite,
               seconds >= 0 else {
@@ -604,6 +622,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     var systemMediaPlaybackRate: Float {
+        guard !isClosing else { return 0 }
         guard let player else { return 0 }
         if player.timeControlStatus == .paused, player.rate == 0 {
             return 0
@@ -618,15 +637,18 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func refreshSystemMediaSession() {
+        guard !isClosing else { return }
         PlayerNowPlayingCoordinator.shared.refresh(for: self)
     }
 
     func handleRemotePlaybackIntent(_ intent: PlayerIntent) {
+        guard !isClosing else { return }
         switch intent {
         case .pause:
             handle(.playbackIntentChanged(.pause))
         case .play:
             Task { @MainActor in
+                guard !self.isClosing else { return }
                 self.isPlaybackCompleted = false
                 self.handle(.playbackIntentChanged(.play))
                 guard !self.isEngineAlive else { return }
@@ -639,6 +661,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func recoverFromInactiveEngineIfNeeded(trigger: String) async {
+        guard !isClosing else { return }
         guard !isEngineAlive else { return }
         if await recoverPlaybackFromPageCacheIfPossible(trigger: trigger) {
             return
@@ -653,8 +676,9 @@ final class PlayerViewModel: ObservableObject {
     var isPictureInPictureActive: Bool { behaviorState.pictureInPictureIsActive }
 
     func backgroundContinuationRate(for player: AVPlayer) -> Float? {
-        behaviorState.backgroundContinuationRate(currentRate: player.rate,
-                                                desiredRate: desiredPlaybackRate)
+        guard !isClosing else { return nil }
+        return behaviorState.backgroundContinuationRate(currentRate: player.rate,
+                                                        desiredRate: desiredPlaybackRate)
     }
 
     func reapplyPlaybackBehavior(to targetPlayer: AVPlayer? = nil) {
@@ -662,6 +686,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     var canBeginTemporarySpeedBoost: Bool {
+        guard !isClosing else { return false }
         guard let player else { return false }
         return player.timeControlStatus == .playing || player.rate > 0
     }
@@ -690,11 +715,12 @@ final class PlayerViewModel: ObservableObject {
         let clamped = min(max(linear, 0), 1)
         guard audioVolumeLinear != clamped else { return }
         audioVolumeLinear = clamped
+        guard !isClosing else { return }
         player?.volume = clamped
     }
 
     func switchQuality(to qn: Int64) async {
-        guard let player else { return }
+        guard !isClosing, let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
         // A pending fast-load upgrade is now obsolete — user is
@@ -761,6 +787,7 @@ final class PlayerViewModel: ObservableObject {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
         } catch {
+            guard !isClosing else { return }
             errorText = error.localizedDescription
             AppLog.error("player", "清晰度切换失败", error: error, metadata: [
                 "aid": String(aid),
@@ -771,6 +798,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func teardown() {
+        isClosing = true
+        dismissalFadeTask?.cancel()
+        dismissalFadeTask = nil
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
@@ -782,9 +812,14 @@ final class PlayerViewModel: ObservableObject {
         ])
         stopHeartbeat()
         suppressNextObservedPlaybackIntent(.pause)
-        player?.pause()
-        setPlayer(nil)
         itemStatusObservation = nil
+        if let player {
+            player.volume = 0
+            player.pause()
+            endTemporarySpeedBoost(on: player)
+            player.replaceCurrentItem(with: nil)
+        }
+        setPlayer(nil)
         activePreparation?.release()
         activePreparation = nil
         cancelPendingUpgrade()
@@ -792,6 +827,25 @@ final class PlayerViewModel: ObservableObject {
         behaviorState = PlayerSessionBehaviorState()
         isPlaybackCompleted = false
         isVideoReady = false
+    }
+
+    func prepareForDismissal() {
+        if behaviorState.pictureInPictureIsActive {
+            handle(.interfaceDeactivated)
+            return
+        }
+        guard !isClosing else { return }
+        isClosing = true
+        loadGeneration &+= 1
+        cancelSuppressedObservedPauseConfirmation()
+        cancelFullscreenPlaybackRecovery()
+        cancelPendingUpgrade()
+        itemStatusObservation = nil
+        stopHeartbeat()
+        PlayerPlaybackCoordinator.shared.unregister(self)
+        PlayerNowPlayingCoordinator.shared.unregister(self)
+        fadeOutAndPauseForDismissal()
+        PlayerNowPlayingCoordinator.shared.refresh(for: self)
     }
 
     /// Cancel any in-flight fast-load upgrade. Safe to call when no
@@ -857,11 +911,35 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    private func fadeOutAndPauseForDismissal() {
+        dismissalFadeTask?.cancel()
+        guard let player else {
+            PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
+            return
+        }
+        endTemporarySpeedBoost(on: player)
+        dismissalFadeTask = Task { @MainActor [weak self, weak player] in
+            guard let self, let player else { return }
+            let startVolume = player.volume
+            let steps = 4
+            for step in 1...steps {
+                try? await Task.sleep(nanoseconds: 18_000_000)
+                guard !Task.isCancelled, self.player === player else { return }
+                player.volume = startVolume * Float(steps - step) / Float(steps)
+            }
+            guard !Task.isCancelled, self.player === player else { return }
+            player.pause()
+            player.volume = 0
+            PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
+        }
+    }
+
     private func observePlayerTimeControl(_ player: AVPlayer) {
         playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self, weak player] observedPlayer, _ in
             Task { @MainActor in
                 guard let self,
                       let player,
+                      !self.isClosing,
                       self.player === player else { return }
                 self.handleObservedPlaybackState(observedPlayer.timeControlStatus, observedPlayer: observedPlayer)
             }
@@ -870,6 +948,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func handleObservedPlaybackState(_ status: AVPlayer.TimeControlStatus,
                                             observedPlayer: AVPlayer? = nil) {
+        guard !isClosing else { return }
         let suppressionActive = Date() < transientPauseSuppressionDeadline
         AppLog.debug("player", "观察到 AVPlayer.timeControlStatus 变化", metadata: playbackDebugMetadata(for: observedPlayer, extra: [
             "observedStatus": timeControlStatusDescription(status),
@@ -921,6 +1000,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func confirmSuppressedObservedPauseIfNeeded() {
         suppressedObservedPauseConfirmationWork = nil
+        guard !isClosing else { return }
         guard transientPauseSuppressionContext == .fullscreenExit else { return }
         guard Date() >= transientPauseSuppressionDeadline else {
             scheduleSuppressedObservedPauseConfirmationIfNeeded()
@@ -943,6 +1023,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func scheduleFullscreenPlaybackRecovery(delay: TimeInterval) {
+        guard !isClosing else { return }
         cancelFullscreenPlaybackRecovery()
         AppLog.debug("player", "安排 fullscreen 退出后的播放恢复检查", metadata: playbackDebugMetadata(extra: [
             "delayMs": String(Int(delay * 1000)),
@@ -962,6 +1043,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func recoverPlaybackAfterFullscreenTransitionIfNeeded() {
         fullscreenPlaybackRecoveryWork = nil
+        guard !isClosing else { return }
         guard Date() < transientPauseSuppressionDeadline else {
             AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(extra: [
                 "reason": "suppression-window-expired",
@@ -996,6 +1078,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func applyPlaybackIntent(to targetPlayer: AVPlayer? = nil) {
+        guard !isClosing else { return }
         PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
         guard let targetPlayer = targetPlayer ?? player else { return }
         switch behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) {
@@ -1247,7 +1330,7 @@ final class PlayerViewModel: ObservableObject {
                                 generation: UInt64) async {
         warm.player.pause()
         await warm.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-        guard loadGeneration == generation else {
+        guard !isClosing, loadGeneration == generation else {
             warm.stop()
             return
         }
@@ -1287,7 +1370,7 @@ final class PlayerViewModel: ObservableObject {
         // hand-off point and turn the swap into a noticeable stall.
         hiWarm.player.pause()
         await hiWarm.player.seek(to: resumeAt)
-        guard loadGeneration == generation else {
+        guard !isClosing, loadGeneration == generation else {
             hiWarm.stop()
             return
         }
@@ -1322,7 +1405,7 @@ final class PlayerViewModel: ObservableObject {
     private func observeItemStatus(_ item: AVPlayerItem, generation: UInt64) {
         itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
             Task { @MainActor in
-                guard let self, self.loadGeneration == generation else { return }
+                guard let self, !self.isClosing, self.loadGeneration == generation else { return }
                 switch item.status {
                 case .readyToPlay:
                     self.isPlaybackCompleted = false
@@ -1342,6 +1425,7 @@ final class PlayerViewModel: ObservableObject {
                         if durationSec <= 0 || resumeSec < durationSec - 3 {
                             let target = CMTime(seconds: resumeSec, preferredTimescale: 600)
                             Task { @MainActor in
+                                guard !self.isClosing, self.loadGeneration == generation else { return }
                                 await self.player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .init(seconds: 1, preferredTimescale: 600))
                                 AppLog.info("player", "已跳转到云端记录进度", metadata: [
                                     "resumeMs": String(ms),
@@ -1362,6 +1446,7 @@ final class PlayerViewModel: ObservableObject {
                         "detail": detail,
                     ])
                     await self.exportActiveDiagnostics(reason: "AVPlayerItem failed: \(detail)", generation: generation)
+                    guard !self.isClosing, self.loadGeneration == generation else { return }
                     let failingQn = self.currentQn
                     let alreadyBlocked = failingQn > 0 && self.blockedQns.contains(failingQn)
                     if failingQn > 0, !alreadyBlocked {
@@ -1390,7 +1475,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func exportActiveDiagnostics(reason: String, generation: UInt64) async {
-        guard loadGeneration == generation, let preparation = activePreparation else { return }
+        guard !isClosing, loadGeneration == generation, let preparation = activePreparation else { return }
         if let url = await preparation.exportDiagnostics(reason) {
             AppLog.info("player", "播放器失败诊断文件已导出", metadata: [
                 "path": url.path,
@@ -1451,6 +1536,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func recoverPlaybackFromPageCacheIfPossible(trigger: String) async -> Bool {
+        guard !isClosing else { return true }
         guard !isRecoveringPlaybackFromPageCache else { return true }
         guard currentQn > 0,
               let info = pageCache.playURL(qn: currentQn, audioQn: currentAudioQn, variant: playbackCacheVariant) else {
@@ -1464,6 +1550,7 @@ final class PlayerViewModel: ObservableObject {
             return false
         }
 
+        guard !isClosing else { return true }
         isRecoveringPlaybackFromPageCache = true
         defer { isRecoveringPlaybackFromPageCache = false }
 
@@ -1531,6 +1618,7 @@ final class PlayerViewModel: ObservableObject {
             ])
             return true
         } catch {
+            guard !isClosing else { return true }
             pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality, variant: playbackCacheVariant)
             AppLog.warning("player", "播放页缓存恢复失败，已回退到常规重载路径", metadata: [
                 "aid": String(aid),
@@ -1545,7 +1633,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func isCurrentLoad(_ generation: UInt64, aid: Int64, cid: Int64) -> Bool {
-        generation == loadGeneration && self.aid == aid && self.cid == cid
+        !isClosing && generation == loadGeneration && self.aid == aid && self.cid == cid
     }
 
     private func normalizedQualities(from info: PlayUrlDTO) -> [(qn: Int64, label: String)] {
@@ -1631,7 +1719,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func switchAudioQuality(to audioQn: Int64) async {
-        guard let player else { return }
+        guard !isClosing, let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
         cancelPendingUpgrade()
@@ -1675,6 +1763,7 @@ final class PlayerViewModel: ObservableObject {
                 "audioQualityLabel": info.audioQualityLabel,
             ])
         } catch {
+            guard !isClosing else { return }
             errorText = error.localizedDescription
             AppLog.error("player", "音质切换失败", error: error, metadata: [
                 "aid": String(aid),

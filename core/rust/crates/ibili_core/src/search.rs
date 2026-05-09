@@ -4,10 +4,13 @@
 //! `searchType = video`. We use the WBI-signed web endpoint and ride
 //! the existing `HttpClient::get_signed_web` machinery.
 
-use crate::Core;
-use crate::dto::{SearchLiveItem, SearchLivePage, SearchVideoItem, SearchVideoPage};
+use crate::dto::{
+    SearchLiveItem, SearchLivePage, SearchUserItem, SearchUserPage, SearchVideoItem,
+    SearchVideoPage,
+};
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
+use crate::Core;
 use serde::Deserialize;
 
 const URL_SEARCH_TYPE: &str = "https://api.bilibili.com/x/web-interface/wbi/search/type";
@@ -26,11 +29,11 @@ struct NavWbiImage {
 
 #[derive(Deserialize, Default)]
 struct SearchTypeRoot {
-    #[serde(default, alias = "numResults")]
+    #[serde(default, alias = "numResults", deserialize_with = "null_as_default")]
     num_results: i64,
-    #[serde(default, alias = "numPages")]
+    #[serde(default, alias = "numPages", deserialize_with = "null_as_default")]
     num_pages: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pages: i64,
     #[serde(default)]
     result: Option<Vec<SearchTypeItem>>,
@@ -40,26 +43,72 @@ struct SearchTypeRoot {
 
 #[derive(Deserialize)]
 struct SearchTypeItem {
-    #[serde(default)] aid: i64,
-    #[serde(default)] bvid: String,
-    #[serde(default)] cid: i64,
-    #[serde(default)] title: String,
-    #[serde(default)] pic: String,
-    #[serde(default)] author: String,
-    #[serde(default)] duration: String,
-    #[serde(default)] play: i64,
-    #[serde(default)] video_review: i64,
-    #[serde(default)] danmaku: i64,
-    #[serde(default)] like: i64,
-    #[serde(default)] pubdate: i64,
-    #[serde(default)] senddate: i64,
-    #[serde(default)] uid: i64,
-    #[serde(default)] uname: String,
-    #[serde(default)] uface: String,
-    #[serde(default)] cover: String,
-    #[serde(default)] online: i64,
-    #[serde(default)] roomid: i64,
-    #[serde(default)] cate_name: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    aid: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    bvid: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    cid: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    title: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pic: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    author: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    duration: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    play: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    video_review: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    danmaku: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    like: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pubdate: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    senddate: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    uid: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    uname: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    uface: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    cover: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    online: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    roomid: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    cate_name: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    mid: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    upic: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    usign: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    fans: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    videos: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    level: i32,
+    #[serde(default, deserialize_with = "null_as_default")]
+    is_live: i32,
+    #[serde(default, deserialize_with = "null_as_default")]
+    room_id: i64,
+    #[serde(default)]
+    official_verify: Option<SearchOfficialVerify>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    verify_info: String,
+}
+
+#[derive(Deserialize, Default)]
+struct SearchOfficialVerify {
+    #[serde(default, deserialize_with = "null_as_default")]
+    desc: String,
 }
 
 impl Core {
@@ -98,23 +147,28 @@ impl Core {
             params.push(("tids".into(), t.to_string()));
         }
         let keyword_encoded = keyword.replace(' ', "%20");
-        let raw: SearchTypeRoot = self
-            .http
-            .get_signed_web_with_headers(
-                URL_SEARCH_TYPE,
-                params,
-                &key,
-                &[
-                    ("Origin", "https://search.bilibili.com".to_string()),
-                    ("Referer", format!(
+        let raw: SearchTypeRoot = self.http.get_signed_web_with_headers(
+            URL_SEARCH_TYPE,
+            params,
+            &key,
+            &[
+                ("Origin", "https://search.bilibili.com".to_string()),
+                (
+                    "Referer",
+                    format!(
                         "https://search.bilibili.com/video?keyword={}",
                         keyword_encoded
-                    )),
-                ],
-            )?;
+                    ),
+                ),
+            ],
+        )?;
         if raw.v_voucher.is_some() {
-            return Err(CoreError::Api { code: -352, msg: "触发搜索风控，请稍后再试".into() });
+            return Err(CoreError::Api {
+                code: -352,
+                msg: "触发搜索风控，请稍后再试".into(),
+            });
         }
+        let num_pages = resolve_num_pages(&raw);
         let items = raw
             .result
             .unwrap_or_default()
@@ -128,13 +182,16 @@ impl Core {
                 author: r.author,
                 duration_sec: parse_duration(&r.duration),
                 play: r.play,
-                danmaku: if r.danmaku > 0 { r.danmaku } else { r.video_review },
+                danmaku: if r.danmaku > 0 {
+                    r.danmaku
+                } else {
+                    r.video_review
+                },
                 like: r.like,
                 pubdate: if r.pubdate > 0 { r.pubdate } else { r.senddate },
             })
             .filter(|item| item.aid > 0 && !item.bvid.is_empty())
             .collect();
-        let num_pages = if raw.num_pages > 0 { raw.num_pages } else { raw.pages };
         Ok(SearchVideoPage {
             items,
             num_results: raw.num_results,
@@ -142,11 +199,7 @@ impl Core {
         })
     }
 
-    pub fn search_live(
-        &self,
-        keyword: &str,
-        page: i64,
-    ) -> CoreResult<SearchLivePage> {
+    pub fn search_live(&self, keyword: &str, page: i64) -> CoreResult<SearchLivePage> {
         let key = self.fetch_wbi_key_for_search()?;
         let params: Vec<(String, String)> = vec![
             ("search_type".into(), "live_room".into()),
@@ -157,23 +210,28 @@ impl Core {
             ("web_location".into(), "1430654".into()),
         ];
         let keyword_encoded = keyword.replace(' ', "%20");
-        let raw: SearchTypeRoot = self
-            .http
-            .get_signed_web_with_headers(
-                URL_SEARCH_TYPE,
-                params,
-                &key,
-                &[
-                    ("Origin", "https://search.bilibili.com".to_string()),
-                    ("Referer", format!(
+        let raw: SearchTypeRoot = self.http.get_signed_web_with_headers(
+            URL_SEARCH_TYPE,
+            params,
+            &key,
+            &[
+                ("Origin", "https://search.bilibili.com".to_string()),
+                (
+                    "Referer",
+                    format!(
                         "https://search.bilibili.com/live?keyword={}",
                         keyword_encoded
-                    )),
-                ],
-            )?;
+                    ),
+                ),
+            ],
+        )?;
         if raw.v_voucher.is_some() {
-            return Err(CoreError::Api { code: -352, msg: "触发搜索风控，请稍后再试".into() });
+            return Err(CoreError::Api {
+                code: -352,
+                msg: "触发搜索风控，请稍后再试".into(),
+            });
         }
+        let num_pages = resolve_num_pages(&raw);
         let items = raw
             .result
             .unwrap_or_default()
@@ -190,8 +248,73 @@ impl Core {
             })
             .filter(|item| item.room_id > 0)
             .collect();
-        let num_pages = if raw.num_pages > 0 { raw.num_pages } else { raw.pages };
         Ok(SearchLivePage {
+            items,
+            num_results: raw.num_results,
+            num_pages,
+        })
+    }
+
+    pub fn search_user(&self, keyword: &str, page: i64) -> CoreResult<SearchUserPage> {
+        let key = self.fetch_wbi_key_for_search()?;
+        let params: Vec<(String, String)> = vec![
+            ("search_type".into(), "bili_user".into()),
+            ("keyword".into(), keyword.to_string()),
+            ("page".into(), page.max(1).to_string()),
+            ("page_size".into(), "20".into()),
+            ("platform".into(), "pc".into()),
+            ("web_location".into(), "1430654".into()),
+        ];
+        let keyword_encoded = keyword.replace(' ', "%20");
+        let raw: SearchTypeRoot = self.http.get_signed_web_with_headers(
+            URL_SEARCH_TYPE,
+            params,
+            &key,
+            &[
+                ("Origin", "https://search.bilibili.com".to_string()),
+                (
+                    "Referer",
+                    format!(
+                        "https://search.bilibili.com/bili_user?keyword={}",
+                        keyword_encoded
+                    ),
+                ),
+            ],
+        )?;
+        if raw.v_voucher.is_some() {
+            return Err(CoreError::Api {
+                code: -352,
+                msg: "触发搜索风控，请稍后再试".into(),
+            });
+        }
+        let num_pages = resolve_num_pages(&raw);
+        let items = raw
+            .result
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| {
+                let official_desc = r
+                    .official_verify
+                    .as_ref()
+                    .map(|v| strip_em_tags(&v.desc))
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| strip_em_tags(&r.verify_info));
+                SearchUserItem {
+                    mid: r.mid,
+                    uname: strip_em_tags(&r.uname),
+                    face: ensure_https(if r.upic.is_empty() { r.uface } else { r.upic }),
+                    sign: strip_em_tags(&r.usign),
+                    fans: r.fans,
+                    videos: r.videos,
+                    level: r.level,
+                    is_live: r.is_live == 1,
+                    room_id: r.room_id,
+                    official_desc,
+                }
+            })
+            .filter(|item| item.mid > 0)
+            .collect();
+        Ok(SearchUserPage {
             items,
             num_results: raw.num_results,
             num_pages,
@@ -200,8 +323,31 @@ impl Core {
 
     fn fetch_wbi_key_for_search(&self) -> CoreResult<WbiKey> {
         let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+        Ok(WbiKey::from_urls(
+            &nav.wbi_img.img_url,
+            &nav.wbi_img.sub_url,
+        ))
     }
+}
+
+fn resolve_num_pages(raw: &SearchTypeRoot) -> i64 {
+    if raw.num_pages > 0 {
+        raw.num_pages
+    } else if raw.pages > 0 {
+        raw.pages
+    } else if raw.num_results > 0 {
+        (raw.num_results + 19) / 20
+    } else {
+        0
+    }
+}
+
+fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
 /// Bilibili search returns titles wrapped in `<em class="keyword">…</em>`

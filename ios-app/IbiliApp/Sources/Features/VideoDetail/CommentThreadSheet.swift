@@ -9,6 +9,8 @@ import SwiftUI
 /// as the main list.
 struct CommentThreadSheet: View {
     let root: ReplyItemDTO
+    var kind: Int32 = 1
+    var onOpenUser: ((Int64) -> Void)? = nil
 
     @State private var replies: [ReplyItemDTO] = []
     @State private var rootState: ReplyItemDTO?
@@ -72,6 +74,7 @@ struct CommentThreadSheet: View {
                        onLike: {
                            Task { await toggleLike(on: item) }
                        },
+                       onOpenUser: onOpenUser,
                        onOpenThread: {})
                 .padding(.horizontal, 16)
         )
@@ -82,8 +85,8 @@ struct CommentThreadSheet: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let p = try await Task.detached(priority: .userInitiated) { [root, page] in
-                try CoreClient.shared.replyDetail(oid: root.oid, kind: 1, root: root.rpid, page: page)
+            let p = try await Task.detached(priority: .userInitiated) { [root, kind, page] in
+                try CoreClient.shared.replyDetail(oid: root.oid, kind: kind, root: root.rpid, page: page)
             }.value
             if page == 1 { total = p.total }
             replies.append(contentsOf: p.items)
@@ -102,8 +105,8 @@ struct CommentThreadSheet: View {
         let next: Int32 = (target.action == 1) ? 0 : 1
         applyLike(rpid: target.rpid, action: next)
         do {
-            try await Task.detached(priority: .userInitiated) { [oid = root.oid, rpid = target.rpid] in
-                try CoreClient.shared.replyLike(oid: oid, kind: 1, rpid: rpid, action: next)
+            try await Task.detached(priority: .userInitiated) { [oid = root.oid, kind, rpid = target.rpid] in
+                try CoreClient.shared.replyLike(oid: oid, kind: kind, rpid: rpid, action: next)
             }.value
         } catch {
             applyLike(rpid: target.rpid, action: next == 1 ? 0 : 1)

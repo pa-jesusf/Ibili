@@ -22,7 +22,9 @@ pub enum TvQrPoll {
     Pending,
     Scanned,
     Expired,
-    Confirmed { session: super::session::PersistedSession },
+    Confirmed {
+        session: super::session::PersistedSession,
+    },
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -271,6 +273,27 @@ pub struct SearchLiveItem {
 #[derive(Debug, Serialize, Clone)]
 pub struct SearchLivePage {
     pub items: Vec<SearchLiveItem>,
+    pub num_results: i64,
+    pub num_pages: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchUserItem {
+    pub mid: i64,
+    pub uname: String,
+    pub face: String,
+    pub sign: String,
+    pub fans: i64,
+    pub videos: i64,
+    pub level: i32,
+    pub is_live: bool,
+    pub room_id: i64,
+    pub official_desc: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchUserPage {
+    pub items: Vec<SearchUserItem>,
     pub num_results: i64,
     pub num_pages: i64,
 }

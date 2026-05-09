@@ -39,6 +39,11 @@ final class PlayerRuntimeCoordinator {
         viewModel.handle(event)
     }
 
+    func prepareForDismissal(routeID: PlayerSessionID) {
+        guard let viewModel = viewModels[routeID] else { return }
+        viewModel.prepareForDismissal()
+    }
+
     func retainSessions(root: DeepLinkRouter.PlayerRoute?, stack: [DeepLinkRouter.PlayerRoute]) {
         var retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
         if let pictureInPictureRouteID {

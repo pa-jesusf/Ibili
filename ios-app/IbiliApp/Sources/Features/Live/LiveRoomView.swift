@@ -17,6 +17,11 @@ final class LiveRuntimeCoordinator {
         return viewModel
     }
 
+    func prepareForDismissal(routeID: PlayerSessionID) {
+        guard let viewModel = viewModels[routeID] else { return }
+        viewModel.prepareForDismissal()
+    }
+
     func retainSessions(root: DeepLinkRouter.LiveRoute?, stack: [DeepLinkRouter.LiveRoute]) {
         let retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
         let staleSessions = viewModels.filter { !retainedIDs.contains($0.key) }
@@ -42,6 +47,8 @@ final class LiveRoomViewModel: ObservableObject {
     private var cdnSelection: String = MediaCDNService.auto.rawValue
     private var playerTimeControlObservation: NSKeyValueObservation?
     private var loadGeneration: UInt64 = 0
+    private var isClosing = false
+    private var dismissalFadeTask: Task<Void, Never>?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -55,6 +62,10 @@ final class LiveRoomViewModel: ObservableObject {
 
     func load(route: DeepLinkRouter.LiveRoute, cdnSelection: String = MediaCDNService.auto.rawValue) async {
         guard route.roomID > 0 else { return }
+        guard !isClosing || roomID != route.roomID || player == nil else { return }
+        isClosing = false
+        dismissalFadeTask?.cancel()
+        dismissalFadeTask = nil
         let resolvedCdnSelection = cdnSelection.trimmingCharacters(in: .whitespacesAndNewlines)
         guard roomID != route.roomID || self.cdnSelection != resolvedCdnSelection || player == nil else { return }
         loadGeneration &+= 1
@@ -87,7 +98,7 @@ final class LiveRoomViewModel: ObservableObject {
     }
 
     func switchQuality(to qn: Int64, cdnSelection: String? = nil) async {
-        guard roomID > 0, qn != currentQn else { return }
+        guard !isClosing, roomID > 0, qn != currentQn else { return }
         let resolvedCdnSelection = cdnSelection?.trimmingCharacters(in: .whitespacesAndNewlines) ?? self.cdnSelection
         loadGeneration &+= 1
         let generation = loadGeneration
@@ -111,22 +122,36 @@ final class LiveRoomViewModel: ObservableObject {
     }
 
     func teardown() {
+        isClosing = true
         loadGeneration &+= 1
+        dismissalFadeTask?.cancel()
+        dismissalFadeTask = nil
         stopCurrentPlayer(releaseAudioSession: true)
     }
 
+    func prepareForDismissal() {
+        guard !isClosing else { return }
+        isClosing = true
+        loadGeneration &+= 1
+        playerTimeControlObservation?.invalidate()
+        playerTimeControlObservation = nil
+        fadeOutAndPauseForDismissal()
+    }
+
     func activatePlayback() {
-        guard let player else { return }
+        guard !isClosing, let player else { return }
         PlayerAudioSessionCoordinator.shared.setSessionNeeded(true, by: self)
         player.play()
     }
 
     func suspendPlayback() {
+        guard !isClosing else { return }
         player?.pause()
         PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
     }
 
     private func configurePlayer(with play: LivePlayUrlDTO, roomID: Int64) {
+        guard !isClosing else { return }
         guard let url = URL(string: play.url) else {
             errorText = "直播地址无效"
             return
@@ -153,12 +178,39 @@ final class LiveRoomViewModel: ObservableObject {
     }
 
     private func stopCurrentPlayer(releaseAudioSession: Bool) {
+        dismissalFadeTask?.cancel()
+        dismissalFadeTask = nil
         playerTimeControlObservation?.invalidate()
         playerTimeControlObservation = nil
-        player?.pause()
-        player?.replaceCurrentItem(with: nil)
+        if let player {
+            player.volume = 0
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+        }
         player = nil
         if releaseAudioSession {
+            PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
+        }
+    }
+
+    private func fadeOutAndPauseForDismissal() {
+        dismissalFadeTask?.cancel()
+        guard let player else {
+            PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
+            return
+        }
+        dismissalFadeTask = Task { @MainActor [weak self, weak player] in
+            guard let self, let player else { return }
+            let startVolume = player.volume
+            let steps = 4
+            for step in 1...steps {
+                try? await Task.sleep(nanoseconds: 18_000_000)
+                guard !Task.isCancelled, self.player === player else { return }
+                player.volume = startVolume * Float(steps - step) / Float(steps)
+            }
+            guard !Task.isCancelled, self.player === player else { return }
+            player.pause()
+            player.volume = 0
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
         }
     }
@@ -168,6 +220,7 @@ final class LiveRoomViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self,
                       let observedPlayer,
+                      !self.isClosing,
                       self.player === observedPlayer else { return }
                 PlayerAudioSessionCoordinator.shared.setSessionNeeded(player.timeControlStatus != .paused, by: self)
             }
@@ -175,7 +228,7 @@ final class LiveRoomViewModel: ObservableObject {
     }
 
     private func isCurrentLoad(_ generation: UInt64, roomID: Int64) -> Bool {
-        loadGeneration == generation && self.roomID == roomID
+        !isClosing && loadGeneration == generation && self.roomID == roomID
     }
 }
 

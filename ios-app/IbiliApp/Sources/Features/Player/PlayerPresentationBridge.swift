@@ -244,10 +244,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
         return vc
     }
 
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
-        context.coordinator.parent = self
-        Orientation.setActivePlayerFullscreenPreference(prefersLandscapeFullscreen, for: sessionID)
-        let incomingPlayerID = ObjectIdentifier(player)
+        func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
+            context.coordinator.parent = self
+            Orientation.setActivePlayerFullscreenPreference(prefersLandscapeFullscreen, for: sessionID)
+            vc.delegate = context.coordinator
+            let incomingPlayerID = ObjectIdentifier(player)
         if vc.title != title {
             vc.title = title
         }
@@ -271,6 +272,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     }
 
     static func dismantleUIViewController(_ vc: AVPlayerViewController, coordinator: Coordinator) {
+        coordinator.prepareForDismantle(controller: vc)
         Orientation.clearActivePlayerFullscreenPreference(for: coordinator.parent.sessionID)
     }
 
@@ -284,15 +286,31 @@ struct PlayerContainer: UIViewControllerRepresentable {
         weak var activeCrossfade: UIView?
         private var transitionSnapshot: PlayerFullscreenTransitionSnapshot?
         private var holdSpeedBadgeIsVisible = false
+        private var isDismantled = false
         init(parent: PlayerContainer) { self.parent = parent }
 
         var shouldAllowHoldSpeedGestureHitTesting: Bool {
-            parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost()
+            !isDismantled && (parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost())
+        }
+
+        func prepareForDismantle(controller vc: AVPlayerViewController) {
+            isDismantled = true
+            activeCrossfade?.removeFromSuperview()
+            activeCrossfade = nil
+            setHoldSpeedBadgeVisible(false, animated: false)
+            holdSpeedBadgeView?.removeFromSuperview()
+            holdSpeedBadgeView = nil
+            danmakuCanvas?.removeFromSuperview()
+            danmakuCanvas = nil
+            transitionSnapshot = nil
+            vc.delegate = nil
+            vc.player = nil
         }
 
         // MARK: PlayerSwapOverlay
 
         func beginCrossfade() {
+            guard !isDismantled else { return }
             // The AVPlayerViewController itself isn't reachable from
             // here, but its `contentOverlayView` lives on the
             // hosting controller's superview chain. We snapshot via
@@ -324,6 +342,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func setHoldSpeedBadgeVisible(_ visible: Bool, animated: Bool) {
+            guard !isDismantled || !visible else { return }
             guard holdSpeedBadgeIsVisible != visible || !animated else { return }
             holdSpeedBadgeIsVisible = visible
             guard let badge = holdSpeedBadgeView else { return }
@@ -342,6 +361,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         @objc func handleHoldSpeedGesture(_ gesture: UILongPressGestureRecognizer) {
+            guard !isDismantled else { return }
             switch gesture.state {
             case .began:
                 let began = parent.beginTemporarySpeedBoost()
@@ -357,7 +377,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            parent.canBeginTemporarySpeedBoost()
+            !isDismantled && parent.canBeginTemporarySpeedBoost()
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
@@ -369,6 +389,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func playerViewController(_ vc: AVPlayerViewController,
                                   willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
+            guard !isDismantled else { return }
             capturePlaybackState(from: vc)
             let identity = presentationIdentity(for: vc)
             if transitionSnapshot?.wasPlaying == true {
@@ -401,6 +422,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func playerViewController(_ vc: AVPlayerViewController,
                                   willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
+            guard !isDismantled else { return }
             capturePlaybackState(from: vc)
             let identity = presentationIdentity(for: vc)
             if transitionSnapshot?.wasPlaying == true {
@@ -430,12 +452,14 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
+            guard !isDismantled else { return }
             AppLog.info("player", "PiP 即将开始")
             parent.onPresentationEvent(.pictureInPictureChanged(true, presentationIdentity(for: playerViewController)))
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,
                                   failedToStartPictureInPictureWithError error: Error) {
+            guard !isDismantled else { return }
             AppLog.warning("player", "PiP 启动失败", metadata: [
                 "error": error.localizedDescription,
             ])
@@ -443,12 +467,17 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
+            guard !isDismantled else { return }
             AppLog.info("player", "PiP 已停止")
             parent.onPresentationEvent(.pictureInPictureChanged(false, presentationIdentity(for: playerViewController)))
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,
                                   restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+            guard !isDismantled else {
+                completionHandler(false)
+                return
+            }
             AppLog.info("player", "PiP 请求恢复原播放器界面")
             parent.onPresentationEvent(.pictureInPictureRestoreRequested(presentationIdentity(for: playerViewController), completionHandler))
         }
@@ -478,6 +507,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func restorePlaybackState(on vc: AVPlayerViewController, source: String) {
+            guard !isDismantled else { return }
             guard let player = vc.player else {
                 AppLog.debug("player", "跳过 AVKit fullscreen 播放恢复", metadata: [
                     "reason": "vc-player-nil",

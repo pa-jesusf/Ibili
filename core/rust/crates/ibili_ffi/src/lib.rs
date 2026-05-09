@@ -16,7 +16,9 @@ pub struct IbiliCore {
 /// Create a core. Returns null on failure.
 #[no_mangle]
 pub extern "C" fn ibili_core_new(config_json: *const c_char) -> *mut IbiliCore {
-    let cfg = if config_json.is_null() { "{}".to_string() } else {
+    let cfg = if config_json.is_null() {
+        "{}".to_string()
+    } else {
         match unsafe { CStr::from_ptr(config_json) }.to_str() {
             Ok(s) => s.to_owned(),
             Err(_) => return ptr::null_mut(),
@@ -32,7 +34,9 @@ pub extern "C" fn ibili_core_new(config_json: *const c_char) -> *mut IbiliCore {
 #[no_mangle]
 pub extern "C" fn ibili_core_free(core: *mut IbiliCore) {
     if !core.is_null() {
-        unsafe { drop(Box::from_raw(core)); }
+        unsafe {
+            drop(Box::from_raw(core));
+        }
     }
 }
 
@@ -40,7 +44,9 @@ pub extern "C" fn ibili_core_free(core: *mut IbiliCore) {
 #[no_mangle]
 pub extern "C" fn ibili_string_free(s: *mut c_char) {
     if !s.is_null() {
-        unsafe { drop(CString::from_raw(s)); }
+        unsafe {
+            drop(CString::from_raw(s));
+        }
     }
 }
 
@@ -69,23 +75,32 @@ fn dispatch(
     method: *const c_char,
     args_json: *const c_char,
 ) -> Result<Value, CoreError> {
-    if core.is_null() { return Err(CoreError::InvalidArgument("null core".into())); }
+    if core.is_null() {
+        return Err(CoreError::InvalidArgument("null core".into()));
+    }
     let core = unsafe { &*core };
-    let method = unsafe { CStr::from_ptr(method) }.to_str()
+    let method = unsafe { CStr::from_ptr(method) }
+        .to_str()
         .map_err(|_| CoreError::InvalidArgument("method utf8".into()))?;
     let args: Value = if args_json.is_null() {
         Value::Object(Default::default())
     } else {
-        let s = unsafe { CStr::from_ptr(args_json) }.to_str()
+        let s = unsafe { CStr::from_ptr(args_json) }
+            .to_str()
             .map_err(|_| CoreError::InvalidArgument("args utf8".into()))?;
-        if s.is_empty() { Value::Object(Default::default()) }
-        else { serde_json::from_str(s)? }
+        if s.is_empty() {
+            Value::Object(Default::default())
+        } else {
+            serde_json::from_str(s)?
+        }
     };
     handle(core, method, args)
 }
 
 #[derive(Deserialize)]
-struct PollArgs { auth_code: String }
+struct PollArgs {
+    auth_code: String,
+}
 
 #[derive(Deserialize)]
 struct FeedArgs {
@@ -96,51 +111,71 @@ struct FeedArgs {
     #[serde(default = "default_recommend_source")]
     source: String,
 }
-fn default_ps() -> i64 { 20 }
-fn default_recommend_source() -> String { "web".into() }
+fn default_ps() -> i64 {
+    20
+}
+fn default_recommend_source() -> String {
+    "web".into()
+}
 
 #[derive(Deserialize)]
 struct PopularArgs {
-    #[serde(default = "default_one_i64")] pn: i64,
-    #[serde(default = "default_ps")] ps: i64,
+    #[serde(default = "default_one_i64")]
+    pn: i64,
+    #[serde(default = "default_ps")]
+    ps: i64,
 }
 
 #[derive(Deserialize)]
 struct LiveFeedArgs {
-    #[serde(default = "default_one_i64")] page: i64,
+    #[serde(default = "default_one_i64")]
+    page: i64,
 }
 
 #[derive(Deserialize)]
 struct LiveRoomArgs {
     room_id: i64,
-    #[serde(default)] qn: i64,
-    #[serde(default = "default_cdn_selection")] cdn: String,
+    #[serde(default)]
+    qn: i64,
+    #[serde(default = "default_cdn_selection")]
+    cdn: String,
 }
 
 #[derive(Deserialize)]
 struct SendLiveDanmakuArgs {
     room_id: i64,
     msg: String,
-    #[serde(default = "default_dm_mode")] mode: i32,
-    #[serde(default = "default_dm_color")] color: i32,
-    #[serde(default = "default_dm_fontsize")] fontsize: i32,
+    #[serde(default = "default_dm_mode")]
+    mode: i32,
+    #[serde(default = "default_dm_color")]
+    color: i32,
+    #[serde(default = "default_dm_fontsize")]
+    fontsize: i32,
 }
 
 #[derive(Deserialize)]
 struct PlayurlArgs {
     aid: i64,
     cid: i64,
-    #[serde(default = "default_qn")] qn: i64,
-    #[serde(default)] audio_qn: i64,
-    #[serde(default = "default_cdn_selection")] cdn: String,
+    #[serde(default = "default_qn")]
+    qn: i64,
+    #[serde(default)]
+    audio_qn: i64,
+    #[serde(default = "default_cdn_selection")]
+    cdn: String,
 }
-fn default_qn() -> i64 { 0 }
-fn default_cdn_selection() -> String { "auto".into() }
+fn default_qn() -> i64 {
+    0
+}
+fn default_cdn_selection() -> String {
+    "auto".into()
+}
 
 #[derive(Deserialize)]
 struct DanmakuArgs {
     cid: i64,
-    #[serde(default)] duration_sec: i64,
+    #[serde(default)]
+    duration_sec: i64,
 }
 
 #[derive(Deserialize)]
@@ -151,65 +186,101 @@ struct DanmakuSegmentArgs {
 
 #[derive(Deserialize)]
 struct VideoViewArgs {
-    #[serde(default)] aid: i64,
-    #[serde(default)] bvid: String,
+    #[serde(default)]
+    aid: i64,
+    #[serde(default)]
+    bvid: String,
 }
 
 #[derive(Deserialize)]
 struct ReplyMainArgs {
     oid: i64,
-    #[serde(default = "default_reply_type")] kind: i32,
-    #[serde(default = "default_reply_sort")] sort: i32,
-    #[serde(default)] next_offset: String,
+    #[serde(default = "default_reply_type")]
+    kind: i32,
+    #[serde(default = "default_reply_sort")]
+    sort: i32,
+    #[serde(default)]
+    next_offset: String,
 }
-fn default_reply_type() -> i32 { 1 }
-fn default_reply_sort() -> i32 { 1 }
+fn default_reply_type() -> i32 {
+    1
+}
+fn default_reply_sort() -> i32 {
+    1
+}
 
 #[derive(Deserialize)]
 struct ReplyDetailArgs {
     oid: i64,
-    #[serde(default = "default_reply_type")] kind: i32,
+    #[serde(default = "default_reply_type")]
+    kind: i32,
     root: i64,
-    #[serde(default = "default_page")] page: i64,
+    #[serde(default = "default_page")]
+    page: i64,
 }
-fn default_page() -> i64 { 1 }
+fn default_page() -> i64 {
+    1
+}
 
 #[derive(Deserialize)]
-struct AidArgs { aid: i64 }
+struct AidArgs {
+    aid: i64,
+}
 
 #[derive(Deserialize)]
-struct LikeArgs { aid: i64, #[serde(default = "default_like_action")] action: i32 }
-fn default_like_action() -> i32 { 1 }
+struct LikeArgs {
+    aid: i64,
+    #[serde(default = "default_like_action")]
+    action: i32,
+}
+fn default_like_action() -> i32 {
+    1
+}
 
 #[derive(Deserialize)]
 struct CoinArgs {
     aid: i64,
-    #[serde(default = "default_multiply")] multiply: i32,
-    #[serde(default)] also_like: bool,
+    #[serde(default = "default_multiply")]
+    multiply: i32,
+    #[serde(default)]
+    also_like: bool,
 }
-fn default_multiply() -> i32 { 1 }
+fn default_multiply() -> i32 {
+    1
+}
 
 #[derive(Deserialize)]
 struct FavoriteArgs {
     aid: i64,
-    #[serde(default)] add_ids: Vec<i64>,
-    #[serde(default)] del_ids: Vec<i64>,
+    #[serde(default)]
+    add_ids: Vec<i64>,
+    #[serde(default)]
+    del_ids: Vec<i64>,
 }
 
 #[derive(Deserialize)]
-struct RelationArgs { fid: i64, #[serde(default = "default_relation_act")] act: i32 }
-fn default_relation_act() -> i32 { 1 }
+struct RelationArgs {
+    fid: i64,
+    #[serde(default = "default_relation_act")]
+    act: i32,
+}
+fn default_relation_act() -> i32 {
+    1
+}
 
 #[derive(Deserialize)]
 struct FavFoldersArgs {
-    #[serde(default)] rid: i64,
+    #[serde(default)]
+    rid: i64,
     up_mid: i64,
 }
 
 #[derive(Deserialize)]
 struct HeartbeatArgs {
-    #[serde(default)] aid: i64,
-    #[serde(default)] bvid: String,
+    #[serde(default)]
+    aid: i64,
+    #[serde(default)]
+    bvid: String,
     cid: i64,
     played_seconds: i64,
 }
@@ -217,7 +288,8 @@ struct HeartbeatArgs {
 #[derive(Deserialize)]
 struct ReplyLikeArgs {
     oid: i64,
-    #[serde(default = "default_reply_type")] kind: i32,
+    #[serde(default = "default_reply_type")]
+    kind: i32,
     rpid: i64,
     action: i32,
 }
@@ -227,23 +299,37 @@ struct SendDanmakuArgs {
     aid: i64,
     cid: i64,
     msg: String,
-    #[serde(default)] progress_ms: i64,
-    #[serde(default = "default_dm_mode")] mode: i32,
-    #[serde(default = "default_dm_color")] color: i32,
-    #[serde(default = "default_dm_fontsize")] fontsize: i32,
+    #[serde(default)]
+    progress_ms: i64,
+    #[serde(default = "default_dm_mode")]
+    mode: i32,
+    #[serde(default = "default_dm_color")]
+    color: i32,
+    #[serde(default = "default_dm_fontsize")]
+    fontsize: i32,
 }
-fn default_dm_mode() -> i32 { 1 }
-fn default_dm_color() -> i32 { 16777215 }
-fn default_dm_fontsize() -> i32 { 25 }
+fn default_dm_mode() -> i32 {
+    1
+}
+fn default_dm_color() -> i32 {
+    16777215
+}
+fn default_dm_fontsize() -> i32 {
+    25
+}
 
 #[derive(Deserialize)]
 struct ReplyAddArgs {
     oid: i64,
-    #[serde(default = "default_reply_type")] kind: i32,
+    #[serde(default = "default_reply_type")]
+    kind: i32,
     message: String,
-    #[serde(default)] root: i64,
-    #[serde(default)] parent: i64,
-    #[serde(default)] pictures: Vec<ibili_core::dto::ReplyPicture>,
+    #[serde(default)]
+    root: i64,
+    #[serde(default)]
+    parent: i64,
+    #[serde(default)]
+    pictures: Vec<ibili_core::dto::ReplyPicture>,
 }
 
 #[derive(Deserialize)]
@@ -252,86 +338,147 @@ struct UploadBfsArgs {
     /// needing a parallel binary entry point — the iOS layer encodes
     /// the JPEG/PNG once and we decode here.
     bytes_b64: String,
-    #[serde(default = "default_bfs_name")] file_name: String,
-    #[serde(default = "default_bfs_biz")] biz: String,
-    #[serde(default = "default_bfs_category")] category: String,
+    #[serde(default = "default_bfs_name")]
+    file_name: String,
+    #[serde(default = "default_bfs_biz")]
+    biz: String,
+    #[serde(default = "default_bfs_category")]
+    category: String,
 }
-fn default_bfs_name() -> String { "image.jpg".into() }
-fn default_bfs_biz() -> String { "new_dyn".into() }
-fn default_bfs_category() -> String { "daily".into() }
+fn default_bfs_name() -> String {
+    "image.jpg".into()
+}
+fn default_bfs_biz() -> String {
+    "new_dyn".into()
+}
+fn default_bfs_category() -> String {
+    "daily".into()
+}
 
 #[derive(Deserialize)]
 struct EmotePanelArgs {
-    #[serde(default = "default_emote_business")] business: String,
+    #[serde(default = "default_emote_business")]
+    business: String,
 }
-fn default_emote_business() -> String { "reply".into() }
+fn default_emote_business() -> String {
+    "reply".into()
+}
 
 #[derive(Deserialize)]
 struct SearchVideoArgs {
     keyword: String,
-    #[serde(default = "default_search_page")] page: i64,
-    #[serde(default)] order: Option<String>,
-    #[serde(default)] duration: Option<i64>,
-    #[serde(default)] tids: Option<i64>,
+    #[serde(default = "default_search_page")]
+    page: i64,
+    #[serde(default)]
+    order: Option<String>,
+    #[serde(default)]
+    duration: Option<i64>,
+    #[serde(default)]
+    tids: Option<i64>,
 }
-fn default_search_page() -> i64 { 1 }
+fn default_search_page() -> i64 {
+    1
+}
 
 #[derive(Deserialize)]
 struct SearchLiveArgs {
     keyword: String,
-    #[serde(default = "default_search_page")] page: i64,
+    #[serde(default = "default_search_page")]
+    page: i64,
 }
 
 #[derive(Deserialize)]
-struct MidArgs { mid: i64 }
+struct SearchUserArgs {
+    keyword: String,
+    #[serde(default = "default_search_page")]
+    page: i64,
+}
+
 #[derive(Deserialize)]
-struct VmidPageArgs { vmid: i64, #[serde(default = "default_one_i64")] pn: i64 }
+struct MidArgs {
+    mid: i64,
+}
 #[derive(Deserialize)]
-struct HistoryCursorArgs { #[serde(default)] max: i64, #[serde(default)] view_at: i64 }
+struct VmidPageArgs {
+    vmid: i64,
+    #[serde(default = "default_one_i64")]
+    pn: i64,
+}
 #[derive(Deserialize)]
-struct FavListArgs { media_id: i64, #[serde(default = "default_one_i64")] pn: i64 }
+struct HistoryCursorArgs {
+    #[serde(default)]
+    max: i64,
+    #[serde(default)]
+    view_at: i64,
+}
+#[derive(Deserialize)]
+struct FavListArgs {
+    media_id: i64,
+    #[serde(default = "default_one_i64")]
+    pn: i64,
+}
 #[derive(Deserialize)]
 struct BangumiListArgs {
     vmid: i64,
-    #[serde(default = "default_bangumi_kind")] kind: i32,
-    #[serde(default)] status: i32,
-    #[serde(default = "default_one_i64")] pn: i64,
+    #[serde(default = "default_bangumi_kind")]
+    kind: i32,
+    #[serde(default)]
+    status: i32,
+    #[serde(default = "default_one_i64")]
+    pn: i64,
 }
-fn default_bangumi_kind() -> i32 { 1 }
-fn default_one_i64() -> i64 { 1 }
+fn default_bangumi_kind() -> i32 {
+    1
+}
+fn default_one_i64() -> i64 {
+    1
+}
 #[derive(Deserialize)]
 struct DynamicFeedArgs {
-    #[serde(default = "default_feed_type")] feed_type: String,
-    #[serde(default = "default_one_i64")] page: i64,
-    #[serde(default)] offset: String,
+    #[serde(default = "default_feed_type")]
+    feed_type: String,
+    #[serde(default = "default_one_i64")]
+    page: i64,
+    #[serde(default)]
+    offset: String,
 }
-fn default_feed_type() -> String { "all".into() }
+fn default_feed_type() -> String {
+    "all".into()
+}
 
 #[derive(Deserialize)]
 struct SpaceDynamicArgs {
     host_mid: i64,
-    #[serde(default)] offset: String,
+    #[serde(default)]
+    offset: String,
 }
 
 #[derive(Deserialize)]
 struct DynamicLikeArgs {
     dynamic_id: String,
-    #[serde(default = "default_like_action")] action: i32,
+    #[serde(default = "default_like_action")]
+    action: i32,
 }
 
 #[derive(Deserialize)]
 struct SpaceArcSearchArgs {
     mid: i64,
-    #[serde(default)] keyword: String,
-    #[serde(default = "default_pubdate")] order: String,
-    #[serde(default = "default_one_i64")] page: i64,
+    #[serde(default)]
+    keyword: String,
+    #[serde(default = "default_pubdate")]
+    order: String,
+    #[serde(default = "default_one_i64")]
+    page: i64,
 }
-fn default_pubdate() -> String { "pubdate".into() }
+fn default_pubdate() -> String {
+    "pubdate".into()
+}
 
 #[derive(Deserialize)]
 struct PackagingOfflineBuildArgs {
     diagnostics_dir: String,
-    #[serde(default)] output_root_dir: String,
+    #[serde(default)]
+    output_root_dir: String,
 }
 
 fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> {
@@ -342,7 +489,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             c.inner.restore_session(s);
             Ok(Value::Object(Default::default()))
         }
-        "session.logout" => { c.inner.logout(); Ok(Value::Object(Default::default())) }
+        "session.logout" => {
+            c.inner.logout();
+            Ok(Value::Object(Default::default()))
+        }
         "auth.tv_qr.start" => to_value(c.inner.auth_tv_qr_start()?),
         "auth.tv_qr.poll" => {
             let a: PollArgs = serde_json::from_value(args)?;
@@ -357,7 +507,8 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             to_value(c.inner.feed_home_with_source(a.idx, a.ps, &a.source)?)
         }
         "feed.popular" => {
-            let a: PopularArgs = serde_json::from_value(args).unwrap_or(PopularArgs { pn: 1, ps: 20 });
+            let a: PopularArgs =
+                serde_json::from_value(args).unwrap_or(PopularArgs { pn: 1, ps: 20 });
             to_value(c.inner.feed_popular(a.pn, a.ps)?)
         }
         "live.feed" => {
@@ -370,7 +521,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "live.playurl" => {
             let a: LiveRoomArgs = serde_json::from_value(args)?;
-            to_value(c.inner.live_playurl_with_cdn_selection(a.room_id, a.qn, &a.cdn)?)
+            to_value(
+                c.inner
+                    .live_playurl_with_cdn_selection(a.room_id, a.qn, &a.cdn)?,
+            )
         }
         "live.danmaku_info" => {
             let a: LiveRoomArgs = serde_json::from_value(args)?;
@@ -382,18 +536,16 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "live.send_danmaku" => {
             let a: SendLiveDanmakuArgs = serde_json::from_value(args)?;
-            c.inner.send_live_danmaku(a.room_id, &a.msg, a.mode, a.color, a.fontsize)?;
+            c.inner
+                .send_live_danmaku(a.room_id, &a.msg, a.mode, a.color, a.fontsize)?;
             Ok(Value::Object(Default::default()))
         }
         "video.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
-            to_value(c.inner.video_playurl_with_audio_options(
-                a.aid,
-                a.cid,
-                a.qn,
-                a.audio_qn,
-                &a.cdn,
-            )?)
+            to_value(
+                c.inner
+                    .video_playurl_with_audio_options(a.aid, a.cid, a.qn, a.audio_qn, &a.cdn)?,
+            )
         }
         "video.playurl.tv" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
@@ -474,7 +626,8 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "interaction.heartbeat" => {
             let a: HeartbeatArgs = serde_json::from_value(args)?;
-            c.inner.archive_heartbeat(a.aid, &a.bvid, a.cid, a.played_seconds)?;
+            c.inner
+                .archive_heartbeat(a.aid, &a.bvid, a.cid, a.played_seconds)?;
             Ok(Value::Object(Default::default()))
         }
         "interaction.watchlater_aids" => {
@@ -501,14 +654,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "interaction.reply_add" => {
             let a: ReplyAddArgs = serde_json::from_value(args)?;
-            to_value(c.inner.reply_add(
-                a.oid,
-                a.kind,
-                &a.message,
-                a.root,
-                a.parent,
-                a.pictures,
-            )?)
+            to_value(
+                c.inner
+                    .reply_add(a.oid, a.kind, &a.message, a.root, a.parent, a.pictures)?,
+            )
         }
         "interaction.upload_bfs" => {
             let a: UploadBfsArgs = serde_json::from_value(args)?;
@@ -516,7 +665,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(a.bytes_b64.as_bytes())
                 .map_err(|e| ibili_core::CoreError::InvalidArgument(format!("base64: {e}")))?;
-            to_value(c.inner.upload_bfs(bytes, a.file_name, &a.biz, &a.category)?)
+            to_value(
+                c.inner
+                    .upload_bfs(bytes, a.file_name, &a.biz, &a.category)?,
+            )
         }
         "interaction.emote_panel" => {
             let a: EmotePanelArgs = serde_json::from_value(args)?;
@@ -536,6 +688,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: SearchLiveArgs = serde_json::from_value(args)?;
             to_value(c.inner.search_live(&a.keyword, a.page)?)
         }
+        "search.user" => {
+            let a: SearchUserArgs = serde_json::from_value(args)?;
+            to_value(c.inner.search_user(&a.keyword, a.page)?)
+        }
         "user.card" => {
             let a: MidArgs = serde_json::from_value(args)?;
             to_value(c.inner.user_card(a.mid)?)
@@ -545,7 +701,8 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             to_value(c.inner.user_live(a.mid)?)
         }
         "user.history" => {
-            let a: HistoryCursorArgs = serde_json::from_value(args).unwrap_or(HistoryCursorArgs { max: 0, view_at: 0 });
+            let a: HistoryCursorArgs =
+                serde_json::from_value(args).unwrap_or(HistoryCursorArgs { max: 0, view_at: 0 });
             to_value(c.inner.history_cursor(a.max, a.view_at)?)
         }
         "user.fav_resources" => {
@@ -554,11 +711,12 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "user.bangumi_follow" => {
             let a: BangumiListArgs = serde_json::from_value(args)?;
-            to_value(c.inner.bangumi_follow_list(a.vmid, a.kind, a.status, a.pn)?)
+            to_value(
+                c.inner
+                    .bangumi_follow_list(a.vmid, a.kind, a.status, a.pn)?,
+            )
         }
-        "user.watchlater_list" => {
-            to_value(c.inner.watchlater_list()?)
-        }
+        "user.watchlater_list" => to_value(c.inner.watchlater_list()?),
         "user.followings" => {
             let a: VmidPageArgs = serde_json::from_value(args)?;
             to_value(c.inner.relation_followings(a.vmid, a.pn)?)
@@ -568,7 +726,11 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             to_value(c.inner.relation_followers(a.vmid, a.pn)?)
         }
         "dynamic.feed" => {
-            let a: DynamicFeedArgs = serde_json::from_value(args).unwrap_or(DynamicFeedArgs { feed_type: "all".into(), page: 1, offset: String::new() });
+            let a: DynamicFeedArgs = serde_json::from_value(args).unwrap_or(DynamicFeedArgs {
+                feed_type: "all".into(),
+                page: 1,
+                offset: String::new(),
+            });
             to_value(c.inner.dynamic_feed(&a.feed_type, a.page, &a.offset)?)
         }
         "dynamic.space_feed" => {
@@ -582,16 +744,23 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "packaging.offline_build" => {
             let a: PackagingOfflineBuildArgs = serde_json::from_value(args)?;
-            to_value(c.inner.packaging_offline_build(ibili_core::packaging::OfflinePackagingRequest {
-                diagnostics_dir: a.diagnostics_dir,
-                output_root_dir: a.output_root_dir,
-            })?)
+            to_value(c.inner.packaging_offline_build(
+                ibili_core::packaging::OfflinePackagingRequest {
+                    diagnostics_dir: a.diagnostics_dir,
+                    output_root_dir: a.output_root_dir,
+                },
+            )?)
         }
         "user.space_arc_search" => {
             let a: SpaceArcSearchArgs = serde_json::from_value(args)?;
-            to_value(c.inner.space_arc_search(a.mid, &a.keyword, &a.order, a.page)?)
+            to_value(
+                c.inner
+                    .space_arc_search(a.mid, &a.keyword, &a.order, a.page)?,
+            )
         }
-        _ => Err(CoreError::InvalidArgument(format!("unknown method: {method}"))),
+        _ => Err(CoreError::InvalidArgument(format!(
+            "unknown method: {method}"
+        ))),
     }
 }
 

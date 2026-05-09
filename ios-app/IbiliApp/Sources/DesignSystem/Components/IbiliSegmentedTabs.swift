@@ -240,6 +240,8 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
     var switcherProgress: Binding<CGFloat>? = nil
 
     @State private var lastObservedOffset: CGFloat?
+    @State private var reverseScrollDistance: CGFloat = 0
+    @State private var reverseScrollSamples: Int = 0
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
@@ -272,6 +274,8 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
         defer { lastObservedOffset = offset }
 
         if absoluteProgress < 0.08 {
+            reverseScrollDistance = 0
+            reverseScrollSamples = 0
             switcherProgress.wrappedValue = absoluteProgress
             return
         }
@@ -283,10 +287,17 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
 
         let delta = offset - lastObservedOffset
         let directionThreshold: CGFloat = 0.8
-        if delta < -directionThreshold {
-            switcherProgress.wrappedValue = 0
-        } else if delta > directionThreshold {
+        let expandDistanceThreshold: CGFloat = 18
+        if delta > directionThreshold {
+            reverseScrollDistance = 0
+            reverseScrollSamples = 0
             switcherProgress.wrappedValue = 1
+        } else if delta < -directionThreshold {
+            reverseScrollDistance += -delta
+            reverseScrollSamples += 1
+            if reverseScrollSamples >= 2, reverseScrollDistance >= expandDistanceThreshold {
+                switcherProgress.wrappedValue = 0
+            }
         }
     }
 }

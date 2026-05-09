@@ -19,7 +19,10 @@ struct CommentListView: View {
     private let providedViewModel: CommentListViewModel?
     @State private var thread: ReplyItemDTO?
     @State private var showSendSheet = false
+    @State private var userSpaceMID: Int64?
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
 
     init(oid: Int64,
          kind: Int32 = 1,
@@ -41,7 +44,8 @@ struct CommentListView: View {
                     kind: kind,
                     viewModel: providedViewModel,
                     thread: $thread,
-                    showSendSheet: $showSendSheet
+                    showSendSheet: $showSendSheet,
+                    onOpenUser: openUserSpace
                 )
             } else {
                 CommentListContent(
@@ -49,12 +53,18 @@ struct CommentListView: View {
                     kind: kind,
                     viewModel: ownedViewModel,
                     thread: $thread,
-                    showSendSheet: $showSendSheet
+                    showSendSheet: $showSendSheet,
+                    onOpenUser: openUserSpace
                 )
             }
         }
         .sheet(item: $thread) { root in
-            CommentThreadSheet(root: root)
+            CommentThreadSheet(root: root, kind: kind) { mid in
+                thread = nil
+                DispatchQueue.main.async {
+                    openUserSpace(mid: mid)
+                }
+            }
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showSendSheet) {
@@ -67,6 +77,33 @@ struct CommentListView: View {
                 currentViewModel.prependLocal(echo)
             }
         }
+        .background {
+            if !isInPlayerHostNavigation {
+                NavigationLink(
+                    isActive: Binding(
+                        get: { userSpaceMID != nil },
+                        set: { if !$0 { userSpaceMID = nil } }
+                    ),
+                    destination: {
+                        if let mid = userSpaceMID {
+                            UserSpaceView(mid: mid)
+                        }
+                    },
+                    label: { EmptyView() }
+                )
+                .opacity(0)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func openUserSpace(mid: Int64) {
+        guard mid > 0 else { return }
+        if isInPlayerHostNavigation {
+            router.openUserSpace(mid: mid)
+        } else {
+            userSpaceMID = mid
+        }
     }
 }
 
@@ -76,6 +113,7 @@ private struct CommentListContent: View {
     @ObservedObject var viewModel: CommentListViewModel
     @Binding var thread: ReplyItemDTO?
     @Binding var showSendSheet: Bool
+    let onOpenUser: (Int64) -> Void
     @EnvironmentObject private var session: AppSession
 
     var body: some View {
@@ -129,13 +167,15 @@ private struct CommentListContent: View {
 
             if let top = viewModel.top {
                 CommentRow(item: top, upperMid: viewModel.upperMid, isPinned: true,
-                           onLike: { Task { await viewModel.toggleLike(rpid: top.rpid) } }) { thread = top }
+                           onLike: { Task { await viewModel.toggleLike(rpid: top.rpid) } },
+                           onOpenUser: onOpenUser) { thread = top }
                 Divider()
             }
 
             ForEach(viewModel.items) { item in
                 CommentRow(item: item, upperMid: viewModel.upperMid, isPinned: false,
-                           onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } }) { thread = item }
+                           onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } },
+                           onOpenUser: onOpenUser) { thread = item }
                     .onAppear {
                         if item.id == viewModel.items.last?.id, !viewModel.isEnd {
                             Task { await viewModel.loadMore() }
@@ -176,6 +216,7 @@ struct CommentRow: View {
     var messageLineLimit: Int? = 6
     var allowsThreadPresentation: Bool = true
     var onLike: (() -> Void)? = nil
+    var onOpenUser: ((Int64) -> Void)? = nil
     let onOpenThread: () -> Void
 
     @State private var isMessageTruncated = false
@@ -186,11 +227,17 @@ struct CommentRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            RemoteImage(url: item.face,
-                        targetPointSize: CGSize(width: 32, height: 32),
-                        quality: 75)
-                .frame(width: 32, height: 32)
-                .clipShape(Circle())
+            Button {
+                onOpenUser?(item.mid)
+            } label: {
+                RemoteImage(url: item.face,
+                            targetPointSize: CGSize(width: 32, height: 32),
+                            quality: 75)
+                    .frame(width: 32, height: 32)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(item.mid <= 0 || onOpenUser == nil)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {

@@ -7,8 +7,8 @@ import SwiftUI
 /// points.
 ///
 /// Implementation notes:
-/// * `.video` and `.live` are implemented. Video keeps the full filter
-///   surface; live ignores video-only filters.
+/// * `.video`, `.user`, and `.live` are implemented. Video keeps the
+///   full filter surface; user/live ignore video-only filters.
 /// * Pagination is explicit. Calling `submit` always restarts from
 ///   `page = 1`; users move with previous/next controls instead of
 ///   scroll-triggered infinite loading.
@@ -153,7 +153,16 @@ final class SearchViewModel: ObservableObject {
                         numPages: page.numPages
                     )
                 }.value
-            case .bangumi, .movie, .user, .article:
+            case .user:
+                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                    let page = try client.searchUser(keyword: queryCopy, page: targetPage)
+                    return SearchPageResult(
+                        items: page.items.map(SearchResultItem.user),
+                        numResults: page.numResults,
+                        numPages: page.numPages
+                    )
+                }.value
+            case .bangumi, .movie, .article:
                 return
             }
             // Guard against late callbacks for a stale query.
@@ -172,6 +181,7 @@ final class SearchViewModel: ObservableObject {
 enum SearchResultItem: Identifiable, Hashable {
     case video(SearchVideoItemDTO)
     case live(SearchLiveItemDTO)
+    case user(SearchUserItemDTO)
 
     var id: String {
         switch self {
@@ -179,6 +189,8 @@ enum SearchResultItem: Identifiable, Hashable {
             return "video-\(item.id)"
         case .live(let item):
             return "live-\(item.id)"
+        case .user(let item):
+            return "user-\(item.id)"
         }
     }
 }

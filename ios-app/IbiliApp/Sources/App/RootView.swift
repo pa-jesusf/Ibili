@@ -198,11 +198,13 @@ private struct DeepLinkPlayerHost: View {
     /// "frozen" lag the user complained about.
     private func dismiss() {
         if !router.path.isEmpty {
+            prepareRouteForDismissal(router.path.last)
             router.path.removeLast()
             return
         }
         let width = UIScreen.main.bounds.width
         isRootDismissInFlight = true
+        prepareRootRouteForDismissal(router.pending)
         router.beginRootSessionDismissal()
         withAnimation(Self.slideSpring) {
             offsetX = width
@@ -245,6 +247,28 @@ private struct DeepLinkPlayerHost: View {
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
         LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
+    }
+
+    private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
+        switch route {
+        case .player(let playerRoute):
+            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
+        case .live(let liveRoute):
+            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
+        case nil:
+            break
+        }
+    }
+
+    private func prepareRouteForDismissal(_ route: DeepLinkRouter.SessionRoute?) {
+        switch route {
+        case .player(let playerRoute):
+            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
+        case .live(let liveRoute):
+            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
+        case .userSpace, .dynamicDetail, nil:
+            break
+        }
     }
 
     @ViewBuilder
