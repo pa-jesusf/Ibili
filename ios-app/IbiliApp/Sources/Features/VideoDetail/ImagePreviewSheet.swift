@@ -48,6 +48,7 @@ struct ImagePreviewSheet: View {
     /// from `ZoomablePreviewPage` via a preference).
     @State private var dismissDrag: CGFloat = 0
     @State private var pageZoomed = false
+    @State private var didEnterGestureShield = false
 
     private var safeIndex: Int {
         guard !images.isEmpty else { return 0 }
@@ -75,23 +76,25 @@ struct ImagePreviewSheet: View {
                 .ignoresSafeArea()
 
             GeometryReader { proxy in
-                TabView(selection: $index) {
-                    ForEach(Array(images.enumerated()), id: \.offset) { i, image in
-                        ZoomablePreviewPage(
-                            image: image,
-                            screenSize: proxy.size,
-                            showsOriginal: originalIndexes.contains(i),
-                            isZoomed: $pageZoomed
-                        )
-                        .tag(i)
-                        .onDisappear {
-                            if index != i {
-                                pageZoomed = false
-                            }
+                ImagePreviewPager(
+                    images: images,
+                    index: $index,
+                    screenSize: proxy.size,
+                    originalIndexes: originalIndexes,
+                    pageZoomed: $pageZoomed
+                ) { image, i in
+                    ZoomablePreviewPage(
+                        image: image,
+                        screenSize: proxy.size,
+                        showsOriginal: originalIndexes.contains(i),
+                        isZoomed: $pageZoomed
+                    )
+                    .onDisappear {
+                        if index != i {
+                            pageZoomed = false
                         }
                     }
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
             }
             .offset(y: dismissDrag)
             .scaleEffect(max(0.85, 1.0 - dragMag / 1600))
@@ -157,6 +160,16 @@ struct ImagePreviewSheet: View {
             }
         }
         .statusBarHidden(true)
+        .onAppear {
+            guard !didEnterGestureShield else { return }
+            didEnterGestureShield = true
+            ModalGestureShield.enter()
+        }
+        .onDisappear {
+            guard didEnterGestureShield else { return }
+            didEnterGestureShield = false
+            ModalGestureShield.leave()
+        }
         // High-priority gesture so we win over `TabView`'s page swipe
         // ONLY when the user is clearly dragging downward. We require
         // the vertical translation to dominate horizontally before
@@ -245,6 +258,134 @@ struct ImagePreviewSheet: View {
                 cc.resume(returning: status)
             }
         }
+    }
+}
+
+/// Single page that supports pinch-to-zoom on top of `RemoteImage`.
+private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
+    let images: [CommentImagePreviewItem]
+    @Binding var index: Int
+    let screenSize: CGSize
+    let originalIndexes: Set<Int>
+    @Binding var pageZoomed: Bool
+    let page: (CommentImagePreviewItem, Int) -> Page
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIViewController(context: Context) -> UIPageViewController {
+        let vc = UIPageViewController(
+            transitionStyle: .scroll,
+            navigationOrientation: .horizontal
+        )
+        vc.dataSource = context.coordinator
+        vc.delegate = context.coordinator
+        context.coordinator.configureScrollViews(in: vc.view)
+        if let initial = context.coordinator.controller(at: index) {
+            vc.setViewControllers([initial], direction: .forward, animated: false)
+        }
+        return vc
+    }
+
+    func updateUIViewController(_ vc: UIPageViewController, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.configureScrollViews(in: vc.view)
+        context.coordinator.reloadVisiblePageIfNeeded(in: vc)
+        guard context.coordinator.visibleIndex != index,
+              let target = context.coordinator.controller(at: index) else { return }
+        let direction: UIPageViewController.NavigationDirection = index > context.coordinator.visibleIndex ? .forward : .reverse
+        let coordinator = context.coordinator
+        coordinator.isProgrammaticUpdate = true
+        vc.setViewControllers([target], direction: direction, animated: false) { _ in
+            coordinator.isProgrammaticUpdate = false
+            coordinator.visibleIndex = index
+        }
+    }
+
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+        var parent: ImagePreviewPager
+        var visibleIndex: Int
+        var isProgrammaticUpdate = false
+        private var controllers: [Int: UIViewController] = [:]
+
+        init(parent: ImagePreviewPager) {
+            self.parent = parent
+            self.visibleIndex = parent.index
+        }
+
+        func configureScrollViews(in root: UIView) {
+            let discovered = root.subviewsRecursive().compactMap { $0 as? UIScrollView }
+            for scrollView in discovered {
+                scrollView.isPagingEnabled = true
+                scrollView.alwaysBounceHorizontal = parent.images.count > 1
+                scrollView.alwaysBounceVertical = false
+                scrollView.delaysContentTouches = false
+                scrollView.canCancelContentTouches = true
+            }
+        }
+
+        func controller(at index: Int) -> UIViewController? {
+            guard parent.images.indices.contains(index) else { return nil }
+            if let existing = controllers[index] {
+                update(existing, at: index)
+                return existing
+            }
+            let controller = UIHostingController(
+                rootView: parent.page(parent.images[index], index)
+            )
+            controller.view.backgroundColor = .clear
+            controllers[index] = controller
+            return controller
+        }
+
+        func reloadVisiblePageIfNeeded(in vc: UIPageViewController) {
+            for (index, controller) in controllers {
+                update(controller, at: index)
+            }
+            guard let visible = vc.viewControllers?.first,
+                  let visibleIndex = controllers.first(where: { $0.value === visible })?.key else { return }
+            self.visibleIndex = visibleIndex
+        }
+
+        private func update(_ controller: UIViewController, at index: Int) {
+            guard let controller = controller as? UIHostingController<Page>,
+                  parent.images.indices.contains(index) else { return }
+            controller.rootView = parent.page(parent.images[index], index)
+        }
+
+        func pageViewController(_ pageViewController: UIPageViewController,
+                                viewControllerBefore viewController: UIViewController) -> UIViewController? {
+            guard let index = index(of: viewController) else { return nil }
+            return controller(at: index - 1)
+        }
+
+        func pageViewController(_ pageViewController: UIPageViewController,
+                                viewControllerAfter viewController: UIViewController) -> UIViewController? {
+            guard let index = index(of: viewController) else { return nil }
+            return controller(at: index + 1)
+        }
+
+        func pageViewController(_ pageViewController: UIPageViewController,
+                                didFinishAnimating finished: Bool,
+                                previousViewControllers: [UIViewController],
+                                transitionCompleted completed: Bool) {
+            guard completed,
+                  let current = pageViewController.viewControllers?.first,
+                  let currentIndex = index(of: current) else { return }
+            visibleIndex = currentIndex
+            parent.index = currentIndex
+        }
+
+        private func index(of controller: UIViewController) -> Int? {
+            controllers.first(where: { $0.value === controller })?.key
+        }
+    }
+}
+
+private extension UIView {
+    func subviewsRecursive() -> [UIView] {
+        subviews + subviews.flatMap { $0.subviewsRecursive() }
     }
 }
 

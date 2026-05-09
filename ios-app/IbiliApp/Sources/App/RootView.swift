@@ -437,8 +437,9 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         }
 
         func updateEnabled(_ isEnabled: Bool) {
-            pan?.isEnabled = isEnabled
-            if !isEnabled {
+            let resolvedEnabled = isEnabled && !ModalGestureShield.isActive
+            pan?.isEnabled = resolvedEnabled
+            if !resolvedEnabled {
                 hasBegunSwipe = false
             }
         }
@@ -466,6 +467,7 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard parent.isEnabled,
+                  !ModalGestureShield.isActive,
                   let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
             guard !hasActivePresentedController(from: pan.view) else { return false }
             let velocity = pan.velocity(in: pan.view)
@@ -475,7 +477,7 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldReceive touch: UITouch) -> Bool {
-            guard parent.isEnabled else { return false }
+            guard parent.isEnabled, !ModalGestureShield.isActive else { return false }
             var view = touch.view
             while let current = view {
                 if current is UIControl {
