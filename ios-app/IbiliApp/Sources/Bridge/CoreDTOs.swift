@@ -71,10 +71,13 @@ public struct FeedPageDTO: Decodable {
 }
 
 public struct FeedItemDTO: Decodable, Identifiable, Hashable {
-    public var id: Int64 { aid }
+    public var id: Int64 { isPGC ? (epID > 0 ? epID : aid) : aid }
     public let aid: Int64
     public let bvid: String
     public let cid: Int64
+    public let epID: Int64
+    public let seasonID: Int64
+    public let isPGC: Bool
     public let title: String
     public let cover: String
     public let author: String
@@ -88,6 +91,9 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case aid, bvid, cid, title, cover, author, play, danmaku, pubdate
+        case epID = "ep_id"
+        case seasonID = "season_id"
+        case isPGC = "is_pgc"
         case durationSec = "duration_sec"
         case isFollowed = "is_followed"
     }
@@ -97,6 +103,9 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
         aid = try c.decode(Int64.self, forKey: .aid)
         bvid = try c.decodeIfPresent(String.self, forKey: .bvid) ?? ""
         cid = try c.decodeIfPresent(Int64.self, forKey: .cid) ?? 0
+        epID = try c.decodeIfPresent(Int64.self, forKey: .epID) ?? 0
+        seasonID = try c.decodeIfPresent(Int64.self, forKey: .seasonID) ?? 0
+        isPGC = try c.decodeIfPresent(Bool.self, forKey: .isPGC) ?? false
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         cover = try c.decodeIfPresent(String.self, forKey: .cover) ?? ""
         author = try c.decodeIfPresent(String.self, forKey: .author) ?? ""
@@ -115,9 +124,11 @@ public struct FeedItemDTO: Decodable, Identifiable, Hashable {
         aid: Int64, bvid: String, cid: Int64, title: String,
         cover: String, author: String, durationSec: Int64,
         play: Int64, danmaku: Int64, pubdate: Int64 = 0,
-        isFollowed: Bool = false
+        isFollowed: Bool = false, epID: Int64 = 0,
+        seasonID: Int64 = 0, isPGC: Bool = false
     ) {
         self.aid = aid; self.bvid = bvid; self.cid = cid
+        self.epID = epID; self.seasonID = seasonID; self.isPGC = isPGC
         self.title = title; self.cover = cover; self.author = author
         self.durationSec = durationSec; self.play = play
         self.danmaku = danmaku; self.pubdate = pubdate
@@ -243,6 +254,7 @@ public struct LiveDanmakuMessageDTO: Decodable, Identifiable, Hashable {
     public let name: String
     public let text: String
     public let isSelf: Bool
+    public let emotes: [ReplyEmoteDTO]
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -250,14 +262,26 @@ public struct LiveDanmakuMessageDTO: Decodable, Identifiable, Hashable {
         case name
         case text
         case isSelf = "is_self"
+        case emotes
     }
 
-    public init(id: String, uid: Int64, name: String, text: String, isSelf: Bool) {
+    public init(id: String, uid: Int64, name: String, text: String, isSelf: Bool, emotes: [ReplyEmoteDTO] = []) {
         self.id = id
         self.uid = uid
         self.name = name
         self.text = text
         self.isSelf = isSelf
+        self.emotes = emotes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        uid = try c.decode(Int64.self, forKey: .uid)
+        name = try c.decode(String.self, forKey: .name)
+        text = try c.decode(String.self, forKey: .text)
+        isSelf = try c.decodeIfPresent(Bool.self, forKey: .isSelf) ?? false
+        emotes = try c.decodeIfPresent([ReplyEmoteDTO].self, forKey: .emotes) ?? []
     }
 }
 
@@ -611,6 +635,95 @@ public struct SearchArticlePageDTO: Decodable {
     }
 }
 
+public struct SearchPgcItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { seasonID }
+    public let seasonID: Int64
+    public let mediaID: Int64
+    public let title: String
+    public let cover: String
+    public let areas: String
+    public let styles: String
+    public let seasonType: Int64
+    public let seasonTypeName: String
+    public let score: String
+    public let indexShow: String
+    public let desc: String
+    public let pubtime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case title, cover, areas, styles, score, desc, pubtime
+        case seasonID = "season_id"
+        case mediaID = "media_id"
+        case seasonType = "season_type"
+        case seasonTypeName = "season_type_name"
+        case indexShow = "index_show"
+    }
+}
+
+public struct SearchPgcPageDTO: Decodable {
+    public let items: [SearchPgcItemDTO]
+    public let numResults: Int64
+    public let numPages: Int64
+    enum CodingKeys: String, CodingKey {
+        case items
+        case numResults = "num_results"
+        case numPages = "num_pages"
+    }
+}
+
+public struct PgcEpisodeDTO: Decodable, Hashable, Identifiable {
+    public var id: Int64 { epID }
+    public let epID: Int64
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let longTitle: String
+    public let cover: String
+    public let durationSec: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover
+        case epID = "ep_id"
+        case longTitle = "long_title"
+        case durationSec = "duration_sec"
+    }
+}
+
+public struct PgcStatDTO: Decodable, Hashable {
+    public let view: Int64
+    public let danmaku: Int64
+    public let reply: Int64
+    public let favorite: Int64
+    public let coin: Int64
+    public let share: Int64
+    public let like: Int64
+}
+
+public struct PgcSeasonDTO: Decodable, Hashable {
+    public let seasonID: Int64
+    public let mediaID: Int64
+    public let title: String
+    public let seasonTitle: String
+    public let cover: String
+    public let evaluate: String
+    public let seasonType: Int64
+    public let upMID: Int64
+    public let upName: String
+    public let stat: PgcStatDTO
+    public let episodes: [PgcEpisodeDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case title, cover, evaluate, stat, episodes
+        case seasonID = "season_id"
+        case mediaID = "media_id"
+        case seasonTitle = "season_title"
+        case seasonType = "season_type"
+        case upMID = "up_mid"
+        case upName = "up_name"
+    }
+}
+
 // MARK: - Article / opus
 
 public struct ArticleDetailDTO: Decodable, Hashable {
@@ -839,6 +952,12 @@ public struct ReplyEmoteDTO: Decodable, Hashable {
     public let url: String
     /// 1 = small inline (≈18pt), 2 = large inline (≈32pt).
     public let size: Int32
+
+    public init(name: String, url: String, size: Int32) {
+        self.name = name
+        self.url = url
+        self.size = size
+    }
 }
 
 public struct ReplyJumpUrlDTO: Decodable, Hashable {
@@ -1269,14 +1388,35 @@ public struct DynamicStatDTO: Decodable, Hashable {
 public struct DynamicVideoDTO: Decodable, Hashable {
     public let aid: Int64
     public let bvid: String
+    public let cid: Int64
+    public let epID: Int64
+    public let seasonID: Int64
+    public let isPGC: Bool
     public let title: String
     public let cover: String
     public let durationLabel: String
     public let statLabel: String
     enum CodingKeys: String, CodingKey {
-        case aid, bvid, title, cover
+        case aid, bvid, cid, title, cover
+        case epID = "ep_id"
+        case seasonID = "season_id"
+        case isPGC = "is_pgc"
         case durationLabel = "duration_label"
         case statLabel = "stat_label"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        aid = try c.decodeIfPresent(Int64.self, forKey: .aid) ?? 0
+        bvid = try c.decodeIfPresent(String.self, forKey: .bvid) ?? ""
+        cid = try c.decodeIfPresent(Int64.self, forKey: .cid) ?? 0
+        epID = try c.decodeIfPresent(Int64.self, forKey: .epID) ?? 0
+        seasonID = try c.decodeIfPresent(Int64.self, forKey: .seasonID) ?? 0
+        isPGC = try c.decodeIfPresent(Bool.self, forKey: .isPGC) ?? false
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        cover = try c.decodeIfPresent(String.self, forKey: .cover) ?? ""
+        durationLabel = try c.decodeIfPresent(String.self, forKey: .durationLabel) ?? ""
+        statLabel = try c.decodeIfPresent(String.self, forKey: .statLabel) ?? ""
     }
 }
 

@@ -93,6 +93,7 @@ final class DanmakuCanvasView: UIView {
     private var active: [LiveDanmaku] = []
     private var cursor: Int = 0
     private var lastTime: Double = 0
+    private var hasSyncedPlaybackTime = false
 
     private var scrollLaneFreeAt: [Double] = []
     private var topLaneNextFree: [Double] = []
@@ -262,6 +263,7 @@ final class DanmakuCanvasView: UIView {
         rebuildLanes()
         textCache.removeAllObjects()
         specialTextCache.removeAllObjects()
+        hasSyncedPlaybackTime = false
         needsRedraw = true
     }
 
@@ -308,6 +310,7 @@ final class DanmakuCanvasView: UIView {
     func attach(_ player: AVPlayer) {
         removeTimeObserverIfNeeded()
         self.player = player
+        syncToPlayerTime(player.currentTime().seconds, preserveActive: false)
         let interval = CMTime(seconds: 1.0 / Double(storedFrameRate), preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
             guard let self else { return }
@@ -322,6 +325,7 @@ final class DanmakuCanvasView: UIView {
         removeTimeObserverIfNeeded()
         player = nil
         active.removeAll()
+        hasSyncedPlaybackTime = false
         needsRedraw = true
         setNeedsDisplay()
     }
@@ -378,10 +382,13 @@ final class DanmakuCanvasView: UIView {
     // MARK: - Logic tick (driven by player time observer at 30Hz)
 
     private func tickLogic(_ now: Double) {
+        if !hasSyncedPlaybackTime {
+            syncToPlayerTime(now, preserveActive: false)
+            needsRedraw = true
+            return
+        }
         if abs(now - lastTime) > seekResyncThreshold {
-            active.removeAll()
-            rebuildLanes()
-            cursor = lowerBound(of: Float(now))
+            syncToPlayerTime(now, preserveActive: false)
         }
         lastTime = now
         currentPlaybackTime = now
@@ -397,6 +404,18 @@ final class DanmakuCanvasView: UIView {
         }
 
         needsRedraw = true
+    }
+
+    private func syncToPlayerTime(_ seconds: Double, preserveActive: Bool) {
+        let now = seconds.isFinite ? max(0, seconds) : 0
+        if !preserveActive {
+            active.removeAll()
+            rebuildLanes()
+        }
+        cursor = lowerBound(of: Float(now))
+        lastTime = now
+        currentPlaybackTime = now
+        hasSyncedPlaybackTime = true
     }
 
     private func schedule(_ item: DanmakuItemDTO, at now: Double) {

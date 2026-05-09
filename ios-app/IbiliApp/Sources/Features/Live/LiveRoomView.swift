@@ -428,8 +428,11 @@ struct LiveRoomView: View {
 
     private func stopDanmakuPipeline() {
         danmaku.detach()
+        danmaku.clear()
         danmakuStream?.close()
         danmakuStream = nil
+        danmakuMessages.removeAll()
+        loadedDanmakuListRoomID = 0
     }
 
     private func loadDanmakuListIfNeeded(generation: UInt64) async {
@@ -833,9 +836,11 @@ private struct LiveDanmakuMessageRow: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(message.isSelf ? IbiliTheme.accent : IbiliTheme.textSecondary)
                 .lineLimit(1)
-            Text(message.text)
-                .font(.subheadline)
-                .foregroundStyle(IbiliTheme.textPrimary)
+            RichReplyText(message: message.text,
+                          emotes: message.emotes,
+                          jumpUrls: [],
+                          font: .subheadline,
+                          textColor: IbiliTheme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }

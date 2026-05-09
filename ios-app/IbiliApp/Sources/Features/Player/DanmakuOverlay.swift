@@ -26,6 +26,10 @@ final class DanmakuController {
         prepareCanvas().mergeItems(items)
     }
 
+    func clear() {
+        canvasView?.setItems([])
+    }
+
     /// Inject a single danmaku item live, *without* refetching the
     /// track. Used by the local-echo path after a successful send so
     /// the user immediately sees their own bullet on screen — also

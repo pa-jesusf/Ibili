@@ -14,6 +14,21 @@ enum DynamicLayout {
     static var contentWidth: CGFloat {
         UIScreen.main.bounds.width - 2 * outerPad - 2 * cardPad
     }
+
+    static func authorSubtitle(pubLabel: String, pubTs: Int64) -> String {
+        let label = pubLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let time = BiliFormat.relativeDate(pubTs)
+        guard !time.isEmpty else { return label }
+        guard !label.isEmpty else { return time }
+        if label == time || label.contains(time) || time.contains(label) {
+            return label
+        }
+        if label.range(of: #"刚刚|(\d+\s*)?(秒|分钟|小时|天)前|昨天|前天|\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}"#,
+                       options: .regularExpression) != nil {
+            return label
+        }
+        return "\(label) · \(time)"
+    }
 }
 
 enum DynamicFeedScope: String, CaseIterable, Identifiable {
@@ -51,7 +66,7 @@ enum DynamicFeedScope: String, CaseIterable, Identifiable {
 /// "card tap" should do.
 enum DynamicTapAction {
     /// Pure video uploads: jump straight to the player overlay.
-    case playVideo(aid: Int64, bvid: String, title: String, cover: String)
+    case playVideo(DynamicVideoDTO, authorName: String)
     case openLive(roomID: Int64, title: String, cover: String, anchorName: String)
     case openArticle(id: String, kind: String)
     /// Anything else (image post / forward / article / live / word):
@@ -61,8 +76,13 @@ enum DynamicTapAction {
 }
 
 private func classify(_ item: DynamicItemDTO) -> DynamicTapAction {
-    if item.kind == .video, let v = item.video, !(v.bvid.isEmpty && v.aid == 0) {
-        return .playVideo(aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+    if (item.kind == .video || item.kind == .pgc), let v = item.video {
+        if v.isPGC, v.epID > 0 || v.seasonID > 0 {
+            return .playVideo(v, authorName: item.author.name)
+        }
+        if !v.bvid.isEmpty || v.aid > 0 {
+            return .playVideo(v, authorName: item.author.name)
+        }
     }
     if item.kind == .live, let live = item.live, live.isOpenable {
         return .openLive(
@@ -79,10 +99,18 @@ private func classify(_ item: DynamicItemDTO) -> DynamicTapAction {
 }
 
 @MainActor
-private func openVideo(_ router: DeepLinkRouter, aid: Int64, bvid: String, title: String, cover: String) {
+private func openVideo(_ router: DeepLinkRouter, video: DynamicVideoDTO, authorName: String = "") {
+    if video.isPGC {
+        if video.epID > 0 {
+            router.openPgc(epID: video.epID)
+        } else if video.seasonID > 0 {
+            router.openPgc(seasonID: video.seasonID)
+        }
+        return
+    }
     router.open(FeedItemDTO(
-        aid: aid, bvid: bvid, cid: 0,
-        title: title, cover: cover, author: "",
+        aid: video.aid, bvid: video.bvid, cid: video.cid,
+        title: video.title, cover: video.cover, author: authorName,
         durationSec: 0, play: 0, danmaku: 0
     ))
 }
@@ -302,14 +330,18 @@ struct DynamicItemCard: View {
 
     private func handleCardTap() {
         switch classify(item) {
-        case .playVideo(let aid, let bvid, let title, let cover):
-            let dto = FeedItemDTO(
-                aid: aid, bvid: bvid, cid: 0,
-                title: title, cover: cover, author: "",
-                durationSec: 0, play: 0, danmaku: 0
-            )
-            if let onOpenVideo { onOpenVideo(dto) }
-            else { router.open(dto) }
+        case .playVideo(let video, let authorName):
+            if video.isPGC {
+                openVideo(router, video: video, authorName: authorName)
+            } else {
+                let dto = FeedItemDTO(
+                    aid: video.aid, bvid: video.bvid, cid: video.cid,
+                    title: video.title, cover: video.cover, author: authorName,
+                    durationSec: 0, play: 0, danmaku: 0
+                )
+                if let onOpenVideo { onOpenVideo(dto) }
+                else { router.open(dto) }
+            }
         case .openLive(let roomID, let title, let cover, let anchorName):
             router.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
         case .openArticle(let id, let kind):
@@ -322,22 +354,30 @@ struct DynamicItemCard: View {
     private func openCardVideo() {
         guard let v = item.video else { return }
         if let onOpenVideo {
-            onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: 0,
-                                    title: v.title, cover: v.cover, author: "",
-                                    durationSec: 0, play: 0, danmaku: 0))
+            if v.isPGC {
+                openVideo(router, video: v, authorName: item.author.name)
+            } else {
+                onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: v.cid,
+                                        title: v.title, cover: v.cover, author: item.author.name,
+                                        durationSec: 0, play: 0, danmaku: 0))
+            }
         } else {
-            openVideo(router, aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+            openVideo(router, video: v, authorName: item.author.name)
         }
     }
 
     private func openOrigVideo() {
         guard let v = item.orig?.video else { return }
         if let onOpenVideo {
-            onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: 0,
-                                    title: v.title, cover: v.cover, author: "",
-                                    durationSec: 0, play: 0, danmaku: 0))
+            if v.isPGC {
+                openVideo(router, video: v, authorName: item.orig?.author.name ?? "")
+            } else {
+                onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: v.cid,
+                                        title: v.title, cover: v.cover, author: item.orig?.author.name ?? "",
+                                        durationSec: 0, play: 0, danmaku: 0))
+            }
         } else {
-            openVideo(router, aid: v.aid, bvid: v.bvid, title: v.title, cover: v.cover)
+            openVideo(router, video: v, authorName: item.orig?.author.name ?? "")
         }
     }
 
@@ -429,8 +469,9 @@ private struct DynamicHeader: View {
                 Text(author.name).font(.subheadline.weight(.medium))
                     .foregroundStyle(IbiliTheme.textPrimary)
                     .lineLimit(1)
-                if !author.pubLabel.isEmpty {
-                    Text(author.pubLabel)
+                let subtitle = DynamicLayout.authorSubtitle(pubLabel: author.pubLabel, pubTs: author.pubTs)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
                         .font(.caption2)
                         .foregroundStyle(IbiliTheme.textSecondary)
                         .lineLimit(1)

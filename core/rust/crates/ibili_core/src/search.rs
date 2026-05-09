@@ -5,8 +5,8 @@
 //! the existing `HttpClient::get_signed_web` machinery.
 
 use crate::dto::{
-    SearchArticleItem, SearchArticlePage, SearchLiveItem, SearchLivePage, SearchUserItem,
-    SearchUserPage, SearchVideoItem, SearchVideoPage,
+    SearchArticleItem, SearchArticlePage, SearchLiveItem, SearchLivePage, SearchPgcItem,
+    SearchPgcPage, SearchUserItem, SearchUserPage, SearchVideoItem, SearchVideoPage,
 };
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
@@ -117,12 +117,36 @@ struct SearchTypeItem {
     reply: i64,
     #[serde(default, deserialize_with = "null_as_default")]
     pub_time: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    season_id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    media_id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    areas: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    styles: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    season_type: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    season_type_name: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    media_score: Option<SearchPgcScore>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    index_show: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pubtime: i64,
 }
 
 #[derive(Deserialize, Default)]
 struct SearchOfficialVerify {
     #[serde(default, deserialize_with = "null_as_default")]
     desc: String,
+}
+
+#[derive(Deserialize, Default)]
+struct SearchPgcScore {
+    #[serde(default, deserialize_with = "score_string_or_empty")]
+    score: String,
 }
 
 impl Core {
@@ -263,6 +287,70 @@ impl Core {
             .filter(|item| item.room_id > 0)
             .collect();
         Ok(SearchLivePage {
+            items,
+            num_results: raw.num_results,
+            num_pages,
+        })
+    }
+
+    pub fn search_pgc(&self, keyword: &str, page: i64, search_type: &str) -> CoreResult<SearchPgcPage> {
+        let search_type = match search_type {
+            "media_ft" => "media_ft",
+            _ => "media_bangumi",
+        };
+        let key = self.fetch_wbi_key_for_search()?;
+        let params: Vec<(String, String)> = vec![
+            ("search_type".into(), search_type.into()),
+            ("keyword".into(), keyword.to_string()),
+            ("page".into(), page.max(1).to_string()),
+            ("page_size".into(), "20".into()),
+            ("platform".into(), "pc".into()),
+            ("web_location".into(), "1430654".into()),
+        ];
+        let keyword_encoded = keyword.replace(' ', "%20");
+        let raw: SearchTypeRoot = self.http.get_signed_web_with_headers(
+            URL_SEARCH_TYPE,
+            params,
+            &key,
+            &[
+                ("Origin", "https://search.bilibili.com".to_string()),
+                (
+                    "Referer",
+                    format!(
+                        "https://search.bilibili.com/{}?keyword={}",
+                        search_type, keyword_encoded
+                    ),
+                ),
+            ],
+        )?;
+        if raw.v_voucher.is_some() {
+            return Err(CoreError::Api {
+                code: -352,
+                msg: "触发搜索风控，请稍后再试".into(),
+            });
+        }
+        let num_pages = resolve_num_pages(&raw);
+        let items = raw
+            .result
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| SearchPgcItem {
+                season_id: r.season_id,
+                media_id: r.media_id,
+                title: strip_em_tags(&r.title),
+                cover: ensure_https(if r.cover.is_empty() { r.pic } else { r.cover }),
+                areas: strip_em_tags(&r.areas),
+                styles: strip_em_tags(&r.styles),
+                season_type: r.season_type,
+                season_type_name: strip_em_tags(&r.season_type_name),
+                score: r.media_score.map(|s| s.score).unwrap_or_default(),
+                index_show: strip_em_tags(&r.index_show),
+                desc: strip_em_tags(&r.desc),
+                pubtime: r.pubtime,
+            })
+            .filter(|item| item.season_id > 0)
+            .collect();
+        Ok(SearchPgcPage {
             items,
             num_results: raw.num_results,
             num_pages,
@@ -479,6 +567,19 @@ where
             .collect(),
         Some(Value::String(s)) if !s.is_empty() => vec![s],
         _ => Vec::new(),
+    })
+}
+
+fn score_string_or_empty<'de, D>(de: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::String(s)) => s,
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
     })
 }
 

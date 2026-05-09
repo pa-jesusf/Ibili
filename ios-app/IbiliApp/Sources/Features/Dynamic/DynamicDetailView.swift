@@ -146,8 +146,10 @@ struct DynamicDetailView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.author.name).font(.subheadline.weight(.semibold))
                     .foregroundStyle(IbiliTheme.textPrimary)
-                if !item.author.pubLabel.isEmpty {
-                    Text(item.author.pubLabel)
+                let subtitle = DynamicLayout.authorSubtitle(pubLabel: item.author.pubLabel,
+                                                            pubTs: item.author.pubTs)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
                         .font(.caption2)
                         .foregroundStyle(IbiliTheme.textSecondary)
                 }
@@ -224,8 +226,16 @@ struct DynamicDetailView: View {
 
     private func openVideo() {
         guard let v = item.video else { return }
+        if v.isPGC {
+            if v.epID > 0 {
+                router.openPgc(epID: v.epID)
+            } else if v.seasonID > 0 {
+                router.openPgc(seasonID: v.seasonID)
+            }
+            return
+        }
         router.open(FeedItemDTO(
-            aid: v.aid, bvid: v.bvid, cid: 0,
+            aid: v.aid, bvid: v.bvid, cid: v.cid,
             title: v.title, cover: v.cover, author: item.author.name,
             durationSec: 0, play: 0, danmaku: 0
         ))
@@ -233,8 +243,16 @@ struct DynamicDetailView: View {
 
     private func openOrigVideo() {
         guard let v = item.orig?.video else { return }
+        if v.isPGC {
+            if v.epID > 0 {
+                router.openPgc(epID: v.epID)
+            } else if v.seasonID > 0 {
+                router.openPgc(seasonID: v.seasonID)
+            }
+            return
+        }
         router.open(FeedItemDTO(
-            aid: v.aid, bvid: v.bvid, cid: 0,
+            aid: v.aid, bvid: v.bvid, cid: v.cid,
             title: v.title, cover: v.cover, author: item.orig?.author.name ?? "",
             durationSec: 0, play: 0, danmaku: 0
         ))

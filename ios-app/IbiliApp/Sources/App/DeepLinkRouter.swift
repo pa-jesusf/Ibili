@@ -277,6 +277,25 @@ final class DeepLinkRouter: ObservableObject {
         path.append(.article(route))
     }
 
+    func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, mode: OpenMode = .push) {
+        guard seasonID > 0 || epID > 0 else { return }
+        Task { @MainActor in
+            do {
+                let season = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
+                }.value
+                let episode = selectEpisode(from: season, epID: epID)
+                guard let episode else { return }
+                open(makePgcFeedItem(season: season, episode: episode), mode: mode)
+            } catch {
+                AppLog.error("router", "PGC 路由解析失败", error: error, metadata: [
+                    "seasonID": String(seasonID),
+                    "epID": String(epID),
+                ])
+            }
+        }
+    }
+
     func closeSession() {
         path.removeAll()
         pending = nil
@@ -321,6 +340,21 @@ final class DeepLinkRouter: ObservableObject {
         case "live":
             if let roomID = Int64(path) {
                 openLive(roomID: roomID)
+            }
+            return .handled
+        case "pgc", "bangumi":
+            let components = url.pathComponents.filter { $0 != "/" }
+            if components.count >= 2 {
+                switch components[0] {
+                case "ep":
+                    if let epID = Int64(components[1]) { openPgc(epID: epID) }
+                case "ss", "season":
+                    if let seasonID = Int64(components[1]) { openPgc(seasonID: seasonID) }
+                default:
+                    break
+                }
+            } else if let epID = Self.extractFirstNumber(from: path), host == "pgc" {
+                openPgc(epID: Int64(epID) ?? 0)
             }
             return .handled
         case "article":
@@ -368,11 +402,40 @@ final class DeepLinkRouter: ObservableObject {
         )
     }
 
+    private func selectEpisode(from season: PgcSeasonDTO, epID: Int64) -> PgcEpisodeDTO? {
+        if epID > 0, let matched = season.episodes.first(where: { $0.epID == epID }) {
+            return matched
+        }
+        return season.episodes.first
+    }
+
+    private func makePgcFeedItem(season: PgcSeasonDTO, episode: PgcEpisodeDTO) -> FeedItemDTO {
+        let seasonTitle = season.seasonTitle.isEmpty ? season.title : season.seasonTitle
+        let epTitle = episode.longTitle.isEmpty ? episode.title : episode.longTitle
+        let title = [seasonTitle, epTitle].filter { !$0.isEmpty }.joined(separator: " · ")
+        return FeedItemDTO(
+            aid: episode.aid,
+            bvid: episode.bvid,
+            cid: episode.cid,
+            title: title.isEmpty ? seasonTitle : title,
+            cover: episode.cover.isEmpty ? season.cover : episode.cover,
+            author: season.upName,
+            durationSec: episode.durationSec,
+            play: season.stat.view,
+            danmaku: season.stat.danmaku,
+            epID: episode.epID,
+            seasonID: season.seasonID,
+            isPGC: true
+        )
+    }
+
     private func isCurrent(_ item: FeedItemDTO) -> Bool {
         guard let currentItem else { return false }
         return currentItem.aid == item.aid
             && currentItem.bvid == item.bvid
             && currentItem.cid == item.cid
+            && currentItem.epID == item.epID
+            && currentItem.isPGC == item.isPGC
     }
 
     private func revealCurrentPlayerIfNeeded(matching item: FeedItemDTO) -> Bool {

@@ -97,7 +97,7 @@ private struct PlayerHoldSpeedBadgeContent: View {
         Image(systemName: "forward.fill")
             .font(.system(size: 22, weight: .bold))
             .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(.white)
+            .foregroundStyle(Color(uiColor: .label))
             .frame(width: 52, height: 52)
         .modifier(PlayerHoldSpeedBadgeBackgroundModifier())
     }
@@ -115,7 +115,7 @@ private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
                     .fill(.ultraThinMaterial)
                     .overlay(
                         Circle()
-                            .stroke(.white.opacity(0.10), lineWidth: 0.5)
+                            .stroke(Color(uiColor: .label).opacity(0.12), lineWidth: 0.5)
                     )
             )
         }

@@ -61,6 +61,10 @@ pub struct DynamicStat {
 pub struct DynamicVideo {
     pub aid: i64,
     pub bvid: String,
+    pub cid: i64,
+    pub ep_id: i64,
+    pub season_id: i64,
+    pub is_pgc: bool,
     pub title: String,
     pub cover: String,
     pub duration_label: String,
@@ -298,6 +302,10 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         video = Some(DynamicVideo {
             aid: arc.aid.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
             bvid: arc.bvid.unwrap_or_default(),
+            cid: 0,
+            ep_id: 0,
+            season_id: 0,
+            is_pgc: false,
             title: arc.title.unwrap_or_default(),
             cover: arc.cover.unwrap_or_default(),
             duration_label: arc.duration_text.unwrap_or_default(),
@@ -337,8 +345,12 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
     }
     if let Some(pgc) = major.pgc {
         video = Some(DynamicVideo {
-            aid: 0,
-            bvid: String::new(),
+            aid: pgc.aid.unwrap_or(0),
+            bvid: pgc.bvid.unwrap_or_default(),
+            cid: 0,
+            ep_id: pgc.epid.unwrap_or(0),
+            season_id: pgc.season_id.unwrap_or(0),
+            is_pgc: true,
             title: pgc.title.unwrap_or_default(),
             cover: pgc.cover.unwrap_or_default(),
             duration_label: pgc.sub_type.unwrap_or_default(),
@@ -502,6 +514,10 @@ struct DynArticleWire {
 
 #[derive(Default, Deserialize)]
 struct DynPgcWire {
+    #[serde(default, deserialize_with = "lenient_i64")] aid: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")] bvid: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")] epid: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")] season_id: Option<i64>,
     #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")] cover: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")] sub_type: Option<String>,

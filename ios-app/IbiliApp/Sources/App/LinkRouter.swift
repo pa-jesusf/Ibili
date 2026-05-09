@@ -7,6 +7,14 @@ enum LinkRouter {
         if let bv = extractBV(from: source) ?? extractBV(from: keyword) {
             return "ibili://bv/\(bv)"
         }
+        if let epID = extract(pattern: #"(?i)(?:/bangumi/play/|^)(?:ep)(\d+)"#, from: source)
+            ?? extract(pattern: #"(?i)^ep(\d+)$"#, from: keyword) {
+            return "ibili://pgc/ep/\(epID)"
+        }
+        if let seasonID = extract(pattern: #"(?i)(?:/bangumi/play/|^)(?:ss)(\d+)"#, from: source)
+            ?? extract(pattern: #"(?i)^ss(\d+)$"#, from: keyword) {
+            return "ibili://pgc/ss/\(seasonID)"
+        }
         if let aid = extract(pattern: #"(?i)(?:^|/|[?&])av(\d+)"#, from: source) ?? extract(pattern: #"(?i)^av(\d+)"#, from: keyword) {
             return "ibili://av/\(aid)"
         }

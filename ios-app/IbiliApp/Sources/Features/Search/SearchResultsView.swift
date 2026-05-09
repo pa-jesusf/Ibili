@@ -14,6 +14,7 @@ struct SearchResultsView: View {
     @State private var isPageInputPresented: Bool = false
     @State private var scrollID: UUID = UUID()
     @State private var userSpaceMID: Int64?
+    @State private var resolvingPgcSeasonID: Int64?
     @StateObject private var scrollContext = InterruptibleScrollContext()
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
 
@@ -59,7 +60,7 @@ struct SearchResultsView: View {
             let preferredCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let cols = vm.selectedType == .user
                 ? (geo.size.width >= 760 ? 2 : 1)
-                : preferredCols
+                : (vm.selectedType == .bangumi || vm.selectedType == .movie ? 1 : preferredCols)
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
             let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
@@ -224,6 +225,25 @@ struct SearchResultsView: View {
                 )
             }
             .buttonStyle(.plain)
+        case .pgc(let pgc):
+            Button {
+                openPgc(pgc)
+            } label: {
+                ZStack {
+                    SearchPgcResultCardView(
+                        item: pgc,
+                        cardWidth: cardWidth,
+                        imageQuality: settings.resolvedImageQuality()
+                    )
+                    if resolvingPgcSeasonID == pgc.seasonID {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.black.opacity(0.18))
+                        ProgressView().tint(.white)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(resolvingPgcSeasonID == pgc.seasonID)
         }
     }
 
@@ -239,6 +259,7 @@ struct SearchResultsView: View {
             case .live(let live): return live.cover
             case .user(let user): return user.face
             case .article(let article): return article.cover
+            case .pgc(let pgc): return pgc.cover
             }
         }
         let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
@@ -280,6 +301,56 @@ struct SearchResultsView: View {
             danmaku: result.danmaku,
             pubdate: result.pubdate
         )
+    }
+
+    private func openPgc(_ item: SearchPgcItemDTO) {
+        guard resolvingPgcSeasonID == nil else { return }
+        resolvingPgcSeasonID = item.seasonID
+        Task {
+            do {
+                let season = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.pgcSeason(seasonID: item.seasonID)
+                }.value
+                guard let episode = season.episodes.first else {
+                    await MainActor.run { resolvingPgcSeasonID = nil }
+                    return
+                }
+                let feedItem = FeedItemDTO(
+                    aid: episode.aid,
+                    bvid: episode.bvid,
+                    cid: episode.cid,
+                    title: pgcDisplayTitle(season: season, episode: episode),
+                    cover: episode.cover.isEmpty ? season.cover : episode.cover,
+                    author: season.upName,
+                    durationSec: episode.durationSec,
+                    play: season.stat.view,
+                    danmaku: season.stat.danmaku,
+                    epID: episode.epID,
+                    seasonID: season.seasonID,
+                    isPGC: true
+                )
+                await MainActor.run {
+                    resolvingPgcSeasonID = nil
+                    router.open(feedItem)
+                }
+            } catch {
+                await MainActor.run {
+                    resolvingPgcSeasonID = nil
+                }
+                AppLog.error("search", "番剧/影视解析失败", error: error, metadata: [
+                    "seasonID": String(item.seasonID),
+                ])
+            }
+        }
+    }
+
+    private func pgcDisplayTitle(season: PgcSeasonDTO, episode: PgcEpisodeDTO) -> String {
+        let seasonTitle = season.seasonTitle.isEmpty ? season.title : season.seasonTitle
+        let epTitle = episode.longTitle.isEmpty ? episode.title : episode.longTitle
+        guard !seasonTitle.isEmpty, !epTitle.isEmpty else {
+            return seasonTitle.isEmpty ? epTitle : seasonTitle
+        }
+        return "\(seasonTitle) · \(epTitle)"
     }
 
     private func openUserSpace(mid: Int64) {

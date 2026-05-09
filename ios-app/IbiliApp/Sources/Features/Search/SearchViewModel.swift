@@ -7,8 +7,9 @@ import SwiftUI
 /// points.
 ///
 /// Implementation notes:
-/// * `.video`, `.user`, `.live`, and `.article` are implemented. Video keeps the
-///   full filter surface; user/live/article ignore video-only filters.
+/// * All visible tabs are implemented. Video keeps the full filter surface;
+///   user/article expose their upstream filters, while live/PGC have no extra
+///   search filters.
 /// * Pagination is explicit. Calling `submit` always restarts from
 ///   `page = 1`; users move with previous/next controls instead of
 ///   scroll-triggered infinite loading.
@@ -194,7 +195,19 @@ final class SearchViewModel: ObservableObject {
                     )
                 }.value
             case .bangumi, .movie:
-                return
+                let searchType = typeCopy == .bangumi ? "media_bangumi" : "media_ft"
+                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                    let page = try client.searchPgc(
+                        keyword: queryCopy,
+                        page: targetPage,
+                        searchType: searchType
+                    )
+                    return SearchPageResult(
+                        items: page.items.map(SearchResultItem.pgc),
+                        numResults: page.numResults,
+                        numPages: page.numPages
+                    )
+                }.value
             }
             // Guard against late callbacks for a stale query.
             guard queryCopy == self.query, typeCopy == self.selectedType else { return }
@@ -214,6 +227,7 @@ enum SearchResultItem: Identifiable, Hashable {
     case live(SearchLiveItemDTO)
     case user(SearchUserItemDTO)
     case article(SearchArticleItemDTO)
+    case pgc(SearchPgcItemDTO)
 
     var id: String {
         switch self {
@@ -225,6 +239,8 @@ enum SearchResultItem: Identifiable, Hashable {
             return "user-\(item.id)"
         case .article(let item):
             return "article-\(item.id)"
+        case .pgc(let item):
+            return "pgc-\(item.id)"
         }
     }
 }

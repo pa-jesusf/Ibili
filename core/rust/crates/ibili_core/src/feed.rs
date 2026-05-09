@@ -26,6 +26,10 @@ struct FeedRawItem {
     #[serde(default)]
     goto: String,
     #[serde(default)]
+    uri: String,
+    #[serde(default)]
+    param: String,
+    #[serde(default)]
     bvid: String,
     #[serde(default)]
     title: String,
@@ -77,6 +81,12 @@ struct PlayerArgs {
     aid: i64,
     #[serde(default)]
     cid: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    ep_id: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    epid: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    season_id: i64,
     #[serde(default)]
     duration: i64,
 }
@@ -284,6 +294,9 @@ impl Core {
                     aid: i.id,
                     bvid: i.bvid,
                     cid: i.cid,
+                    ep_id: 0,
+                    season_id: 0,
+                    is_pgc: false,
                     owner_mid: owner.mid.unwrap_or(0),
                     title: i.title,
                     cover: ensure_https(i.pic),
@@ -351,10 +364,24 @@ impl Core {
                 if pa.aid == 0 {
                     return None;
                 }
+                let is_pgc = i.goto == "bangumi";
+                let ep_id = if pa.ep_id > 0 { pa.ep_id } else { pa.epid };
+                let season_id = if pa.season_id > 0 {
+                    pa.season_id
+                } else if is_pgc {
+                    extract_pgc_id(&i.uri, "ss")
+                        .or_else(|| extract_pgc_id(&i.param, "ss"))
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 Some(FeedItem {
                     aid: pa.aid,
                     bvid: i.bvid,
                     cid: pa.cid,
+                    ep_id,
+                    season_id,
+                    is_pgc,
                     owner_mid: i.args.up_id.unwrap_or(0),
                     title: i.title,
                     cover: i.cover,
@@ -400,6 +427,9 @@ impl Core {
                 aid: item.aid,
                 bvid: item.bvid,
                 cid: item.cid,
+                ep_id: 0,
+                season_id: 0,
+                is_pgc: false,
                 owner_mid: item.owner.mid.unwrap_or(0),
                 title: item.title,
                 cover: item.pic,
@@ -482,6 +512,13 @@ fn relation_attribute_is_following(attribute: i64) -> bool {
     attribute & 2 != 0
 }
 
+fn extract_pgc_id(raw: &str, prefix: &str) -> Option<i64> {
+    let index = raw.find(prefix)?;
+    let tail = &raw[index + prefix.len()..];
+    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 fn lenient_string<'de, D>(de: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -508,6 +545,13 @@ where
         Some(Value::Bool(b)) => Some(if b { 1 } else { 0 }),
         _ => None,
     })
+}
+
+fn lenient_i64_value<'de, D>(de: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(lenient_i64(de)?.unwrap_or(0))
 }
 
 fn lenient_bool<'de, D>(de: D) -> Result<Option<bool>, D::Error>

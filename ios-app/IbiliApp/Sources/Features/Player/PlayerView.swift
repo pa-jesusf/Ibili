@@ -5,6 +5,7 @@ import UIKit
 import os
 
 private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> FeedItemDTO {
+    guard !item.isPGC else { return item }
     guard item.cid == 0 else { return item }
     let resolvedCid: Int64 = try await Task.detached(priority: .userInitiated) {
         try CoreClient.shared.videoViewCid(bvid: item.bvid)
@@ -20,7 +21,10 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
         play: item.play,
         danmaku: item.danmaku,
         pubdate: item.pubdate,
-        isFollowed: item.isFollowed
+        isFollowed: item.isFollowed,
+        epID: item.epID,
+        seasonID: item.seasonID,
+        isPGC: item.isPGC
     )
 }
 
@@ -280,16 +284,15 @@ final class PlayerViewModel: ObservableObject {
         do {
             let discoveryQnTarget = max(preferredQn, discoveryQn)
             let initial: PlayUrlDTO
-            if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
-                                                       cid: item.cid,
-                                                       qn: discoveryQnTarget,
-                                                       cdn: cdnSelection) {
+            if !item.isPGC,
+               let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
+                                                        cid: item.cid,
+                                                        qn: discoveryQnTarget,
+                                                        cdn: cdnSelection) {
                 initial = warm
                 rememberPlayURL(warm)
             } else {
-                initial = try await fetchPlayUrl(aid: item.aid,
-                                                 cid: item.cid,
-                                                 qn: discoveryQnTarget)
+                initial = try await fetchPlayUrl(for: item, qn: discoveryQnTarget)
             }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let qualities = normalizedQualities(from: initial)
@@ -297,16 +300,15 @@ final class PlayerViewModel: ObservableObject {
             let info: PlayUrlDTO
             if targetQn == initial.quality {
                 info = initial
-            } else if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
-                                                                cid: item.cid,
-                                                                qn: targetQn,
-                                                                cdn: cdnSelection) {
+            } else if !item.isPGC,
+                      let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
+                                                               cid: item.cid,
+                                                               qn: targetQn,
+                                                               cdn: cdnSelection) {
                 info = warm
                 rememberPlayURL(warm)
             } else {
-                info = try await fetchPlayUrl(aid: item.aid,
-                                              cid: item.cid,
-                                              qn: targetQn)
+                info = try await fetchPlayUrl(for: item, qn: targetQn)
             }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
@@ -328,16 +330,15 @@ final class PlayerViewModel: ObservableObject {
             let runFastLoad = fastLoad && lowestQn < info.quality
             if runFastLoad {
                 let loInfo: PlayUrlDTO
-                if let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
+                if !item.isPGC,
+                   let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                             cid: item.cid,
                                                             qn: lowestQn,
                                                             cdn: cdnSelection) {
                     loInfo = warm
                     rememberPlayURL(warm)
                 } else {
-                    loInfo = try await fetchPlayUrl(aid: item.aid,
-                                                    cid: item.cid,
-                                                    qn: lowestQn)
+                    loInfo = try await fetchPlayUrl(for: item, qn: lowestQn)
                 }
                 guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
                 rememberPlayURL(loInfo)
@@ -756,7 +757,12 @@ final class PlayerViewModel: ObservableObject {
             // Releasing the previous source before allocating the new
             // one keeps the proxy token table from growing across
             // switches without tearing down other tab's retained players.
-            let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
+            let info: PlayUrlDTO
+            if let item = lastLoadedItem {
+                info = try await fetchPlayUrl(for: item, qn: qn)
+            } else {
+                info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
+            }
             rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
@@ -1123,6 +1129,7 @@ final class PlayerViewModel: ObservableObject {
     /// — that's how the cloud "history / 继续观看" works.
     private func startHeartbeatIfNeeded() {
         guard let player, heartbeatObserverToken == nil else { return }
+        guard lastLoadedItem?.isPGC != true else { return }
         let interval = CMTime(seconds: 15, preferredTimescale: 1)
         let aidSnap = aid
         let bvidSnap = bvid
@@ -1494,6 +1501,17 @@ final class PlayerViewModel: ObservableObject {
         try await fetchPlayUrl(aid: aid, cid: cid, qn: qn, audioQn: currentAudioQn)
     }
 
+    private func fetchPlayUrl(for item: FeedItemDTO, qn: Int64) async throws -> PlayUrlDTO {
+        try await fetchPlayUrl(for: item, qn: qn, audioQn: currentAudioQn)
+    }
+
+    private func fetchPlayUrl(for item: FeedItemDTO, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
+        if item.isPGC {
+            return try await fetchPgcPlayUrl(item: item, qn: qn, audioQn: audioQn)
+        }
+        return try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: qn, audioQn: audioQn)
+    }
+
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
         if self.aid == aid,
            self.cid == cid,
@@ -1511,6 +1529,35 @@ final class PlayerViewModel: ObservableObject {
             try CoreClient.shared.playUrl(
                 aid: aid,
                 cid: cid,
+                qn: qn,
+                audioQn: audioQn,
+                cdn: cdnSelection
+            )
+        }.value
+        rememberPlayURL(info)
+        return info
+    }
+
+    private func fetchPgcPlayUrl(item: FeedItemDTO, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
+        if self.aid == item.aid,
+           self.cid == item.cid,
+           let cached = pageCache.playURL(qn: qn, audioQn: audioQn, variant: playbackCacheVariant) {
+            AppLog.debug("player", "命中播放页缓存的 PGC 播放地址", metadata: [
+                "aid": String(item.aid),
+                "cid": String(item.cid),
+                "epID": String(item.epID),
+                "qn": String(qn),
+                "audioQn": String(audioQn),
+            ])
+            return cached
+        }
+        let cdnSelection = self.cdnSelection
+        let info = try await Task.detached {
+            try CoreClient.shared.pgcPlayUrl(
+                aid: item.aid,
+                cid: item.cid,
+                epID: item.epID,
+                seasonID: item.seasonID,
                 qn: qn,
                 audioQn: audioQn,
                 cdn: cdnSelection
@@ -1744,7 +1791,12 @@ final class PlayerViewModel: ObservableObject {
             player.replaceCurrentItem(with: nil)
             activePreparation?.release()
             activePreparation = nil
-            let info = try await fetchPlayUrl(aid: aid, cid: cid, qn: currentQn, audioQn: audioQn)
+            let info: PlayUrlDTO
+            if let item = lastLoadedItem {
+                info = try await fetchPlayUrl(for: item, qn: currentQn, audioQn: audioQn)
+            } else {
+                info = try await fetchPlayUrl(aid: aid, cid: cid, qn: currentQn, audioQn: audioQn)
+            }
             rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             let prep = try await engine.makeItem(for: info)
@@ -2024,7 +2076,7 @@ struct PlayerView: View {
     }
 
     private var mediaLoadKey: String {
-        "\(item.aid):\(item.bvid):\(item.cid)"
+        "\(item.isPGC ? "pgc" : "ugc"):\(item.aid):\(item.bvid):\(item.cid):\(item.epID)"
     }
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
@@ -2426,6 +2478,11 @@ struct PlayerView: View {
             } else {
                 resolvedItem = try await resolvePlayableItemIfNeeded(item)
             }
+            guard !resolvedItem.isPGC else {
+                danmaku.clear()
+                if let p = vm.player { danmaku.attach(p) }
+                return
+            }
             guard !usesSegmentedDanmaku(resolvedItem) else {
                 await MainActor.run {
                     if let p = vm.player {
@@ -2478,7 +2535,7 @@ struct PlayerView: View {
     }
 
     private func usesSegmentedDanmaku(_ item: FeedItemDTO) -> Bool {
-        item.durationSec >= Self.longDanmakuDurationThresholdSec
+        !item.isPGC && item.durationSec >= Self.longDanmakuDurationThresholdSec
     }
 
     private func configureDanmakuSegmentObserver(for player: AVPlayer) {

@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::cdn::cdn_host_for_selection;
 use crate::dto::{
     LiveDanmakuHistory, LiveDanmakuHost, LiveDanmakuInfo, LiveDanmakuMessage, LiveFeedItem,
-    LiveFeedPage, LivePlayUrl, LiveQuality, LiveRoomInfo,
+    LiveFeedPage, LivePlayUrl, LiveQuality, LiveRoomInfo, ReplyEmote,
 };
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
@@ -224,6 +224,10 @@ struct LiveHistoryDanmakuWire {
     text: Option<String>,
     #[serde(default)]
     user: Option<LiveHistoryUserWire>,
+    #[serde(default)]
+    emots: std::collections::BTreeMap<String, LiveEmoteWire>,
+    #[serde(default)]
+    emoticon: Option<LiveEmoteWire>,
 }
 
 #[derive(Default, Deserialize)]
@@ -375,7 +379,8 @@ impl Core {
         let self_mid = self.session.read().snapshot().mid;
         let mut items = Vec::with_capacity(raw.room.len());
         for (idx, item) in raw.room.into_iter().enumerate() {
-            let text = item.text.unwrap_or_default().trim().to_string();
+            let raw_text = item.text.unwrap_or_default();
+            let text = raw_text.trim().to_string();
             if text.is_empty() {
                 continue;
             }
@@ -398,6 +403,7 @@ impl Core {
                 name,
                 text,
                 is_self: self_mid > 0 && uid == self_mid,
+                emotes: live_history_emotes(&raw_text, item.emots, item.emoticon),
             });
         }
         Ok(LiveDanmakuHistory { items })
@@ -638,6 +644,54 @@ fn ensure_https(raw: String) -> String {
     } else {
         raw
     }
+}
+
+#[derive(Default, Deserialize)]
+struct LiveEmoteWire {
+    #[serde(default, deserialize_with = "lenient_string")]
+    url: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    emoticon_unique: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    width: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    height: Option<i64>,
+}
+
+fn live_history_emotes(
+    text: &str,
+    emots: std::collections::BTreeMap<String, LiveEmoteWire>,
+    emoticon: Option<LiveEmoteWire>,
+) -> Vec<ReplyEmote> {
+    let mut out = Vec::new();
+    for (key, emote) in emots {
+        if let Some(reply) = live_emote_to_reply_emote(key, emote) {
+            out.push(reply);
+        }
+    }
+    if let Some(emote) = emoticon {
+        let key = if text.trim().is_empty() {
+            emote.emoticon_unique.clone().unwrap_or_default()
+        } else {
+            text.to_string()
+        };
+        if let Some(reply) = live_emote_to_reply_emote(key, emote) {
+            out.push(reply);
+        }
+    }
+    out
+}
+
+fn live_emote_to_reply_emote(name: String, emote: LiveEmoteWire) -> Option<ReplyEmote> {
+    let name = name.trim().to_string();
+    let url = ensure_https(emote.url.unwrap_or_default());
+    if name.is_empty() || url.is_empty() {
+        return None;
+    }
+    let width = emote.width.unwrap_or(0);
+    let height = emote.height.unwrap_or(width);
+    let size = if width.max(height) >= 80 { 2 } else { 1 };
+    Some(ReplyEmote { name, url, size })
 }
 
 fn lenient_string<'de, D>(de: D) -> Result<Option<String>, D::Error>

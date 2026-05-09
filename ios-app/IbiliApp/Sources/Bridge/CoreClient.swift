@@ -250,6 +250,51 @@ public final class CoreClient: @unchecked Sendable {
         )
     }
 
+    public func pgcPlayUrl(
+        aid: Int64,
+        cid: Int64,
+        epID: Int64,
+        seasonID: Int64 = 0,
+        qn: Int64 = 0,
+        audioQn: Int64 = 0,
+        cdn: String = "auto"
+    ) throws -> PlayUrlDTO {
+        struct A: Encodable {
+            let aid: Int64
+            let cid: Int64
+            let ep_id: Int64
+            let season_id: Int64
+            let qn: Int64
+            let audio_qn: Int64
+            let cdn: String
+        }
+        return try call(
+            "pgc.playurl",
+            args: A(
+                aid: aid,
+                cid: cid,
+                ep_id: epID,
+                season_id: seasonID,
+                qn: qn,
+                audio_qn: audioQn,
+                cdn: cdn
+            ),
+            decoding: PlayUrlDTO.self
+        )
+    }
+
+    public func pgcSeason(seasonID: Int64 = 0, epID: Int64 = 0) throws -> PgcSeasonDTO {
+        struct A: Encodable {
+            let season_id: Int64
+            let ep_id: Int64
+        }
+        return try call(
+            "pgc.season",
+            args: A(season_id: seasonID, ep_id: epID),
+            decoding: PgcSeasonDTO.self
+        )
+    }
+
     public func playUrlTV(aid: Int64, cid: Int64, qn: Int64 = 0) throws -> PlayUrlDTO {
         struct A: Encodable { let aid: Int64; let cid: Int64; let qn: Int64 }
         return try call("video.playurl.tv", args: A(aid: aid, cid: cid, qn: qn), decoding: PlayUrlDTO.self)
@@ -374,6 +419,23 @@ public final class CoreClient: @unchecked Sendable {
             "search.article",
             args: A(keyword: keyword, page: page, order: order, category_id: categoryID),
             decoding: SearchArticlePageDTO.self
+        )
+    }
+
+    public func searchPgc(
+        keyword: String,
+        page: Int64 = 1,
+        searchType: String
+    ) throws -> SearchPgcPageDTO {
+        struct A: Encodable {
+            let keyword: String
+            let page: Int64
+            let search_type: String
+        }
+        return try call(
+            "search.pgc",
+            args: A(keyword: keyword, page: page, search_type: searchType),
+            decoding: SearchPgcPageDTO.self
         )
     }
 

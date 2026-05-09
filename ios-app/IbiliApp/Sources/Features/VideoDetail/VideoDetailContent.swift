@@ -85,7 +85,19 @@ struct VideoDetailContent: View {
         .onChange(of: tab) { newValue in
             mountedTabs.insert(newValue)
         }
-        .task(id: "\(item.aid):\(item.bvid)") {
+        .task(id: "\(item.isPGC ? "pgc" : "ugc"):\(item.aid):\(item.bvid):\(item.epID)") {
+            if item.isPGC {
+                interaction.reset(stat: VideoStatDTO(
+                    view: item.play,
+                    danmaku: item.danmaku,
+                    reply: 0,
+                    favorite: 0,
+                    coin: 0,
+                    share: 0,
+                    like: 0
+                ))
+                return
+            }
             let stat = vm.view?.stat ?? VideoStatDTO(view: 0, danmaku: 0, reply: 0, favorite: 0, coin: 0, share: 0, like: 0)
             interaction.reset(stat: stat)
 
@@ -138,7 +150,7 @@ struct VideoDetailContent: View {
     }
 
     private var commentOID: Int64 {
-        vm.view?.aid ?? item.aid
+        item.isPGC ? item.aid : (vm.view?.aid ?? item.aid)
     }
 
     private var refreshBVID: String {
@@ -222,21 +234,29 @@ struct VideoDetailContent: View {
                 case .intro:
                     introBody
                 case .replies:
-                    CommentListView(oid: commentOID, viewModel: commentListViewModel)
-                        .padding(.horizontal, 16)
+                    if item.isPGC {
+                        emptyPGCDetailText("番剧/影视评论后续接入")
+                    } else {
+                        CommentListView(oid: commentOID, viewModel: commentListViewModel)
+                            .padding(.horizontal, 16)
+                    }
                 case .related:
-                    RelatedVideoList(
-                        items: vm.related,
-                        isLoadingMore: vm.isLoadingMoreRelated,
-                        isEnd: vm.relatedIsEnd,
-                        onTap: { feedItem in
-                            router.open(feedItem)
-                        },
-                        onReachEnd: {
-                            Task { await vm.loadMoreRelated() }
-                        }
-                    )
-                    .padding(.horizontal, 12)
+                    if item.isPGC {
+                        emptyPGCDetailText("番剧/影视相关推荐后续接入")
+                    } else {
+                        RelatedVideoList(
+                            items: vm.related,
+                            isLoadingMore: vm.isLoadingMoreRelated,
+                            isEnd: vm.relatedIsEnd,
+                            onTap: { feedItem in
+                                router.open(feedItem)
+                            },
+                            onReachEnd: {
+                                Task { await vm.loadMoreRelated() }
+                            }
+                        )
+                        .padding(.horizontal, 12)
+                    }
                 }
             }
             .padding(.bottom, Self.floatingControlsReservedBottomInset)
@@ -257,14 +277,16 @@ struct VideoDetailContent: View {
         VStack(alignment: .leading, spacing: 14) {
             VideoIntroSection(
                 title: vm.view?.title ?? item.title,
-                stat: vm.view?.stat,
+                stat: item.isPGC
+                    ? VideoStatDTO(view: item.play, danmaku: item.danmaku, reply: 0, favorite: 0, coin: 0, share: 0, like: 0)
+                    : vm.view?.stat,
                 pubdate: vm.view?.pubdate ?? 0,
                 aid: vm.view?.aid ?? item.aid,
                 bvid: vm.view?.bvid ?? item.bvid
             )
             .padding(.horizontal, 16)
 
-            if let stat = vm.view?.stat {
+            if !item.isPGC, let stat = vm.view?.stat {
                 if interaction.isHydrating {
                     // Don't flash default-false icons before relation
                     // state arrives — show a spacer-height loader.
@@ -282,17 +304,22 @@ struct VideoDetailContent: View {
                 }
             }
 
-            if let owner = vm.view?.owner {
+            if !item.isPGC, let owner = vm.view?.owner {
                 UploaderCardView(owner: owner, interaction: interaction)
                     .padding(.horizontal, 16)
             }
 
-            if let v = vm.view, !v.desc.isEmpty || !v.descV2.isEmpty {
+            if item.isPGC {
+                Text("番剧/影视内容播放中")
+                    .font(.footnote)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .padding(.horizontal, 16)
+            } else if let v = vm.view, !v.desc.isEmpty || !v.descV2.isEmpty {
                 VideoDescriptionView(desc: v.desc, descV2: v.descV2)
                     .padding(.horizontal, 16)
             }
 
-            if let v = vm.view {
+            if !item.isPGC, let v = vm.view {
                 let currentCid = v.cid
                 if let season = v.ugcSeason, season.id > 0 {
                     VideoSeasonCard(source: .season(season, currentCid: currentCid)) { aid, bvid, cid in
@@ -323,7 +350,7 @@ struct VideoDetailContent: View {
                 }
             }
 
-            if let tags = vm.view?.tags, !tags.isEmpty {
+            if !item.isPGC, let tags = vm.view?.tags, !tags.isEmpty {
                 VideoTagsView(tags: tags)
                     .padding(.horizontal, 16)
             }
@@ -338,7 +365,16 @@ struct VideoDetailContent: View {
         }
     }
 
+    private func emptyPGCDetailText(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(IbiliTheme.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+            .padding(.horizontal, 16)
+    }
+
     private func refreshMetadata(trigger: String = "pull-to-refresh") async {
+        guard !item.isPGC else { return }
         guard !isRefreshingMetadata else { return }
         isRefreshingMetadata = true
         lastMetadataRefreshAt = Date()

@@ -157,6 +157,10 @@ struct SendLiveDanmakuArgs {
 struct PlayurlArgs {
     aid: i64,
     cid: i64,
+    #[serde(default)]
+    ep_id: i64,
+    #[serde(default)]
+    season_id: i64,
     #[serde(default = "default_qn")]
     qn: i64,
     #[serde(default)]
@@ -190,6 +194,10 @@ struct VideoViewArgs {
     aid: i64,
     #[serde(default)]
     bvid: String,
+    #[serde(default)]
+    ep_id: i64,
+    #[serde(default)]
+    season_id: i64,
 }
 
 #[derive(Deserialize)]
@@ -388,6 +396,18 @@ struct SearchLiveArgs {
 }
 
 #[derive(Deserialize)]
+struct SearchPgcArgs {
+    keyword: String,
+    #[serde(default = "default_search_page")]
+    page: i64,
+    #[serde(default = "default_search_pgc_type")]
+    search_type: String,
+}
+fn default_search_pgc_type() -> String {
+    "media_bangumi".into()
+}
+
+#[derive(Deserialize)]
 struct SearchUserArgs {
     keyword: String,
     #[serde(default = "default_search_page")]
@@ -574,6 +594,22 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                     .video_playurl_with_audio_options(a.aid, a.cid, a.qn, a.audio_qn, &a.cdn)?,
             )
         }
+        "pgc.playurl" => {
+            let a: PlayurlArgs = serde_json::from_value(args)?;
+            to_value(c.inner.pgc_playurl_with_audio_options(
+                a.aid,
+                a.cid,
+                a.ep_id,
+                a.season_id,
+                a.qn,
+                a.audio_qn,
+                &a.cdn,
+            )?)
+        }
+        "pgc.season" => {
+            let a: VideoViewArgs = serde_json::from_value(args)?;
+            to_value(c.inner.pgc_season(a.season_id, a.ep_id)?)
+        }
         "video.playurl.tv" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
             to_value(c.inner.video_playurl_tv_compat(a.aid, a.cid, a.qn)?)
@@ -714,6 +750,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "search.live" => {
             let a: SearchLiveArgs = serde_json::from_value(args)?;
             to_value(c.inner.search_live(&a.keyword, a.page)?)
+        }
+        "search.pgc" => {
+            let a: SearchPgcArgs = serde_json::from_value(args)?;
+            to_value(c.inner.search_pgc(&a.keyword, a.page, &a.search_type)?)
         }
         "search.user" => {
             let a: SearchUserArgs = serde_json::from_value(args)?;

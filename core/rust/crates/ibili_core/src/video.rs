@@ -2,16 +2,18 @@ use crate::Core;
 use crate::cdn::rank_urls_for_selection;
 use crate::dto::PlayUrl;
 use crate::dto::{
-    RelatedVideoItem, UgcSeason, UgcSeasonEpisode, UgcSeasonSection, VideoDescNode, VideoHonor,
-    VideoOwner, VideoPage, VideoStat, VideoView,
+    PgcEpisode, PgcSeason, PgcStat, RelatedVideoItem, UgcSeason, UgcSeasonEpisode,
+    UgcSeasonSection, VideoDescNode, VideoHonor, VideoOwner, VideoPage, VideoStat, VideoView,
 };
 use crate::error::{CoreError, CoreResult};
-use crate::signer::WbiKey;
+use crate::signer::{WbiKey, WbiSigner};
 use serde::{Deserialize, Deserializer};
 
 const URL_PLAYURL_WEB: &str = "https://api.bilibili.com/x/player/wbi/playurl";
+const URL_PLAYURL_PGC: &str = "https://api.bilibili.com/pgc/player/web/v2/playurl";
 const URL_PLAYURL_TV: &str = "https://api.bilibili.com/x/tv/playurl";
 const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
+const URL_PGC_INFO: &str = "https://api.bilibili.com/pgc/view/web/season";
 
 #[derive(Deserialize)]
 struct PlayUrlRoot {
@@ -27,6 +29,87 @@ struct PlayUrlRoot {
     /// cid; absent / 0 otherwise.
     #[serde(default)] last_play_time: i64,
     #[serde(default)] last_play_cid: i64,
+}
+
+#[derive(Deserialize)]
+struct PgcPlayUrlEnvelope {
+    #[serde(default)] code: i64,
+    #[serde(default)] message: String,
+    #[serde(default)] result: Option<PgcPlayUrlResult>,
+}
+
+#[derive(Deserialize)]
+struct PgcPlayUrlResult {
+    video_info: PlayUrlRoot,
+    #[serde(default)] play_view_business_info: Option<PgcPlayViewBusinessInfo>,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcPlayViewBusinessInfo {
+    #[serde(default)] user_status: Option<PgcPlayUserStatus>,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcPlayUserStatus {
+    #[serde(default, deserialize_with = "lenient_i64_value")] current_watch_progress: i64,
+}
+
+#[derive(Deserialize)]
+struct PgcSeasonEnvelope {
+    #[serde(default)] code: i64,
+    #[serde(default)] message: String,
+    #[serde(default)] result: Option<PgcSeasonWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcSeasonWire {
+    #[serde(default, deserialize_with = "lenient_i64_value")] season_id: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] media_id: i64,
+    #[serde(default, deserialize_with = "null_as_default")] title: String,
+    #[serde(default, deserialize_with = "null_as_default")] season_title: String,
+    #[serde(default, deserialize_with = "null_as_default")] cover: String,
+    #[serde(default, deserialize_with = "null_as_default")] evaluate: String,
+    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")] season_type: i64,
+    #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<PgcEpisodeWire>,
+    #[serde(default, deserialize_with = "null_as_default")] section: Vec<PgcSectionWire>,
+    #[serde(default)] stat: Option<PgcStatWire>,
+    #[serde(default)] up_info: Option<PgcUpInfoWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcSectionWire {
+    #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<PgcEpisodeWire>,
+}
+
+#[derive(Clone, Default, Deserialize)]
+struct PgcEpisodeWire {
+    #[serde(default, deserialize_with = "lenient_i64_value")] aid: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] cid: i64,
+    #[serde(default, deserialize_with = "null_as_default")] bvid: String,
+    #[serde(default, deserialize_with = "null_as_default")] cover: String,
+    #[serde(default, deserialize_with = "lenient_i64_value")] ep_id: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] id: i64,
+    #[serde(default, deserialize_with = "null_as_default")] title: String,
+    #[serde(default, deserialize_with = "null_as_default")] long_title: String,
+    #[serde(default, deserialize_with = "null_as_default")] show_title: String,
+    #[serde(default, deserialize_with = "lenient_i64_value")] duration: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcStatWire {
+    #[serde(default, alias = "views", deserialize_with = "lenient_i64_value")] view: i64,
+    #[serde(default, alias = "danmakus", deserialize_with = "lenient_i64_value")] danmaku: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] reply: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] favorite: i64,
+    #[serde(default, alias = "coins", deserialize_with = "lenient_i64_value")] coin: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] share: i64,
+    #[serde(default, alias = "likes", deserialize_with = "lenient_i64_value")] like: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct PgcUpInfoWire {
+    #[serde(default, deserialize_with = "lenient_i64_value")] mid: i64,
+    #[serde(default, alias = "uname", deserialize_with = "null_as_default")] name: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -121,6 +204,20 @@ where
     Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
+fn lenient_i64_value<'de, D>(de: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(de)?;
+    Ok(match v {
+        Some(Value::Number(n)) => n.as_i64().unwrap_or(0),
+        Some(Value::String(s)) => s.parse().unwrap_or(0),
+        Some(Value::Bool(b)) => i64::from(b),
+        _ => 0,
+    })
+}
+
 fn prefer_non_empty(primary: String, secondary: String) -> String {
     if !primary.is_empty() { primary } else { secondary }
 }
@@ -175,6 +272,72 @@ impl<'de> Deserialize<'de> for DashAudio {
         D: Deserializer<'de>,
     {
         DashAudioWire::deserialize(deserializer).map(Into::into)
+    }
+}
+
+impl PgcSeasonWire {
+    fn into_pgc_season(self) -> PgcSeason {
+        let mut episodes = self
+            .episodes
+            .into_iter()
+            .chain(self.section.into_iter().flat_map(|section| section.episodes))
+            .map(PgcEpisodeWire::into_pgc_episode)
+            .filter(|ep| ep.ep_id > 0 && ep.cid > 0)
+            .collect::<Vec<_>>();
+        episodes.sort_by_key(|ep| ep.ep_id);
+        episodes.dedup_by_key(|ep| ep.ep_id);
+
+        let stat = self.stat.unwrap_or_default();
+        let up_info = self.up_info.unwrap_or_default();
+        PgcSeason {
+            season_id: self.season_id,
+            media_id: self.media_id,
+            title: self.title,
+            season_title: self.season_title,
+            cover: self.cover,
+            evaluate: self.evaluate,
+            season_type: self.season_type,
+            up_mid: up_info.mid,
+            up_name: up_info.name,
+            stat: PgcStat {
+                view: stat.view,
+                danmaku: stat.danmaku,
+                reply: stat.reply,
+                favorite: stat.favorite,
+                coin: stat.coin,
+                share: stat.share,
+                like: stat.like,
+            },
+            episodes,
+        }
+    }
+}
+
+impl PgcEpisodeWire {
+    fn into_pgc_episode(self) -> PgcEpisode {
+        let title = if !self.show_title.is_empty() {
+            self.show_title
+        } else {
+            self.title
+        };
+        PgcEpisode {
+            ep_id: if self.ep_id > 0 { self.ep_id } else { self.id },
+            aid: self.aid,
+            bvid: self.bvid,
+            cid: self.cid,
+            title,
+            long_title: self.long_title,
+            cover: self.cover,
+            duration_sec: normalize_pgc_duration_sec(self.duration),
+        }
+    }
+}
+
+fn normalize_pgc_duration_sec(duration: i64) -> i64 {
+    if duration > 24 * 60 * 60 {
+        duration / 1000
+    } else {
+        duration
     }
 }
 
@@ -246,8 +409,70 @@ impl Core {
         }
     }
 
+    pub fn pgc_playurl_with_audio_options(
+        &self,
+        aid: i64,
+        cid: i64,
+        ep_id: i64,
+        season_id: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<PlayUrl> {
+        match self.pgc_playurl_web_with_audio(aid, cid, ep_id, season_id, qn, audio_qn, cdn_selection) {
+            Ok(play) => Ok(play),
+            Err(web_err) => {
+                let web_msg = format!("pgc/player/web/v2/playurl failed → fell back to tv_durl: {web_err}");
+                eprintln!("[ibili_core] {web_msg}");
+                if ep_id <= 0 {
+                    return Err(CoreError::Internal(web_msg));
+                }
+                match self.pgc_playurl_tv_with_options(ep_id, cid, qn, cdn_selection) {
+                    Ok(mut play) => {
+                        play.debug_message = Some(web_msg);
+                        Ok(play)
+                    }
+                    Err(tv_err) => Err(CoreError::Internal(format!(
+                        "pgc web playurl failed: {web_err}; pgc tv playurl failed: {tv_err}"
+                    ))),
+                }
+            }
+        }
+    }
+
     pub fn video_playurl_tv_compat(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
         self.video_playurl_tv(aid, cid, qn)
+    }
+
+    pub fn pgc_season(&self, season_id: i64, ep_id: i64) -> CoreResult<PgcSeason> {
+        if season_id <= 0 && ep_id <= 0 {
+            return Err(CoreError::InvalidArgument("season_id or ep_id required".into()));
+        }
+        let mut params: Vec<(String, String)> = Vec::new();
+        if season_id > 0 {
+            params.push(("season_id".into(), season_id.to_string()));
+        }
+        if ep_id > 0 {
+            params.push(("ep_id".into(), ep_id.to_string()));
+        }
+        let body = self
+            .http
+            .client
+            .get(URL_PGC_INFO)
+            .header("User-Agent", crate::http::UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .query(&params)
+            .send()
+            .map_err(|e| CoreError::Network(e.to_string()))?
+            .text()
+            .map_err(|e| CoreError::Network(e.to_string()))?;
+        let env: PgcSeasonEnvelope = serde_json::from_str(&body)
+            .map_err(|e| CoreError::Decode(format!("{}: {}", e, body.chars().take(500).collect::<String>())))?;
+        if env.code != 0 {
+            return Err(CoreError::Api { code: env.code, msg: env.message });
+        }
+        let wire = env.result.ok_or_else(|| CoreError::Decode("missing pgc result".into()))?;
+        Ok(wire.into_pgc_season())
     }
 
     fn video_playurl_web_with_audio(
@@ -274,6 +499,67 @@ impl Core {
         ];
         let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
         build_playurl_from_web_response(response, qn, audio_qn, cdn_selection)
+    }
+
+    fn pgc_playurl_web_with_audio(
+        &self,
+        aid: i64,
+        cid: i64,
+        ep_id: i64,
+        season_id: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<PlayUrl> {
+        let qn = if qn <= 0 { 80 } else { qn };
+        let wbi_key = self.fetch_wbi_key()?;
+        let mut params = vec![
+            ("cid".into(), cid.to_string()),
+            ("qn".into(), qn.to_string()),
+            ("fnval".into(), "4048".into()),
+            ("fourk".into(), "1".into()),
+            ("fnver".into(), "0".into()),
+            ("voice_balance".into(), "1".into()),
+            ("gaia_source".into(), "pre-load".into()),
+            ("isGaiaAvoided".into(), "true".into()),
+            ("web_location".into(), "1315873".into()),
+        ];
+        if aid > 0 {
+            params.push(("avid".into(), aid.to_string()));
+        }
+        if ep_id > 0 {
+            params.push(("ep_id".into(), ep_id.to_string()));
+        }
+        if season_id > 0 {
+            params.push(("season_id".into(), season_id.to_string()));
+        }
+        WbiSigner::sign(&mut params, &wbi_key);
+        let body = self
+            .http
+            .client
+            .get(URL_PLAYURL_PGC)
+            .header("User-Agent", crate::http::UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .query(&params)
+            .send()
+            .map_err(|e| CoreError::Network(e.to_string()))?
+            .text()
+            .map_err(|e| CoreError::Network(e.to_string()))?;
+        let env: PgcPlayUrlEnvelope = serde_json::from_str(&body)
+            .map_err(|e| CoreError::Decode(format!("{}: {}", e, body.chars().take(500).collect::<String>())))?;
+        if env.code != 0 {
+            return Err(CoreError::Api { code: env.code, msg: env.message });
+        }
+        let result = env.result.ok_or_else(|| CoreError::Decode("missing pgc playurl result".into()))?;
+        let resume_ms = result
+            .play_view_business_info
+            .and_then(|info| info.user_status)
+            .map(|status| status.current_watch_progress)
+            .unwrap_or(0);
+        let mut play = build_playurl_from_web_response(result.video_info, qn, audio_qn, cdn_selection)?;
+        play.last_play_time_ms = resume_ms;
+        play.stream_type = format!("pgc_{}", play.stream_type);
+        Ok(play)
     }
 
     /// Mirrors `VideoHttp.tvPlayUrl` from upstream PiliPlus.
@@ -321,6 +607,68 @@ impl Core {
             audio_url: None,
             format: r.format,
             stream_type: "tv_durl".into(),
+            quality: r.quality,
+            duration_ms: r.timelength,
+            backup_urls,
+            audio_backup_urls: Vec::new(),
+            accept_quality,
+            accept_description,
+            video_codec: String::new(),
+            audio_codec: String::new(),
+            video_width: None,
+            video_height: None,
+            video_frame_rate: None,
+            video_range: None,
+            debug_message: None,
+            audio_quality: 0,
+            audio_quality_label: String::new(),
+            accept_audio_quality: Vec::new(),
+            accept_audio_description: Vec::new(),
+            last_play_time_ms: r.last_play_time,
+            last_play_cid: r.last_play_cid,
+        })
+    }
+
+    fn pgc_playurl_tv_with_options(
+        &self,
+        ep_id: i64,
+        cid: i64,
+        qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<PlayUrl> {
+        let access_key = self.session.read().access_key()
+            .ok_or(CoreError::AuthRequired)?;
+        let qn = if qn <= 0 { 80 } else { qn };
+        let params = vec![
+            ("access_key".into(), access_key.clone()),
+            ("actionKey".into(), "appkey".into()),
+            ("cid".into(), cid.to_string()),
+            ("fourk".into(), "1".into()),
+            ("is_proj".into(), "1".into()),
+            ("mobile_access_key".into(), access_key),
+            ("mobi_app".into(), "android".into()),
+            ("object_id".into(), ep_id.to_string()),
+            ("platform".into(), "android".into()),
+            ("playurl_type".into(), "2".into()),
+            ("protocol".into(), "0".into()),
+            ("qn".into(), qn.to_string()),
+        ];
+        let r: PlayUrlRoot = self.http.get_signed_app(URL_PLAYURL_TV, params)?;
+        let accept_quality = r.accept_quality.clone();
+        let accept_description = r.accept_description.clone();
+        let first = r.durl.into_iter().next()
+            .ok_or_else(|| CoreError::Decode("empty pgc tv durl".into()))?;
+        let ranked = rank_urls_for_selection(
+            &collect_candidates(&first.url, &first.backup_url),
+            cdn_selection,
+        );
+        let url = ranked.first().cloned().unwrap_or(first.url);
+        let backup_urls = ranked.into_iter().skip(1).collect::<Vec<_>>();
+        Ok(PlayUrl {
+            url,
+            audio_url: None,
+            format: r.format,
+            stream_type: "pgc_tv_durl".into(),
             quality: r.quality,
             duration_ms: r.timelength,
             backup_urls,

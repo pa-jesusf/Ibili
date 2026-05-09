@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ReplyEmote {
+    /// e.g. `"[doge]"`. Includes the brackets.
+    pub name: String,
+    /// CDN URL of the emote PNG/animated WebP.
+    pub url: String,
+    /// 1 = small (inline 18pt), 2 = large (inline 32pt).
+    pub size: i32,
+}
+
 /// Bilibili envelope: `{ "code": 0, "message": "0", "data": ... }`.
 #[derive(Debug, Deserialize)]
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
@@ -32,6 +42,12 @@ pub struct FeedItem {
     pub aid: i64,
     pub bvid: String,
     pub cid: i64,
+    #[serde(default)]
+    pub ep_id: i64,
+    #[serde(default)]
+    pub season_id: i64,
+    #[serde(default)]
+    pub is_pgc: bool,
     #[serde(skip_serializing)]
     pub owner_mid: i64,
     pub title: String,
@@ -119,6 +135,8 @@ pub struct LiveDanmakuMessage {
     pub name: String,
     pub text: String,
     pub is_self: bool,
+    #[serde(default)]
+    pub emotes: Vec<ReplyEmote>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -323,6 +341,67 @@ pub struct SearchArticlePage {
     pub num_pages: i64,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchPgcItem {
+    pub season_id: i64,
+    pub media_id: i64,
+    pub title: String,
+    pub cover: String,
+    pub areas: String,
+    pub styles: String,
+    pub season_type: i64,
+    pub season_type_name: String,
+    pub score: String,
+    pub index_show: String,
+    pub desc: String,
+    pub pubtime: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchPgcPage {
+    pub items: Vec<SearchPgcItem>,
+    pub num_results: i64,
+    pub num_pages: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PgcEpisode {
+    pub ep_id: i64,
+    pub aid: i64,
+    pub bvid: String,
+    pub cid: i64,
+    pub title: String,
+    pub long_title: String,
+    pub cover: String,
+    pub duration_sec: i64,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct PgcStat {
+    pub view: i64,
+    pub danmaku: i64,
+    pub reply: i64,
+    pub favorite: i64,
+    pub coin: i64,
+    pub share: i64,
+    pub like: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PgcSeason {
+    pub season_id: i64,
+    pub media_id: i64,
+    pub title: String,
+    pub season_title: String,
+    pub cover: String,
+    pub evaluate: String,
+    pub season_type: i64,
+    pub up_mid: i64,
+    pub up_name: String,
+    pub stat: PgcStat,
+    pub episodes: Vec<PgcEpisode>,
+}
+
 // ---------- Video detail (view/full) ----------
 
 /// Full video detail surface, mirrored from
@@ -448,16 +527,6 @@ pub struct ReplyPage {
     pub cursor_next: String,
     pub is_end: bool,
     pub total: i64,
-}
-
-#[derive(Debug, Serialize, Clone, Default)]
-pub struct ReplyEmote {
-    /// e.g. `"[doge]"`. Includes the brackets.
-    pub name: String,
-    /// CDN URL of the emote PNG/animated WebP.
-    pub url: String,
-    /// 1 = small (inline 18pt), 2 = large (inline 32pt).
-    pub size: i32,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]

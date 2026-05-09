@@ -221,11 +221,13 @@ final class LiveDanmakuStream: NSObject, URLSessionWebSocketDelegate {
         var senderMID: Int64 = 0
         var senderName = ""
         var messageID = "live-\(roomID)-\(UUID().uuidString)"
+        var emotes: [ReplyEmoteDTO] = []
 
         if let extra = parseLiveDanmakuExtra(from: first) {
             if let v = extra["mode"] as? NSNumber { mode = v.int32Value }
             if let v = extra["color"] as? NSNumber { color = v.uint32Value }
             if let id = extra["id_str"] as? String, !id.isEmpty { messageID = id }
+            emotes.append(contentsOf: parseInlineEmotes(from: extra["emots"]))
             if let user = extra["user"] as? [String: Any],
                let uid = user["uid"] as? NSNumber {
                 senderMID = uid.int64Value
@@ -246,6 +248,9 @@ final class LiveDanmakuStream: NSObject, URLSessionWebSocketDelegate {
                let name = base["name"] as? String {
                 senderName = name
             }
+        }
+        if let single = parseSingleEmote(from: first?[safe: 13], fallbackName: text) {
+            emotes.append(single)
         }
 
         if let first {
@@ -277,8 +282,49 @@ final class LiveDanmakuStream: NSObject, URLSessionWebSocketDelegate {
             uid: senderMID,
             name: senderName,
             text: text,
-            isSelf: isSelf
+            isSelf: isSelf,
+            emotes: deduplicatedEmotes(emotes)
         ))
+    }
+
+    private func parseInlineEmotes(from raw: Any?) -> [ReplyEmoteDTO] {
+        guard let dict = raw as? [String: Any] else { return [] }
+        return dict.compactMap { key, value in
+            parseSingleEmote(from: value, fallbackName: key)
+        }
+    }
+
+    private func parseSingleEmote(from raw: Any?, fallbackName: String) -> ReplyEmoteDTO? {
+        guard let dict = raw as? [String: Any] else { return nil }
+        let url = normalizedImageURL(dict["url"] as? String ?? "")
+        guard !url.isEmpty else { return nil }
+        let name = fallbackName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let width = numericDouble(dict["width"]) ?? 0
+        let height = numericDouble(dict["height"]) ?? width
+        let size: Int32 = max(width, height) >= 80 ? 2 : 1
+        return ReplyEmoteDTO(name: name, url: url, size: size)
+    }
+
+    private func deduplicatedEmotes(_ emotes: [ReplyEmoteDTO]) -> [ReplyEmoteDTO] {
+        var seen = Set<String>()
+        var result: [ReplyEmoteDTO] = []
+        for emote in emotes where seen.insert(emote.name).inserted {
+            result.append(emote)
+        }
+        return result
+    }
+
+    private func normalizedImageURL(_ raw: String) -> String {
+        if raw.hasPrefix("//") { return "https:\(raw)" }
+        if raw.hasPrefix("http://") { return "https://" + String(raw.dropFirst("http://".count)) }
+        return raw
+    }
+
+    private func numericDouble(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let string = value as? String { return Double(string) }
+        return nil
     }
 
     private func parseLiveDanmakuExtra(from first: [Any]?) -> [String: Any]? {
