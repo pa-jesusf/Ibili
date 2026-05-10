@@ -1593,6 +1593,13 @@ final class PlayerViewModel: ObservableObject {
                         "videoCodec": self.currentVideoCodec.isEmpty ? "-" : self.currentVideoCodec,
                         "codecPreference": self.playbackCodecPreference,
                     ])
+                    guard !self.isClosing, self.loadGeneration == generation else { return }
+                    if self.isCurrentSourceOffline {
+                        self.errorText = detail
+                        self.isLoading = false
+                        self.refreshSystemMediaSession()
+                        return
+                    }
                     await self.exportActiveDiagnostics(reason: "AVPlayerItem failed: \(detail)", generation: generation)
                     guard !self.isClosing, self.loadGeneration == generation else { return }
                     if self.shouldAttemptAVCRecovery() {

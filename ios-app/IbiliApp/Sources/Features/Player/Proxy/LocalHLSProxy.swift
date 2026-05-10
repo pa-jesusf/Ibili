@@ -426,7 +426,7 @@ final class LocalHLSProxy: @unchecked Sendable {
         try ensureRunning()
         let runtime = RuntimeSource(source: source)
         let port = state.withLock { s -> UInt16 in s.sources[token] = runtime; return s.port }
-        let playbackHost = Self.preferredPlaybackHost()
+        let playbackHost = Self.preferredPlaybackHost(for: source)
         runtime.prewarmStartupSegments()
         AppLog.info("player", "HLS 代理 source 已注册", metadata: [
             "token": token,
@@ -835,8 +835,12 @@ final class LocalHLSProxy: @unchecked Sendable {
         }
     }
 
-    private static func preferredPlaybackHost() -> String {
-        preferredLANIPv4Address() ?? "127.0.0.1"
+    private static func preferredPlaybackHost(for source: Source) -> String {
+        if source.videoCandidates.allSatisfy(\.isFileURL),
+           source.audioCandidates.allSatisfy(\.isFileURL) {
+            return "127.0.0.1"
+        }
+        return preferredLANIPv4Address() ?? "127.0.0.1"
     }
 
     private static func preferredLANIPv4Address() -> String? {
@@ -860,7 +864,8 @@ final class LocalHLSProxy: @unchecked Sendable {
             guard !name.hasPrefix("pdp_ip") else { continue }
             guard let address = ipv4String(from: rawAddress),
                   !address.isEmpty,
-                  address != "0.0.0.0" else { continue }
+                  address != "0.0.0.0",
+                  isPrivateLANIPv4Address(address) else { continue }
 
             let score: Int
             if name == "en0" {
@@ -890,6 +895,15 @@ final class LocalHLSProxy: @unchecked Sendable {
             }
             return String(cString: buffer)
         }
+    }
+
+    private static func isPrivateLANIPv4Address(_ address: String) -> Bool {
+        let parts = address.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        if parts[0] == 10 { return true }
+        if parts[0] == 172, (16...31).contains(parts[1]) { return true }
+        if parts[0] == 192, parts[1] == 168 { return true }
+        return false
     }
 
     // MARK: - Connection handling
