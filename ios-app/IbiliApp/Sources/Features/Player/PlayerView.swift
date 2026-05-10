@@ -96,6 +96,7 @@ final class PlayerViewModel: ObservableObject {
     private var playbackCacheVariant: String = AppSettings.shared.playbackCacheVariantKey()
     private var playbackCodecPreference: String = "auto"
     private var currentVideoCodec: String = ""
+    private var isCurrentSourceOffline = false
     private var didAttemptAVCRecovery = false
     /// Number of automatic recovery attempts the view-model has issued
     /// for the current `(aid, cid)`. Reset to zero in `load(...)`.
@@ -205,7 +206,8 @@ final class PlayerViewModel: ObservableObject {
         preferredAudioQn: Int64 = 0,
         fastLoad: Bool,
         cdnSelection: String = MediaCDNService.auto.rawValue,
-        cacheVariant: String = MediaCDNService.auto.rawValue
+        cacheVariant: String = MediaCDNService.auto.rawValue,
+        offlineOnly: Bool = false
     ) async {
         guard !isClosing else { return }
         // Some entry points (notably the search results grid) hand us
@@ -214,13 +216,15 @@ final class PlayerViewModel: ObservableObject {
         // API before doing anything player-related — otherwise both
         // the web and TV playurl calls hit "请求错误 / 啥都木有".
         var item = item
-        do {
-            item = try await resolvePlayableItemIfNeeded(item)
-        } catch {
-            guard !isClosing else { return }
-            isLoading = false
-            errorText = "无法解析视频信息: \((error as NSError).localizedDescription)"
-            return
+        if !offlineOnly {
+            do {
+                item = try await resolvePlayableItemIfNeeded(item)
+            } catch {
+                guard !isClosing else { return }
+                isLoading = false
+                errorText = "无法解析视频信息: \((error as NSError).localizedDescription)"
+                return
+            }
         }
         guard !isClosing else { return }
         if player != nil, aid == item.aid, cid == item.cid {
@@ -250,6 +254,7 @@ final class PlayerViewModel: ObservableObject {
             blockedQns.removeAll()
             playbackCodecPreference = "auto"
             currentVideoCodec = ""
+            isCurrentSourceOffline = false
             didAttemptAVCRecovery = false
             pageCache.clearMediaData()
             stopHeartbeat()
@@ -286,8 +291,28 @@ final class PlayerViewModel: ObservableObject {
             "preferredQn": String(preferredQn),
             "fastLoad": String(fastLoad),
             "cdn": cdnSelection,
+            "offlineOnly": String(offlineOnly),
         ])
         do {
+            if let offline = OfflineDownloadService.shared.playbackSource(
+                for: item,
+                preferredQn: preferredQn,
+                audioQn: preferredAudioQn
+            ) {
+                try await loadOfflineSource(
+                    offline,
+                    item: item,
+                    generation: generation,
+                    startedAt: startedAt
+                )
+                if isCurrentLoad(generation, aid: item.aid, cid: item.cid) {
+                    isLoading = false
+                }
+                return
+            } else if offlineOnly {
+                throw OfflineDownloadError.message("离线文件不可用或已损坏")
+            }
+
             let discoveryQnTarget = max(preferredQn, discoveryQn)
             let initial: PlayUrlDTO
             if !item.isPGC,
@@ -530,7 +555,8 @@ final class PlayerViewModel: ObservableObject {
                preferredAudioQn: lastPreferredAudioQn,
                fastLoad: lastFastLoad,
                cdnSelection: cdnSelection,
-               cacheVariant: playbackCacheVariant)
+               cacheVariant: playbackCacheVariant,
+               offlineOnly: isCurrentSourceOffline)
         guard !isClosing else { return }
         // `load(...)` zeroes the counter; preserve our caller's tally
         // so a chain of failed reloads cannot loop indefinitely.
@@ -782,7 +808,21 @@ final class PlayerViewModel: ObservableObject {
             // switches without tearing down other tab's retained players.
             let info: PlayUrlDTO
             if let item = lastLoadedItem {
-                info = try await fetchPlayUrl(for: item, qn: qn)
+                if let offline = OfflineDownloadService.shared.playbackSource(
+                    for: item,
+                    preferredQn: qn,
+                    audioQn: currentAudioQn
+                ), offline.metadata.qn == qn {
+                    info = offline.play
+                    isCurrentSourceOffline = true
+                    AppLog.info("player", "清晰度切换命中离线缓存", metadata: [
+                        "aid": String(item.aid),
+                        "cid": String(item.cid),
+                        "qn": String(qn),
+                    ])
+                } else {
+                    info = try await fetchPlayUrl(for: item, qn: qn)
+                }
             } else {
                 info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             }
@@ -1152,6 +1192,7 @@ final class PlayerViewModel: ObservableObject {
     /// PiliPlus' `makeHeartBeat(type: .status / .completed)` cadence
     /// — that's how the cloud "history / 继续观看" works.
     private func startHeartbeatIfNeeded() {
+        guard !isCurrentSourceOffline else { return }
         guard let player, heartbeatObserverToken == nil else { return }
         guard lastLoadedItem?.isPGC != true else { return }
         let interval = CMTime(seconds: 15, preferredTimescale: 1)
@@ -1215,7 +1256,7 @@ final class PlayerViewModel: ObservableObject {
         // Best-effort terminal beat for the *just-stopped* video so the
         // cloud history matches the actual stop position even if the
         // user dismissed without finishing.
-        if aid > 0, cid > 0, let position = player?.currentTime() {
+        if !isCurrentSourceOffline, aid > 0, cid > 0, let position = player?.currentTime() {
             let sec = Int64(CMTimeGetSeconds(position))
             let aidSnap = aid, bvidSnap = bvid, cidSnap = cid
             Task.detached(priority: .background) {
@@ -1267,6 +1308,67 @@ final class PlayerViewModel: ObservableObject {
             preparation?.release()
             throw error
         }
+    }
+
+    private func loadOfflineSource(
+        _ offline: OfflinePlaybackSource,
+        item: FeedItemDTO,
+        generation: UInt64,
+        startedAt: CFTimeInterval
+    ) async throws {
+        let info = offline.play
+        AppLog.info("player", "命中离线缓存，优先使用本地播放源", metadata: [
+            "aid": String(item.aid),
+            "cid": String(item.cid),
+            "qn": String(info.quality),
+            "audioQn": String(info.audioQuality),
+            "storageMode": offline.metadata.storageMode ?? "-",
+            "directory": offline.directory.path,
+        ])
+
+        let qualities = normalizedQualities(from: info)
+        availableQualities = qualities.isEmpty
+            ? [(info.quality, qualityLabel(for: info.quality))]
+            : qualities
+        availableAudioQualities = normalizedAudioQualities(from: info)
+        currentAudioQn = info.audioQuality
+        pendingResumeMs = 0
+        rememberPlayURL(info)
+
+        let prep = try await engine.makeItem(for: info)
+        guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
+            prep.release()
+            AppLog.debug("player", "丢弃过期离线播放器加载结果", metadata: [
+                "aid": String(item.aid),
+                "cid": String(item.cid),
+            ])
+            return
+        }
+        applyPresentationMetadata(to: prep.item, for: item)
+        rememberActivePlayURL(info)
+        currentQn = info.quality
+        prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
+        let player = AVPlayer(playerItem: prep.item)
+        configureExternalPlayback(for: player)
+        activePreparation = prep
+        observeItemStatus(prep.item, generation: generation)
+        setPlayer(player)
+        applyPlaybackIntent(to: player)
+
+        let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
+        var meta = prep.logSummary
+        meta["aid"] = String(item.aid)
+        meta["cid"] = String(item.cid)
+        meta["quality"] = String(info.quality)
+        meta["available"] = availableQualities.map { String($0.qn) }.joined(separator: ",")
+        meta["streamType"] = info.streamType
+        meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
+        meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
+        meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
+        meta["prepMs"] = String(prep.totalElapsedMs)
+        meta["startupMs"] = String(startupMs)
+        meta["source"] = "offline"
+        AppLog.info("player", "离线播放器已就绪", metadata: meta)
     }
 
     /// Race two hidden players and return whichever reaches actual
@@ -1643,6 +1745,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func rememberActivePlayURL(_ info: PlayUrlDTO) {
         currentVideoCodec = info.videoCodec
+        isCurrentSourceOffline = info.url.hasPrefix("file://")
     }
 
     private func playURLCacheVariant(codecPreference: String? = nil) -> String {
@@ -1878,7 +1981,21 @@ final class PlayerViewModel: ObservableObject {
             activePreparation = nil
             let info: PlayUrlDTO
             if let item = lastLoadedItem {
-                info = try await fetchPlayUrl(for: item, qn: currentQn, audioQn: audioQn)
+                if let offline = OfflineDownloadService.shared.playbackSource(
+                    for: item,
+                    preferredQn: currentQn,
+                    audioQn: audioQn
+                ), offline.metadata.qn == currentQn, offline.metadata.audioQn == audioQn {
+                    info = offline.play
+                    AppLog.info("player", "音质切换命中离线缓存", metadata: [
+                        "aid": String(item.aid),
+                        "cid": String(item.cid),
+                        "qn": String(currentQn),
+                        "audioQn": String(audioQn),
+                    ])
+                } else {
+                    info = try await fetchPlayUrl(for: item, qn: currentQn, audioQn: audioQn)
+                }
             } else {
                 info = try await fetchPlayUrl(aid: aid, cid: cid, qn: currentQn, audioQn: audioQn)
             }
@@ -2120,6 +2237,7 @@ struct PlayerView: View {
     private static let longDanmakuDurationThresholdSec: Int64 = 2 * 60 * 60
 
     let item: FeedItemDTO
+    let offlineOnly: Bool
     @StateObject private var vm: PlayerViewModel
     private let onPictureInPictureActiveChange: ((Bool) -> Void)?
     private let onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))?
@@ -2157,10 +2275,12 @@ struct PlayerView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     init(item: FeedItemDTO,
+         offlineOnly: Bool = false,
          viewModel: PlayerViewModel? = nil,
          onPictureInPictureActiveChange: ((Bool) -> Void)? = nil,
          onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))? = nil) {
         self.item = item
+        self.offlineOnly = offlineOnly
         self.onPictureInPictureActiveChange = onPictureInPictureActiveChange
         self.onPictureInPictureRestore = onPictureInPictureRestore
         _vm = StateObject(wrappedValue: viewModel ?? PlayerViewModel())
@@ -2243,6 +2363,31 @@ struct PlayerView: View {
         )
     }
 
+    private var offlineDetailPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(IbiliTheme.accent)
+                Text("离线播放")
+                    .font(.headline)
+                Spacer()
+            }
+            Text(item.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .lineLimit(3)
+            if !item.author.isEmpty {
+                Text(item.author)
+                    .font(.caption)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(IbiliTheme.background)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
@@ -2290,7 +2435,9 @@ struct PlayerView: View {
             }
             .aspectRatio(16.0/9.0, contentMode: .fit)
 
-            if shouldMountDetailContent {
+            if offlineOnly {
+                offlineDetailPlaceholder
+            } else if shouldMountDetailContent {
                 VideoDetailContent(item: item,
                                    currentSeasonID: vm.currentSeasonID,
                                    currentEpisodeID: vm.currentEpisodeID,
@@ -2390,7 +2537,8 @@ struct PlayerView: View {
                           preferredAudioQn: Int64(settings.preferredAudioQn),
                           fastLoad: settings.fastLoad,
                           cdnSelection: settings.cdnService.rawValue,
-                          cacheVariant: settings.playbackCacheVariantKey())
+                          cacheVariant: settings.playbackCacheVariantKey(),
+                          offlineOnly: offlineOnly)
             vm.handle(.interfaceActivated)
         }
         .onChange(of: vm.isVideoReady) { ready in
@@ -2647,6 +2795,22 @@ struct PlayerView: View {
                 resolvedItem = try await resolvePlayableItemIfNeeded(item)
             }
             guard resolvedItem.cid > 0 else { return }
+            if let offlineItems = OfflineDownloadService.shared.danmakuItems(for: resolvedItem) {
+                vm.pageCache.storeDanmaku(offlineItems, for: resolvedItem.cid)
+                danmaku.setItems(offlineItems)
+                if let p = vm.player { danmaku.attach(p) }
+                AppLog.info("danmaku", "命中离线弹幕", metadata: [
+                    "cid": String(resolvedItem.cid),
+                    "count": String(offlineItems.count),
+                ])
+                return
+            }
+            guard !offlineOnly else {
+                AppLog.warning("danmaku", "离线播放未找到本地弹幕，跳过联网加载", metadata: [
+                    "cid": String(resolvedItem.cid),
+                ])
+                return
+            }
             guard !usesSegmentedDanmaku(resolvedItem) else {
                 await MainActor.run {
                     if let p = vm.player {

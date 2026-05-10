@@ -34,6 +34,9 @@ final class ProxyURLLoader: @unchecked Sendable {
     /// Fetch `range` (inclusive) from `url` and return the body bytes.
     /// `range == nil` requests the entire resource.
     func fetch(url: URL, range: ClosedRange<UInt64>? = nil) async throws -> RangeResponse {
+        if url.isFileURL {
+            return try fetchFile(url: url, range: range)
+        }
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         for (k, v) in BiliHTTP.headers { req.setValue(v, forHTTPHeaderField: k) }
@@ -49,6 +52,32 @@ final class ProxyURLLoader: @unchecked Sendable {
         }
         let total = parseContentRangeTotal(http.value(forHTTPHeaderField: "Content-Range"))
         return RangeResponse(data: data, totalBytes: total, statusCode: http.statusCode)
+    }
+
+    private func fetchFile(url: URL, range: ClosedRange<UInt64>?) throws -> RangeResponse {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        let fileSize = Int64(values.fileSize ?? 0)
+        guard fileSize > 0 else {
+            throw ProxyLoaderError.emptyFile(url.path)
+        }
+        let lower: UInt64
+        let upper: UInt64
+        if let range {
+            lower = range.lowerBound
+            upper = min(range.upperBound, UInt64(fileSize - 1))
+            guard lower <= upper else {
+                throw ProxyLoaderError.invalidRange
+            }
+        } else {
+            lower = 0
+            upper = UInt64(fileSize - 1)
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: lower)
+        let length = Int(upper - lower + 1)
+        let data = try handle.read(upToCount: length) ?? Data()
+        return RangeResponse(data: data, totalBytes: fileSize, statusCode: range == nil ? 200 : 206)
     }
 
     /// Race a Range probe across `urls`. Returns the URL of the first one
@@ -80,7 +109,7 @@ final class ProxyURLLoader: @unchecked Sendable {
             while let outcome = try await group.next() {
                 switch outcome.result {
                 case .success(let response):
-                    attempts.append("\(outcome.url.host ?? "?") \(outcome.elapsedMs)ms ok")
+                    attempts.append("\(Self.displayHost(outcome.url)) \(outcome.elapsedMs)ms ok")
                     group.cancelAll()
                     let raceMs = Int((CFAbsoluteTimeGetCurrent() - raceStart) * 1000)
                     return ProbeRaceOutcome(winnerURL: outcome.url,
@@ -91,7 +120,7 @@ final class ProxyURLLoader: @unchecked Sendable {
                                             attempts: attempts)
                 case .failure(let err):
                     let detail = Self.debugSummary(of: err)
-                    attempts.append("\(outcome.url.host ?? "?") \(outcome.elapsedMs)ms \(detail)")
+                    attempts.append("\(Self.displayHost(outcome.url)) \(outcome.elapsedMs)ms \(detail)")
                     errors.append(err)
                 }
             }
@@ -114,6 +143,10 @@ final class ProxyURLLoader: @unchecked Sendable {
         let ns = error as NSError
         return "\(ns.domain)#\(ns.code) \(ns.localizedDescription)"
     }
+
+    static func displayHost(_ url: URL) -> String {
+        url.isFileURL ? "local-file" : (url.host ?? "?")
+    }
 }
 
 struct ProbeRaceOutcome {
@@ -129,6 +162,8 @@ enum ProxyLoaderError: Error, LocalizedError {
     case unexpectedResponse
     case httpStatus(Int, host: String)
     case allCandidatesFailed
+    case emptyFile(String)
+    case invalidRange
 
     var errorDescription: String? {
         switch self {
@@ -138,6 +173,10 @@ enum ProxyLoaderError: Error, LocalizedError {
             return "上游返回 HTTP \(code) (\(host))"
         case .allCandidatesFailed:
             return "所有候选 CDN 均失败"
+        case .emptyFile(let path):
+            return "本地文件为空: \(path)"
+        case .invalidRange:
+            return "请求的本地文件 Range 无效"
         }
     }
 }

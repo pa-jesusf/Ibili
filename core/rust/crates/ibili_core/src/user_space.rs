@@ -340,8 +340,16 @@ impl Core {
     }
 
     /// `/x/v3/fav/resource/list`. Lists video resources inside a
-    /// favourite folder. `pn` is 1-based.
-    pub fn fav_resource_list(&self, media_id: i64, pn: i64, keyword: &str) -> CoreResult<FavResourcePage> {
+    /// favourite folder. `pn` is 1-based. When `all_folders` is true,
+    /// Bilibili searches all favourite folders; `media_id` should be
+    /// the default folder id, matching upstream PiliPlus.
+    pub fn fav_resource_list(
+        &self,
+        media_id: i64,
+        pn: i64,
+        keyword: &str,
+        all_folders: bool,
+    ) -> CoreResult<FavResourcePage> {
         if self.session.read().access_key().is_none() {
             return Ok(FavResourcePage { items: vec![], has_more: false });
         }
@@ -351,7 +359,7 @@ impl Core {
             ("ps".into(), "20".into()),
             ("keyword".into(), keyword.trim().to_string()),
             ("order".into(), "mtime".into()),
-            ("type".into(), "0".into()),
+            ("type".into(), if all_folders { "1" } else { "0" }.into()),
             ("tid".into(), "0".into()),
             ("platform".into(), "web".into()),
         ];

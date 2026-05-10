@@ -70,11 +70,6 @@ struct OfflineDownloadSheet: View {
                         }
                     }
                 }
-                Section {
-                    Text("离线缓存会优先无损封装为单个可播放文件；如果当前流无法无损封装，将明确失败，不会静默转码降级。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
             .navigationTitle("离线缓存")
             .navigationBarTitleDisplayMode(.inline)

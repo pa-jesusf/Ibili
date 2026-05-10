@@ -327,6 +327,56 @@ public struct PlayUrlDTO: Codable {
     /// last watch was on a different page. Currently exposed but not
     /// auto-followed.
     public let lastPlayCid: Int64
+
+    public init(
+        url: String,
+        audioUrl: String?,
+        format: String,
+        streamType: String,
+        quality: Int64,
+        durationMs: Int64,
+        backupUrls: [String],
+        audioBackupUrls: [String],
+        acceptQuality: [Int64],
+        acceptDescription: [String],
+        videoCodec: String,
+        audioCodec: String,
+        videoWidth: Int?,
+        videoHeight: Int?,
+        videoFrameRate: String?,
+        videoRange: String?,
+        debugMessage: String?,
+        audioQuality: Int64,
+        audioQualityLabel: String,
+        acceptAudioQuality: [Int64],
+        acceptAudioDescription: [String],
+        lastPlayTimeMs: Int64,
+        lastPlayCid: Int64
+    ) {
+        self.url = url
+        self.audioUrl = audioUrl
+        self.format = format
+        self.streamType = streamType
+        self.quality = quality
+        self.durationMs = durationMs
+        self.backupUrls = backupUrls
+        self.audioBackupUrls = audioBackupUrls
+        self.acceptQuality = acceptQuality
+        self.acceptDescription = acceptDescription
+        self.videoCodec = videoCodec
+        self.audioCodec = audioCodec
+        self.videoWidth = videoWidth
+        self.videoHeight = videoHeight
+        self.videoFrameRate = videoFrameRate
+        self.videoRange = videoRange
+        self.debugMessage = debugMessage
+        self.audioQuality = audioQuality
+        self.audioQualityLabel = audioQualityLabel
+        self.acceptAudioQuality = acceptAudioQuality
+        self.acceptAudioDescription = acceptAudioDescription
+        self.lastPlayTimeMs = lastPlayTimeMs
+        self.lastPlayCid = lastPlayCid
+    }
     enum CodingKeys: String, CodingKey {
         case url, format, quality
         case audioUrl = "audio_url"
@@ -415,6 +465,34 @@ public struct PlayUrlDTO: Codable {
         try c.encode(acceptAudioDescription, forKey: .acceptAudioDescription)
         try c.encode(lastPlayTimeMs, forKey: .lastPlayTimeMs)
         try c.encode(lastPlayCid, forKey: .lastPlayCid)
+    }
+
+    public func replacingLocalMediaURLs(videoURL: URL, audioURL: URL?) -> PlayUrlDTO {
+        PlayUrlDTO(
+            url: videoURL.absoluteString,
+            audioUrl: audioURL?.absoluteString,
+            format: format,
+            streamType: "offline_\(streamType)",
+            quality: quality,
+            durationMs: durationMs,
+            backupUrls: [],
+            audioBackupUrls: [],
+            acceptQuality: acceptQuality,
+            acceptDescription: acceptDescription,
+            videoCodec: videoCodec,
+            audioCodec: audioURL == nil ? "" : audioCodec,
+            videoWidth: videoWidth,
+            videoHeight: videoHeight,
+            videoFrameRate: videoFrameRate,
+            videoRange: videoRange,
+            debugMessage: debugMessage,
+            audioQuality: audioURL == nil ? 0 : audioQuality,
+            audioQualityLabel: audioURL == nil ? "" : audioQualityLabel,
+            acceptAudioQuality: acceptAudioQuality,
+            acceptAudioDescription: acceptAudioDescription,
+            lastPlayTimeMs: 0,
+            lastPlayCid: lastPlayCid
+        )
     }
 }
 

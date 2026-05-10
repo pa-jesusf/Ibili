@@ -834,41 +834,21 @@ impl Core {
 }
 
 fn build_offline_playurl(play: PlayUrl) -> OfflinePlayUrl {
-    let video_codec = play.video_codec.to_ascii_lowercase();
-    let audio_codec = play.audio_codec.to_ascii_lowercase();
     let is_dash = play.audio_url.is_some();
-    let video_supported = video_codec.is_empty()
-        || video_codec.starts_with("avc")
-        || video_codec.starts_with("hev")
-        || video_codec.starts_with("hvc")
-        || video_codec.starts_with("dv");
-    let audio_supported = audio_codec.is_empty()
-        || audio_codec.starts_with("mp4a")
-        || audio_codec.starts_with("ec-3")
-        || audio_codec.starts_with("ac-3")
-        || audio_codec.starts_with("fla");
-    let mut candidates = vec!["mp4".to_string(), "m4v".to_string(), "mov".to_string()];
-    if video_codec.starts_with("dv") || video_codec.contains("dvh") || video_codec.contains("dvh1") {
-        candidates = vec!["mov".to_string(), "m4v".to_string(), "mp4".to_string()];
-    }
-    let can_lossless_remux = !is_dash || (video_supported && audio_supported);
-    let lossless_note = if can_lossless_remux {
-        if is_dash {
-            "可尝试无损合并音视频流".to_string()
-        } else {
-            "单流可直接保存为原始文件".to_string()
-        }
+    let candidates = if is_dash {
+        vec!["bilibili_dash".to_string()]
     } else {
-        format!(
-            "当前编码可能无法由系统无损封装为单文件: video={}, audio={}",
-            if play.video_codec.is_empty() { "unknown" } else { &play.video_codec },
-            if play.audio_codec.is_empty() { "unknown" } else { &play.audio_codec },
-        )
+        vec!["source".to_string()]
+    };
+    let lossless_note = if is_dash {
+        "保存 B 站原始 DASH 结构，不转码、不降级".to_string()
+    } else {
+        "单流可直接保存为原始文件，不转码、不降级".to_string()
     };
     OfflinePlayUrl {
         play,
         lossless_container_candidates: candidates,
-        can_lossless_remux,
+        can_lossless_remux: true,
         lossless_note,
     }
 }

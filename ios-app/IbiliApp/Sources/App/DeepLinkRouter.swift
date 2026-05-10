@@ -13,14 +13,20 @@ final class DeepLinkRouter: ObservableObject {
     struct PlayerRoute: Hashable, Identifiable {
         let id: UUID
         var item: FeedItemDTO
+        var offlineOnly: Bool
 
-        init(id: UUID = UUID(), item: FeedItemDTO) {
+        init(id: UUID = UUID(), item: FeedItemDTO, offlineOnly: Bool = false) {
             self.id = id
             self.item = item
+            self.offlineOnly = offlineOnly
         }
 
         func replacingItem(_ item: FeedItemDTO) -> Self {
-            Self(id: id, item: item)
+            Self(id: id, item: item, offlineOnly: offlineOnly)
+        }
+
+        func replacingOfflineOnly(_ offlineOnly: Bool) -> Self {
+            Self(id: id, item: item, offlineOnly: offlineOnly)
         }
 
         func hash(into hasher: inout Hasher) {
@@ -208,21 +214,29 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     func open(_ item: FeedItemDTO, mode: OpenMode = .push) {
+        openPlayer(item, offlineOnly: false, mode: mode)
+    }
+
+    func openOffline(_ item: FeedItemDTO, mode: OpenMode = .push) {
+        openPlayer(item, offlineOnly: true, mode: mode)
+    }
+
+    private func openPlayer(_ item: FeedItemDTO, offlineOnly: Bool, mode: OpenMode) {
         guard pending != nil, !isClosingRootSession else {
             path.removeAll()
             isClosingRootSession = false
-            pending = .player(PlayerRoute(item: item))
+            pending = .player(PlayerRoute(item: item, offlineOnly: offlineOnly))
             return
         }
 
         switch mode {
         case .push:
-            if revealCurrentPlayerIfNeeded(matching: item) {
+            if revealCurrentPlayerIfNeeded(matching: item, offlineOnly: offlineOnly) {
                 return
             }
-            path.append(.player(PlayerRoute(item: item)))
+            path.append(.player(PlayerRoute(item: item, offlineOnly: offlineOnly)))
         case .replaceCurrent:
-            replaceCurrentPlayer(with: item)
+            replaceCurrentPlayer(with: item, offlineOnly: offlineOnly)
         }
     }
 
@@ -438,8 +452,13 @@ final class DeepLinkRouter: ObservableObject {
             && currentItem.isPGC == item.isPGC
     }
 
-    private func revealCurrentPlayerIfNeeded(matching item: FeedItemDTO) -> Bool {
+    private func isCurrent(_ item: FeedItemDTO, offlineOnly: Bool) -> Bool {
         guard isCurrent(item) else { return false }
+        return currentRoute?.offlineOnly == offlineOnly
+    }
+
+    private func revealCurrentPlayerIfNeeded(matching item: FeedItemDTO, offlineOnly: Bool) -> Bool {
+        guard isCurrent(item, offlineOnly: offlineOnly) else { return false }
 
         if let lastPlayerIndex = path.lastIndex(where: { $0.playerRoute != nil }) {
             let trailingIndex = path.index(after: lastPlayerIndex)
@@ -455,17 +474,17 @@ final class DeepLinkRouter: ObservableObject {
         return true
     }
 
-    private func replaceCurrentPlayer(with item: FeedItemDTO) {
+    private func replaceCurrentPlayer(with item: FeedItemDTO, offlineOnly: Bool) {
         if let lastPlayerIndex = path.lastIndex(where: { $0.playerRoute != nil }),
            case .player(let route) = path[lastPlayerIndex] {
-            path[lastPlayerIndex] = .player(route.replacingItem(item))
+            path[lastPlayerIndex] = .player(route.replacingItem(item).replacingOfflineOnly(offlineOnly))
             return
         }
 
         if let pendingPlayer = pending?.playerRoute {
-            pending = .player(pendingPlayer.replacingItem(item))
+            pending = .player(pendingPlayer.replacingItem(item).replacingOfflineOnly(offlineOnly))
         } else {
-            pending = .player(PlayerRoute(item: item))
+            pending = .player(PlayerRoute(item: item, offlineOnly: offlineOnly))
         }
     }
 

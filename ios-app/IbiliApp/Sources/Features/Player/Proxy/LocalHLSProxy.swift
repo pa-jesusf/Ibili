@@ -250,11 +250,11 @@ final class LocalHLSProxy: @unchecked Sendable {
                     guard let self else { return }
                     do {
                         _ = try await self.fetchCachedOrInflight(
-                            track: track,
-                            range: range,
-                            candidates: candidates,
-                            label: label
-                        )
+                        track: track,
+                        range: range,
+                        candidates: candidates,
+                        label: label
+                    )
                         AppLog.debug("player", "HLS 代理启动段预热完成", metadata: [
                             "label": label,
                             "range": "\(range.lowerBound)-\(range.upperBound)",
@@ -296,7 +296,7 @@ final class LocalHLSProxy: @unchecked Sendable {
                     lastError = error
                     AppLog.warning("player", "HLS 代理 segment 失败重试", metadata: [
                         "label": label,
-                        "host": url.host ?? "?",
+                        "host": ProxyURLLoader.displayHost(url),
                         "range": "\(range.lowerBound)-\(range.upperBound)",
                         "error": ProxyURLLoader.debugSummary(of: error),
                     ])

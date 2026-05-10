@@ -80,7 +80,7 @@ final class HLSProxyEngine: PlaybackEngine {
         let totalMs = Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000)
         var summary: [String: String] = [
             "engine": "hls_proxy",
-            "videoCdn": video.race.winnerURL.host ?? "?",
+            "videoCdn": ProxyURLLoader.displayHost(video.race.winnerURL),
             "videoOpenMs": String(video.race.winnerElapsedMs),
             "videoRaceMs": String(video.race.raceMs),
             "videoFragments": String(video.probe.index.entries.count),
@@ -89,7 +89,7 @@ final class HLSProxyEngine: PlaybackEngine {
             "proxyToken": token,
         ]
         if let audio {
-            summary["audioCdn"] = audio.race.winnerURL.host ?? "?"
+            summary["audioCdn"] = ProxyURLLoader.displayHost(audio.race.winnerURL)
             summary["audioOpenMs"] = String(audio.race.winnerElapsedMs)
             summary["audioRaceMs"] = String(audio.race.raceMs)
             summary["audioFragments"] = String(audio.probe.index.entries.count)
@@ -142,7 +142,7 @@ final class HLSProxyEngine: PlaybackEngine {
         let race = try await ProxyURLLoader.shared.raceProbe(urls: urls, range: fastProbeRange)
         AppLog.info("player", "HLS 代理探针完成", metadata: [
             "label": label,
-            "host": race.winnerURL.host ?? "?",
+            "host": ProxyURLLoader.displayHost(race.winnerURL),
             "elapsedMs": String(race.winnerElapsedMs),
             "raceMs": String(race.raceMs),
             "candidates": String(urls.count),
@@ -157,7 +157,7 @@ final class HLSProxyEngine: PlaybackEngine {
             // the proven-good winner — no need to race again.
             AppLog.info("player", "HLS 代理探针扩展", metadata: [
                 "label": label,
-                "host": race.winnerURL.host ?? "?",
+                "host": ProxyURLLoader.displayHost(race.winnerURL),
                 "fastBytes": String(race.data.count),
             ])
             let extended = try await ProxyURLLoader.shared.fetch(url: race.winnerURL, range: slowProbeRange)
@@ -175,7 +175,7 @@ final class HLSProxyEngine: PlaybackEngine {
             } catch {
                 AppLog.error("player", "HLS 代理 fMP4 解析失败", error: error, metadata: [
                     "label": label,
-                    "host": race.winnerURL.host ?? "?",
+                    "host": ProxyURLLoader.displayHost(race.winnerURL),
                     "bytes": String(extended.data.count),
                     "tier": "slow",
                 ])
@@ -184,7 +184,7 @@ final class HLSProxyEngine: PlaybackEngine {
         } catch {
             AppLog.error("player", "HLS 代理 fMP4 解析失败", error: error, metadata: [
                 "label": label,
-                "host": race.winnerURL.host ?? "?",
+                "host": ProxyURLLoader.displayHost(race.winnerURL),
                 "bytes": String(race.data.count),
                 "tier": "fast",
             ])

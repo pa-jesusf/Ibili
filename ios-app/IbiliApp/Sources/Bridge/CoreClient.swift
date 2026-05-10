@@ -742,9 +742,23 @@ public final class CoreClient: @unchecked Sendable {
     }
 
     /// Videos inside a favourite folder. `pn` is 1-based.
-    public func userFavResources(mediaId: Int64, page: Int64 = 1, keyword: String = "") throws -> FavResourcePageDTO {
-        struct A: Encodable { let media_id: Int64; let pn: Int64; let keyword: String }
-        return try call("user.fav_resources", args: A(media_id: mediaId, pn: page, keyword: keyword), decoding: FavResourcePageDTO.self)
+    public func userFavResources(
+        mediaId: Int64,
+        page: Int64 = 1,
+        keyword: String = "",
+        allFolders: Bool = false
+    ) throws -> FavResourcePageDTO {
+        struct A: Encodable {
+            let media_id: Int64
+            let pn: Int64
+            let keyword: String
+            let all_folders: Bool
+        }
+        return try call(
+            "user.fav_resources",
+            args: A(media_id: mediaId, pn: page, keyword: keyword, all_folders: allFolders),
+            decoding: FavResourcePageDTO.self
+        )
     }
 
     public func userSubscriptions(mid: Int64, page: Int64 = 1, pageSize: Int64 = 20) throws -> SubscriptionFolderPageDTO {

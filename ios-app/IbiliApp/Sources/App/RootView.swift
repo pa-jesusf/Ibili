@@ -304,6 +304,7 @@ private struct DeepLinkPlayerHost: View {
     private func playerDestination(for route: DeepLinkRouter.PlayerRoute) -> some View {
         PlayerView(
             item: route.item,
+            offlineOnly: route.offlineOnly,
             viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id),
             onPictureInPictureActiveChange: { isActive in
                 handlePictureInPictureChange(isActive, routeID: route.id)

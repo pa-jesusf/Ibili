@@ -503,6 +503,8 @@ struct FavListArgs {
     pn: i64,
     #[serde(default)]
     keyword: String,
+    #[serde(default)]
+    all_folders: bool,
 }
 #[derive(Deserialize)]
 struct WatchLaterListArgs {
@@ -874,7 +876,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "user.fav_resources" => {
             let a: FavListArgs = serde_json::from_value(args)?;
-            to_value(c.inner.fav_resource_list(a.media_id, a.pn, &a.keyword)?)
+            to_value(c.inner.fav_resource_list(a.media_id, a.pn, &a.keyword, a.all_folders)?)
         }
         "user.subscriptions" => {
             let a: SubscriptionListArgs = serde_json::from_value(args)?;

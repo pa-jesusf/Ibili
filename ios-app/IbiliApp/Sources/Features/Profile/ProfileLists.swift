@@ -394,9 +394,12 @@ final class WatchLaterListViewModel: ObservableObject {
 
 struct FavoritesFolderListView: View {
     let mid: Int64
+    @EnvironmentObject private var router: DeepLinkRouter
     @State private var folders: [FavFolderInfoDTO] = []
     @State private var isLoading = false
     @State private var searchText = ""
+    @State private var searchTask: Task<Void, Never>?
+    @StateObject private var searchVM = FavoriteResourcesViewModel()
 
     private var filteredFolders: [FavFolderInfoDTO] {
         let keyword = normalizedProfileSearchQuery(searchText)
@@ -408,14 +411,26 @@ struct FavoritesFolderListView: View {
         !normalizedProfileSearchQuery(searchText).isEmpty
     }
 
+    private var defaultSearchFolderID: Int64 {
+        folders.first?.id ?? 0
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            ProfileInlineSearchBar(placeholder: "搜索收藏夹", text: $searchText)
+            ProfileInlineSearchBar(placeholder: "搜索收藏内容", text: $searchText)
             Group {
-                if folders.isEmpty && isLoading {
+                if isSearching {
+                    FavoriteRootSearchResultsView(
+                        vm: searchVM,
+                        keyword: normalizedProfileSearchQuery(searchText),
+                        folderId: defaultSearchFolderID,
+                        isPreparing: defaultSearchFolderID == 0 && isLoading,
+                        router: router
+                    )
+                } else if folders.isEmpty && isLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if filteredFolders.isEmpty {
-                    emptyState(title: isSearching ? "没有搜索结果" : "暂无收藏夹", symbol: "star")
+                    emptyState(title: "暂无收藏夹", symbol: "star")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
@@ -453,6 +468,86 @@ struct FavoritesFolderListView: View {
             }.value
             folders = result
             isLoading = false
+            if isSearching {
+                scheduleRootSearch(searchText)
+            }
+        }
+        .onChange(of: searchText) { newValue in
+            scheduleRootSearch(newValue)
+        }
+        .onDisappear {
+            searchTask?.cancel()
+        }
+    }
+
+    private func scheduleRootSearch(_ rawQuery: String) {
+        searchTask?.cancel()
+        let keyword = normalizedProfileSearchQuery(rawQuery)
+        guard !keyword.isEmpty else {
+            Task { await searchVM.clearSearch() }
+            return
+        }
+        let defaultFolderID = defaultSearchFolderID
+        guard defaultFolderID > 0 else { return }
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await searchVM.search(folderId: defaultFolderID, keyword: keyword, allFolders: true)
+        }
+    }
+}
+
+private struct FavoriteRootSearchResultsView: View {
+    @ObservedObject var vm: FavoriteResourcesViewModel
+    let keyword: String
+    let folderId: Int64
+    let isPreparing: Bool
+    let router: DeepLinkRouter
+
+    var body: some View {
+        Group {
+            if isPreparing || (vm.items.isEmpty && vm.isLoading) {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.items.isEmpty {
+                emptyState(title: "没有搜索结果", symbol: "magnifyingglass")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                            Button {
+                                pushVideo(router,
+                                          aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                          title: item.title, cover: item.cover,
+                                          author: item.author, durationSec: item.durationSec,
+                                          play: item.play, danmaku: item.danmaku)
+                            } label: {
+                                CompactVideoRow(
+                                    cover: item.cover,
+                                    title: item.title,
+                                    author: item.author,
+                                    durationSec: item.durationSec,
+                                    play: item.play,
+                                    danmaku: item.danmaku
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 12)
+                            .onAppear {
+                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                    Task {
+                                        await vm.loadMore(folderId: folderId, keyword: keyword, allFolders: true)
+                                    }
+                                }
+                            }
+                            if index < vm.items.count - 1 {
+                                Divider().padding(.leading, 144)
+                            }
+                        }
+                        if vm.isLoading { ProgressView().padding() }
+                    }
+                }
+            }
         }
     }
 }
@@ -563,22 +658,40 @@ final class FavoriteResourcesViewModel: ObservableObject {
         await fetch(folderId: folderId, keyword: normalizedProfileSearchQuery(rawKeyword))
     }
 
-    func search(folderId: Int64, keyword rawKeyword: String) async {
+    func loadMore(folderId: Int64, keyword rawKeyword: String = "", allFolders: Bool) async {
+        guard !isLoading, !isEnd else { return }
+        await fetch(folderId: folderId, keyword: normalizedProfileSearchQuery(rawKeyword), allFolders: allFolders)
+    }
+
+    func search(folderId: Int64, keyword rawKeyword: String, allFolders: Bool = false) async {
         let nextKeyword = normalizedProfileSearchQuery(rawKeyword)
         guard nextKeyword != keyword || page != 1 || !items.isEmpty else { return }
         keyword = nextKeyword
         page = 1
         isEnd = false
         items.removeAll()
-        await fetch(folderId: folderId, keyword: nextKeyword)
+        await fetch(folderId: folderId, keyword: nextKeyword, allFolders: allFolders)
     }
 
-    private func fetch(folderId: Int64, keyword query: String) async {
+    func clearSearch() async {
+        keyword = ""
+        page = 1
+        isEnd = false
+        isLoading = false
+        items.removeAll()
+    }
+
+    private func fetch(folderId: Int64, keyword query: String, allFolders: Bool = false) async {
         isLoading = true
         let p = page
         let expectedKeyword = query
         let result: FavResourcePageDTO? = await Task.detached {
-            try? CoreClient.shared.userFavResources(mediaId: folderId, page: p, keyword: expectedKeyword)
+            try? CoreClient.shared.userFavResources(
+                mediaId: folderId,
+                page: p,
+                keyword: expectedKeyword,
+                allFolders: allFolders
+            )
         }.value
         guard expectedKeyword == keyword else { return }
         isLoading = false
