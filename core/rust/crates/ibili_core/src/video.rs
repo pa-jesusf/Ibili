@@ -462,7 +462,19 @@ impl Core {
         audio_qn: i64,
         cdn_selection: &str,
     ) -> CoreResult<PlayUrl> {
-        match self.video_playurl_web_with_audio(aid, cid, qn, audio_qn, cdn_selection) {
+        self.video_playurl_with_audio_playback_options(aid, cid, qn, audio_qn, cdn_selection, "auto")
+    }
+
+    pub fn video_playurl_with_audio_playback_options(
+        &self,
+        aid: i64,
+        cid: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+        codec_preference: &str,
+    ) -> CoreResult<PlayUrl> {
+        match self.video_playurl_web_with_audio(aid, cid, qn, audio_qn, cdn_selection, codec_preference) {
             Ok(play) => Ok(play),
             Err(web_err) => {
                 let web_msg = format!("wbi/playurl failed → fell back to tv_durl: {web_err}");
@@ -505,7 +517,21 @@ impl Core {
         audio_qn: i64,
         cdn_selection: &str,
     ) -> CoreResult<PlayUrl> {
-        match self.pgc_playurl_web_with_audio(aid, cid, ep_id, season_id, qn, audio_qn, cdn_selection) {
+        self.pgc_playurl_with_audio_playback_options(aid, cid, ep_id, season_id, qn, audio_qn, cdn_selection, "auto")
+    }
+
+    pub fn pgc_playurl_with_audio_playback_options(
+        &self,
+        aid: i64,
+        cid: i64,
+        ep_id: i64,
+        season_id: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+        codec_preference: &str,
+    ) -> CoreResult<PlayUrl> {
+        match self.pgc_playurl_web_with_audio(aid, cid, ep_id, season_id, qn, audio_qn, cdn_selection, codec_preference) {
             Ok(play) => Ok(play),
             Err(web_err) => {
                 let web_msg = format!("pgc/player/web/v2/playurl failed → fell back to tv_durl: {web_err}");
@@ -590,6 +616,7 @@ impl Core {
         qn: i64,
         audio_qn: i64,
         cdn_selection: &str,
+        codec_preference: &str,
     ) -> CoreResult<PlayUrl> {
         let qn = if qn <= 0 { 80 } else { qn };
         let wbi_key = self.fetch_wbi_key()?;
@@ -606,7 +633,7 @@ impl Core {
             ("web_location".into(), "1315873".into()),
         ];
         let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
-        build_playurl_from_web_response(response, qn, audio_qn, cdn_selection)
+        build_playurl_from_web_response(response, qn, audio_qn, cdn_selection, codec_preference)
     }
 
     fn pgc_playurl_web_with_audio(
@@ -618,6 +645,7 @@ impl Core {
         qn: i64,
         audio_qn: i64,
         cdn_selection: &str,
+        codec_preference: &str,
     ) -> CoreResult<PlayUrl> {
         let qn = if qn <= 0 { 80 } else { qn };
         let wbi_key = self.fetch_wbi_key()?;
@@ -664,7 +692,7 @@ impl Core {
             .and_then(|info| info.user_status)
             .map(|status| status.current_watch_progress)
             .unwrap_or(0);
-        let mut play = build_playurl_from_web_response(result.video_info, qn, audio_qn, cdn_selection)?;
+        let mut play = build_playurl_from_web_response(result.video_info, qn, audio_qn, cdn_selection, codec_preference)?;
         play.last_play_time_ms = resume_ms;
         play.stream_type = format!("pgc_{}", play.stream_type);
         Ok(play)
@@ -886,6 +914,7 @@ fn build_playurl_from_web_response(
     requested_qn: i64,
     audio_qn: i64,
     cdn_selection: &str,
+    codec_preference: &str,
 ) -> CoreResult<PlayUrl> {
     let accept_quality = if response.accept_quality.is_empty() {
         response.dash.as_ref()
@@ -902,7 +931,7 @@ fn build_playurl_from_web_response(
 
     if let Some(dash) = response.dash {
         let target_qn = pick_target_quality(requested_qn, &accept_quality, &dash.video);
-        if let Some(video) = pick_video_stream(&dash.video, target_qn) {
+        if let Some(video) = pick_video_stream(&dash.video, target_qn, codec_preference) {
             let all_audio = dash.all_audio();
             let (accept_audio_quality, accept_audio_description) = collect_audio_qualities(&all_audio);
             let audio = pick_audio_stream_by_quality(&all_audio, audio_qn);
@@ -1064,16 +1093,43 @@ fn pick_target_quality(requested_qn: i64, accept_quality: &[i64], videos: &[Dash
     candidates.into_iter().find(|item| *item <= requested_qn).unwrap_or(highest)
 }
 
-fn pick_video_stream(videos: &[DashVideo], target_qn: i64) -> Option<DashVideo> {
-    let resolved_qn = videos.iter()
+fn pick_video_stream(videos: &[DashVideo], target_qn: i64, codec_preference: &str) -> Option<DashVideo> {
+    let mut qns = videos.iter()
         .map(|item| item.id)
+        .collect::<Vec<_>>();
+    qns.sort_unstable_by(|a, b| b.cmp(a));
+    qns.dedup();
+    let resolved_qns = qns
+        .iter()
+        .copied()
         .filter(|item| *item <= target_qn)
-        .max()
-        .or_else(|| videos.iter().map(|item| item.id).max())?;
+        .chain(qns.iter().copied().filter(|item| *item > target_qn))
+        .collect::<Vec<_>>();
+
+    if is_avc_codec_preference(codec_preference) {
+        for qn in resolved_qns.iter().copied() {
+            if let Some(video) = videos
+                .iter()
+                .filter(|item| item.id == qn && item.codecs.to_ascii_lowercase().starts_with("avc1"))
+                .max_by_key(|item| item.bandwidth)
+            {
+                return Some(video.clone());
+            }
+        }
+    }
+
+    let resolved_qn = resolved_qns.first().copied()?;
     videos.iter()
         .filter(|item| item.id == resolved_qn)
         .max_by_key(|item| (video_codec_score(&item.codecs), item.bandwidth))
         .cloned()
+}
+
+fn is_avc_codec_preference(preference: &str) -> bool {
+    matches!(
+        preference.to_ascii_lowercase().as_str(),
+        "avc" | "h264" | "h.264" | "avc1"
+    )
 }
 
 /// Map audio stream id to a quality tier for sorting/comparison.

@@ -228,7 +228,8 @@ public final class CoreClient: @unchecked Sendable {
         cid: Int64,
         qn: Int64 = 0,
         audioQn: Int64 = 0,
-        cdn: String = "auto"
+        cdn: String = "auto",
+        codecPreference: String = "auto"
     ) throws -> PlayUrlDTO {
         struct A: Encodable {
             let aid: Int64
@@ -236,6 +237,7 @@ public final class CoreClient: @unchecked Sendable {
             let qn: Int64
             let audio_qn: Int64
             let cdn: String
+            let codec_preference: String
         }
         return try call(
             "video.playurl",
@@ -244,7 +246,8 @@ public final class CoreClient: @unchecked Sendable {
                 cid: cid,
                 qn: qn,
                 audio_qn: audioQn,
-                cdn: cdn
+                cdn: cdn,
+                codec_preference: codecPreference
             ),
             decoding: PlayUrlDTO.self
         )
@@ -278,7 +281,8 @@ public final class CoreClient: @unchecked Sendable {
         seasonID: Int64 = 0,
         qn: Int64 = 0,
         audioQn: Int64 = 0,
-        cdn: String = "auto"
+        cdn: String = "auto",
+        codecPreference: String = "auto"
     ) throws -> PlayUrlDTO {
         struct A: Encodable {
             let aid: Int64
@@ -288,6 +292,7 @@ public final class CoreClient: @unchecked Sendable {
             let qn: Int64
             let audio_qn: Int64
             let cdn: String
+            let codec_preference: String
         }
         return try call(
             "pgc.playurl",
@@ -298,7 +303,8 @@ public final class CoreClient: @unchecked Sendable {
                 season_id: seasonID,
                 qn: qn,
                 audio_qn: audioQn,
-                cdn: cdn
+                cdn: cdn,
+                codec_preference: codecPreference
             ),
             decoding: PlayUrlDTO.self
         )

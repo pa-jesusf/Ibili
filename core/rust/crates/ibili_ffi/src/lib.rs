@@ -167,6 +167,8 @@ struct PlayurlArgs {
     audio_qn: i64,
     #[serde(default = "default_cdn_selection")]
     cdn: String,
+    #[serde(default = "default_codec_preference")]
+    codec_preference: String,
 }
 
 #[derive(Deserialize)]
@@ -198,6 +200,9 @@ fn default_qn() -> i64 {
     0
 }
 fn default_cdn_selection() -> String {
+    "auto".into()
+}
+fn default_codec_preference() -> String {
     "auto".into()
 }
 
@@ -633,7 +638,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: PlayurlArgs = serde_json::from_value(args)?;
             to_value(
                 c.inner
-                    .video_playurl_with_audio_options(a.aid, a.cid, a.qn, a.audio_qn, &a.cdn)?,
+                    .video_playurl_with_audio_playback_options(a.aid, a.cid, a.qn, a.audio_qn, &a.cdn, &a.codec_preference)?,
             )
         }
         "video.offline_playurl" => {
@@ -648,7 +653,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "pgc.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
-            to_value(c.inner.pgc_playurl_with_audio_options(
+            to_value(c.inner.pgc_playurl_with_audio_playback_options(
                 a.aid,
                 a.cid,
                 a.ep_id,
@@ -656,6 +661,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                 a.qn,
                 a.audio_qn,
                 &a.cdn,
+                &a.codec_preference,
             )?)
         }
         "pgc.offline_playurl" => {

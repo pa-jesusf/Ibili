@@ -94,6 +94,9 @@ final class PlayerViewModel: ObservableObject {
     private var lastFastLoad: Bool = false
     private var cdnSelection: String = MediaCDNService.auto.rawValue
     private var playbackCacheVariant: String = AppSettings.shared.playbackCacheVariantKey()
+    private var playbackCodecPreference: String = "auto"
+    private var currentVideoCodec: String = ""
+    private var didAttemptAVCRecovery = false
     /// Number of automatic recovery attempts the view-model has issued
     /// for the current `(aid, cid)`. Reset to zero in `load(...)`.
     /// Cap of 1 keeps us from looping when the upstream playurl itself
@@ -245,6 +248,9 @@ final class PlayerViewModel: ObservableObject {
         autoReloadAttempts = 0
         if !isSameVideo {
             blockedQns.removeAll()
+            playbackCodecPreference = "auto"
+            currentVideoCodec = ""
+            didAttemptAVCRecovery = false
             pageCache.clearMediaData()
             stopHeartbeat()
             cancelPendingUpgrade()
@@ -371,6 +377,7 @@ final class PlayerViewModel: ObservableObject {
                     await showWarmPlayer(hiWarm,
                                          qn: info.quality,
                                          generation: generation)
+                    rememberActivePlayURL(info)
                     var meta = hiWarm.preparation.logSummary
                     meta["aid"] = String(item.aid)
                     meta["cid"] = String(item.cid)
@@ -390,6 +397,7 @@ final class PlayerViewModel: ObservableObject {
                     await showWarmPlayer(loWarm,
                                          qn: loInfo.quality,
                                          generation: generation)
+                    rememberActivePlayURL(loInfo)
                     var meta = loWarm.preparation.logSummary
                     meta["aid"] = String(item.aid)
                     meta["cid"] = String(item.cid)
@@ -445,6 +453,7 @@ final class PlayerViewModel: ObservableObject {
                     return
                 }
                 applyPresentationMetadata(to: prep.item, for: item)
+                rememberActivePlayURL(info)
                 self.currentQn = info.quality
                 self.prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
                 let player = AVPlayer(playerItem: prep.item)
@@ -788,6 +797,7 @@ final class PlayerViewModel: ObservableObject {
                 applyPresentationMetadata(to: prep.item, for: item)
             }
             activePreparation = prep
+            rememberActivePlayURL(info)
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -1367,6 +1377,9 @@ final class PlayerViewModel: ObservableObject {
         observeItemStatus(warm.preparation.item, generation: generation)
         activePreparation = warm.preparation
         setPlayer(warm.player)
+        if let cached = pageCache.playURL(qn: qn, audioQn: currentAudioQn, variant: playURLCacheVariant()) {
+            rememberActivePlayURL(cached)
+        }
         currentQn = qn
         isVideoReady = true
         applyPlaybackIntent(to: warm.player)
@@ -1416,6 +1429,7 @@ final class PlayerViewModel: ObservableObject {
         observeItemStatus(hiWarm.preparation.item, generation: generation)
         activePreparation = hiWarm.preparation
         setPlayer(hiWarm.player)
+        rememberActivePlayURL(hiInfo)
         self.currentQn = hiInfo.quality
         isVideoReady = true
         applyPlaybackIntent(to: hiWarm.player)
@@ -1466,16 +1480,37 @@ final class PlayerViewModel: ObservableObject {
                     self.refreshSystemMediaSession()
                 case .failed:
                     let detail = item.error?.localizedDescription ?? "unknown"
+                    let failedCacheVariant = self.playURLCacheVariant()
                     self.pageCache.removePlayURL(
                         qn: self.currentQn,
                         audioQn: self.currentAudioQn,
-                        variant: self.playbackCacheVariant
+                        variant: failedCacheVariant
                     )
                     AppLog.error("player", "AVPlayerItem 失败", error: item.error, metadata: [
                         "detail": detail,
+                        "videoCodec": self.currentVideoCodec.isEmpty ? "-" : self.currentVideoCodec,
+                        "codecPreference": self.playbackCodecPreference,
                     ])
                     await self.exportActiveDiagnostics(reason: "AVPlayerItem failed: \(detail)", generation: generation)
                     guard !self.isClosing, self.loadGeneration == generation else { return }
+                    if self.shouldAttemptAVCRecovery() {
+                        self.didAttemptAVCRecovery = true
+                        self.playbackCodecPreference = "avc"
+                        self.pageCache.removePlayURL(
+                            qn: self.currentQn,
+                            audioQn: self.currentAudioQn,
+                            variant: self.playURLCacheVariant(codecPreference: "avc")
+                        )
+                        AppLog.warning("player", "尝试自动恢复播放(切换 H.264)", metadata: [
+                            "detail": detail,
+                            "failedCodec": self.currentVideoCodec.isEmpty ? "-" : self.currentVideoCodec,
+                            "qn": String(self.currentQn),
+                            "nextCodecPreference": self.playbackCodecPreference,
+                        ])
+                        Task { await self.reload() }
+                        self.refreshSystemMediaSession()
+                        return
+                    }
                     let failingQn = self.currentQn
                     let alreadyBlocked = failingQn > 0 && self.blockedQns.contains(failingQn)
                     if failingQn > 0, !alreadyBlocked {
@@ -1501,6 +1536,16 @@ final class PlayerViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func shouldAttemptAVCRecovery() -> Bool {
+        guard playbackCodecPreference != "avc", !didAttemptAVCRecovery else { return false }
+        let codec = currentVideoCodec.lowercased()
+        return codec.hasPrefix("hev1")
+            || codec.hasPrefix("hvc1")
+            || codec.hasPrefix("dvh1")
+            || codec.hasPrefix("dvhe")
+            || codec.hasPrefix("av01")
     }
 
     private func exportActiveDiagnostics(reason: String, generation: UInt64) async {
@@ -1529,25 +1574,29 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
+        let cacheVariant = playURLCacheVariant()
         if self.aid == aid,
            self.cid == cid,
-           let cached = pageCache.playURL(qn: qn, audioQn: audioQn, variant: playbackCacheVariant) {
+           let cached = pageCache.playURL(qn: qn, audioQn: audioQn, variant: cacheVariant) {
             AppLog.debug("player", "命中播放页缓存的播放地址", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
                 "qn": String(qn),
                 "audioQn": String(audioQn),
+                "codecPreference": playbackCodecPreference,
             ])
             return cached
         }
         let cdnSelection = self.cdnSelection
+        let codecPreference = self.playbackCodecPreference
         let info = try await Task.detached {
             try CoreClient.shared.playUrl(
                 aid: aid,
                 cid: cid,
                 qn: qn,
                 audioQn: audioQn,
-                cdn: cdnSelection
+                cdn: cdnSelection,
+                codecPreference: codecPreference
             )
         }.value
         rememberPlayURL(info)
@@ -1555,19 +1604,22 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func fetchPgcPlayUrl(item: FeedItemDTO, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
+        let cacheVariant = playURLCacheVariant()
         if self.aid == item.aid,
            self.cid == item.cid,
-           let cached = pageCache.playURL(qn: qn, audioQn: audioQn, variant: playbackCacheVariant) {
+           let cached = pageCache.playURL(qn: qn, audioQn: audioQn, variant: cacheVariant) {
             AppLog.debug("player", "命中播放页缓存的 PGC 播放地址", metadata: [
                 "aid": String(item.aid),
                 "cid": String(item.cid),
                 "epID": String(item.epID),
                 "qn": String(qn),
                 "audioQn": String(audioQn),
+                "codecPreference": playbackCodecPreference,
             ])
             return cached
         }
         let cdnSelection = self.cdnSelection
+        let codecPreference = self.playbackCodecPreference
         let info = try await Task.detached {
             try CoreClient.shared.pgcPlayUrl(
                 aid: item.aid,
@@ -1576,7 +1628,8 @@ final class PlayerViewModel: ObservableObject {
                 seasonID: item.seasonID,
                 qn: qn,
                 audioQn: audioQn,
-                cdn: cdnSelection
+                cdn: cdnSelection,
+                codecPreference: codecPreference
             )
         }.value
         rememberPlayURL(info)
@@ -1584,7 +1637,16 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func rememberPlayURL(_ info: PlayUrlDTO) {
-        pageCache.storePlayURL(info, variant: playbackCacheVariant)
+        currentVideoCodec = info.videoCodec
+        pageCache.storePlayURL(info, variant: playURLCacheVariant())
+    }
+
+    private func rememberActivePlayURL(_ info: PlayUrlDTO) {
+        currentVideoCodec = info.videoCodec
+    }
+
+    private func playURLCacheVariant(codecPreference: String? = nil) -> String {
+        "\(playbackCacheVariant)|codec=\(codecPreference ?? playbackCodecPreference)"
     }
 
     private func currentPlaybackTimeForRecovery() -> CMTime {
@@ -1607,14 +1669,16 @@ final class PlayerViewModel: ObservableObject {
     private func recoverPlaybackFromPageCacheIfPossible(trigger: String) async -> Bool {
         guard !isClosing else { return true }
         guard !isRecoveringPlaybackFromPageCache else { return true }
+        let cacheVariant = playURLCacheVariant()
         guard currentQn > 0,
-              let info = pageCache.playURL(qn: currentQn, audioQn: currentAudioQn, variant: playbackCacheVariant) else {
+              let info = pageCache.playURL(qn: currentQn, audioQn: currentAudioQn, variant: cacheVariant) else {
             AppLog.debug("player", "播放页缓存未命中，无法直接恢复播放源", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
                 "trigger": trigger,
                 "qn": String(currentQn),
                 "audioQn": String(currentAudioQn),
+                "codecPreference": playbackCodecPreference,
             ])
             return false
         }
@@ -1632,6 +1696,7 @@ final class PlayerViewModel: ObservableObject {
             "trigger": trigger,
             "qn": String(info.quality),
             "audioQn": String(info.audioQuality),
+            "codecPreference": playbackCodecPreference,
             "resumeSec": String(format: "%.3f", CMTimeGetSeconds(resumeAt)),
         ])
 
@@ -1665,6 +1730,7 @@ final class PlayerViewModel: ObservableObject {
             }
 
             activePreparation = prep
+            rememberActivePlayURL(info)
             observeItemStatus(prep.item, generation: generation)
 
             if player == nil {
@@ -1685,17 +1751,19 @@ final class PlayerViewModel: ObservableObject {
                 "trigger": trigger,
                 "qn": String(info.quality),
                 "audioQn": String(info.audioQuality),
+                "codecPreference": playbackCodecPreference,
             ])
             return true
         } catch {
             guard !isClosing else { return true }
-            pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality, variant: playbackCacheVariant)
+            pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality, variant: cacheVariant)
             AppLog.warning("player", "播放页缓存恢复失败，已回退到常规重载路径", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
                 "trigger": trigger,
                 "qn": String(info.quality),
                 "audioQn": String(info.audioQuality),
+                "codecPreference": playbackCodecPreference,
                 "error": error.localizedDescription,
             ])
             return false
@@ -1825,6 +1893,7 @@ final class PlayerViewModel: ObservableObject {
                 applyPresentationMetadata(to: prep.item, for: item)
             }
             activePreparation = prep
+            rememberActivePlayURL(info)
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
