@@ -250,6 +250,27 @@ public final class CoreClient: @unchecked Sendable {
         )
     }
 
+    public func offlinePlayUrl(
+        aid: Int64,
+        cid: Int64,
+        qn: Int64 = 0,
+        audioQn: Int64 = 0,
+        cdn: String = "auto"
+    ) throws -> OfflinePlayUrlDTO {
+        struct A: Encodable {
+            let aid: Int64
+            let cid: Int64
+            let qn: Int64
+            let audio_qn: Int64
+            let cdn: String
+        }
+        return try call(
+            "video.offline_playurl",
+            args: A(aid: aid, cid: cid, qn: qn, audio_qn: audioQn, cdn: cdn),
+            decoding: OfflinePlayUrlDTO.self
+        )
+    }
+
     public func pgcPlayUrl(
         aid: Int64,
         cid: Int64,
@@ -280,6 +301,31 @@ public final class CoreClient: @unchecked Sendable {
                 cdn: cdn
             ),
             decoding: PlayUrlDTO.self
+        )
+    }
+
+    public func pgcOfflinePlayUrl(
+        aid: Int64,
+        cid: Int64,
+        epID: Int64,
+        seasonID: Int64 = 0,
+        qn: Int64 = 0,
+        audioQn: Int64 = 0,
+        cdn: String = "auto"
+    ) throws -> OfflinePlayUrlDTO {
+        struct A: Encodable {
+            let aid: Int64
+            let cid: Int64
+            let ep_id: Int64
+            let season_id: Int64
+            let qn: Int64
+            let audio_qn: Int64
+            let cdn: String
+        }
+        return try call(
+            "pgc.offline_playurl",
+            args: A(aid: aid, cid: cid, ep_id: epID, season_id: seasonID, qn: qn, audio_qn: audioQn, cdn: cdn),
+            decoding: OfflinePlayUrlDTO.self
         )
     }
 
@@ -693,6 +739,21 @@ public final class CoreClient: @unchecked Sendable {
     public func userFavResources(mediaId: Int64, page: Int64 = 1, keyword: String = "") throws -> FavResourcePageDTO {
         struct A: Encodable { let media_id: Int64; let pn: Int64; let keyword: String }
         return try call("user.fav_resources", args: A(media_id: mediaId, pn: page, keyword: keyword), decoding: FavResourcePageDTO.self)
+    }
+
+    public func userSubscriptions(mid: Int64, page: Int64 = 1, pageSize: Int64 = 20) throws -> SubscriptionFolderPageDTO {
+        struct A: Encodable { let mid: Int64; let page: Int64; let page_size: Int64 }
+        return try call("user.subscriptions", args: A(mid: mid, page: page, page_size: pageSize), decoding: SubscriptionFolderPageDTO.self)
+    }
+
+    public func userSubscriptionResources(id: Int64, page: Int64 = 1, pageSize: Int64 = 20) throws -> SubscriptionResourcePageDTO {
+        struct A: Encodable { let id: Int64; let page: Int64; let page_size: Int64 }
+        return try call("user.subscription_resources", args: A(id: id, page: page, page_size: pageSize), decoding: SubscriptionResourcePageDTO.self)
+    }
+
+    public func userSubscriptionCancel(id: Int64, type: Int64) throws {
+        struct A: Encodable { let id: Int64; let kind: Int64 }
+        try callVoid("user.subscription_cancel", args: A(id: id, kind: type))
     }
 
     /// 番剧 / 影视 follow list. `kind` 1=bangumi, 2=cinema.

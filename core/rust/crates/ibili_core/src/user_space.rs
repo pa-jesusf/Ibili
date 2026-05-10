@@ -23,6 +23,10 @@ const URL_HISTORY_CURSOR: &str = "https://api.bilibili.com/x/web-interface/histo
 const URL_HISTORY_SEARCH: &str = "https://api.bilibili.com/x/web-interface/history/search";
 const URL_FAV_RESOURCE_LIST: &str = "https://api.bilibili.com/x/v3/fav/resource/list";
 const URL_FAV_PGC_LIST: &str = "https://api.bilibili.com/x/space/bangumi/follow/list";
+const URL_SUBSCRIPTION_FOLDER_LIST: &str = "https://api.bilibili.com/x/v3/fav/folder/collected/list";
+const URL_SUBSCRIPTION_RESOURCE_LIST: &str = "https://api.bilibili.com/x/space/fav/season/list";
+const URL_UNFAV_FOLDER: &str = "https://api.bilibili.com/x/v3/fav/folder/unfav";
+const URL_UNFAV_SEASON: &str = "https://api.bilibili.com/x/v3/fav/season/unfav";
 const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/web";
 const URL_FOLLOWINGS: &str = "https://api.bilibili.com/x/relation/followings";
 const URL_FOLLOWERS: &str = "https://api.bilibili.com/x/relation/followers";
@@ -108,6 +112,49 @@ pub struct FavResourceItem {
 #[derive(Debug, Serialize, Clone)]
 pub struct FavResourcePage {
     pub items: Vec<FavResourceItem>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SubscriptionFolder {
+    pub id: i64,
+    pub fid: i64,
+    pub mid: i64,
+    pub title: String,
+    pub cover: String,
+    pub intro: String,
+    pub upper_mid: i64,
+    pub upper_name: String,
+    pub media_count: i64,
+    pub view_count: i64,
+    pub fav_state: i64,
+    #[serde(rename = "type")]
+    pub kind: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SubscriptionFolderPage {
+    pub items: Vec<SubscriptionFolder>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SubscriptionResource {
+    pub aid: i64,
+    pub bvid: String,
+    pub cid: i64,
+    pub title: String,
+    pub cover: String,
+    pub duration_sec: i64,
+    pub play: i64,
+    pub danmaku: i64,
+    pub pubdate: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SubscriptionResourcePage {
+    pub info: Option<SubscriptionFolder>,
+    pub items: Vec<SubscriptionResource>,
     pub has_more: bool,
 }
 
@@ -329,6 +376,84 @@ impl Core {
             })
             .collect();
         Ok(FavResourcePage { items, has_more: raw.has_more.unwrap_or(false) })
+    }
+
+    /// `/x/v3/fav/folder/collected/list`. Lists collection folders /
+    /// seasons the current account has subscribed to.
+    pub fn subscription_folder_list(&self, mid: i64, pn: i64, ps: i64) -> CoreResult<SubscriptionFolderPage> {
+        if mid <= 0 || self.session.read().access_key().is_none() {
+            return Ok(SubscriptionFolderPage { items: vec![], has_more: false });
+        }
+        let params: Vec<(String, String)> = vec![
+            ("up_mid".into(), mid.to_string()),
+            ("pn".into(), pn.max(1).to_string()),
+            ("ps".into(), ps.clamp(1, 50).to_string()),
+            ("platform".into(), "web".into()),
+        ];
+        let raw: SubscriptionFolderListWire = self.http.get_web(URL_SUBSCRIPTION_FOLDER_LIST, &params)?;
+        Ok(SubscriptionFolderPage {
+            items: raw.list.into_iter().map(subscription_folder_from_wire).collect(),
+            has_more: raw.has_more.unwrap_or(false),
+        })
+    }
+
+    /// `/x/space/fav/season/list`. Lists videos/resources inside a
+    /// subscribed favourite season/folder.
+    pub fn subscription_resource_list(&self, id: i64, pn: i64, ps: i64) -> CoreResult<SubscriptionResourcePage> {
+        if id <= 0 || self.session.read().access_key().is_none() {
+            return Ok(SubscriptionResourcePage { info: None, items: vec![], has_more: false });
+        }
+        let page_size = ps.clamp(1, 50);
+        let params: Vec<(String, String)> = vec![
+            ("season_id".into(), id.to_string()),
+            ("pn".into(), pn.max(1).to_string()),
+            ("ps".into(), page_size.to_string()),
+        ];
+        let raw: SubscriptionResourceListWire = self.http.get_web(URL_SUBSCRIPTION_RESOURCE_LIST, &params)?;
+        let items: Vec<SubscriptionResource> = raw.medias.into_iter().map(|m| {
+            let cnt = m.cnt_info.unwrap_or_default();
+            SubscriptionResource {
+                aid: m.id.unwrap_or(0),
+                bvid: m.bvid.unwrap_or_default(),
+                cid: 0,
+                title: m.title.unwrap_or_default(),
+                cover: m.cover.unwrap_or_default(),
+                duration_sec: m.duration.unwrap_or(0),
+                play: cnt.play.unwrap_or(0),
+                danmaku: cnt.danmaku.unwrap_or(0),
+                pubdate: m.pubtime.unwrap_or(0),
+            }
+        }).collect();
+        let has_more = items.len() >= page_size as usize;
+        Ok(SubscriptionResourcePage {
+            info: raw.info.map(subscription_folder_from_wire),
+            items,
+            has_more,
+        })
+    }
+
+    /// Cancel one subscribed folder / season. `kind == 11` mirrors
+    /// upstream PiliPlus and uses the favourite-folder unfav endpoint;
+    /// every other value uses the season unfav endpoint.
+    pub fn subscription_cancel(&self, id: i64, kind: i64) -> CoreResult<()> {
+        if id <= 0 {
+            return Err(CoreError::InvalidArgument("subscription id required".into()));
+        }
+        let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
+        let form = if kind == 11 {
+            vec![
+                ("media_id".to_string(), id.to_string()),
+                ("csrf".to_string(), csrf),
+            ]
+        } else {
+            vec![
+                ("platform".to_string(), "web".to_string()),
+                ("season_id".to_string(), id.to_string()),
+                ("csrf".to_string(), csrf),
+            ]
+        };
+        let url = if kind == 11 { URL_UNFAV_FOLDER } else { URL_UNFAV_SEASON };
+        self.http.post_form_web_empty(url, &form)
     }
 
     /// `/x/space/bangumi/follow/list`. `kind` 1 = bangumi, 2 = cinema.
@@ -611,6 +736,50 @@ struct FavCntWire {
 }
 
 #[derive(Default, Deserialize)]
+struct SubscriptionFolderListWire {
+    #[serde(default, deserialize_with = "null_as_empty_vec")] list: Vec<SubscriptionFolderWire>,
+    #[serde(default)] has_more: Option<bool>,
+}
+
+#[derive(Default, Deserialize)]
+struct SubscriptionResourceListWire {
+    #[serde(default)] info: Option<SubscriptionFolderWire>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")] medias: Vec<SubscriptionResourceWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct SubscriptionFolderWire {
+    #[serde(default)] id: Option<i64>,
+    #[serde(default)] fid: Option<i64>,
+    #[serde(default)] mid: Option<i64>,
+    #[serde(default)] title: Option<String>,
+    #[serde(default)] cover: Option<String>,
+    #[serde(default)] intro: Option<String>,
+    #[serde(default)] upper: Option<SubscriptionUpperWire>,
+    #[serde(default)] media_count: Option<i64>,
+    #[serde(default)] view_count: Option<i64>,
+    #[serde(default)] fav_state: Option<i64>,
+    #[serde(default, rename = "type")] kind: Option<i64>,
+}
+
+#[derive(Default, Deserialize)]
+struct SubscriptionUpperWire {
+    #[serde(default)] mid: Option<i64>,
+    #[serde(default)] name: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct SubscriptionResourceWire {
+    #[serde(default)] id: Option<i64>,
+    #[serde(default)] bvid: Option<String>,
+    #[serde(default)] title: Option<String>,
+    #[serde(default)] cover: Option<String>,
+    #[serde(default)] duration: Option<i64>,
+    #[serde(default)] pubtime: Option<i64>,
+    #[serde(default)] cnt_info: Option<FavCntWire>,
+}
+
+#[derive(Default, Deserialize)]
 struct BangumiListWire {
     #[serde(default, deserialize_with = "null_as_empty_vec")] list: Vec<BangumiItemWire>,
     #[serde(default)] total: Option<i64>,
@@ -702,6 +871,24 @@ fn history_items_from_wire(list: Vec<HistoryItemWire>) -> Vec<HistoryItem> {
             })
         })
         .collect()
+}
+
+fn subscription_folder_from_wire(raw: SubscriptionFolderWire) -> SubscriptionFolder {
+    let upper = raw.upper.unwrap_or_default();
+    SubscriptionFolder {
+        id: raw.id.unwrap_or(0),
+        fid: raw.fid.unwrap_or(0),
+        mid: raw.mid.unwrap_or(0),
+        title: raw.title.unwrap_or_default(),
+        cover: raw.cover.unwrap_or_default(),
+        intro: raw.intro.unwrap_or_default(),
+        upper_mid: upper.mid.unwrap_or(0),
+        upper_name: upper.name.unwrap_or_default(),
+        media_count: raw.media_count.unwrap_or(0),
+        view_count: raw.view_count.unwrap_or(0),
+        fav_state: raw.fav_state.unwrap_or(0),
+        kind: raw.kind.unwrap_or(0),
+    }
 }
 
 // `_value_unused` keeps clippy from flagging the unused import when

@@ -70,7 +70,7 @@ public struct FeedPageDTO: Decodable {
     public let items: [FeedItemDTO]
 }
 
-public struct FeedItemDTO: Decodable, Identifiable, Hashable {
+public struct FeedItemDTO: Codable, Identifiable, Hashable {
     public var id: Int64 { isPGC ? (epID > 0 ? epID : aid) : aid }
     public let aid: Int64
     public let bvid: String
@@ -289,7 +289,7 @@ public struct LiveDanmakuHistoryDTO: Decodable {
     public let items: [LiveDanmakuMessageDTO]
 }
 
-public struct PlayUrlDTO: Decodable {
+public struct PlayUrlDTO: Codable {
     public let url: String
     public let audioUrl: String?
     public let format: String
@@ -389,6 +389,33 @@ public struct PlayUrlDTO: Decodable {
         lastPlayTimeMs = try c.decodeIfPresent(Int64.self, forKey: .lastPlayTimeMs) ?? 0
         lastPlayCid = try c.decodeIfPresent(Int64.self, forKey: .lastPlayCid) ?? 0
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(url, forKey: .url)
+        try c.encodeIfPresent(audioUrl, forKey: .audioUrl)
+        try c.encode(format, forKey: .format)
+        try c.encode(streamType, forKey: .streamType)
+        try c.encode(quality, forKey: .quality)
+        try c.encode(durationMs, forKey: .durationMs)
+        try c.encode(backupUrls, forKey: .backupUrls)
+        try c.encode(audioBackupUrls, forKey: .audioBackupUrls)
+        try c.encode(acceptQuality, forKey: .acceptQuality)
+        try c.encode(acceptDescription, forKey: .acceptDescription)
+        try c.encode(videoCodec, forKey: .videoCodec)
+        try c.encode(audioCodec, forKey: .audioCodec)
+        try c.encodeIfPresent(videoWidth, forKey: .videoWidth)
+        try c.encodeIfPresent(videoHeight, forKey: .videoHeight)
+        try c.encodeIfPresent(videoFrameRate, forKey: .videoFrameRate)
+        try c.encodeIfPresent(videoRange, forKey: .videoRange)
+        try c.encodeIfPresent(debugMessage, forKey: .debugMessage)
+        try c.encode(audioQuality, forKey: .audioQuality)
+        try c.encode(audioQualityLabel, forKey: .audioQualityLabel)
+        try c.encode(acceptAudioQuality, forKey: .acceptAudioQuality)
+        try c.encode(acceptAudioDescription, forKey: .acceptAudioDescription)
+        try c.encode(lastPlayTimeMs, forKey: .lastPlayTimeMs)
+        try c.encode(lastPlayCid, forKey: .lastPlayCid)
+    }
 }
 
 private extension String {
@@ -427,7 +454,28 @@ public struct PackagingOfflineBuildDTO: Decodable {
     }
 }
 
-public struct DanmakuItemDTO: Decodable {
+public struct OfflinePlayUrlDTO: Decodable {
+    public let play: PlayUrlDTO
+    public let losslessContainerCandidates: [String]
+    public let canLosslessRemux: Bool
+    public let losslessNote: String
+
+    enum CodingKeys: String, CodingKey {
+        case losslessContainerCandidates = "lossless_container_candidates"
+        case canLosslessRemux = "can_lossless_remux"
+        case losslessNote = "lossless_note"
+    }
+
+    public init(from decoder: Decoder) throws {
+        play = try PlayUrlDTO(from: decoder)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        losslessContainerCandidates = try c.decodeIfPresent([String].self, forKey: .losslessContainerCandidates) ?? ["mp4", "m4v", "mov"]
+        canLosslessRemux = try c.decodeIfPresent(Bool.self, forKey: .canLosslessRemux) ?? false
+        losslessNote = try c.decodeIfPresent(String.self, forKey: .losslessNote) ?? ""
+    }
+}
+
+public struct DanmakuItemDTO: Codable {
     public let timeSec: Float
     public let mode: Int32
     public let color: UInt32
@@ -501,9 +549,25 @@ public struct DanmakuItemDTO: Decodable {
         self.count = count
         self.isSelf = isSelf
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(timeSec, forKey: .timeSec)
+        try c.encode(mode, forKey: .mode)
+        try c.encode(color, forKey: .color)
+        try c.encode(fontSize, forKey: .fontSize)
+        try c.encode(text, forKey: .text)
+        try c.encode(weight, forKey: .weight)
+        try c.encode(hasWeight, forKey: .hasWeight)
+        try c.encode(midHash, forKey: .midHash)
+        try c.encode(likeCount, forKey: .likeCount)
+        try c.encode(colorful, forKey: .colorful)
+        try c.encode(count, forKey: .count)
+        try c.encode(isSelf, forKey: .isSelf)
+    }
 }
 
-public struct DanmakuTrackDTO: Decodable {
+public struct DanmakuTrackDTO: Codable {
     public let items: [DanmakuItemDTO]
 }
 
@@ -1309,6 +1373,69 @@ public struct FavResourcePageDTO: Decodable {
     public let hasMore: Bool
     enum CodingKeys: String, CodingKey {
         case items
+        case hasMore = "has_more"
+    }
+}
+
+public struct SubscriptionFolderDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { folderID }
+    public let folderID: Int64
+    public let fid: Int64
+    public let mid: Int64
+    public let title: String
+    public let cover: String
+    public let intro: String
+    public let upperMid: Int64
+    public let upperName: String
+    public let mediaCount: Int64
+    public let viewCount: Int64
+    public let favState: Int64
+    public let type: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case folderID = "id"
+        case fid, mid, title, cover, intro
+        case upperMid = "upper_mid"
+        case upperName = "upper_name"
+        case mediaCount = "media_count"
+        case viewCount = "view_count"
+        case favState = "fav_state"
+        case type
+    }
+}
+
+public struct SubscriptionFolderPageDTO: Decodable {
+    public let items: [SubscriptionFolderDTO]
+    public let hasMore: Bool
+    enum CodingKeys: String, CodingKey {
+        case items
+        case hasMore = "has_more"
+    }
+}
+
+public struct SubscriptionResourceDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { aid }
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let title: String
+    public let cover: String
+    public let durationSec: Int64
+    public let play: Int64
+    public let danmaku: Int64
+    public let pubdate: Int64
+    enum CodingKeys: String, CodingKey {
+        case aid, bvid, cid, title, cover, play, danmaku, pubdate
+        case durationSec = "duration_sec"
+    }
+}
+
+public struct SubscriptionResourcePageDTO: Decodable {
+    public let info: SubscriptionFolderDTO?
+    public let items: [SubscriptionResourceDTO]
+    public let hasMore: Bool
+    enum CodingKeys: String, CodingKey {
+        case info, items
         case hasMore = "has_more"
     }
 }

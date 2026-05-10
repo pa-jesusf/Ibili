@@ -189,6 +189,16 @@ private struct ProfileQuickActions: View {
             } label: {
                 ActionTile(symbol: "tv", title: "我的追番")
             }
+            NavigationLink {
+                SubscriptionFolderListView(mid: mid)
+            } label: {
+                ActionTile(symbol: "rectangle.stack.badge.person.crop", title: "我的订阅")
+            }
+            NavigationLink {
+                OfflineCacheListView()
+            } label: {
+                ActionTile(symbol: "square.and.arrow.down", title: "离线缓存")
+            }
         }
         .buttonStyle(.plain)
     }

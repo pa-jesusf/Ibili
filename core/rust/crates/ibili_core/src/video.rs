@@ -1,6 +1,6 @@
 use crate::Core;
 use crate::cdn::rank_urls_for_selection;
-use crate::dto::PlayUrl;
+use crate::dto::{OfflinePlayUrl, PlayUrl};
 use crate::dto::{
     PgcEpisode, PgcSeason, PgcStat, RelatedVideoItem, UgcSeason, UgcSeasonEpisode,
     UgcSeasonSection, VideoDescNode, VideoHonor, VideoOwner, VideoPage, VideoStat, VideoView,
@@ -483,6 +483,18 @@ impl Core {
         }
     }
 
+    pub fn video_offline_playurl(
+        &self,
+        aid: i64,
+        cid: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<OfflinePlayUrl> {
+        let play = self.video_playurl_with_audio_options(aid, cid, qn, audio_qn, cdn_selection)?;
+        Ok(build_offline_playurl(play))
+    }
+
     pub fn pgc_playurl_with_audio_options(
         &self,
         aid: i64,
@@ -512,6 +524,28 @@ impl Core {
                 }
             }
         }
+    }
+
+    pub fn pgc_offline_playurl(
+        &self,
+        aid: i64,
+        cid: i64,
+        ep_id: i64,
+        season_id: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<OfflinePlayUrl> {
+        let play = self.pgc_playurl_with_audio_options(
+            aid,
+            cid,
+            ep_id,
+            season_id,
+            qn,
+            audio_qn,
+            cdn_selection,
+        )?;
+        Ok(build_offline_playurl(play))
     }
 
     pub fn video_playurl_tv_compat(&self, aid: i64, cid: i64, qn: i64) -> CoreResult<PlayUrl> {
@@ -768,6 +802,46 @@ impl Core {
     fn fetch_wbi_key(&self) -> CoreResult<WbiKey> {
         let nav: NavData = self.http.get_web(URL_NAV, &[])?;
         Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+    }
+}
+
+fn build_offline_playurl(play: PlayUrl) -> OfflinePlayUrl {
+    let video_codec = play.video_codec.to_ascii_lowercase();
+    let audio_codec = play.audio_codec.to_ascii_lowercase();
+    let is_dash = play.audio_url.is_some();
+    let video_supported = video_codec.is_empty()
+        || video_codec.starts_with("avc")
+        || video_codec.starts_with("hev")
+        || video_codec.starts_with("hvc")
+        || video_codec.starts_with("dv");
+    let audio_supported = audio_codec.is_empty()
+        || audio_codec.starts_with("mp4a")
+        || audio_codec.starts_with("ec-3")
+        || audio_codec.starts_with("ac-3")
+        || audio_codec.starts_with("fla");
+    let mut candidates = vec!["mp4".to_string(), "m4v".to_string(), "mov".to_string()];
+    if video_codec.starts_with("dv") || video_codec.contains("dvh") || video_codec.contains("dvh1") {
+        candidates = vec!["mov".to_string(), "m4v".to_string(), "mp4".to_string()];
+    }
+    let can_lossless_remux = !is_dash || (video_supported && audio_supported);
+    let lossless_note = if can_lossless_remux {
+        if is_dash {
+            "可尝试无损合并音视频流".to_string()
+        } else {
+            "单流可直接保存为原始文件".to_string()
+        }
+    } else {
+        format!(
+            "当前编码可能无法由系统无损封装为单文件: video={}, audio={}",
+            if play.video_codec.is_empty() { "unknown" } else { &play.video_codec },
+            if play.audio_codec.is_empty() { "unknown" } else { &play.audio_codec },
+        )
+    };
+    OfflinePlayUrl {
+        play,
+        lossless_container_candidates: candidates,
+        can_lossless_remux,
+        lossless_note,
     }
 }
 

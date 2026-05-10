@@ -2065,6 +2065,11 @@ struct PlayerView: View {
     @State private var playerVCRef = PlayerVCBox()
     /// Long-press on the danmaku toggle opens this sheet for sending.
     @State private var showDanmakuSheet = false
+    @State private var showDanmakuStyleSheet = false
+    @State private var showOfflineDownloadSheet = false
+    @StateObject private var offlineService = OfflineDownloadService.shared
+    @State private var playerActionToast: String?
+    @State private var playerActionToastWork: DispatchWorkItem?
     /// One-shot transient hint that surfaces when the user enables
     /// danmaku, telling them they can long-press the toggle to send one.
     /// Suppressible via `AppSettings.showDanmakuSendHint`.
@@ -2259,6 +2264,30 @@ struct PlayerView: View {
                         onPick: { qn in Task { await vm.switchAudioQuality(to: qn) } }
                     )
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            showOfflineDownloadSheet = true
+                        } label: {
+                            Label("离线缓存", systemImage: "square.and.arrow.down")
+                        }
+                        Button {
+                            showDanmakuStyleSheet = true
+                        } label: {
+                            Label("弹幕样式", systemImage: "textformat.size")
+                        }
+                        Button {
+                            saveCurrentCover()
+                        } label: {
+                            Label("保存封面", systemImage: "photo")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.white)
+                    }
+                    .disabled(vm.player == nil)
+                }
             }
         }
         .task(id: mediaLoadKey) {
@@ -2392,7 +2421,19 @@ struct PlayerView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .overlay(alignment: .top) {
+            if let message = playerActionToast {
+                Text(message)
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(.regularMaterial))
+                    .padding(.top, 48)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: danmakuHint)
+        .animation(.easeInOut(duration: 0.2), value: playerActionToast)
         .sheet(isPresented: $showDanmakuSheet) {
             DanmakuSendSheet(
                 aid: vm.currentAid > 0 ? vm.currentAid : item.aid,
@@ -2403,6 +2444,25 @@ struct PlayerView: View {
                     // sees their bullet immediately. Frame styling is
                     // handled inside the canvas based on `isSelf`.
                     danmaku.appendLive(echo)
+                }
+            )
+        }
+        .sheet(isPresented: $showDanmakuStyleSheet) {
+            DanmakuStyleSettingsView()
+                .environmentObject(settings)
+        }
+        .sheet(isPresented: $showOfflineDownloadSheet) {
+            OfflineDownloadSheet(
+                item: vm.currentFeedItem ?? item,
+                qualities: vm.availableQualities,
+                currentQn: vm.currentQn,
+                audioQualities: vm.availableAudioQualities,
+                currentAudioQn: vm.currentAudioQn,
+                cdn: settings.cdnService.rawValue,
+                onStart: { request in
+                    offlineService.start(request)
+                    showOfflineDownloadSheet = false
+                    flashPlayerAction("已加入离线缓存")
                 }
             )
         }
@@ -2417,6 +2477,26 @@ struct PlayerView: View {
         let s = CMTimeGetSeconds(t)
         guard s.isFinite, s >= 0 else { return 0 }
         return Int64(s * 1000)
+    }
+
+    private func saveCurrentCover() {
+        let cover = (vm.currentFeedItem ?? item).cover
+        Task {
+            do {
+                try await offlineService.saveCoverToPhotos(urlString: cover)
+                await MainActor.run { flashPlayerAction("封面已保存到相册") }
+            } catch {
+                await MainActor.run { flashPlayerAction((error as? LocalizedError)?.errorDescription ?? "封面保存失败") }
+            }
+        }
+    }
+
+    private func flashPlayerAction(_ message: String) {
+        playerActionToast = message
+        playerActionToastWork?.cancel()
+        let work = DispatchWorkItem { playerActionToast = nil }
+        playerActionToastWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: work)
     }
 
     @ViewBuilder

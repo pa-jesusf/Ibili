@@ -168,6 +168,32 @@ struct PlayurlArgs {
     #[serde(default = "default_cdn_selection")]
     cdn: String,
 }
+
+#[derive(Deserialize)]
+struct SubscriptionListArgs {
+    mid: i64,
+    #[serde(default = "default_one_i64")]
+    page: i64,
+    #[serde(default = "default_ps")]
+    page_size: i64,
+}
+
+#[derive(Deserialize)]
+struct SubscriptionResourcesArgs {
+    id: i64,
+    #[serde(default = "default_one_i64")]
+    page: i64,
+    #[serde(default = "default_ps")]
+    page_size: i64,
+}
+
+#[derive(Deserialize)]
+struct SubscriptionCancelArgs {
+    id: i64,
+    #[serde(default)]
+    kind: i64,
+}
+
 fn default_qn() -> i64 {
     0
 }
@@ -610,9 +636,31 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                     .video_playurl_with_audio_options(a.aid, a.cid, a.qn, a.audio_qn, &a.cdn)?,
             )
         }
+        "video.offline_playurl" => {
+            let a: PlayurlArgs = serde_json::from_value(args)?;
+            to_value(c.inner.video_offline_playurl(
+                a.aid,
+                a.cid,
+                a.qn,
+                a.audio_qn,
+                &a.cdn,
+            )?)
+        }
         "pgc.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
             to_value(c.inner.pgc_playurl_with_audio_options(
+                a.aid,
+                a.cid,
+                a.ep_id,
+                a.season_id,
+                a.qn,
+                a.audio_qn,
+                &a.cdn,
+            )?)
+        }
+        "pgc.offline_playurl" => {
+            let a: PlayurlArgs = serde_json::from_value(args)?;
+            to_value(c.inner.pgc_offline_playurl(
                 a.aid,
                 a.cid,
                 a.ep_id,
@@ -821,6 +869,19 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "user.fav_resources" => {
             let a: FavListArgs = serde_json::from_value(args)?;
             to_value(c.inner.fav_resource_list(a.media_id, a.pn, &a.keyword)?)
+        }
+        "user.subscriptions" => {
+            let a: SubscriptionListArgs = serde_json::from_value(args)?;
+            to_value(c.inner.subscription_folder_list(a.mid, a.page, a.page_size)?)
+        }
+        "user.subscription_resources" => {
+            let a: SubscriptionResourcesArgs = serde_json::from_value(args)?;
+            to_value(c.inner.subscription_resource_list(a.id, a.page, a.page_size)?)
+        }
+        "user.subscription_cancel" => {
+            let a: SubscriptionCancelArgs = serde_json::from_value(args)?;
+            c.inner.subscription_cancel(a.id, a.kind)?;
+            Ok(Value::Object(Default::default()))
         }
         "user.bangumi_follow" => {
             let a: BangumiListArgs = serde_json::from_value(args)?;

@@ -220,6 +220,15 @@ pub struct PlayUrl {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct OfflinePlayUrl {
+    #[serde(flatten)]
+    pub play: PlayUrl,
+    pub lossless_container_candidates: Vec<String>,
+    pub can_lossless_remux: bool,
+    pub lossless_note: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct DanmakuItem {
     /// Time in seconds when the comment should appear.
     pub time_sec: f32,

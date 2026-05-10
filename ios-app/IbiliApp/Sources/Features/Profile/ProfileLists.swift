@@ -588,6 +588,258 @@ final class FavoriteResourcesViewModel: ObservableObject {
     }
 }
 
+// MARK: - Subscriptions
+
+struct SubscriptionFolderListView: View {
+    let mid: Int64
+    @StateObject private var vm = SubscriptionFolderListViewModel()
+    @State private var searchText = ""
+
+    private var displayedItems: [SubscriptionFolderDTO] {
+        let keyword = normalizedProfileSearchQuery(searchText)
+        guard !keyword.isEmpty else { return vm.items }
+        return vm.items.filter {
+            profileFields([$0.title, $0.intro, $0.upperName], match: keyword)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ProfileInlineSearchBar(placeholder: "搜索我的订阅", text: $searchText)
+            Group {
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if displayedItems.isEmpty {
+                    emptyState(title: normalizedProfileSearchQuery(searchText).isEmpty ? "暂无订阅" : "没有搜索结果",
+                               symbol: "rectangle.stack")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 10) {
+                            ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
+                                NavigationLink {
+                                    SubscriptionResourcesView(folder: item)
+                                } label: {
+                                    SubscriptionFolderRow(
+                                        item: item,
+                                        onCancel: { Task { await vm.cancel(item) } }
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .onAppear {
+                                    if normalizedProfileSearchQuery(searchText).isEmpty,
+                                       !vm.isEnd,
+                                       index >= max(0, displayedItems.count - 4) {
+                                        Task { await vm.loadMore(mid: mid) }
+                                    }
+                                }
+                            }
+                            if vm.isLoading { ProgressView().padding() }
+                        }
+                        .padding(12)
+                    }
+                }
+            }
+        }
+        .background(IbiliTheme.background)
+        .navigationTitle("我的订阅")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await vm.loadInitial(mid: mid) }
+        .refreshable { await vm.reload(mid: mid) }
+    }
+}
+
+private struct SubscriptionFolderRow: View {
+    let item: SubscriptionFolderDTO
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            RemoteImage(url: item.cover,
+                        contentMode: .fill,
+                        targetPointSize: CGSize(width: 220, height: 140),
+                        quality: 76)
+                .frame(width: 104, height: 66)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(2)
+                if !item.upperName.isEmpty {
+                    Label(item.upperName, systemImage: "person.crop.circle")
+                        .font(.caption2)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .lineLimit(1)
+                }
+                Text("\(item.mediaCount) 个视频")
+                    .font(.caption2)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+            }
+            Spacer(minLength: 0)
+            Button(role: .destructive, action: onCancel) {
+                Image(systemName: "trash")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(IbiliTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+@MainActor
+final class SubscriptionFolderListViewModel: ObservableObject {
+    @Published var items: [SubscriptionFolderDTO] = []
+    @Published var isLoading = false
+    @Published var isEnd = false
+    private var page: Int64 = 1
+
+    func loadInitial(mid: Int64) async {
+        guard items.isEmpty else { return }
+        await fetch(mid: mid, reset: true)
+    }
+
+    func reload(mid: Int64) async {
+        await fetch(mid: mid, reset: true)
+    }
+
+    func loadMore(mid: Int64) async {
+        guard !isLoading, !isEnd else { return }
+        await fetch(mid: mid, reset: false)
+    }
+
+    func cancel(_ item: SubscriptionFolderDTO) async {
+        let old = items
+        items.removeAll { $0.id == item.id }
+        do {
+            try await Task.detached {
+                try CoreClient.shared.userSubscriptionCancel(id: item.folderID, type: item.type)
+            }.value
+        } catch {
+            items = old
+        }
+    }
+
+    private func fetch(mid: Int64, reset: Bool) async {
+        guard !isLoading else { return }
+        if reset {
+            page = 1
+            isEnd = false
+            items.removeAll()
+        }
+        isLoading = true
+        let p = page
+        let result: SubscriptionFolderPageDTO? = await Task.detached {
+            try? CoreClient.shared.userSubscriptions(mid: mid, page: p)
+        }.value
+        isLoading = false
+        guard let result else { isEnd = true; return }
+        items.append(contentsOf: result.items)
+        if result.hasMore { page += 1 } else { isEnd = true }
+    }
+}
+
+struct SubscriptionResourcesView: View {
+    let folder: SubscriptionFolderDTO
+    @EnvironmentObject private var router: DeepLinkRouter
+    @StateObject private var vm = SubscriptionResourcesViewModel()
+
+    var body: some View {
+        Group {
+            if vm.items.isEmpty && vm.isLoading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.items.isEmpty {
+                emptyState(title: "订阅内容为空", symbol: "rectangle.stack")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                            Button {
+                                pushVideo(router,
+                                          aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                          title: item.title, cover: item.cover,
+                                          author: folder.upperName,
+                                          durationSec: item.durationSec,
+                                          play: item.play, danmaku: item.danmaku)
+                            } label: {
+                                CompactVideoRow(
+                                    cover: item.cover,
+                                    title: item.title,
+                                    author: folder.upperName,
+                                    durationSec: item.durationSec,
+                                    play: item.play,
+                                    danmaku: item.danmaku
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 12)
+                            .onAppear {
+                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                    Task { await vm.loadMore(id: folder.folderID) }
+                                }
+                            }
+                            if index < vm.items.count - 1 {
+                                Divider().padding(.leading, 144)
+                            }
+                        }
+                        if vm.isLoading { ProgressView().padding() }
+                    }
+                }
+            }
+        }
+        .background(IbiliTheme.background)
+        .navigationTitle(folder.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await vm.loadInitial(id: folder.folderID) }
+        .refreshable { await vm.reload(id: folder.folderID) }
+    }
+}
+
+@MainActor
+final class SubscriptionResourcesViewModel: ObservableObject {
+    @Published var items: [SubscriptionResourceDTO] = []
+    @Published var isLoading = false
+    @Published var isEnd = false
+    private var page: Int64 = 1
+
+    func loadInitial(id: Int64) async {
+        guard items.isEmpty else { return }
+        await fetch(id: id, reset: true)
+    }
+
+    func reload(id: Int64) async {
+        await fetch(id: id, reset: true)
+    }
+
+    func loadMore(id: Int64) async {
+        guard !isLoading, !isEnd else { return }
+        await fetch(id: id, reset: false)
+    }
+
+    private func fetch(id: Int64, reset: Bool) async {
+        guard !isLoading else { return }
+        if reset {
+            page = 1
+            isEnd = false
+            items.removeAll()
+        }
+        isLoading = true
+        let p = page
+        let result: SubscriptionResourcePageDTO? = await Task.detached {
+            try? CoreClient.shared.userSubscriptionResources(id: id, page: p)
+        }.value
+        isLoading = false
+        guard let result else { isEnd = true; return }
+        items.append(contentsOf: result.items)
+        if result.hasMore { page += 1 } else { isEnd = true }
+    }
+}
+
 // MARK: - Bangumi (追番)
 
 struct BangumiFollowListView: View {

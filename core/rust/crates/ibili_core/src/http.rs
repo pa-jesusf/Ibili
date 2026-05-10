@@ -260,6 +260,27 @@ impl HttpClient {
         unwrap_envelope(body)
     }
 
+    /// Same as `post_form_web`, but accepts `data:null` / missing data.
+    /// Mutating Bilibili endpoints often signal success purely through
+    /// `{code:0}`.
+    pub fn post_form_web_empty(
+        &self, url: &str, form: &[(String, String)],
+    ) -> CoreResult<()> {
+        let resp = self.client.post(url)
+            .header("User-Agent", UA_WEB)
+            .header("Referer", "https://www.bilibili.com/")
+            .form(form)
+            .send()
+            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let env: ApiEnvelope<serde_json::Value> = serde_json::from_str(&body)
+            .map_err(|e| CoreError::Decode(format!("{}: {}", e, body.chars().take(500).collect::<String>())))?;
+        if env.code != 0 {
+            return Err(CoreError::Api { code: env.code, msg: env.message });
+        }
+        Ok(())
+    }
+
     /// POST a web form with query parameters and custom headers. Live
     /// message submit keeps WBI auth in the query string and CSRF in the
     /// form body, while requiring the live-room referer.
