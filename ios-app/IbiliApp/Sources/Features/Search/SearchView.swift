@@ -1,10 +1,8 @@
 import SwiftUI
 
-/// Top-level search screen. Owns the `NavigationStack`, the system
-/// `.searchable` field, and switches between the landing view (history
-/// + 分区) and the result grid. Designed to feel native on iOS 16+
-/// — taps on the toolbar magnifying glass slide into a long search
-/// bar exactly the way Apple Music / App Store / Photos do.
+/// Top-level search screen. Owns the `NavigationStack`, the inline search
+/// field, and switches between the landing view (history + 分区) and the
+/// result grid.
 struct SearchView: View {
     @StateObject private var vm = SearchViewModel()
     @StateObject private var history = SearchHistoryStore()
@@ -13,23 +11,24 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            content
+            VStack(spacing: 0) {
+                SearchInlineInputBar(
+                    text: $vm.query,
+                    isFocused: $isSearchFocused,
+                    onSubmit: submitCurrentQuery
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
+
+                content
+            }
                 .background(IbiliTheme.background)
                 .navigationTitle("搜索")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbarContent }
         }
         .tint(IbiliTheme.accent)
-        .searchable(
-            text: $vm.query,
-            placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "搜索视频、UP主、番剧"
-        )
-        .focused($isSearchFocused)
-        .onSubmit(of: .search) {
-            history.push(vm.query)
-            vm.submit()
-        }
         .sheet(isPresented: $isFiltersSheetPresented) {
             SearchFiltersSheet(vm: vm)
         }
@@ -71,5 +70,56 @@ struct SearchView: View {
                 .foregroundStyle(IbiliTheme.accent)
             }
         }
+    }
+
+    private func submitCurrentQuery() {
+        history.push(vm.query)
+        vm.submit()
+        isSearchFocused = false
+    }
+}
+
+private struct SearchInlineInputBar: View {
+    @Binding var text: String
+    var isFocused: FocusState<Bool>.Binding
+    let onSubmit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(IbiliTheme.textSecondary)
+
+            TextField("搜索视频、UP主、番剧", text: $text)
+                .focused(isFocused)
+                .submitLabel(.search)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.subheadline)
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .onSubmit(onSubmit)
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(IbiliTheme.textSecondary.opacity(0.72))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 40)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(IbiliTheme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+        )
     }
 }

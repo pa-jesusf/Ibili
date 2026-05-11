@@ -949,7 +949,7 @@ struct MainTabView: View {
                         ProfileView()
                     }
                 }
-                Tab(role: .search) {
+                Tab("搜索", systemImage: "magnifyingglass") {
                     SearchView()
                 }
             }
