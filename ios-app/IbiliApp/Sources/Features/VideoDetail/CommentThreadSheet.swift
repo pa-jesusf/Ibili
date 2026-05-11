@@ -32,31 +32,34 @@ struct CommentThreadSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    threadRow(for: currentRootItem)
-                    Divider()
-                    ForEach(replies) { r in
-                        threadRow(for: r)
-                            .onAppear {
-                                if r.id == replies.last?.id, !isEnd, !isLoading {
-                                    Task { await loadMore() }
-                                }
-                            }
+        GeometryReader { proxy in
+            NavigationStack {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        threadRow(for: currentRootItem)
                         Divider()
-                    }
-                    if isLoading {
-                        HStack { Spacer(); ProgressView(); Spacer() }
-                            .padding(.vertical, 12)
-                    } else if isEnd, !replies.isEmpty {
-                        HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
-                            .padding(.vertical, 12)
+                        ForEach(replies) { r in
+                            threadRow(for: r)
+                                .onAppear {
+                                    if r.id == replies.last?.id, !isEnd, !isLoading {
+                                        Task { await loadMore() }
+                                    }
+                                }
+                            Divider()
+                        }
+                        if isLoading {
+                            HStack { Spacer(); ProgressView(); Spacer() }
+                                .padding(.vertical, 12)
+                        } else if isEnd, !replies.isEmpty {
+                            HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
+                                .padding(.vertical, 12)
+                        }
                     }
                 }
+                .navigationTitle(navigationTitleText)
+                .navigationBarTitleDisplayMode(.inline)
             }
-            .navigationTitle(navigationTitleText)
-            .navigationBarTitleDisplayMode(.inline)
+            .environment(\.commentViewportHeight, max(1, proxy.size.height))
         }
         .task {
             guard root.replyCount > 0 else { return }

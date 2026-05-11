@@ -57,10 +57,11 @@ struct RootView: View {
     @State private var releaseDismissedPlayerHostWork: DispatchWorkItem?
     @State private var splitDetailProgress: CGFloat = 0
     @State private var splitRootDismissWork: DispatchWorkItem?
+    @State private var splitLayoutBaseSize: CGSize?
 
     var body: some View {
         GeometryReader { proxy in
-            let canSplit = isIPadLandscapeSplitCandidate(size: proxy.size)
+            let canSplit = isIPadLandscapeSplitCandidate(size: proxy.size, stableBaseSize: splitLayoutBaseSize)
             let usesSplit = canSplit && router.pending != nil && session.isLoggedIn
 
             ZStack {
@@ -94,8 +95,15 @@ struct RootView: View {
                     releaseDismissedPlayerHostWork?.cancel()
                     releaseDismissedPlayerHostWork = nil
                     retainsDismissedPlayerHost = false
+                    splitLayoutBaseSize = proxy.size
                 }
                 updateSplitDetailProgress(isActive: splitActive)
+            }
+            .onChange(of: proxy.size) { newSize in
+                handleRootSizeChange(newSize)
+            }
+            .onAppear {
+                handleRootSizeChange(proxy.size)
             }
         }
         .environmentObject(router)
@@ -113,6 +121,7 @@ struct RootView: View {
         }
         .onChange(of: session.isLoggedIn) { _ in
             splitDetailProgress = 0
+            splitLayoutBaseSize = nil
         }
     }
 
@@ -189,6 +198,7 @@ struct RootView: View {
             withTransaction(transaction) {
                 router.closeSession()
             }
+            splitLayoutBaseSize = nil
             splitRootDismissWork = nil
         }
         splitRootDismissWork = work
@@ -233,11 +243,45 @@ struct RootView: View {
         )
     }
 
-    private func isIPadLandscapeSplitCandidate(size: CGSize) -> Bool {
-        UIDevice.current.userInterfaceIdiom == .pad
-            && size.width > size.height
-            && size.width >= 900
-            && size.height >= 600
+    private func isIPadLandscapeSplitCandidate(size: CGSize, stableBaseSize: CGSize?) -> Bool {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return false }
+        guard size.width >= 900 else { return false }
+        if let stableBaseSize {
+            return stableBaseSize.width > stableBaseSize.height
+                && stableBaseSize.width >= 900
+                && stableBaseSize.height >= 600
+        }
+        return interfaceIsLandscape(size: size) && size.height >= 600
+    }
+
+    private func handleRootSizeChange(_ size: CGSize) {
+        guard UIDevice.current.userInterfaceIdiom == .pad else {
+            splitLayoutBaseSize = nil
+            return
+        }
+        if router.pending == nil || !session.isLoggedIn {
+            splitLayoutBaseSize = nil
+            return
+        }
+        guard let base = splitLayoutBaseSize else { return }
+        if size.width < 900 || !interfaceIsLandscape(size: size) {
+            splitLayoutBaseSize = nil
+        } else if size.width > base.width + 1 || size.height > base.height + 1 {
+            splitLayoutBaseSize = size
+        }
+    }
+
+    private func interfaceIsLandscape(size: CGSize) -> Bool {
+        if let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) {
+            let orientation = scene.interfaceOrientation
+            if orientation == .unknown {
+                return size.width > size.height
+            }
+            return orientation.isLandscape
+        }
+        return size.width > size.height
     }
 
     private func retainDismissedPlayerHost(for interval: TimeInterval) {

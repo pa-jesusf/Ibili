@@ -38,7 +38,7 @@ struct VideoDetailContent: View {
     private static let upwardRefreshTriggerOffset: CGFloat = 72
     private static let upwardRefreshResetOffset: CGFloat = 8
     private static let metadataRefreshCooldown: TimeInterval = 12
-    private static let floatingControlsReservedBottomInset: CGFloat = 72
+    private static let floatingControlsReservedBottomInset: CGFloat = 82
 
     init(item: FeedItemDTO,
          currentSeasonID: Int64 = 0,
@@ -77,23 +77,26 @@ struct VideoDetailContent: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            scrollContent
-                .background(IbiliTheme.background)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    PlayerDetailFloatingControlCluster(
-                        tabs: visibleTabs,
-                        selection: $tab,
-                        onReselectCurrentTab: {
-                            proxy.interruptingScrollTo(
-                                topAnchorID(for: tab),
-                                anchor: .top,
-                                context: scrollContexts.context(for: tab),
-                                animation: .spring(response: 0.28, dampingFraction: 0.88)
-                            )
-                        }
-                    )
-                }
+        GeometryReader { viewportProxy in
+            ScrollViewReader { proxy in
+                scrollContent
+                    .background(IbiliTheme.background)
+                    .environment(\.commentViewportHeight, max(1, viewportProxy.size.height))
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        PlayerDetailFloatingControlCluster(
+                            tabs: visibleTabs,
+                            selection: $tab,
+                            onReselectCurrentTab: {
+                                proxy.interruptingScrollTo(
+                                    topAnchorID(for: tab),
+                                    anchor: .top,
+                                    context: scrollContexts.context(for: tab),
+                                    animation: .spring(response: 0.28, dampingFraction: 0.88)
+                                )
+                            }
+                        )
+                    }
+            }
         }
         .onChange(of: tab) { newValue in
             mountedTabs.insert(newValue)
@@ -547,21 +550,37 @@ private final class VideoDetailScrollContexts: ObservableObject {
 }
 
 private struct PlayerDetailFloatingControlCluster: View {
-    private static let systemTabBarBottomOffset: CGFloat = 40
+    private static let systemTabBarHeight: CGFloat = 50
+    private static let systemTabBarIPadVisualLift: CGFloat = 8
+    private static let systemTabBarPhoneVisualLift: CGFloat = 16
 
     let tabs: [VideoDetailContent.Tab]
     @Binding var selection: VideoDetailContent.Tab
     let onReselectCurrentTab: () -> Void
 
+    private var systemTabBarVisualLift: CGFloat {
+        UIDevice.current.userInterfaceIdiom == .phone
+            ? Self.systemTabBarPhoneVisualLift
+            : Self.systemTabBarIPadVisualLift
+    }
+
     var body: some View {
         if #available(iOS 26.0, *) {
-            PlayerDetailSystemTabBar(
-                tabs: tabs,
-                selection: $selection,
-                onReselectCurrentTab: onReselectCurrentTab
-            )
-            .frame(maxWidth: .infinity)
-            .offset(y: Self.systemTabBarBottomOffset)
+            GeometryReader { proxy in
+                let availableHeight = max(1, proxy.size.height)
+                let barHeight = min(Self.systemTabBarHeight, availableHeight)
+                let centeredY = max(0, (availableHeight - barHeight) / 2)
+                let y = min(max(0, centeredY + systemTabBarVisualLift), max(0, availableHeight - barHeight))
+                PlayerDetailSystemTabBar(
+                    tabs: tabs,
+                    selection: $selection,
+                    onReselectCurrentTab: onReselectCurrentTab
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: barHeight)
+                .offset(y: y)
+            }
+            .frame(height: Self.systemTabBarHeight + systemTabBarVisualLift * 2)
         } else {
             PlayerDetailFloatingTabs(
                 tabs: tabs,

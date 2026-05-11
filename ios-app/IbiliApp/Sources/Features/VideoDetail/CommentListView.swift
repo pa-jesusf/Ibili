@@ -1,5 +1,16 @@
 import SwiftUI
 
+extension EnvironmentValues {
+    var commentViewportHeight: CGFloat? {
+        get { self[CommentViewportHeightKey.self] }
+        set { self[CommentViewportHeightKey.self] = newValue }
+    }
+}
+
+private struct CommentViewportHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
 /// Top-level comment list. Each row taps into a `CommentThreadSheet`
 /// when the comment has nested replies.
 ///
@@ -323,6 +334,8 @@ struct ReplyPictureGrid: View {
     private let rawURLs: [String]
 
     @State private var preview: PreviewSelection?
+    @State private var measuredWidth: CGFloat = UIScreen.main.bounds.width
+    @Environment(\.commentViewportHeight) private var commentViewportHeight
 
     init(urls: [String]) {
         rawURLs = urls
@@ -334,44 +347,86 @@ struct ReplyPictureGrid: View {
     }
 
     var body: some View {
-        let cols = rawURLs.count == 1 ? 1 : (rawURLs.count == 2 ? 2 : 3)
-        let screenWidth = UIScreen.main.bounds.width
-        let spacing: CGFloat = 4
-        let target = screenWidth * 0.6
-        let maxTileSide = screenWidth * 0.3
-        let naturalTileSide = (target - CGFloat(cols - 1) * spacing) / CGFloat(cols)
-        let tileSide = min(maxTileSide, naturalTileSide)
-        let gridWidth = tileSide * CGFloat(cols) + CGFloat(cols - 1) * spacing
-        let columns = Array(
-            repeating: GridItem(.fixed(tileSide), spacing: spacing),
-            count: cols
-        )
-        let images = rawURLs.map {
+        let availableWidth = max(1, measuredWidth)
+        gridContent(availableWidth: availableWidth)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: gridHeight(availableWidth: availableWidth))
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: ReplyPictureGridWidthPreferenceKey.self, value: proxy.size.width)
+                }
+            }
+            .onPreferenceChange(ReplyPictureGridWidthPreferenceKey.self) { width in
+                guard width > 1, abs(width - measuredWidth) > 0.5 else { return }
+                measuredWidth = width
+            }
+            .fullScreenCover(item: $preview) { sel in
+                ImagePreviewSheet(images: previewImages(tileSide: gridMetrics(availableWidth: availableWidth).tileSide), initialIndex: sel.index)
+            }
+    }
+
+    private func previewImages(tileSide: CGFloat) -> [CommentImagePreviewItem] {
+        rawURLs.map {
             CommentImagePreviewItem(originalURL: $0, cachedThumbnailSide: tileSide)
         }
-        HStack(spacing: 0) {
+    }
+
+    private func gridMetrics(availableWidth: CGFloat) -> (tileSide: CGFloat, gridWidth: CGFloat, gridHeight: CGFloat, cols: Int) {
+        let cols = rawURLs.count == 1 ? 1 : (rawURLs.count == 2 ? 2 : 3)
+        let spacing: CGFloat = 4
+        let target = availableWidth * 0.6
+        let maxTileSide = availableWidth * 0.3
+        let naturalTileSide = (target - CGFloat(cols - 1) * spacing) / CGFloat(cols)
+        let rowCount = max(1, Int(ceil(Double(rawURLs.count) / Double(cols))))
+        let maxGridHeight = max(48, (commentViewportHeight ?? availableWidth) / 3)
+        let maxTileSideByHeight = (maxGridHeight - CGFloat(rowCount - 1) * spacing) / CGFloat(rowCount)
+        let tileSide = max(24, min(maxTileSide, naturalTileSide, maxTileSideByHeight))
+        let gridWidth = tileSide * CGFloat(cols) + CGFloat(cols - 1) * spacing
+        let gridHeight = tileSide * CGFloat(rowCount) + CGFloat(rowCount - 1) * spacing
+        return (tileSide, gridWidth, gridHeight, cols)
+    }
+
+    private func gridHeight(availableWidth: CGFloat) -> CGFloat {
+        gridMetrics(availableWidth: availableWidth).gridHeight
+    }
+
+    private func gridContent(availableWidth: CGFloat) -> some View {
+        let metrics = gridMetrics(availableWidth: availableWidth)
+        let spacing: CGFloat = 4
+        let columns = Array(
+            repeating: GridItem(.fixed(metrics.tileSide), spacing: spacing),
+            count: metrics.cols
+        )
+        let images = previewImages(tileSide: metrics.tileSide)
+        return HStack(spacing: 0) {
             LazyVGrid(columns: columns, spacing: spacing) {
                 ForEach(Array(images.enumerated()), id: \.offset) { i, image in
                     Button { preview = .init(index: i) } label: {
                         RemoteImage(url: image.originalURL,
                                     contentMode: .fill,
-                                    targetPointSize: CGSize(width: tileSide, height: tileSide),
+                                    targetPointSize: CGSize(width: metrics.tileSide, height: metrics.tileSide),
                                     quality: 75)
-                            .frame(width: tileSide, height: tileSide)
+                            .frame(width: metrics.tileSide, height: metrics.tileSide)
                             .clipped()
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
-                    .frame(width: tileSide, height: tileSide)
+                    .frame(width: metrics.tileSide, height: metrics.tileSide)
                     .contentShape(ReplyPictureHitShape(inset: 3, cornerRadius: 6))
                     .buttonStyle(.plain)
                 }
             }
-            .frame(width: min(target, gridWidth), alignment: .leading)
+            .frame(width: min(availableWidth * 0.6, metrics.gridWidth), alignment: .leading)
             Spacer(minLength: 0)
         }
-        .fullScreenCover(item: $preview) { sel in
-            ImagePreviewSheet(images: images, initialIndex: sel.index)
-        }
+    }
+}
+
+private struct ReplyPictureGridWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
