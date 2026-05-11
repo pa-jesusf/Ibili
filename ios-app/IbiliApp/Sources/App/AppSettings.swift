@@ -274,11 +274,11 @@ final class AppSettings: ObservableObject {
         )
     }
 
-    private let maxFeedColumns = 5
+    private let maxFeedColumns = 4
     private let supportedDanmakuFrameRates = [30, 60]
 
     /// Resolves the effective column count given the current layout context.
-    /// iOS defaults to 2 columns on phones and opens at most 3 columns.
+    /// iOS defaults to 2 columns on phones and opens at most 4 columns.
     func effectiveColumns(horizontal: UserInterfaceSizeClass?, width: CGFloat) -> Int {
         let clampedStoredColumns = min(max(columnsRaw, 0), maxFeedColumns)
         if clampedStoredColumns != columnsRaw {
@@ -292,7 +292,7 @@ final class AppSettings: ObservableObject {
         case ..<700:   return 3          // iPhone landscape / small iPad split
         case ..<900:   return 3          // iPad half-width split
         case ..<1120:  return horizontal == .compact ? 2 : 4
-        default:       return horizontal == .compact ? 2 : 5
+        default:       return horizontal == .compact ? 2 : 4
         }
     }
 

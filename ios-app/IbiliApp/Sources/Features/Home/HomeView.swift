@@ -72,6 +72,7 @@ private struct HomeFeedPage: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
@@ -90,7 +91,8 @@ private struct HomeFeedPage: View {
 
     private var feedGrid: some View {
         GeometryReader { geo in
-            let cols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
             let usesTopTrailingDuration = UIDevice.current.userInterfaceIdiom == .phone && cols >= 3
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
@@ -177,6 +179,7 @@ private struct HomeFeedPage: View {
             .coordinateSpace(name: "home-feed-scroll")
             .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
             .modifier(ProMotionScrollHint())
+            .transaction { $0.animation = nil }
             .onAppear {
                 prefetch.update(
                     preferredQn: Int64(settings.resolvedPreferredVideoQn()),
@@ -222,10 +225,12 @@ private struct HomeLiveFeedPage: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
 
     var body: some View {
         GeometryReader { geo in
-            let cols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
             let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
@@ -316,6 +321,7 @@ private struct HomeLiveFeedPage: View {
             .coordinateSpace(name: "home-feed-scroll")
             .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
             .modifier(ProMotionScrollHint())
+            .transaction { $0.animation = nil }
         }
         .task { await vm.loadInitial() }
         .refreshable { await vm.refresh() }

@@ -217,14 +217,17 @@ private struct DynamicFeedPage: View {
     let onOpenDetail: (DynamicItemDTO) -> Void
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitRootIsActive) private var splitRootIsActive
+    @Environment(\.splitPreviewLeftWidth) private var splitPreviewLeftWidth
 
     var body: some View {
         GeometryReader { geo in
-            let shouldCenterWideFeed = UIDevice.current.userInterfaceIdiom == .pad
+            let isWidePad = UIDevice.current.userInterfaceIdiom == .pad
                 && geo.size.width > geo.size.height
                 && geo.size.width >= 900
-                && !splitRootIsActive
-            let feedWidth = shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width
+            let previewWidth = splitPreviewLeftWidth.map { min($0, geo.size.width) }
+            let usesPreviewWidth = isWidePad && previewWidth != nil
+            let shouldCenterWideFeed = isWidePad && !splitRootIsActive
+            let feedWidth = usesPreviewWidth ? (previewWidth ?? geo.size.width) : (shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width)
             let contentWidth = DynamicLayout.contentWidth(containerWidth: feedWidth)
             ScrollView {
                 if #unavailable(iOS 18.0) {
@@ -273,11 +276,12 @@ private struct DynamicFeedPage: View {
                 }
             }
             .frame(width: feedWidth, alignment: .top)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: shouldCenterWideFeed ? .top : .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
             .coordinateSpace(name: "dynamic-feed-scroll")
             .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
             .modifier(ProMotionScrollHint())
             .scrollContentBackground(.hidden)
+            .transaction { $0.animation = nil }
         }
         .task(id: vm.scope) { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }

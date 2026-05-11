@@ -16,6 +16,16 @@ extension EnvironmentValues {
         get { self[SplitRootIsActiveKey.self] }
         set { self[SplitRootIsActiveKey.self] = newValue }
     }
+
+    var splitFeedColumnLimit: Int? {
+        get { self[SplitFeedColumnLimitKey.self] }
+        set { self[SplitFeedColumnLimitKey.self] = newValue }
+    }
+
+    var splitPreviewLeftWidth: CGFloat? {
+        get { self[SplitPreviewLeftWidthKey.self] }
+        set { self[SplitPreviewLeftWidthKey.self] = newValue }
+    }
 }
 
 private struct IsInPlayerHostNavigationKey: EnvironmentKey {
@@ -30,12 +40,23 @@ private struct SplitRootIsActiveKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct SplitFeedColumnLimitKey: EnvironmentKey {
+    static let defaultValue: Int? = nil
+}
+
+private struct SplitPreviewLeftWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
 /// Top-level shell. Switches between login and main tab interface.
 struct RootView: View {
+    @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject var session: AppSession
     @StateObject private var router = DeepLinkRouter()
     @State private var retainsDismissedPlayerHost = false
     @State private var releaseDismissedPlayerHostWork: DispatchWorkItem?
+    @State private var splitDetailProgress: CGFloat = 0
+    @State private var splitRootDismissWork: DispatchWorkItem?
 
     var body: some View {
         GeometryReader { proxy in
@@ -74,6 +95,7 @@ struct RootView: View {
                     releaseDismissedPlayerHostWork = nil
                     retainsDismissedPlayerHost = false
                 }
+                updateSplitDetailProgress(isActive: splitActive)
             }
         }
         .environmentObject(router)
@@ -82,41 +104,133 @@ struct RootView: View {
         })
         .onChange(of: router.pending?.id) { newValue in
             guard newValue != nil else { return }
+            splitRootDismissWork?.cancel()
+            splitRootDismissWork = nil
+            splitDetailProgress = 1
             releaseDismissedPlayerHostWork?.cancel()
             releaseDismissedPlayerHostWork = nil
             retainsDismissedPlayerHost = false
+        }
+        .onChange(of: session.isLoggedIn) { _ in
+            splitDetailProgress = 0
         }
     }
 
     @ViewBuilder
     private func mainContent(size: CGSize, canSplit: Bool, usesSplit: Bool) -> some View {
         if canSplit {
-            let leftWidth = usesSplit ? floor(size.width * 0.5) : size.width
-            HStack(spacing: 0) {
+            let splitMetrics = splitLayoutMetrics(size: size, usesSplit: usesSplit)
+            ZStack(alignment: .leading) {
                 MainTabView()
                     .environment(\.prefersSplitRootSelection, true)
                     .environment(\.splitRootIsActive, usesSplit)
-                    .frame(width: leftWidth, height: size.height)
+                    .environment(\.splitFeedColumnLimit, splitMetrics.feedColumnLimit)
+                    .environment(\.splitPreviewLeftWidth, splitMetrics.previewLeftWidth)
+                    .frame(width: splitMetrics.leftWidth, height: size.height)
                     .clipped()
+                    .transaction { $0.animation = nil }
 
-                if usesSplit {
-                    Divider().ignoresSafeArea(edges: .vertical)
+                Divider()
+                    .ignoresSafeArea(edges: .vertical)
+                    .opacity(usesSplit ? 1 : 0)
+                    .frame(width: 1, height: size.height)
+                    .offset(x: splitMetrics.leftWidth)
 
-                    DeepLinkSplitHost()
-                        .environmentObject(router)
-                        .tint(.white)
-                        .frame(width: max(0, size.width - leftWidth - 1), height: size.height)
-                        .clipped()
-                }
+                DeepLinkSplitHost(onRootDismiss: dismissSplitRoot)
+                    .environmentObject(router)
+                    .tint(.white)
+                    .frame(width: splitMetrics.rightWidth, height: size.height)
+                    .clipped()
+                    .offset(x: splitMetrics.leftWidth + 1 + splitMetrics.rightWidth * (1 - splitDetailProgress))
+                    .opacity(splitDetailProgress > 0.01 ? 1 : 0)
+                    .allowsHitTesting(usesSplit)
+                    .compositingGroup()
             }
             .frame(width: size.width, height: size.height, alignment: .leading)
             .background(IbiliTheme.background.ignoresSafeArea())
-            .animation(.interactiveSpring(response: 0.36, dampingFraction: 0.88), value: usesSplit)
         } else {
             MainTabView()
                 .environment(\.prefersSplitRootSelection, false)
                 .environment(\.splitRootIsActive, false)
+                .environment(\.splitFeedColumnLimit, nil)
+                .environment(\.splitPreviewLeftWidth, nil)
         }
+    }
+
+    private func updateSplitDetailProgress(isActive: Bool) {
+        splitRootDismissWork?.cancel()
+        splitRootDismissWork = nil
+        if isActive {
+            splitDetailProgress = 0
+            DispatchQueue.main.async {
+                withAnimation(.interactiveSpring(response: 0.30, dampingFraction: 0.9, blendDuration: 0)) {
+                    splitDetailProgress = 1
+                }
+            }
+        } else {
+            withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.92, blendDuration: 0)) {
+                splitDetailProgress = 0
+            }
+        }
+    }
+
+    private func dismissSplitRoot() {
+        guard router.pending != nil else { return }
+        splitRootDismissWork?.cancel()
+        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.92, blendDuration: 0)) {
+            splitDetailProgress = 0
+        }
+        let dismissingRouteID = router.pending?.id
+        let work = DispatchWorkItem {
+            guard router.pending?.id == dismissingRouteID,
+                  router.path.isEmpty else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                router.closeSession()
+            }
+            splitRootDismissWork = nil
+        }
+        splitRootDismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30, execute: work)
+    }
+
+    private struct SplitLayoutMetrics: Equatable {
+        let leftWidth: CGFloat
+        let rightWidth: CGFloat
+        let feedColumnLimit: Int?
+        let previewLeftWidth: CGFloat?
+    }
+
+    private func splitLayoutMetrics(size: CGSize, usesSplit: Bool) -> SplitLayoutMetrics {
+        let fullColumns = min(max(settings.effectiveColumns(horizontal: .regular, width: size.width), 1), 4)
+        let targetColumns = max(1, (fullColumns + 1) / 2)
+        let horizontalPadding: CGFloat = 12
+        let spacing: CGFloat = 12
+        let fullCardWidth = max(
+            1,
+            floor((size.width - horizontalPadding * 2 - spacing * CGFloat(fullColumns - 1)) / CGFloat(fullColumns))
+        )
+        let idealLeftWidth = fullCardWidth * CGFloat(targetColumns)
+            + spacing * CGFloat(max(0, targetColumns - 1))
+            + horizontalPadding * 2
+        let minRightWidth = min(max(size.width * 0.30, 360), 520)
+        let maxLeftWidth = max(1, size.width - minRightWidth - 1)
+        let targetLeftWidth = floor(min(max(idealLeftWidth, 360), maxLeftWidth))
+        guard usesSplit else {
+            return SplitLayoutMetrics(
+                leftWidth: size.width,
+                rightWidth: 0,
+                feedColumnLimit: nil,
+                previewLeftWidth: targetLeftWidth
+            )
+        }
+        return SplitLayoutMetrics(
+            leftWidth: targetLeftWidth,
+            rightWidth: max(0, size.width - targetLeftWidth - 1),
+            feedColumnLimit: targetColumns,
+            previewLeftWidth: targetLeftWidth
+        )
     }
 
     private func isIPadLandscapeSplitCandidate(size: CGSize) -> Bool {
@@ -494,6 +608,7 @@ private struct DeepLinkRouteContent {
 
 private struct DeepLinkSplitHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    let onRootDismiss: () -> Void
 
     var body: some View {
         NavigationStack(path: $router.path) {
@@ -567,7 +682,7 @@ private struct DeepLinkSplitHost: View {
             return
         }
         prepareRootRouteForDismissal(router.pending)
-        router.closeSession()
+        onRootDismiss()
     }
 
     private func syncPlayerSessions() {

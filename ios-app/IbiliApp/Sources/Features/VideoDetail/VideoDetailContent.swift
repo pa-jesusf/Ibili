@@ -38,7 +38,7 @@ struct VideoDetailContent: View {
     private static let upwardRefreshTriggerOffset: CGFloat = 72
     private static let upwardRefreshResetOffset: CGFloat = 8
     private static let metadataRefreshCooldown: TimeInterval = 12
-    private static let floatingControlsReservedBottomInset: CGFloat = 24
+    private static let floatingControlsReservedBottomInset: CGFloat = 72
 
     init(item: FeedItemDTO,
          currentSeasonID: Int64 = 0,

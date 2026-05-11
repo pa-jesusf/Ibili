@@ -18,6 +18,7 @@ struct SearchResultsView: View {
     @StateObject private var scrollContext = InterruptibleScrollContext()
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
 
     var body: some View {
         Group {
@@ -59,9 +60,10 @@ struct SearchResultsView: View {
     private var resultsGrid: some View {
         GeometryReader { geo in
             let preferredCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let feedCols = splitFeedColumnLimit.map { min(preferredCols, $0) } ?? preferredCols
             let cols = vm.selectedType == .user
                 ? (geo.size.width >= 760 ? 2 : 1)
-                : (vm.selectedType == .bangumi || vm.selectedType == .movie ? 1 : preferredCols)
+                : (vm.selectedType == .bangumi || vm.selectedType == .movie ? 1 : feedCols)
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
             let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
@@ -112,6 +114,7 @@ struct SearchResultsView: View {
                         animation: .easeOut(duration: 0.2)
                     )
                 }
+                .transaction { $0.animation = nil }
             }
         }
         .alert("跳转到页码", isPresented: $isPageInputPresented) {
