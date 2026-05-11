@@ -9,13 +9,19 @@ private func pushVideo(
     _ router: DeepLinkRouter,
     aid: Int64, bvid: String, cid: Int64,
     title: String, cover: String, author: String,
-    durationSec: Int64, play: Int64 = 0, danmaku: Int64 = 0
+    durationSec: Int64, play: Int64 = 0, danmaku: Int64 = 0,
+    prefersSplitRootSelection: Bool = false
 ) {
-    router.open(FeedItemDTO(
+    let item = FeedItemDTO(
         aid: aid, bvid: bvid, cid: cid,
         title: title, cover: cover, author: author,
         durationSec: durationSec, play: play, danmaku: danmaku
-    ))
+    )
+    if prefersSplitRootSelection {
+        router.select(item)
+    } else {
+        router.open(item)
+    }
 }
 
 private func normalizedProfileSearchQuery(_ query: String) -> String {
@@ -71,6 +77,7 @@ private struct ProfileInlineSearchBar: View {
 /// on the cover, mirroring Apple TV's "Up Next" pattern.
 struct HistoryListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @StateObject private var vm = HistoryListViewModel()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
@@ -108,7 +115,8 @@ struct HistoryListView: View {
                                     pushVideo(router,
                                               aid: item.aid, bvid: item.bvid, cid: item.cid,
                                               title: item.title, cover: item.cover,
-                                              author: item.author, durationSec: item.durationSec)
+                                              author: item.author, durationSec: item.durationSec,
+                                              prefersSplitRootSelection: prefersSplitRootSelection)
                                 } label: {
                                     CompactVideoRow(
                                         cover: item.cover,
@@ -286,6 +294,7 @@ final class HistoryListViewModel: ObservableObject {
 
 struct WatchLaterListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @StateObject private var vm = WatchLaterListViewModel()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
@@ -315,7 +324,8 @@ struct WatchLaterListView: View {
                                     pushVideo(router,
                                               aid: item.aid, bvid: item.bvid, cid: item.cid,
                                               title: item.title, cover: item.cover,
-                                              author: item.author, durationSec: item.durationSec)
+                                              author: item.author, durationSec: item.durationSec,
+                                              prefersSplitRootSelection: prefersSplitRootSelection)
                                 } label: {
                                     CompactVideoRow(
                                         cover: item.cover,
@@ -395,6 +405,7 @@ final class WatchLaterListViewModel: ObservableObject {
 struct FavoritesFolderListView: View {
     let mid: Int64
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var folders: [FavFolderInfoDTO] = []
     @State private var isLoading = false
     @State private var searchText = ""
@@ -425,7 +436,8 @@ struct FavoritesFolderListView: View {
                         keyword: normalizedProfileSearchQuery(searchText),
                         folderId: defaultSearchFolderID,
                         isPreparing: defaultSearchFolderID == 0 && isLoading,
-                        router: router
+                        router: router,
+                        prefersSplitRootSelection: prefersSplitRootSelection
                     )
                 } else if folders.isEmpty && isLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -503,6 +515,7 @@ private struct FavoriteRootSearchResultsView: View {
     let folderId: Int64
     let isPreparing: Bool
     let router: DeepLinkRouter
+    let prefersSplitRootSelection: Bool
 
     var body: some View {
         Group {
@@ -520,7 +533,8 @@ private struct FavoriteRootSearchResultsView: View {
                                           aid: item.aid, bvid: item.bvid, cid: item.cid,
                                           title: item.title, cover: item.cover,
                                           author: item.author, durationSec: item.durationSec,
-                                          play: item.play, danmaku: item.danmaku)
+                                          play: item.play, danmaku: item.danmaku,
+                                          prefersSplitRootSelection: prefersSplitRootSelection)
                             } label: {
                                 CompactVideoRow(
                                     cover: item.cover,
@@ -556,6 +570,7 @@ struct FavoriteResourcesView: View {
     let folderId: Int64
     let title: String
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @StateObject private var vm = FavoriteResourcesViewModel()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
@@ -582,7 +597,8 @@ struct FavoriteResourcesView: View {
                                               aid: item.aid, bvid: item.bvid, cid: item.cid,
                                               title: item.title, cover: item.cover,
                                               author: item.author, durationSec: item.durationSec,
-                                              play: item.play, danmaku: item.danmaku)
+                                              play: item.play, danmaku: item.danmaku,
+                                              prefersSplitRootSelection: prefersSplitRootSelection)
                                 } label: {
                                     CompactVideoRow(
                                         cover: item.cover,
@@ -859,6 +875,7 @@ final class SubscriptionFolderListViewModel: ObservableObject {
 struct SubscriptionResourcesView: View {
     let folder: SubscriptionFolderDTO
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @StateObject private var vm = SubscriptionResourcesViewModel()
 
     var body: some View {
@@ -878,7 +895,8 @@ struct SubscriptionResourcesView: View {
                                           title: item.title, cover: item.cover,
                                           author: folder.upperName,
                                           durationSec: item.durationSec,
-                                          play: item.play, danmaku: item.danmaku)
+                                          play: item.play, danmaku: item.danmaku,
+                                          prefersSplitRootSelection: prefersSplitRootSelection)
                             } label: {
                                 CompactVideoRow(
                                     cover: item.cover,
@@ -959,6 +977,7 @@ struct BangumiFollowListView: View {
     let mid: Int64
     @StateObject private var vm = BangumiFollowListViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var searchText = ""
 
     private var isSearching: Bool {
@@ -996,7 +1015,11 @@ struct BangumiFollowListView: View {
                         LazyVStack(spacing: 12) {
                             ForEach(displayedItems) { item in
                                 Button {
-                                    router.openPgc(seasonID: item.seasonId)
+                                    if prefersSplitRootSelection {
+                                        router.selectPgc(seasonID: item.seasonId)
+                                    } else {
+                                        router.openPgc(seasonID: item.seasonId)
+                                    }
                                 } label: {
                                     BangumiRow(item: item)
                                 }
@@ -1032,19 +1055,22 @@ private struct BangumiRow: View {
     let item: BangumiFollowItemDTO
 
     var body: some View {
-        PgcPosterCardView(
-            data: PgcPosterCardData(
-                id: item.seasonId,
-                title: item.title,
-                cover: item.cover,
-                primaryLine: followPrimaryLine,
-                secondaryLine: item.progress,
-                description: item.evaluate
-            ),
-            cardWidth: UIScreen.main.bounds.width - 24,
-            imageQuality: 78,
-            style: .compact
-        )
+        GeometryReader { proxy in
+            PgcPosterCardView(
+                data: PgcPosterCardData(
+                    id: item.seasonId,
+                    title: item.title,
+                    cover: item.cover,
+                    primaryLine: followPrimaryLine,
+                    secondaryLine: item.progress,
+                    description: item.evaluate
+                ),
+                cardWidth: max(1, proxy.size.width),
+                imageQuality: 78,
+                style: .compact
+            )
+        }
+        .frame(height: 156)
     }
 
     private var followPrimaryLine: String {

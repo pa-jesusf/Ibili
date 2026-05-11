@@ -972,6 +972,7 @@ struct OfflineCacheListView: View {
     @State private var previewURL: URL?
     @State private var searchText = ""
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
 
     private var filteredEntries: [OfflineDownloadMetadata] {
         let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1007,7 +1008,13 @@ struct OfflineCacheListView: View {
                                 videoURL: service.videoURL(for: entry),
                                 directoryURL: service.directoryURL(for: entry),
                                 onOpen: { url in previewURL = url },
-                                onPlay: { router.openOffline(entry.feedItem) },
+                                onPlay: {
+                                    if prefersSplitRootSelection {
+                                        router.selectOffline(entry.feedItem)
+                                    } else {
+                                        router.openOffline(entry.feedItem)
+                                    }
+                                },
                                 onPause: { service.pause(entry.id) },
                                 onRetry: { service.retry(entry) },
                                 onDelete: { service.delete(entry) }

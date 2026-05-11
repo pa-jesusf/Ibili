@@ -71,6 +71,7 @@ private struct HomeFeedPage: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
@@ -131,7 +132,11 @@ private struct HomeFeedPage: View {
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                         ForEach(vm.items) { item in
                             Button {
-                                router.open(item)
+                                if prefersSplitRootSelection {
+                                    router.select(item)
+                                } else {
+                                    router.open(item)
+                                }
                             } label: {
                                 VideoCardView(
                                     item: item,
@@ -216,6 +221,7 @@ private struct HomeLiveFeedPage: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
 
     var body: some View {
         GeometryReader { geo in
@@ -260,12 +266,22 @@ private struct HomeLiveFeedPage: View {
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                         ForEach(vm.items) { item in
                             Button {
-                                router.openLive(
-                                    roomID: item.roomID,
-                                    title: item.title,
-                                    cover: item.systemCover.isEmpty ? item.cover : item.systemCover,
-                                    anchorName: item.uname
-                                )
+                                let cover = item.systemCover.isEmpty ? item.cover : item.systemCover
+                                if prefersSplitRootSelection {
+                                    router.selectLive(
+                                        roomID: item.roomID,
+                                        title: item.title,
+                                        cover: cover,
+                                        anchorName: item.uname
+                                    )
+                                } else {
+                                    router.openLive(
+                                        roomID: item.roomID,
+                                        title: item.title,
+                                        cover: cover,
+                                        anchorName: item.uname
+                                    )
+                                }
                             } label: {
                                 LiveCardView(
                                     item: item,

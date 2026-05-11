@@ -6,9 +6,27 @@ extension EnvironmentValues {
         get { self[IsInPlayerHostNavigationKey.self] }
         set { self[IsInPlayerHostNavigationKey.self] = newValue }
     }
+
+    var prefersSplitRootSelection: Bool {
+        get { self[PrefersSplitRootSelectionKey.self] }
+        set { self[PrefersSplitRootSelectionKey.self] = newValue }
+    }
+
+    var splitRootIsActive: Bool {
+        get { self[SplitRootIsActiveKey.self] }
+        set { self[SplitRootIsActiveKey.self] = newValue }
+    }
 }
 
 private struct IsInPlayerHostNavigationKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private struct PrefersSplitRootSelectionKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private struct SplitRootIsActiveKey: EnvironmentKey {
     static let defaultValue = false
 }
 
@@ -20,32 +38,42 @@ struct RootView: View {
     @State private var releaseDismissedPlayerHostWork: DispatchWorkItem?
 
     var body: some View {
-        ZStack {
-            Group {
+        GeometryReader { proxy in
+            let canSplit = isIPadLandscapeSplitCandidate(size: proxy.size)
+            let usesSplit = canSplit && router.pending != nil && session.isLoggedIn
+
+            ZStack {
                 if session.isLoggedIn {
-                    MainTabView()
+                    mainContent(size: proxy.size, canSplit: canSplit, usesSplit: usesSplit)
                         .transition(.opacity)
                 } else {
                     LoginView()
                         .transition(.opacity)
                 }
-            }
 
-            // Player is presented as a horizontal-slide overlay above
-            // the tab interface — *not* a `.fullScreenCover` — so that
-            // the user's right-edge swipe-back actually reveals the
-            // previous screen (home / search) underneath instead of a
-            // black backdrop. The host drives its own slide-in/out
-            // animation off a single offset state so SwiftUI's render
-            // loop can keep it on the ProMotion 120 Hz path; we
-            // deliberately don't combine `.transition(.move)` with a
-            // separate offset, because that doubles up the work and
-            // tends to fall back to 60 Hz.
-            if router.pending != nil || retainsDismissedPlayerHost {
-                DeepLinkPlayerHost(onRootDismissed: retainDismissedPlayerHost)
-                    .environmentObject(router)
-                    .tint(IbiliTheme.accent)
-                    .zIndex(1)
+                // Player is presented as a horizontal-slide overlay above
+                // the tab interface — *not* a `.fullScreenCover` — so that
+                // the user's right-edge swipe-back actually reveals the
+                // previous screen (home / search) underneath instead of a
+                // black backdrop. The host drives its own slide-in/out
+                // animation off a single offset state so SwiftUI's render
+                // loop can keep it on the ProMotion 120 Hz path; we
+                // deliberately don't combine `.transition(.move)` with a
+                // separate offset, because that doubles up the work and
+                // tends to fall back to 60 Hz.
+                if !usesSplit, router.pending != nil || retainsDismissedPlayerHost {
+                    DeepLinkPlayerHost(onRootDismissed: retainDismissedPlayerHost)
+                        .environmentObject(router)
+                        .tint(IbiliTheme.accent)
+                        .zIndex(1)
+                }
+            }
+            .onChange(of: usesSplit) { splitActive in
+                if splitActive {
+                    releaseDismissedPlayerHostWork?.cancel()
+                    releaseDismissedPlayerHostWork = nil
+                    retainsDismissedPlayerHost = false
+                }
             }
         }
         .environmentObject(router)
@@ -58,6 +86,44 @@ struct RootView: View {
             releaseDismissedPlayerHostWork = nil
             retainsDismissedPlayerHost = false
         }
+    }
+
+    @ViewBuilder
+    private func mainContent(size: CGSize, canSplit: Bool, usesSplit: Bool) -> some View {
+        if canSplit {
+            let leftWidth = usesSplit ? floor(size.width * 0.5) : size.width
+            HStack(spacing: 0) {
+                MainTabView()
+                    .environment(\.prefersSplitRootSelection, true)
+                    .environment(\.splitRootIsActive, usesSplit)
+                    .frame(width: leftWidth, height: size.height)
+                    .clipped()
+
+                if usesSplit {
+                    Divider().ignoresSafeArea(edges: .vertical)
+
+                    DeepLinkSplitHost()
+                        .environmentObject(router)
+                        .tint(.white)
+                        .frame(width: max(0, size.width - leftWidth - 1), height: size.height)
+                        .clipped()
+                }
+            }
+            .frame(width: size.width, height: size.height, alignment: .leading)
+            .background(IbiliTheme.background.ignoresSafeArea())
+            .animation(.interactiveSpring(response: 0.36, dampingFraction: 0.88), value: usesSplit)
+        } else {
+            MainTabView()
+                .environment(\.prefersSplitRootSelection, false)
+                .environment(\.splitRootIsActive, false)
+        }
+    }
+
+    private func isIPadLandscapeSplitCandidate(size: CGSize) -> Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+            && size.width > size.height
+            && size.width >= 900
+            && size.height >= 600
     }
 
     private func retainDismissedPlayerHost(for interval: TimeInterval) {
@@ -255,7 +321,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .article, nil:
+        case .dynamicDetail, .userSpace, .article, nil:
             break
         }
     }
@@ -273,55 +339,20 @@ private struct DeepLinkPlayerHost: View {
 
     @ViewBuilder
     private func destinationView(for route: DeepLinkRouter.SessionRoute) -> some View {
-        switch route {
-        case .player(let playerRoute):
-            playerDestination(for: playerRoute)
-                .id(playerRoute.id)
-        case .live(let liveRoute):
-            liveDestination(for: liveRoute)
-                .id(liveRoute.id)
-        case .userSpace(let userSpaceRoute):
-            UserSpaceView(mid: userSpaceRoute.mid)
-        case .dynamicDetail(let detailRoute):
-            DynamicDetailView(item: detailRoute.item)
-        case .article(let articleRoute):
-            ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
-        }
+        DeepLinkRouteContent.destinationView(
+            for: route,
+            onPictureInPictureActiveChange: handlePictureInPictureChange,
+            onPictureInPictureRestore: restorePictureInPicture
+        )
     }
 
     @ViewBuilder
     private func rootDestination(for route: DeepLinkRouter.RootRoute) -> some View {
-        switch route {
-        case .player(let playerRoute):
-            playerDestination(for: playerRoute)
-        case .live(let liveRoute):
-            liveDestination(for: liveRoute)
-        case .article(let articleRoute):
-            ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
-        }
-    }
-
-    private func playerDestination(for route: DeepLinkRouter.PlayerRoute) -> some View {
-        PlayerView(
-            item: route.item,
-            offlineOnly: route.offlineOnly,
-            viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id),
-            onPictureInPictureActiveChange: { isActive in
-                handlePictureInPictureChange(isActive, routeID: route.id)
-            },
-            onPictureInPictureRestore: { completion in
-                restorePictureInPicture(routeID: route.id, completion: completion)
-            }
+        DeepLinkRouteContent.rootDestination(
+            for: route,
+            onPictureInPictureActiveChange: handlePictureInPictureChange,
+            onPictureInPictureRestore: restorePictureInPicture
         )
-        .tint(.white)
-    }
-
-    private func liveDestination(for route: DeepLinkRouter.LiveRoute) -> some View {
-        LiveRoomView(
-            route: route,
-            vm: LiveRuntimeCoordinator.shared.viewModel(for: route.id)
-        )
-            .tint(.white)
     }
 
     private var isAnyAreaPlayerSwipeBackEnabled: Bool {
@@ -353,6 +384,216 @@ private struct DeepLinkPlayerHost: View {
         guard router.path.isEmpty else { return }
         withAnimation(Self.slideSpring) {
             offsetX = 0
+        }
+    }
+
+    private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
+        PlayerRuntimeCoordinator.shared.handle(.pictureInPictureChanged(isActive), for: routeID)
+        PlayerRuntimeCoordinator.shared.setPictureInPictureActive(
+            isActive,
+            for: routeID,
+            snapshot: isActive ? router.snapshot : nil
+        )
+        syncPlayerSessions()
+    }
+
+    private func restorePictureInPicture(routeID: UUID,
+                                         completion: @escaping (Bool) -> Void) {
+        if let snapshot = PlayerRuntimeCoordinator.shared.pictureInPictureSnapshot(for: routeID) {
+            router.restore(snapshot)
+            syncPlayerSessions()
+            completion(true)
+            return
+        }
+        completion(router.containsRoute(id: routeID))
+    }
+}
+
+private struct DeepLinkRouteContent {
+    @ViewBuilder
+    @MainActor
+    static func destinationView(
+        for route: DeepLinkRouter.SessionRoute,
+        onPictureInPictureActiveChange: @escaping (Bool, UUID) -> Void,
+        onPictureInPictureRestore: @escaping (UUID, @escaping (Bool) -> Void) -> Void
+    ) -> some View {
+        switch route {
+        case .player(let playerRoute):
+            playerDestination(
+                for: playerRoute,
+                onPictureInPictureActiveChange: onPictureInPictureActiveChange,
+                onPictureInPictureRestore: onPictureInPictureRestore
+            )
+            .id(playerRoute.id)
+        case .live(let liveRoute):
+            liveDestination(for: liveRoute)
+                .id(liveRoute.id)
+        case .userSpace(let userSpaceRoute):
+            UserSpaceView(mid: userSpaceRoute.mid)
+        case .dynamicDetail(let detailRoute):
+            DynamicDetailView(item: detailRoute.item)
+        case .article(let articleRoute):
+            ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
+        }
+    }
+
+    @ViewBuilder
+    @MainActor
+    static func rootDestination(
+        for route: DeepLinkRouter.RootRoute,
+        onPictureInPictureActiveChange: @escaping (Bool, UUID) -> Void,
+        onPictureInPictureRestore: @escaping (UUID, @escaping (Bool) -> Void) -> Void
+    ) -> some View {
+        switch route {
+        case .player(let playerRoute):
+            playerDestination(
+                for: playerRoute,
+                onPictureInPictureActiveChange: onPictureInPictureActiveChange,
+                onPictureInPictureRestore: onPictureInPictureRestore
+            )
+        case .live(let liveRoute):
+            liveDestination(for: liveRoute)
+        case .dynamicDetail(let detailRoute):
+            DynamicDetailView(item: detailRoute.item)
+        case .userSpace(let userSpaceRoute):
+            UserSpaceView(mid: userSpaceRoute.mid)
+        case .article(let articleRoute):
+            ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
+        }
+    }
+
+    @MainActor
+    static func playerDestination(
+        for route: DeepLinkRouter.PlayerRoute,
+        onPictureInPictureActiveChange: @escaping (Bool, UUID) -> Void,
+        onPictureInPictureRestore: @escaping (UUID, @escaping (Bool) -> Void) -> Void
+    ) -> some View {
+        PlayerView(
+            item: route.item,
+            offlineOnly: route.offlineOnly,
+            viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id),
+            onPictureInPictureActiveChange: { isActive in
+                onPictureInPictureActiveChange(isActive, route.id)
+            },
+            onPictureInPictureRestore: { completion in
+                onPictureInPictureRestore(route.id, completion)
+            }
+        )
+        .tint(.white)
+    }
+
+    @MainActor
+    static func liveDestination(for route: DeepLinkRouter.LiveRoute) -> some View {
+        LiveRoomView(
+            route: route,
+            vm: LiveRuntimeCoordinator.shared.viewModel(for: route.id)
+        )
+        .tint(.white)
+    }
+}
+
+private struct DeepLinkSplitHost: View {
+    @EnvironmentObject private var router: DeepLinkRouter
+
+    var body: some View {
+        NavigationStack(path: $router.path) {
+            Group {
+                if let route = router.pending {
+                    DeepLinkRouteContent.rootDestination(
+                        for: route,
+                        onPictureInPictureActiveChange: handlePictureInPictureChange,
+                        onPictureInPictureRestore: restorePictureInPicture
+                    )
+                    .id(route.id)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                dismiss()
+                            } label: {
+                                Image(systemName: router.path.isEmpty ? "xmark" : "chevron.backward")
+                                    .fontWeight(.semibold)
+                            }
+                            .tint(.white)
+                        }
+                    }
+                } else {
+                    splitEmptyState
+                }
+            }
+            .navigationDestination(for: DeepLinkRouter.SessionRoute.self) { route in
+                DeepLinkRouteContent.destinationView(
+                    for: route,
+                    onPictureInPictureActiveChange: handlePictureInPictureChange,
+                    onPictureInPictureRestore: restorePictureInPicture
+                )
+            }
+        }
+        .tint(.white)
+        .environment(\.isInPlayerHostNavigation, true)
+        .environment(\.prefersSplitRootSelection, false)
+        .environment(\.splitRootIsActive, true)
+        .background(IbiliTheme.background)
+        .onAppear { syncPlayerSessions() }
+        .onChange(of: router.pending?.id) { _ in
+            router.cancelRootSessionDismissal()
+            syncPlayerSessions()
+        }
+        .onChange(of: router.path.map(\.id)) { _ in
+            router.cancelRootSessionDismissal()
+            syncPlayerSessions()
+        }
+        .onDisappear {
+            syncPlayerSessions()
+        }
+    }
+
+    private var splitEmptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "play.rectangle")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(IbiliTheme.textSecondary)
+            Text("选择一个内容开始播放")
+                .font(.subheadline)
+                .foregroundStyle(IbiliTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(IbiliTheme.background)
+    }
+
+    private func dismiss() {
+        if !router.path.isEmpty {
+            prepareRouteForDismissal(router.path.last)
+            router.path.removeLast()
+            return
+        }
+        prepareRootRouteForDismissal(router.pending)
+        router.closeSession()
+    }
+
+    private func syncPlayerSessions() {
+        PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
+        LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
+    }
+
+    private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
+        switch route {
+        case .player(let playerRoute):
+            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
+        case .live(let liveRoute):
+            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
+        case .dynamicDetail, .userSpace, .article, nil:
+            break
+        }
+    }
+
+    private func prepareRouteForDismissal(_ route: DeepLinkRouter.SessionRoute?) {
+        switch route {
+        case .player(let playerRoute):
+            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
+        case .live(let liveRoute):
+            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
+        case .userSpace, .dynamicDetail, .article, nil:
+            break
         }
     }
 
@@ -554,6 +795,7 @@ struct MainTabView: View {
                 }
             }
             .tint(IbiliTheme.accent)
+            .tabViewStyle(.tabBarOnly)
         } else {
             TabView {
                 NavigationStack {

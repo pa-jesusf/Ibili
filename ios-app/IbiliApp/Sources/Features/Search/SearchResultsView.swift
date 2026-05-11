@@ -17,6 +17,7 @@ struct SearchResultsView: View {
     @State private var resolvingPgcSeasonID: Int64?
     @StateObject private var scrollContext = InterruptibleScrollContext()
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
 
     var body: some View {
         Group {
@@ -181,7 +182,12 @@ struct SearchResultsView: View {
         switch item {
         case .video(let video):
             Button {
-                router.open(feedItem(from: video))
+                let item = feedItem(from: video)
+                if prefersSplitRootSelection {
+                    router.select(item)
+                } else {
+                    router.open(item)
+                }
             } label: {
                 SearchResultCardView(
                     item: video,
@@ -193,12 +199,11 @@ struct SearchResultsView: View {
             .buttonStyle(.plain)
         case .live(let live):
             Button {
-                router.openLive(
-                    roomID: live.roomID,
-                    title: live.title,
-                    cover: live.cover,
-                    anchorName: live.uname
-                )
+                if prefersSplitRootSelection {
+                    router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
+                } else {
+                    router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
+                }
             } label: {
                 SearchLiveResultCardView(
                     item: live,
@@ -216,7 +221,11 @@ struct SearchResultsView: View {
             .buttonStyle(.plain)
         case .article(let article):
             Button {
-                router.openArticle(id: String(article.id), kind: "read")
+                if prefersSplitRootSelection {
+                    router.selectArticle(id: String(article.id), kind: "read")
+                } else {
+                    router.openArticle(id: String(article.id), kind: "read")
+                }
             } label: {
                 SearchArticleResultCardView(
                     item: article,
@@ -331,7 +340,11 @@ struct SearchResultsView: View {
                 )
                 await MainActor.run {
                     resolvingPgcSeasonID = nil
-                    router.open(feedItem)
+                    if prefersSplitRootSelection {
+                        router.select(feedItem)
+                    } else {
+                        router.open(feedItem)
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -357,6 +370,8 @@ struct SearchResultsView: View {
         guard mid > 0 else { return }
         if isInPlayerHostNavigation {
             router.openUserSpace(mid: mid)
+        } else if prefersSplitRootSelection {
+            router.selectUserSpace(mid: mid)
         } else {
             userSpaceMID = mid
         }

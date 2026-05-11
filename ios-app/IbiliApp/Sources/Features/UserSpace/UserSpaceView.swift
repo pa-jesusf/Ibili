@@ -28,8 +28,10 @@ struct UserSpaceView: View {
     @StateObject private var vm = UserSpaceViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
+    @State private var dynamicsContainerWidth: CGFloat = 0
     @FocusState private var searchFocused: Bool
     /// Hoisted nav state for "tap dynamic → push DynamicDetailView".
     /// Keeping the destination state at this view (rather than inside
@@ -153,12 +155,11 @@ struct UserSpaceView: View {
                 .contentShape(Circle())
                 .onTapGesture {
                     guard let live = vm.userLive, live.isLive else { return }
-                    router.openLive(
-                        roomID: live.roomID,
-                        title: live.title,
-                        cover: live.cover,
-                        anchorName: vm.card?.name ?? ""
-                    )
+                    if prefersSplitRootSelection {
+                        router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
+                    } else {
+                        router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
+                    }
                 }
                 .padding(.top, 4)
             Text(vm.card?.name ?? "—")
@@ -247,12 +248,17 @@ struct UserSpaceView: View {
         LazyVStack(spacing: 4) {
             ForEach(Array(vm.archives.enumerated()), id: \.element.id) { idx, item in
                 Button {
-                    router.open(FeedItemDTO(
+                    let feedItem = FeedItemDTO(
                         aid: item.aid, bvid: item.bvid, cid: 0,
                         title: item.title, cover: item.cover,
                         author: item.author, durationSec: 0,
                         play: item.play, danmaku: item.danmaku
-                    ))
+                    )
+                    if prefersSplitRootSelection {
+                        router.select(feedItem)
+                    } else {
+                        router.open(feedItem)
+                    }
                 } label: {
                     CompactVideoRow(
                         cover: item.cover,
@@ -288,14 +294,25 @@ struct UserSpaceView: View {
     }
 
     private var dynamicsList: some View {
-        LazyVStack(spacing: 14) {
+        let containerWidth = dynamicsContainerWidth > 0 ? dynamicsContainerWidth : UIScreen.main.bounds.width
+        let contentWidth = DynamicLayout.contentWidth(containerWidth: containerWidth)
+        return LazyVStack(spacing: 14) {
             ForEach(Array(vm.dynamics.enumerated()), id: \.element.id) { idx, item in
                 DynamicItemCard(
                     item: item,
-                    onOpenVideo: { feedItem in router.open(feedItem) },
+                    contentWidth: contentWidth,
+                    onOpenVideo: { feedItem in
+                        if prefersSplitRootSelection {
+                            router.select(feedItem)
+                        } else {
+                            router.open(feedItem)
+                        }
+                    },
                     onOpenDetail: { dyn in
                         if isInPlayerHostNavigation {
                             router.openDynamicDetail(dyn)
+                        } else if prefersSplitRootSelection {
+                            router.selectDynamicDetail(dyn)
                         } else {
                             pushDynamic = dyn
                         }
@@ -321,6 +338,13 @@ struct UserSpaceView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { dynamicsContainerWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { dynamicsContainerWidth = $0 }
+            }
+        }
     }
 
     // MARK: Search bar

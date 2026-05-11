@@ -274,7 +274,7 @@ final class AppSettings: ObservableObject {
         )
     }
 
-    private let maxFeedColumns = 3
+    private let maxFeedColumns = 5
     private let supportedDanmakuFrameRates = [30, 60]
 
     /// Resolves the effective column count given the current layout context.
@@ -285,12 +285,14 @@ final class AppSettings: ObservableObject {
             columnsRaw = clampedStoredColumns
         }
         if clampedStoredColumns > 0 { return clampedStoredColumns }
-        // Auto: width buckets tuned for iPhone portrait/landscape and iPad split views.
+        // Auto: width buckets tuned for iPhone portrait/landscape, iPad split
+        // columns, and full-width iPad grids.
         switch width {
         case ..<480:   return 2          // iPhone portrait
         case ..<700:   return 3          // iPhone landscape / small iPad split
-        case ..<1000:  return 3
-        default:       return horizontal == .compact ? 2 : 3
+        case ..<900:   return 3          // iPad half-width split
+        case ..<1120:  return horizontal == .compact ? 2 : 4
+        default:       return horizontal == .compact ? 2 : 5
         }
     }
 

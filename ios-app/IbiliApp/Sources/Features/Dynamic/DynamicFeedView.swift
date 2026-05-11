@@ -11,8 +11,9 @@ import UIKit
 enum DynamicLayout {
     static let outerPad: CGFloat = 12
     static let cardPad: CGFloat = 14
-    static var contentWidth: CGFloat {
-        UIScreen.main.bounds.width - 2 * outerPad - 2 * cardPad
+
+    static func contentWidth(containerWidth: CGFloat) -> CGFloat {
+        max(1, containerWidth - 2 * outerPad - 2 * cardPad)
     }
 
     static func authorSubtitle(pubLabel: String, pubTs: Int64) -> String {
@@ -99,20 +100,33 @@ private func classify(_ item: DynamicItemDTO) -> DynamicTapAction {
 }
 
 @MainActor
-private func openVideo(_ router: DeepLinkRouter, video: DynamicVideoDTO, authorName: String = "") {
+private func openVideo(_ router: DeepLinkRouter, video: DynamicVideoDTO, authorName: String = "", prefersSplitRootSelection: Bool = false) {
     if video.isPGC {
         if video.epID > 0 {
-            router.openPgc(epID: video.epID)
+            if prefersSplitRootSelection {
+                router.selectPgc(epID: video.epID)
+            } else {
+                router.openPgc(epID: video.epID)
+            }
         } else if video.seasonID > 0 {
-            router.openPgc(seasonID: video.seasonID)
+            if prefersSplitRootSelection {
+                router.selectPgc(seasonID: video.seasonID)
+            } else {
+                router.openPgc(seasonID: video.seasonID)
+            }
         }
         return
     }
-    router.open(FeedItemDTO(
+    let item = FeedItemDTO(
         aid: video.aid, bvid: video.bvid, cid: video.cid,
         title: video.title, cover: video.cover, author: authorName,
         durationSec: 0, play: 0, danmaku: 0
-    ))
+    )
+    if prefersSplitRootSelection {
+        router.select(item)
+    } else {
+        router.open(item)
+    }
 }
 
 // MARK: - Feed root
@@ -125,6 +139,7 @@ struct DynamicFeedView: View {
     @StateObject private var videoVM: DynamicFeedViewModel
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var pendingDetail: DynamicItemDTO?
 
     init() {
@@ -143,6 +158,8 @@ struct DynamicFeedView: View {
             onOpenDetail: { dyn in
                 if isInPlayerHostNavigation {
                     router.openDynamicDetail(dyn)
+                } else if prefersSplitRootSelection {
+                    router.selectDynamicDetail(dyn)
                 } else {
                     pendingDetail = dyn
                 }
@@ -198,67 +215,80 @@ private struct DynamicFeedPage: View {
     let emptyTitle: String
     let emptyMessage: String
     let onOpenDetail: (DynamicItemDTO) -> Void
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.splitRootIsActive) private var splitRootIsActive
 
     var body: some View {
-        ScrollView {
-            if #unavailable(iOS 18.0) {
-                ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
-            }
+        GeometryReader { geo in
+            let shouldCenterWideFeed = UIDevice.current.userInterfaceIdiom == .pad
+                && geo.size.width > geo.size.height
+                && geo.size.width >= 900
+                && !splitRootIsActive
+            let feedWidth = shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width
+            let contentWidth = DynamicLayout.contentWidth(containerWidth: feedWidth)
+            ScrollView {
+                if #unavailable(iOS 18.0) {
+                    ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
+                }
 
-            FeedTitleHeader(
-                title: "动态",
-                collapseProgress: collapseProgress,
-                showsBackground: false
-            )
+                FeedTitleHeader(
+                    title: "动态",
+                    collapseProgress: collapseProgress,
+                    showsBackground: false
+                )
 
-            if vm.items.isEmpty && vm.isLoading {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 28)
-            } else if vm.items.isEmpty {
-                emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
-                    .padding(.top, 18)
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                        DynamicItemCard(
-                            item: item,
-                            onOpenDetail: onOpenDetail
-                        )
-                        .onAppear {
-                            if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                Task { await vm.loadMore() }
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 28)
+                } else if vm.items.isEmpty {
+                    emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
+                        .padding(.top, 18)
+                } else {
+                    LazyVStack(spacing: 14) {
+                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                            DynamicItemCard(
+                                item: item,
+                                contentWidth: contentWidth,
+                                onOpenDetail: onOpenDetail
+                            )
+                            .onAppear {
+                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                    Task { await vm.loadMore() }
+                                }
                             }
                         }
+                        if vm.isLoading {
+                            ProgressView().padding()
+                        } else if vm.isEnd {
+                            Text("已经到底了")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding()
+                        }
                     }
-                    if vm.isLoading {
-                        ProgressView().padding()
-                    } else if vm.isEnd {
-                        Text("已经到底了")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding()
-                    }
+                    .padding(.horizontal, DynamicLayout.outerPad)
+                    .padding(.top, 8)
+                    .padding(.bottom, 32)
                 }
-                .padding(.horizontal, DynamicLayout.outerPad)
-                .padding(.top, 8)
-                .padding(.bottom, 32)
             }
+            .frame(width: feedWidth, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: shouldCenterWideFeed ? .top : .topLeading)
+            .coordinateSpace(name: "dynamic-feed-scroll")
+            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
+            .modifier(ProMotionScrollHint())
+            .scrollContentBackground(.hidden)
         }
-        .coordinateSpace(name: "dynamic-feed-scroll")
-        .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
-        .modifier(ProMotionScrollHint())
-        .scrollContentBackground(.hidden)
         .task(id: vm.scope) { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }
-}
-
     }
+}
 
 // MARK: - Card
 
 struct DynamicItemCard: View {
     let item: DynamicItemDTO
+    var contentWidth: CGFloat? = nil
     /// When non-nil, video taps inside the card route through this
     /// closure instead of the global player overlay (`router.pending`).
     /// The user-space page wires this up so video taps push a
@@ -276,9 +306,18 @@ struct DynamicItemCard: View {
     /// straight to the root tab".
     var onOpenDetail: ((DynamicItemDTO) -> Void)? = nil
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var preview: ImagePreviewState?
 
     var body: some View {
+        let resolvedContentWidth = contentWidth ?? DynamicLayout.contentWidth(containerWidth: UIScreen.main.bounds.width)
+        cardContent(resolvedContentWidth: resolvedContentWidth)
+            .fullScreenCover(item: $preview) { state in
+                ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
+            }
+    }
+
+    private func cardContent(resolvedContentWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             DynamicHeader(author: item.author)
 
@@ -294,7 +333,7 @@ struct DynamicItemCard: View {
             DynamicBody(
                 item: convertToRef(item),
                 kind: item.kind,
-                contentWidth: DynamicLayout.contentWidth,
+                contentWidth: resolvedContentWidth,
                 onPlayVideo: openCardVideo,
                 onOpenLive: openCardLive,
                 onOpenArticle: openCardArticle,
@@ -304,7 +343,7 @@ struct DynamicItemCard: View {
             if let orig = item.orig {
                 DynamicForwardPanel(
                     orig: orig,
-                    contentWidth: DynamicLayout.contentWidth - 20,
+                    contentWidth: max(1, resolvedContentWidth - 20),
                     onPlayVideo: openOrigVideo,
                     onOpenLive: openOrigLive,
                     onOpenArticle: openOrigArticle,
@@ -323,16 +362,13 @@ struct DynamicItemCard: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onTapGesture { handleCardTap() }
-        .fullScreenCover(item: $preview) { state in
-            ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
-        }
     }
 
     private func handleCardTap() {
         switch classify(item) {
         case .playVideo(let video, let authorName):
             if video.isPGC {
-                openVideo(router, video: video, authorName: authorName)
+                openVideo(router, video: video, authorName: authorName, prefersSplitRootSelection: prefersSplitRootSelection)
             } else {
                 let dto = FeedItemDTO(
                     aid: video.aid, bvid: video.bvid, cid: video.cid,
@@ -340,12 +376,21 @@ struct DynamicItemCard: View {
                     durationSec: 0, play: 0, danmaku: 0
                 )
                 if let onOpenVideo { onOpenVideo(dto) }
+                else if prefersSplitRootSelection { router.select(dto) }
                 else { router.open(dto) }
             }
         case .openLive(let roomID, let title, let cover, let anchorName):
-            router.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
+            if prefersSplitRootSelection {
+                router.selectLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
+            } else {
+                router.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
+            }
         case .openArticle(let id, let kind):
-            router.openArticle(id: id, kind: kind)
+            if prefersSplitRootSelection {
+                router.selectArticle(id: id, kind: kind)
+            } else {
+                router.openArticle(id: id, kind: kind)
+            }
         case .openDetail:
             onOpenDetail?(item)
         }
@@ -355,14 +400,14 @@ struct DynamicItemCard: View {
         guard let v = item.video else { return }
         if let onOpenVideo {
             if v.isPGC {
-                openVideo(router, video: v, authorName: item.author.name)
+                openVideo(router, video: v, authorName: item.author.name, prefersSplitRootSelection: prefersSplitRootSelection)
             } else {
                 onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: v.cid,
                                         title: v.title, cover: v.cover, author: item.author.name,
                                         durationSec: 0, play: 0, danmaku: 0))
             }
         } else {
-            openVideo(router, video: v, authorName: item.author.name)
+            openVideo(router, video: v, authorName: item.author.name, prefersSplitRootSelection: prefersSplitRootSelection)
         }
     }
 
@@ -370,45 +415,51 @@ struct DynamicItemCard: View {
         guard let v = item.orig?.video else { return }
         if let onOpenVideo {
             if v.isPGC {
-                openVideo(router, video: v, authorName: item.orig?.author.name ?? "")
+                openVideo(router, video: v, authorName: item.orig?.author.name ?? "", prefersSplitRootSelection: prefersSplitRootSelection)
             } else {
                 onOpenVideo(FeedItemDTO(aid: v.aid, bvid: v.bvid, cid: v.cid,
                                         title: v.title, cover: v.cover, author: item.orig?.author.name ?? "",
                                         durationSec: 0, play: 0, danmaku: 0))
             }
         } else {
-            openVideo(router, video: v, authorName: item.orig?.author.name ?? "")
+            openVideo(router, video: v, authorName: item.orig?.author.name ?? "", prefersSplitRootSelection: prefersSplitRootSelection)
         }
     }
 
     private func openCardLive() {
         guard let live = item.live, live.isOpenable else { return }
-        router.openLive(
-            roomID: live.roomID,
-            title: live.title,
-            cover: live.cover,
-            anchorName: item.author.name
-        )
+        if prefersSplitRootSelection {
+            router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
+        } else {
+            router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
+        }
     }
 
     private func openOrigLive() {
         guard let orig = item.orig, let live = orig.live, live.isOpenable else { return }
-        router.openLive(
-            roomID: live.roomID,
-            title: live.title,
-            cover: live.cover,
-            anchorName: orig.author.name
-        )
+        if prefersSplitRootSelection {
+            router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
+        } else {
+            router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
+        }
     }
 
     private func openCardArticle() {
         guard let article = item.article, !article.id.isEmpty else { return }
-        router.openArticle(id: article.id, kind: article.kind)
+        if prefersSplitRootSelection {
+            router.selectArticle(id: article.id, kind: article.kind)
+        } else {
+            router.openArticle(id: article.id, kind: article.kind)
+        }
     }
 
     private func openOrigArticle() {
         guard let article = item.orig?.article, !article.id.isEmpty else { return }
-        router.openArticle(id: article.id, kind: article.kind)
+        if prefersSplitRootSelection {
+            router.selectArticle(id: article.id, kind: article.kind)
+        } else {
+            router.openArticle(id: article.id, kind: article.kind)
+        }
     }
 
     private func openOrigDetail() {

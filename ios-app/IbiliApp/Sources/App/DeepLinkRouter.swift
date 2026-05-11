@@ -146,6 +146,8 @@ final class DeepLinkRouter: ObservableObject {
     enum RootRoute: Hashable, Identifiable {
         case player(PlayerRoute)
         case live(LiveRoute)
+        case dynamicDetail(DynamicDetailRoute)
+        case userSpace(UserSpaceRoute)
         case article(ArticleRoute)
 
         var id: UUID {
@@ -153,6 +155,10 @@ final class DeepLinkRouter: ObservableObject {
             case .player(let route):
                 return route.id
             case .live(let route):
+                return route.id
+            case .dynamicDetail(let route):
+                return route.id
+            case .userSpace(let route):
                 return route.id
             case .article(let route):
                 return route.id
@@ -221,6 +227,21 @@ final class DeepLinkRouter: ObservableObject {
         openPlayer(item, offlineOnly: true, mode: mode)
     }
 
+    func select(_ item: FeedItemDTO) {
+        selectPlayer(item, offlineOnly: false)
+    }
+
+    func selectOffline(_ item: FeedItemDTO) {
+        selectPlayer(item, offlineOnly: true)
+    }
+
+    private func selectPlayer(_ item: FeedItemDTO, offlineOnly: Bool) {
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .player(PlayerRoute(item: item, offlineOnly: offlineOnly))
+    }
+
     private func openPlayer(_ item: FeedItemDTO, offlineOnly: Bool, mode: OpenMode) {
         guard pending != nil, !isClosingRootSession else {
             path.removeAll()
@@ -267,14 +288,42 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
+    func selectLive(
+        roomID: Int64,
+        title: String = "",
+        cover: String = "",
+        anchorName: String = ""
+    ) {
+        guard roomID > 0 else { return }
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .live(LiveRoute(roomID: roomID, title: title, cover: cover, anchorName: anchorName))
+    }
+
     func openUserSpace(mid: Int64) {
         guard pending != nil, mid > 0 else { return }
         path.append(.userSpace(UserSpaceRoute(mid: mid)))
     }
 
+    func selectUserSpace(mid: Int64) {
+        guard mid > 0 else { return }
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .userSpace(UserSpaceRoute(mid: mid))
+    }
+
     func openDynamicDetail(_ item: DynamicItemDTO) {
         guard pending != nil else { return }
         path.append(.dynamicDetail(DynamicDetailRoute(item: item)))
+    }
+
+    func selectDynamicDetail(_ item: DynamicItemDTO) {
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .dynamicDetail(DynamicDetailRoute(item: item))
     }
 
     func openArticle(id: String, kind: String = "read") {
@@ -291,6 +340,16 @@ final class DeepLinkRouter: ObservableObject {
         path.append(.article(route))
     }
 
+    func selectArticle(id: String, kind: String = "read") {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let normalizedKind = kind == "opus" ? "opus" : "read"
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .article(ArticleRoute(articleID: trimmed, kind: normalizedKind))
+    }
+
     func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, mode: OpenMode = .push) {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
@@ -301,6 +360,25 @@ final class DeepLinkRouter: ObservableObject {
                 let episode = selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
                 open(makePgcFeedItem(season: season, episode: episode), mode: mode)
+            } catch {
+                AppLog.error("router", "PGC 路由解析失败", error: error, metadata: [
+                    "seasonID": String(seasonID),
+                    "epID": String(epID),
+                ])
+            }
+        }
+    }
+
+    func selectPgc(seasonID: Int64 = 0, epID: Int64 = 0) {
+        guard seasonID > 0 || epID > 0 else { return }
+        Task { @MainActor in
+            do {
+                let season = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
+                }.value
+                let episode = selectEpisode(from: season, epID: epID)
+                guard let episode else { return }
+                select(makePgcFeedItem(season: season, episode: episode))
             } catch {
                 AppLog.error("router", "PGC 路由解析失败", error: error, metadata: [
                     "seasonID": String(seasonID),
@@ -513,5 +591,26 @@ final class DeepLinkRouter: ObservableObject {
         }
 
         pending = .live(route)
+    }
+
+    private func prepareCurrentRootForReplacement() {
+        for route in path {
+            switch route {
+            case .player(let playerRoute):
+                PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
+            case .live(let liveRoute):
+                LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
+            case .userSpace, .dynamicDetail, .article:
+                break
+            }
+        }
+        switch pending {
+        case .player(let playerRoute):
+            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
+        case .live(let liveRoute):
+            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
+        case .dynamicDetail, .userSpace, .article, nil:
+            break
+        }
     }
 }
