@@ -245,13 +245,14 @@ struct RootView: View {
 
     private func isIPadLandscapeSplitCandidate(size: CGSize, stableBaseSize: CGSize?) -> Bool {
         guard UIDevice.current.userInterfaceIdiom == .pad else { return false }
-        guard size.width >= 900 else { return false }
+        let stableSize = stableRootLayoutSize(fallback: size)
+        guard stableSize.width >= 900 else { return false }
         if let stableBaseSize {
             return stableBaseSize.width > stableBaseSize.height
                 && stableBaseSize.width >= 900
                 && stableBaseSize.height >= 600
         }
-        return interfaceIsLandscape(size: size) && size.height >= 600
+        return interfaceIsLandscape(size: stableSize) && stableSize.height >= 600
     }
 
     private func handleRootSizeChange(_ size: CGSize) {
@@ -264,11 +265,24 @@ struct RootView: View {
             return
         }
         guard let base = splitLayoutBaseSize else { return }
-        if size.width < 900 || !interfaceIsLandscape(size: size) {
+        let stableSize = stableRootLayoutSize(fallback: size)
+        if stableSize.width < 900 || !interfaceIsLandscape(size: stableSize) {
             splitLayoutBaseSize = nil
-        } else if size.width > base.width + 1 || size.height > base.height + 1 {
-            splitLayoutBaseSize = size
+        } else if stableSize.width > base.width + 1 || stableSize.height > base.height + 1 {
+            splitLayoutBaseSize = stableSize
         }
+    }
+
+    private func stableRootLayoutSize(fallback size: CGSize) -> CGSize {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return size }
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else {
+            return size
+        }
+        let windowBounds = scene.windows.first(where: \.isKeyWindow)?.bounds ?? scene.screen.bounds
+        guard windowBounds.width > 0, windowBounds.height > 0 else { return size }
+        return windowBounds.size
     }
 
     private func interfaceIsLandscape(size: CGSize) -> Bool {
@@ -924,6 +938,8 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
 }
 
 struct MainTabView: View {
+    @State private var selectedTab: MainTab = .home
+
     var body: some View {
         // On iOS 18+ we use the new `Tab(role: .search)` initializer
         // so SwiftUI renders the search tab the way Apple Music does:
@@ -933,49 +949,72 @@ struct MainTabView: View {
         // On iOS 16/17 we fall back to a plain extra `.tabItem`,
         // which still works but doesn't get the floating split look.
         if #available(iOS 18.0, *) {
-            TabView {
-                Tab("首页", systemImage: "house.fill") {
+            TabView(selection: $selectedTab) {
+                Tab("首页", systemImage: "house.fill", value: MainTab.home) {
                     NavigationStack {
                         HomeView()
                     }
                 }
-                Tab("动态", systemImage: "sparkles") {
+                Tab("动态", systemImage: "sparkles", value: MainTab.dynamic) {
                     NavigationStack {
                         DynamicFeedView()
                     }
                 }
-                Tab("我的", systemImage: "person.crop.circle") {
+                Tab("我的", systemImage: "person.crop.circle", value: MainTab.profile) {
                     NavigationStack {
                         ProfileView()
                     }
                 }
-                Tab("搜索", systemImage: "magnifyingglass") {
+                Tab(value: MainTab.search, role: .search) {
                     SearchView()
                 }
             }
             .tint(IbiliTheme.accent)
             .tabViewStyle(.tabBarOnly)
+            .ibTabViewSearchSelectionOnly()
         } else {
-            TabView {
+            TabView(selection: $selectedTab) {
                 NavigationStack {
                     HomeView()
                 }
                 .tabItem { Label("首页", systemImage: "house.fill") }
+                .tag(MainTab.home)
 
                 NavigationStack {
                     DynamicFeedView()
                 }
                 .tabItem { Label("动态", systemImage: "sparkles") }
+                .tag(MainTab.dynamic)
 
                 SearchView()
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
+                    .tag(MainTab.search)
 
                 NavigationStack {
                     ProfileView()
                 }
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
+                .tag(MainTab.profile)
             }
             .tint(IbiliTheme.accent)
+        }
+    }
+
+    private enum MainTab: Hashable {
+        case home
+        case dynamic
+        case profile
+        case search
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func ibTabViewSearchSelectionOnly() -> some View {
+        if #available(iOS 26.0, *) {
+            tabViewSearchActivation(.searchTabSelection)
+        } else {
+            self
         }
     }
 }
