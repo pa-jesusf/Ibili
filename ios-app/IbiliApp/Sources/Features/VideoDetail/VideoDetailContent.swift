@@ -82,6 +82,7 @@ struct VideoDetailContent: View {
                 scrollContent
                     .background(IbiliTheme.background)
                     .environment(\.commentViewportHeight, max(1, viewportProxy.size.height))
+                    .environment(\.commentContentWidth, max(1, viewportProxy.size.width - 32))
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         PlayerDetailFloatingControlCluster(
                             tabs: visibleTabs,

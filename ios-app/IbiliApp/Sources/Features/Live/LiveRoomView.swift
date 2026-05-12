@@ -389,8 +389,7 @@ struct LiveRoomView: View {
                     endTemporarySpeedBoost: {},
                     canRestorePlaybackAfterPresentation: { vm.canRestorePlaybackAfterPresentation },
                     onCreated: { _ in },
-                    onPresentationEvent: handlePresentationEvent,
-                    onSwapOverlayReady: { _ in }
+                    onPresentationEvent: handlePresentationEvent
                 )
             } else if vm.isLoading {
                 ProgressView().tint(.white)

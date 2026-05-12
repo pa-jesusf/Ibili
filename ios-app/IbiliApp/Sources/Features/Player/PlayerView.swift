@@ -2,7 +2,6 @@ import SwiftUI
 import AVKit
 import AVFoundation
 import UIKit
-import os
 
 private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> FeedItemDTO {
     guard !item.isPGC else { return item }
@@ -53,11 +52,6 @@ final class PlayerViewModel: ObservableObject {
     /// ``setAudioVolumeLinear(_:)`` and applied to the active
     /// AVPlayer (and any subsequently-attached one).
     private var audioVolumeLinear: Float = 1.0
-    /// Lightweight handle the SwiftUI player container hands us so we
-    /// can drive a snapshot crossfade across an AVPlayer identity swap
-    /// without forcing the view-model to know about UIKit views.
-    weak var playerSwapOverlay: PlayerSwapOverlay?
-
     private var aid: Int64 = 0
     private var cid: Int64 = 0
     /// Public read-only accessors so views (e.g. the danmaku-send sheet)
@@ -91,7 +85,6 @@ final class PlayerViewModel: ObservableObject {
     private var lastLoadedItem: FeedItemDTO?
     private var lastPreferredQn: Int64 = 0
     private var lastPreferredAudioQn: Int64 = 0
-    private var lastFastLoad: Bool = false
     private var cdnSelection: String = MediaCDNService.auto.rawValue
     private var playbackCacheVariant: String = AppSettings.shared.playbackCacheVariantKey()
     private var playbackCodecPreference: String = "auto"
@@ -113,13 +106,6 @@ final class PlayerViewModel: ObservableObject {
     /// later low->high upgrade can release the old proxy token without
     /// tearing down the newly-promoted stream.
     private var activePreparation: EnginePreparation?
-    /// Pending fast-load warm-player task for the higher quality.
-    /// Cancelled on teardown / manual quality switch / next load so a
-    /// stale upgrade cannot resurrect a closed player.
-    private var pendingReadyTask: Task<WarmPlayer, Error>?
-    /// Coordination task that awaits `pendingReadyTask` and promotes it
-    /// once the high-quality player is actually playing.
-    private var pendingUpgradeTask: Task<Void, Never>?
     private let sessionID: PlayerSessionID
     private var behaviorState = PlayerSessionBehaviorState()
     private var playerTimeControlObservation: NSKeyValueObservation?
@@ -155,8 +141,6 @@ final class PlayerViewModel: ObservableObject {
             }
             activePreparation?.release()
             activePreparation = nil
-            pendingUpgradeTask?.cancel()
-            pendingReadyTask?.cancel()
         }
     }
 
@@ -204,7 +188,6 @@ final class PlayerViewModel: ObservableObject {
         item: FeedItemDTO,
         preferredQn: Int64,
         preferredAudioQn: Int64 = 0,
-        fastLoad: Bool,
         cdnSelection: String = MediaCDNService.auto.rawValue,
         cacheVariant: String = MediaCDNService.auto.rawValue,
         offlineOnly: Bool = false
@@ -246,7 +229,6 @@ final class PlayerViewModel: ObservableObject {
         lastLoadedItem = item
         lastPreferredQn = preferredQn
         lastPreferredAudioQn = preferredAudioQn
-        lastFastLoad = fastLoad
         self.cdnSelection = cdnSelection
         playbackCacheVariant = cacheVariant
         autoReloadAttempts = 0
@@ -258,7 +240,6 @@ final class PlayerViewModel: ObservableObject {
             didAttemptAVCRecovery = false
             pageCache.clearMediaData()
             stopHeartbeat()
-            cancelPendingUpgrade()
             // Switching to a different video/part inside the same
             // route should always auto-play the replacement source.
             // Do this before we tear the old player down so the audio
@@ -283,13 +264,11 @@ final class PlayerViewModel: ObservableObject {
         itemStatusObservation = nil
         if isSameVideo {
             stopHeartbeat()
-            cancelPendingUpgrade()
         }
         AppLog.info("player", "开始加载播放器", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
             "preferredQn": String(preferredQn),
-            "fastLoad": String(fastLoad),
             "cdn": cdnSelection,
             "offlineOnly": String(offlineOnly),
         ])
@@ -353,163 +332,47 @@ final class PlayerViewModel: ObservableObject {
             // quality switches don't re-seek backward.
             self.pendingResumeMs = info.lastPlayTimeMs
 
-            // Decide whether to race the lowest variant against the
-            // preferred one. We only do it when the user opted in AND
-            // there's actually something cheaper to race — picking the
-            // lowest qn that is strictly less than the preferred one.
-            let lowestQn = finalQualities.map(\.qn).min() ?? info.quality
-            let runFastLoad = fastLoad && lowestQn < info.quality
-            if runFastLoad {
-                let loInfo: PlayUrlDTO
-                if !item.isPGC,
-                   let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
-                                                            cid: item.cid,
-                                                            qn: lowestQn,
-                                                            cdn: cdnSelection) {
-                    loInfo = warm
-                    rememberPlayURL(warm)
-                } else {
-                    loInfo = try await fetchPlayUrl(for: item, qn: lowestQn)
-                }
-                guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
-                rememberPlayURL(loInfo)
-                // Race on hidden players reaching actual playback, not
-                // on `makeItem` completion. That keeps the feature true
-                // to its purpose: first picture wins, not first asset
-                // construction.
-                let hiTask = Task { [weak self] in
-                    guard let self else { throw CancellationError() }
-                    return try await self.makeWarmPlayer(for: info, presenting: item)
-                }
-                let loTask = Task { [weak self] in
-                    guard let self else { throw CancellationError() }
-                    return try await self.makeWarmPlayer(for: loInfo, presenting: item)
-                }
-                let winner = try await Self.raceFirstWarmPlayer(hi: hiTask, lo: loTask)
-                guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
-                    discardWarmPlayerTask(hiTask)
-                    discardWarmPlayerTask(loTask)
-                    AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
-                        "aid": String(item.aid),
-                        "cid": String(item.cid),
-                    ])
-                    return
-                }
-                let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-                switch winner {
-                case .hi(let hiWarm):
-                    discardWarmPlayerTask(loTask)
-                    await showWarmPlayer(hiWarm,
-                                         qn: info.quality,
-                                         generation: generation)
-                    rememberActivePlayURL(info)
-                    var meta = hiWarm.preparation.logSummary
-                    meta["aid"] = String(item.aid)
-                    meta["cid"] = String(item.cid)
-                    meta["quality"] = String(info.quality)
-                    meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
-                    meta["streamType"] = info.streamType
-                    meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
-                    meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
-                    meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
-                    meta["prepMs"] = String(hiWarm.preparation.totalElapsedMs)
-                    meta["startupMs"] = String(startupMs)
-                    meta["fastLoad"] = "true"
-                    meta["raceWinner"] = "hi"
-                    meta["winnerBasis"] = "timeControlStatus.playing"
-                    AppLog.info("player", "快速加载已就绪(高画质先达到可播)", metadata: meta)
-                case .lo(let loWarm):
-                    await showWarmPlayer(loWarm,
-                                         qn: loInfo.quality,
-                                         generation: generation)
-                    rememberActivePlayURL(loInfo)
-                    var meta = loWarm.preparation.logSummary
-                    meta["aid"] = String(item.aid)
-                    meta["cid"] = String(item.cid)
-                    meta["quality"] = String(loInfo.quality)
-                    meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
-                    meta["streamType"] = loInfo.streamType
-                    meta["videoCodec"] = loInfo.videoCodec.isEmpty ? "-" : loInfo.videoCodec
-                    meta["audioCodec"] = loInfo.audioCodec.isEmpty ? "-" : loInfo.audioCodec
-                    meta["separateAudio"] = loInfo.audioUrl == nil ? "false" : "true"
-                    meta["prepMs"] = String(loWarm.preparation.totalElapsedMs)
-                    meta["startupMs"] = String(startupMs)
-                    meta["targetQn"] = String(info.quality)
-                    meta["fastLoad"] = "true"
-                    meta["raceWinner"] = "lo"
-                    meta["winnerBasis"] = "timeControlStatus.playing"
-                    AppLog.info("player", "快速加载已就绪(低画质先达到可播)", metadata: meta)
-                    self.pendingReadyTask = hiTask
-                    self.pendingUpgradeTask = Task { @MainActor [weak self] in
-                        do {
-                            let hiWarm = try await hiTask.value
-                            guard let self else {
-                                hiWarm.stop()
-                                return
-                            }
-                            guard !Task.isCancelled,
-                                  self.isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
-                                hiWarm.stop()
-                                return
-                            }
-                            await self.applyFastLoadUpgrade(hiWarm: hiWarm,
-                                                            hiInfo: info,
-                                                            generation: generation)
-                        } catch {
-                            if !(error is CancellationError) {
-                                AppLog.warning("player", "高画质预加载失败，保留低画质", metadata: [
-                                    "detail": error.localizedDescription,
-                                ])
-                            }
-                        }
-                    }
-                }
-                if let msg = info.debugMessage {
-                    AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
-                }
-            } else {
-                let prep = try await engine.makeItem(for: info)
-                guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
-                    prep.release()
-                    AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
-                        "aid": String(item.aid),
-                        "cid": String(item.cid),
-                    ])
-                    return
-                }
-                applyPresentationMetadata(to: prep.item, for: item)
-                rememberActivePlayURL(info)
-                self.currentQn = info.quality
-                self.prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
-                let player = AVPlayer(playerItem: prep.item)
-                configureExternalPlayback(for: player)
-                // Leave `automaticallyWaitsToMinimizeStalling` at its
-                // default (`true`). With our HLS proxy AVPlayer needs to
-                // fetch the master + media playlists and the init
-                // segment before it can emit frames; forcing the flag
-                // off makes it call `play()` before there is anything
-                // to render and the playback gets stuck at rate=1 with
-                // no frames (the user has to tap once to unstick it).
-                self.activePreparation = prep
-                observeItemStatus(prep.item, generation: generation)
-                setPlayer(player)
-                applyPlaybackIntent(to: player)
-                let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-                var meta = prep.logSummary
-                meta["aid"] = String(item.aid)
-                meta["cid"] = String(item.cid)
-                meta["quality"] = String(info.quality)
-                meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
-                meta["streamType"] = info.streamType
-                meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
-                meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
-                meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
-                meta["prepMs"] = String(prep.totalElapsedMs)
-                meta["startupMs"] = String(startupMs)
-                AppLog.info("player", "播放器已就绪", metadata: meta)
-                if let msg = info.debugMessage {
-                    AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
-                }
+            let prep = try await engine.makeItem(for: info)
+            guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
+                prep.release()
+                AppLog.debug("player", "丢弃过期播放器加载结果", metadata: [
+                    "aid": String(item.aid),
+                    "cid": String(item.cid),
+                ])
+                return
+            }
+            applyPresentationMetadata(to: prep.item, for: item)
+            rememberActivePlayURL(info)
+            self.currentQn = info.quality
+            self.prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
+            let player = AVPlayer(playerItem: prep.item)
+            configureExternalPlayback(for: player)
+            // Leave `automaticallyWaitsToMinimizeStalling` at its
+            // default (`true`). With our HLS proxy AVPlayer needs to
+            // fetch the master + media playlists and the init
+            // segment before it can emit frames; forcing the flag
+            // off makes it call `play()` before there is anything
+            // to render and the playback gets stuck at rate=1 with
+            // no frames (the user has to tap once to unstick it).
+            self.activePreparation = prep
+            observeItemStatus(prep.item, generation: generation)
+            setPlayer(player)
+            applyPlaybackIntent(to: player)
+            let startupMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
+            var meta = prep.logSummary
+            meta["aid"] = String(item.aid)
+            meta["cid"] = String(item.cid)
+            meta["quality"] = String(info.quality)
+            meta["available"] = finalQualities.map { String($0.qn) }.joined(separator: ",")
+            meta["streamType"] = info.streamType
+            meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
+            meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
+            meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
+            meta["prepMs"] = String(prep.totalElapsedMs)
+            meta["startupMs"] = String(startupMs)
+            AppLog.info("player", "播放器已就绪", metadata: meta)
+            if let msg = info.debugMessage {
+                AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
         } catch {
             guard !isClosing else { return }
@@ -548,12 +411,10 @@ final class PlayerViewModel: ObservableObject {
         setPlayer(nil)
         activePreparation?.release()
         activePreparation = nil
-        cancelPendingUpgrade()
         aid = 0; cid = 0
         await load(item: item,
                preferredQn: lastPreferredQn,
                preferredAudioQn: lastPreferredAudioQn,
-               fastLoad: lastFastLoad,
                cdnSelection: cdnSelection,
                cacheVariant: playbackCacheVariant,
                offlineOnly: isCurrentSourceOffline)
@@ -779,9 +640,6 @@ final class PlayerViewModel: ObservableObject {
         guard !isClosing, let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
-        // A pending fast-load upgrade is now obsolete — user is
-        // explicitly choosing a different quality.
-        cancelPendingUpgrade()
         AppLog.info("player", "开始切换清晰度", metadata: [
             "aid": String(aid),
             "cid": String(cid),
@@ -898,7 +756,6 @@ final class PlayerViewModel: ObservableObject {
         setPlayer(nil)
         activePreparation?.release()
         activePreparation = nil
-        cancelPendingUpgrade()
         pageCache.clearMediaData()
         behaviorState = PlayerSessionBehaviorState()
         isPlaybackCompleted = false
@@ -915,23 +772,12 @@ final class PlayerViewModel: ObservableObject {
         loadGeneration &+= 1
         cancelSuppressedObservedPauseConfirmation()
         cancelFullscreenPlaybackRecovery()
-        cancelPendingUpgrade()
         itemStatusObservation = nil
         stopHeartbeat()
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         fadeOutAndPauseForDismissal()
         PlayerNowPlayingCoordinator.shared.refresh(for: self)
-    }
-
-    /// Cancel any in-flight fast-load upgrade. Safe to call when no
-    /// upgrade is pending.
-    private func cancelPendingUpgrade() {
-        pendingUpgradeTask?.cancel()
-        pendingUpgradeTask = nil
-        let readyTask = pendingReadyTask
-        pendingReadyTask = nil
-        discardWarmPlayerTask(readyTask)
     }
 
     private static func prefersLandscapeFullscreen(for source: PlayUrlDTO) -> Bool {
@@ -1268,48 +1114,6 @@ final class PlayerViewModel: ObservableObject {
         lastHeartbeatSec = -1
     }
 
-    /// Cancel and reap a hidden warm-player task. If the task already
-    /// completed we synchronously stop its muted player and release its
-    /// proxy token.
-    private func discardWarmPlayerTask(_ task: Task<WarmPlayer, Error>?) {
-        guard let task else { return }
-        task.cancel()
-        Task { @MainActor in
-            guard let warm = try? await task.value else { return }
-            warm.stop()
-        }
-    }
-
-    /// Build a muted hidden player and wait until it is actually
-    /// playing. This gives the fast-load race a meaningful winner:
-    /// whichever stream is first to render progress, not whichever
-    /// finished `makeItem` first.
-    private func makeWarmPlayer(for source: PlayUrlDTO, presenting item: FeedItemDTO) async throws -> WarmPlayer {
-        var preparation: EnginePreparation?
-        var hiddenPlayer: AVPlayer?
-        do {
-            let prep = try await engine.makeItem(for: source)
-            preparation = prep
-            try Task.checkCancellation()
-            applyPresentationMetadata(to: prep.item, for: item)
-
-            let player = AVPlayer(playerItem: prep.item)
-            hiddenPlayer = player
-            player.isMuted = true
-            applyRate(to: player)
-            player.play()
-
-            try await Self.waitUntilActuallyPlaying(player: player, item: prep.item)
-            try Task.checkCancellation()
-            return WarmPlayer(player: player, preparation: prep)
-        } catch {
-            hiddenPlayer?.pause()
-            hiddenPlayer?.replaceCurrentItem(with: nil)
-            preparation?.release()
-            throw error
-        }
-    }
-
     private func loadOfflineSource(
         _ offline: OfflinePlaybackSource,
         item: FeedItemDTO,
@@ -1370,179 +1174,6 @@ final class PlayerViewModel: ObservableObject {
         meta["source"] = "offline"
         AppLog.info("player", "离线播放器已就绪", metadata: meta)
     }
-
-    /// Race two hidden players and return whichever reaches actual
-    /// playback first.
-    private static func raceFirstWarmPlayer(
-        hi: Task<WarmPlayer, Error>,
-        lo: Task<WarmPlayer, Error>
-    ) async throws -> FastLoadWinner {
-        try await withCheckedThrowingContinuation { continuation in
-            let state = OSAllocatedUnfairLock<RaceState>(initialState: .pending(hiError: nil, loError: nil))
-            Task {
-                do {
-                    let warm = try await hi.value
-                    state.withLock { current in
-                        if case .resolved = current { return }
-                        current = .resolved
-                        continuation.resume(returning: .hi(warm))
-                    }
-                } catch {
-                    state.withLock { current in
-                        guard case .pending(_, let loErr) = current else { return }
-                        if let loErr {
-                            current = .resolved
-                            continuation.resume(throwing: loErr)
-                        } else {
-                            current = .pending(hiError: error, loError: nil)
-                        }
-                    }
-                }
-            }
-            Task {
-                do {
-                    let warm = try await lo.value
-                    state.withLock { current in
-                        if case .resolved = current { return }
-                        current = .resolved
-                        continuation.resume(returning: .lo(warm))
-                    }
-                } catch {
-                    state.withLock { current in
-                        guard case .pending(let hiErr, _) = current else { return }
-                        if let hiErr {
-                            current = .resolved
-                            continuation.resume(throwing: hiErr)
-                        } else {
-                            current = .pending(hiError: nil, loError: error)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Wait until a hidden player has genuinely started playback.
-    private static func waitUntilActuallyPlaying(player: AVPlayer,
-                                                 item: AVPlayerItem) async throws {
-        let box = WarmPlayerObservationBox()
-        try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                guard box.installContinuation(continuation) else {
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-
-                let itemObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
-                    switch item.status {
-                    case .failed:
-                        box.finish(.failure(item.error ?? WarmPlayerError.unexpectedFailure))
-                    case .readyToPlay:
-                        if player.timeControlStatus == .playing {
-                            box.finish(.success(()))
-                        }
-                    default:
-                        break
-                    }
-                }
-                box.installItemObservation(itemObservation)
-
-                let playerObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { player, _ in
-                    if player.timeControlStatus == .playing {
-                        box.finish(.success(()))
-                    }
-                }
-                box.installPlayerObservation(playerObservation)
-
-                if Task.isCancelled {
-                    box.finish(.failure(CancellationError()))
-                }
-            }
-        }, onCancel: {
-            box.finish(.failure(CancellationError()))
-        })
-    }
-
-    /// Make a warmed hidden player visible as the initial winner.
-    private func showWarmPlayer(_ warm: WarmPlayer,
-                                qn: Int64,
-                                generation: UInt64) async {
-        warm.player.pause()
-        await warm.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-        guard !isClosing, loadGeneration == generation else {
-            warm.stop()
-            return
-        }
-        warm.player.isMuted = false
-        configureExternalPlayback(for: warm.player)
-        itemStatusObservation = nil
-        observeItemStatus(warm.preparation.item, generation: generation)
-        activePreparation = warm.preparation
-        setPlayer(warm.player)
-        if let cached = pageCache.playURL(qn: qn, audioQn: currentAudioQn, variant: playURLCacheVariant()) {
-            rememberActivePlayURL(cached)
-        }
-        currentQn = qn
-        isVideoReady = true
-        applyPlaybackIntent(to: warm.player)
-    }
-
-    /// Hot-swap the visible player to the warmed high-quality player.
-    /// Each `AVPlayerItem` stays with its original `AVPlayer`, so we
-    /// avoid AVFoundation's one-item-per-player assertion entirely.
-    private func applyFastLoadUpgrade(hiWarm: WarmPlayer,
-                                      hiInfo: PlayUrlDTO,
-                                      generation: UInt64) async {
-        guard let activePlayer = self.player else {
-            hiWarm.stop()
-            return
-        }
-        let resumeAt = activePlayer.currentTime()
-        let previousPreparation = activePreparation
-        AppLog.info("player", "快速加载无缝升级", metadata: [
-            "fromQn": String(self.currentQn),
-            "toQn": String(hiInfo.quality),
-            "videoCodec": hiInfo.videoCodec.isEmpty ? "-" : hiInfo.videoCodec,
-            "audioCodec": hiInfo.audioCodec.isEmpty ? "-" : hiInfo.audioCodec,
-            "resumeSec": String(format: "%.3f", resumeAt.seconds),
-            "prepMs": String(hiWarm.preparation.totalElapsedMs),
-        ])
-        // Pause the warm player but use a default-tolerance seek so
-        // AVPlayer can resume from the closest sync sample. A
-        // zero-tolerance exact seek would force a re-buffer at the
-        // hand-off point and turn the swap into a noticeable stall.
-        hiWarm.player.pause()
-        await hiWarm.player.seek(to: resumeAt)
-        guard !isClosing, loadGeneration == generation else {
-            hiWarm.stop()
-            return
-        }
-        // Pre-fade audio: muting the outgoing player just before AVKit
-        // tears its AVPlayerLayer down hides the click that otherwise
-        // happens at the swap moment.
-        activePlayer.isMuted = true
-        // Snapshot the current AVPlayerLayer contents and crossfade
-        // over the swap so users don't see AVKit's brief black frame
-        // while it rebuilds the layer for the new AVPlayer instance.
-        playerSwapOverlay?.beginCrossfade()
-        itemStatusObservation = nil
-        hiWarm.player.isMuted = false
-        configureExternalPlayback(for: hiWarm.player)
-        observeItemStatus(hiWarm.preparation.item, generation: generation)
-        activePreparation = hiWarm.preparation
-        setPlayer(hiWarm.player)
-        rememberActivePlayURL(hiInfo)
-        self.currentQn = hiInfo.quality
-        isVideoReady = true
-        applyPlaybackIntent(to: hiWarm.player)
-        suppressNextObservedPlaybackIntent(.pause)
-        activePlayer.pause()
-        activePlayer.replaceCurrentItem(with: nil)
-        previousPreparation?.release()
-        pendingReadyTask = nil
-        pendingUpgradeTask = nil
-    }
-
 
     /// item has buffered enough to render its first frame. The earlier
     /// generation guard ensures stale loads (rapid quality switches /
@@ -1822,7 +1453,6 @@ final class PlayerViewModel: ObservableObject {
             }
 
             isVideoReady = false
-            cancelPendingUpgrade()
             stopHeartbeat()
             itemStatusObservation = nil
 
@@ -1970,7 +1600,6 @@ final class PlayerViewModel: ObservableObject {
         guard !isClosing, let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
-        cancelPendingUpgrade()
         AppLog.info("player", "开始切换音质", metadata: [
             "aid": String(aid),
             "cid": String(cid),
@@ -2128,112 +1757,6 @@ actor PlayerArtworkStore {
             return nil
         }
     }
-}
-
-/// Hidden muted player used by fast-load while racing or preparing a
-/// later low->high upgrade.
-fileprivate struct WarmPlayer {
-    let player: AVPlayer
-    let preparation: EnginePreparation
-
-    @MainActor
-    func stop() {
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-        preparation.release()
-    }
-}
-
-/// Result of racing the high-quality and low-quality warm-player tasks
-/// during fast-load.
-fileprivate enum FastLoadWinner {
-    case hi(WarmPlayer)
-    case lo(WarmPlayer)
-}
-
-/// Internal state for the race continuation. Tracks per-side errors so
-/// we only resume the continuation as a throw once both sides have
-/// failed.
-fileprivate enum RaceState {
-    case pending(hiError: Error?, loError: Error?)
-    case resolved
-}
-
-/// Shared one-shot state for KVO-based readiness waits.
-fileprivate enum ObservationState {
-    case pending
-    case resolved
-}
-
-fileprivate struct WarmPlayerObservationStorage {
-    var state: ObservationState = .pending
-    var continuation: CheckedContinuation<Void, Error>?
-    var itemObservation: NSKeyValueObservation?
-    var playerObservation: NSKeyValueObservation?
-}
-
-fileprivate final class WarmPlayerObservationBox: @unchecked Sendable {
-    private let storage = OSAllocatedUnfairLock<WarmPlayerObservationStorage>(
-        initialState: WarmPlayerObservationStorage()
-    )
-
-    func installContinuation(_ continuation: CheckedContinuation<Void, Error>) -> Bool {
-        storage.withLock { storage in
-            guard case .pending = storage.state else { return false }
-            storage.continuation = continuation
-            return true
-        }
-    }
-
-    func installItemObservation(_ observation: NSKeyValueObservation) {
-        let shouldInvalidate = storage.withLock { storage in
-            guard case .pending = storage.state else { return true }
-            storage.itemObservation = observation
-            return false
-        }
-        if shouldInvalidate {
-            observation.invalidate()
-        }
-    }
-
-    func installPlayerObservation(_ observation: NSKeyValueObservation) {
-        let shouldInvalidate = storage.withLock { storage in
-            guard case .pending = storage.state else { return true }
-            storage.playerObservation = observation
-            return false
-        }
-        if shouldInvalidate {
-            observation.invalidate()
-        }
-    }
-
-    func finish(_ result: Result<Void, Error>) {
-        let payload = storage.withLock { storage -> (CheckedContinuation<Void, Error>?, NSKeyValueObservation?, NSKeyValueObservation?)? in
-            guard case .pending = storage.state else { return nil }
-            storage.state = .resolved
-            let continuation = storage.continuation
-            let itemObservation = storage.itemObservation
-            let playerObservation = storage.playerObservation
-            storage.continuation = nil
-            storage.itemObservation = nil
-            storage.playerObservation = nil
-            return (continuation, itemObservation, playerObservation)
-        }
-        guard let (continuation, itemObservation, playerObservation) = payload else { return }
-        itemObservation?.invalidate()
-        playerObservation?.invalidate()
-        guard let continuation else { return }
-        switch result {
-        case .success:
-            continuation.resume()
-        case .failure(let error):
-            continuation.resume(throwing: error)
-        }
-    }
-}
-
-fileprivate enum WarmPlayerError: Error {
-    case unexpectedFailure
 }
 
 // MARK: - Player view
@@ -2419,8 +1942,7 @@ struct PlayerView: View {
                         endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
                         canRestorePlaybackAfterPresentation: { vm.canRestorePlaybackAfterPresentation },
                         onCreated: { vc in playerVCRef.vc = vc },
-                        onPresentationEvent: handlePresentationEvent,
-                        onSwapOverlayReady: { overlay in vm.playerSwapOverlay = overlay }
+                        onPresentationEvent: handlePresentationEvent
                     )
                     // Cover the native chrome until the first frame is
                     // ready, otherwise users see a misleading pause icon
@@ -2542,7 +2064,6 @@ struct PlayerView: View {
             await vm.load(item: item,
                           preferredQn: Int64(settings.resolvedPreferredVideoQn()),
                           preferredAudioQn: Int64(settings.preferredAudioQn),
-                          fastLoad: settings.fastLoad,
                           cdnSelection: settings.cdnService.rawValue,
                           cacheVariant: settings.playbackCacheVariantKey(),
                           offlineOnly: offlineOnly)

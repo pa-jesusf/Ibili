@@ -75,6 +75,7 @@ struct DynamicDetailView: View {
                 .padding(.vertical, 14)
             }
             .environment(\.commentViewportHeight, max(1, proxy.size.height))
+            .environment(\.commentContentWidth, max(1, proxy.size.width - 32))
         }
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("动态")

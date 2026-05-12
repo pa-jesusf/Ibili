@@ -18,6 +18,9 @@ enum Orientation {
     }
 
     static func supportedMask(for window: UIWindow? = nil) -> UIInterfaceOrientationMask {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            return .landscape
+        }
         guard UIDevice.current.userInterfaceIdiom == .phone else { return .all }
         let topViewController = topPresentedViewController(from: window?.rootViewController)
         if shouldForceLandscapeForExplicitFullscreen(topViewController: topViewController) {
@@ -77,6 +80,10 @@ enum Orientation {
     /// On iOS 16+ this is the public API; pre-16 falls back to the legacy
     /// `UIDevice.orientation` setter.
     static func request(_ mask: UIInterfaceOrientationMask) {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            requestWithoutMaskChange(.landscape)
+            return
+        }
         if UIDevice.current.userInterfaceIdiom == .phone {
             // Mirror the requested orientation in the mask so the
             // system actually performs the rotation: only landscape
@@ -101,10 +108,12 @@ enum Orientation {
     /// `preparePhoneFullscreenLandscape`) and we just need to
     /// trigger the rotation.
     static func requestWithoutMaskChange(_ mask: UIInterfaceOrientationMask) {
+        let requestMask: UIInterfaceOrientationMask = UIDevice.current.userInterfaceIdiom == .pad ? .landscape : mask
+        let effectiveMask: UIInterfaceOrientationMask = UIDevice.current.userInterfaceIdiom == .pad ? .landscape : phoneSupportedMask
         guard let scene = activeForegroundWindowScene() else {
             AppLog.debug("player", "请求界面方向更新", metadata: [
-                "requestedMask": interfaceOrientationMaskDescription(mask),
-                "effectiveMask": interfaceOrientationMaskDescription(phoneSupportedMask),
+                "requestedMask": interfaceOrientationMaskDescription(requestMask),
+                "effectiveMask": interfaceOrientationMaskDescription(effectiveMask),
                 "sceneFound": "false",
             ])
             return
@@ -112,12 +121,12 @@ enum Orientation {
         let primaryWindow = scene.windows.first(where: \ .isKeyWindow) ?? scene.windows.first
         if #available(iOS 16, *) {
             primaryWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-            let requestedMaskDescription = interfaceOrientationMaskDescription(mask)
+            let requestedMaskDescription = interfaceOrientationMaskDescription(requestMask)
             var metadata = sceneOrientationDebugMetadata(for: scene, rootViewController: primaryWindow?.rootViewController)
             metadata["requestedMask"] = requestedMaskDescription
-            metadata["effectiveMask"] = interfaceOrientationMaskDescription(phoneSupportedMask)
+            metadata["effectiveMask"] = interfaceOrientationMaskDescription(effectiveMask)
             AppLog.debug("player", "请求界面方向更新", metadata: metadata)
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: requestMask)) { error in
                 AppLog.warning("player", "界面方向更新被系统拒绝", metadata: [
                     "requestedMask": requestedMaskDescription,
                     "error": error.localizedDescription,
@@ -139,13 +148,13 @@ enum Orientation {
                     let observedWindow = observedScene.windows.first(where: \ .isKeyWindow) ?? observedScene.windows.first
                     var followUpMetadata = sceneOrientationDebugMetadata(for: observedScene, rootViewController: observedWindow?.rootViewController)
                     followUpMetadata["requestedMask"] = requestedMaskDescription
-                    followUpMetadata["effectiveMask"] = interfaceOrientationMaskDescription(phoneSupportedMask)
+                    followUpMetadata["effectiveMask"] = interfaceOrientationMaskDescription(effectiveMask)
                     AppLog.debug("player", "界面方向更新后观察", metadata: followUpMetadata)
                 }
             }
         } else {
             let value: UIDeviceOrientation
-            switch mask {
+            switch requestMask {
             case .portrait:        value = .portrait
             case .landscapeLeft:   value = .landscapeRight
             case .landscapeRight:  value = .landscapeLeft
@@ -153,7 +162,7 @@ enum Orientation {
             default:               value = .portrait
             }
             AppLog.debug("player", "使用旧版方式请求设备方向", metadata: [
-                "requestedMask": interfaceOrientationMaskDescription(mask),
+                "requestedMask": interfaceOrientationMaskDescription(requestMask),
                 "deviceOrientation": deviceOrientationDescription(value),
             ])
             UIDevice.current.setValue(value.rawValue, forKey: "orientation")

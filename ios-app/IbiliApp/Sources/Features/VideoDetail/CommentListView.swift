@@ -5,9 +5,18 @@ extension EnvironmentValues {
         get { self[CommentViewportHeightKey.self] }
         set { self[CommentViewportHeightKey.self] = newValue }
     }
+
+    var commentContentWidth: CGFloat? {
+        get { self[CommentContentWidthKey.self] }
+        set { self[CommentContentWidthKey.self] = newValue }
+    }
 }
 
 private struct CommentViewportHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+private struct CommentContentWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat? = nil
 }
 
@@ -334,8 +343,8 @@ struct ReplyPictureGrid: View {
     private let rawURLs: [String]
 
     @State private var preview: PreviewSelection?
-    @State private var measuredWidth: CGFloat = UIScreen.main.bounds.width
     @Environment(\.commentViewportHeight) private var commentViewportHeight
+    @Environment(\.commentContentWidth) private var commentContentWidth
 
     init(urls: [String]) {
         rawURLs = urls
@@ -347,23 +356,23 @@ struct ReplyPictureGrid: View {
     }
 
     var body: some View {
-        let availableWidth = max(1, measuredWidth)
-        gridContent(availableWidth: availableWidth)
+        let availableWidth = stableAvailableWidth
+        let metrics = gridMetrics(availableWidth: availableWidth)
+        gridContent(availableWidth: availableWidth, metrics: metrics)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: gridHeight(availableWidth: availableWidth))
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .preference(key: ReplyPictureGridWidthPreferenceKey.self, value: proxy.size.width)
-                }
-            }
-            .onPreferenceChange(ReplyPictureGridWidthPreferenceKey.self) { width in
-                guard width > 1, abs(width - measuredWidth) > 0.5 else { return }
-                measuredWidth = width
-            }
+            .frame(height: metrics.gridHeight, alignment: .topLeading)
             .fullScreenCover(item: $preview) { sel in
-                ImagePreviewSheet(images: previewImages(tileSide: gridMetrics(availableWidth: availableWidth).tileSide), initialIndex: sel.index)
+                ImagePreviewSheet(images: previewImages(tileSide: metrics.tileSide), initialIndex: sel.index)
             }
+    }
+
+    private var stableAvailableWidth: CGFloat {
+        // Parent views provide the comment list's stable width. Subtract the
+        // fixed avatar column used by CommentRow so image tiles no longer need
+        // their own GeometryReader while scrolling.
+        let rowAccessoryWidth: CGFloat = 32 + 10
+        let fallback = UIScreen.main.bounds.width - 32
+        return max(1, (commentContentWidth ?? fallback) - rowAccessoryWidth)
     }
 
     private func previewImages(tileSide: CGFloat) -> [CommentImagePreviewItem] {
@@ -387,12 +396,8 @@ struct ReplyPictureGrid: View {
         return (tileSide, gridWidth, gridHeight, cols)
     }
 
-    private func gridHeight(availableWidth: CGFloat) -> CGFloat {
-        gridMetrics(availableWidth: availableWidth).gridHeight
-    }
-
-    private func gridContent(availableWidth: CGFloat) -> some View {
-        let metrics = gridMetrics(availableWidth: availableWidth)
+    private func gridContent(availableWidth: CGFloat,
+                             metrics: (tileSide: CGFloat, gridWidth: CGFloat, gridHeight: CGFloat, cols: Int)) -> some View {
         let spacing: CGFloat = 4
         let columns = Array(
             repeating: GridItem(.fixed(metrics.tileSide), spacing: spacing),
@@ -419,14 +424,6 @@ struct ReplyPictureGrid: View {
             .frame(width: min(availableWidth * 0.6, metrics.gridWidth), alignment: .leading)
             Spacer(minLength: 0)
         }
-    }
-}
-
-private struct ReplyPictureGridWidthPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 

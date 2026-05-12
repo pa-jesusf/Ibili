@@ -179,12 +179,6 @@ final class AppSettings: ObservableObject {
     /// (≈ 40 dB SPL at min system volume), which the user reported
     /// is otherwise ~15 dB louder than peers.
     @AppStorage("ibili.player.audioGainDb") var audioGainDb: Double = -15
-    /// Race the lowest available quality against the user's preferred
-    /// quality on player startup. Whichever AVPlayerItem reaches
-    /// `.readyToPlay` first is shown immediately; if the lowest variant
-    /// won, the player seamlessly upgrades to the preferred quality
-    /// once it finishes preparing.
-    @AppStorage("ibili.player.fastLoad") var fastLoad: Bool = false
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
     @AppStorage("ibili.home.recommendSource") private var homeRecommendSourceRaw: String = HomeRecommendSource.web.rawValue
 
@@ -212,15 +206,12 @@ final class AppSettings: ObservableObject {
 
     // MARK: - Feed-card meta visibility (per screen)
     //
-    // Home and Search keep separate flags so power users can show a
-    // dense layout on search results while keeping the home grid lean,
-    // or vice versa. Defaults match the freshly-redesigned
-    // "投稿时间 + 弹幕数" preset.
+    // Home and Search keep separate flags where those flags actually
+    // affect rendering. Home recommendation cards do not receive stable
+    // publish-time / extra-stat data, so those two slots are hard-disabled.
     @AppStorage("ibili.card.home.showPlay") var homeShowPlay: Bool = true
     @AppStorage("ibili.card.home.showDuration") var homeShowDuration: Bool = true
-    @AppStorage("ibili.card.home.showPubdate") var homeShowPubdate: Bool = true
     @AppStorage("ibili.card.home.showAuthor") var homeShowAuthor: Bool = true
-    @AppStorage("ibili.card.home.stat") private var homeStatRaw: String = FeedCardStat.danmaku.rawValue
 
     @AppStorage("ibili.card.search.showPlay") var searchShowPlay: Bool = true
     @AppStorage("ibili.card.search.showDuration") var searchShowDuration: Bool = true
@@ -228,10 +219,6 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.card.search.showAuthor") var searchShowAuthor: Bool = true
     @AppStorage("ibili.card.search.stat") private var searchStatRaw: String = FeedCardStat.danmaku.rawValue
 
-    var homeCardStat: FeedCardStat {
-        get { FeedCardStat(rawValue: homeStatRaw) ?? .danmaku }
-        set { homeStatRaw = newValue.rawValue }
-    }
     var searchCardStat: FeedCardStat {
         get { FeedCardStat(rawValue: searchStatRaw) ?? .danmaku }
         set { searchStatRaw = newValue.rawValue }

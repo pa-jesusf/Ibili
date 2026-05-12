@@ -100,6 +100,7 @@ struct DanmakuStyleSettingsView: View {
             }
             .navigationTitle("弹幕样式")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(IbiliTheme.accent)
         }
     }
 

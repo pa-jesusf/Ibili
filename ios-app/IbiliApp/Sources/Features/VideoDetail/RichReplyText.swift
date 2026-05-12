@@ -19,22 +19,22 @@ struct RichReplyText: View {
     var onTruncationChange: ((Bool) -> Void)? = nil
 
     @State private var emoteImages: [String: UIImage] = [:]
-    @State private var truncates: Bool = false
+    @State private var lastReportedTruncates: Bool?
 
     var body: some View {
+        let estimatedTruncates = estimatedTruncation
         measuredText
             .lineLimit(lineLimit)
             .lineSpacing(2)
             .foregroundStyle(textColor)
-            .background(measureGeometry)
-            .task(id: emotes.map { $0.url }.joined(separator: "|")) {
+            .task(id: emoteLoadKey) {
                 await loadEmotes()
             }
             .onAppear {
-                onTruncationChange?(truncates)
+                reportTruncationIfNeeded(estimatedTruncates)
             }
-            .onChange(of: truncates) { newValue in
-                onTruncationChange?(newValue)
+            .onChange(of: estimatedTruncates) { newValue in
+                reportTruncationIfNeeded(newValue)
             }
     }
 
@@ -43,37 +43,33 @@ struct RichReplyText: View {
             .font(font)
     }
 
-    private var measureGeometry: some View {
-        Group {
-            if let lineLimit {
-                measuredText
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .hidden()
-                    .background(GeometryReader { full in
-                        measuredText
-                            .lineSpacing(2)
-                            .lineLimit(lineLimit)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .background(GeometryReader { clipped in
-                                Color.clear
-                                    .onAppear {
-                                        updateTruncation(clippedHeight: clipped.size.height,
-                                                         fullHeight: full.size.height)
-                                    }
-                                    .onChange(of: emoteImages.count) { _ in
-                                        updateTruncation(clippedHeight: clipped.size.height,
-                                                         fullHeight: full.size.height)
-                                    }
-                            })
-                            .hidden()
-                    })
-            }
-        }
+    private var emoteLoadKey: String {
+        emotes.map { "\($0.name)=\($0.url)#\($0.size)" }.joined(separator: "|")
     }
 
-    private func updateTruncation(clippedHeight: CGFloat, fullHeight: CGFloat) {
-        truncates = clippedHeight < fullHeight - 1
+    private var estimatedTruncation: Bool {
+        guard let lineLimit, lineLimit > 0 else { return false }
+        let hardLineBreaks = message.filter { $0 == "\n" }.count
+        if hardLineBreaks >= lineLimit { return true }
+        let visibleBudget = max(48, lineLimit * 24)
+        return message.count > visibleBudget
+    }
+
+    private func reportTruncationIfNeeded(_ value: Bool) {
+        guard lastReportedTruncates != value else { return }
+        lastReportedTruncates = value
+        onTruncationChange?(value)
+    }
+
+    private func emotePointSize(for emote: ReplyEmoteDTO) -> CGFloat {
+        emote.size >= 2 ? 32 : 18
+    }
+
+    private func emotePointSize(for token: String) -> CGFloat {
+        if let e = emotes.first(where: { $0.name == token }) {
+            return emotePointSize(for: e)
+        }
+        return 18
     }
 
     // MARK: - Rendering
@@ -98,13 +94,9 @@ struct RichReplyText: View {
             return Text(s)
         case .emote(let token):
             if let img = emoteImages[token] {
-                let size = emoteSize(for: token)
-                let scaled = img.resized(toHeight: size)
-                return Text(Image(uiImage: scaled))
+                return Text(Image(uiImage: img))
             }
-            // While loading: keep the bracketed token as plain text so
-            // the layout doesn't reflow when the image arrives.
-            return Text(token).foregroundColor(.secondary)
+            return Text(Image(uiImage: ReplyEmoteImageCache.placeholder(pointSize: emotePointSize(for: token))))
         case .link(let label, let url):
             // Markdown link → SwiftUI Text picks it up as a tappable
             // run that emits the URL into the OpenURLAction env.
@@ -213,43 +205,90 @@ struct RichReplyText: View {
         return nil
     }
 
-    private func emoteSize(for token: String) -> CGFloat {
-        // Honour upstream `meta.size` (1=small/inline, 2=large) — the
-        // large emotes are roughly 32pt vs 18pt for small.
-        if let e = emotes.first(where: { $0.name == token }), e.size >= 2 { return 32 }
-        return 18
-    }
-
     // MARK: - Async emote fetch
 
     @MainActor
     private func loadEmotes() async {
         for e in emotes where !e.url.isEmpty && emoteImages[e.name] == nil {
-            guard let url = URL(string: e.url) else { continue }
-            let key = url as NSURL
-            if let cached = ImageCache.shared.cache.object(forKey: key) {
-                emoteImages[e.name] = cached
-                continue
-            }
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                guard let img = UIImage(data: data) else { continue }
-                ImageCache.shared.cache.setObject(img, forKey: key, cost: data.count)
-                emoteImages[e.name] = img
-            } catch {
-                // Silent — token will keep showing as bracketed text.
+            if let image = await ReplyEmoteImageCache.shared.image(for: e, pointSize: emotePointSize(for: e)) {
+                emoteImages[e.name] = image
             }
         }
     }
 }
 
-private extension UIImage {
-    func resized(toHeight h: CGFloat) -> UIImage {
-        let scale = h / max(size.height, 1)
-        let target = CGSize(width: size.width * scale, height: h)
-        let r = UIGraphicsImageRenderer(size: target)
-        return r.image { _ in
-            draw(in: CGRect(origin: .zero, size: target))
+@MainActor
+private final class ReplyEmoteImageCache {
+    static let shared = ReplyEmoteImageCache()
+
+    private let renderedCache = NSCache<NSString, UIImage>()
+    private var inFlight: [String: Task<UIImage?, Never>] = [:]
+    private static var placeholders: [Int: UIImage] = [:]
+
+    func image(for emote: ReplyEmoteDTO, pointSize: CGFloat) async -> UIImage? {
+        let cacheKey = "\(emote.url)#\(Int(pointSize.rounded()))" as NSString
+        if let cached = renderedCache.object(forKey: cacheKey) {
+            return cached
+        }
+        let taskKey = cacheKey as String
+        if let task = inFlight[taskKey] {
+            return await task.value
+        }
+        let task = Task<UIImage?, Never> {
+            guard let url = URL(string: emote.url) else { return nil }
+            let rawKey = url as NSURL
+            let rawImage: UIImage
+            if let cached = ImageCache.shared.cache.object(forKey: rawKey) {
+                rawImage = cached
+            } else {
+                do {
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        return nil
+                    }
+                    guard let decoded = UIImage(data: data) else { return nil }
+                    ImageCache.shared.cache.setObject(decoded, forKey: rawKey, cost: data.count)
+                    rawImage = decoded
+                } catch {
+                    return nil
+                }
+            }
+            return Self.renderedSquare(rawImage, pointSize: pointSize)
+        }
+        inFlight[taskKey] = task
+        let image = await task.value
+        inFlight[taskKey] = nil
+        if let image {
+            renderedCache.setObject(image, forKey: cacheKey, cost: Int(image.size.width * image.size.height * image.scale * image.scale * 4))
+        }
+        return image
+    }
+
+    static func placeholder(pointSize: CGFloat) -> UIImage {
+        let key = Int(pointSize.rounded())
+        if let cached = placeholders[key] { return cached }
+        let size = CGSize(width: pointSize, height: pointSize)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { _ in
+            UIColor.clear.setFill()
+            UIBezierPath(rect: CGRect(origin: .zero, size: size)).fill()
+        }
+        placeholders[key] = image
+        return image
+    }
+
+    private static func renderedSquare(_ image: UIImage, pointSize: CGFloat) -> UIImage {
+        let canvas = CGSize(width: pointSize, height: pointSize)
+        let imageSize = image.size
+        let scale = min(canvas.width / max(imageSize.width, 1), canvas.height / max(imageSize.height, 1))
+        let drawSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        let drawOrigin = CGPoint(
+            x: (canvas.width - drawSize.width) / 2,
+            y: (canvas.height - drawSize.height) / 2
+        )
+        let renderer = UIGraphicsImageRenderer(size: canvas)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: drawOrigin, size: drawSize))
         }
     }
 }

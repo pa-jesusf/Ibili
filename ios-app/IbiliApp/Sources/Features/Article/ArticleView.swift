@@ -134,6 +134,7 @@ struct ArticleView: View {
                 .padding(.bottom, 32)
             }
             .environment(\.commentViewportHeight, max(1, proxy.size.height))
+            .environment(\.commentContentWidth, contentWidth)
             .refreshable {
                 await vm.load(id: articleID, kind: kind, force: true)
             }

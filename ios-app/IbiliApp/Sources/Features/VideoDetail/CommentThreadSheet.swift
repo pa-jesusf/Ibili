@@ -60,6 +60,7 @@ struct CommentThreadSheet: View {
                 .navigationBarTitleDisplayMode(.inline)
             }
             .environment(\.commentViewportHeight, max(1, proxy.size.height))
+            .environment(\.commentContentWidth, max(1, proxy.size.width - 32))
         }
         .task {
             guard root.replyCount > 0 else { return }

@@ -196,7 +196,6 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Toggle("快速加载", isOn: $settings.fastLoad)
                 Toggle("B站定向流量支持", isOn: .constant(true))
                     .disabled(true)
                 Picker("CDN", selection: Binding(
@@ -267,9 +266,7 @@ struct SettingsView: View {
                 title: "首页卡片显示",
                 showPlay: $settings.homeShowPlay,
                 showDuration: $settings.homeShowDuration,
-                showPubdate: .constant(false), 
-                showAuthor: $settings.homeShowAuthor,
-                stat: .constant(.none) 
+                showAuthor: $settings.homeShowAuthor
             )
 
             cardMetaSection(
@@ -347,26 +344,30 @@ struct SettingsView: View {
     /// Search visually identical in 设置 while still letting users tune
     /// each independently.
 @ViewBuilder
-private func cardMetaSection(
-    title: String,
-    showPlay: Binding<Bool>,
-    showDuration: Binding<Bool>,
-    showPubdate: Binding<Bool>,
-    showAuthor: Binding<Bool>,
-    stat: Binding<FeedCardStat>,
-    footer: String? = nil
-) -> some View {
-    Section {
-        Toggle("播放数", isOn: showPlay)
-        Toggle("时长", isOn: showDuration)
-        Toggle("投稿时间", isOn: showPubdate)
-        Toggle("UP 主", isOn: showAuthor)
-
-        Picker("数据角标", selection: stat) {
-            ForEach(FeedCardStat.allCases) { s in
-                Text(s.label).tag(s)
+    private func cardMetaSection(
+        title: String,
+        showPlay: Binding<Bool>,
+        showDuration: Binding<Bool>,
+        showPubdate: Binding<Bool>? = nil,
+        showAuthor: Binding<Bool>,
+        stat: Binding<FeedCardStat>? = nil,
+        footer: String? = nil
+    ) -> some View {
+        Section {
+            Toggle("播放数", isOn: showPlay)
+            Toggle("时长", isOn: showDuration)
+            if let showPubdate {
+                Toggle("投稿时间", isOn: showPubdate)
             }
-        }
+            Toggle("UP 主", isOn: showAuthor)
+
+            if let stat {
+                Picker("数据角标", selection: stat) {
+                    ForEach(FeedCardStat.allCases) { s in
+                        Text(s.label).tag(s)
+                    }
+                }
+            }
     } header: {
         Text(title)
     } footer: {

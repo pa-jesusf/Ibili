@@ -36,10 +36,10 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>需要相册权限以保存图片和视频封面到相册</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>需要本地网络权限以支持通过隔空播放把视频投放到同一局域网内的设备</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>需要相册权限以保存图片和视频封面到相册</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
