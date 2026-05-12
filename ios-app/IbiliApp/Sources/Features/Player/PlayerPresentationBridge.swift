@@ -26,6 +26,32 @@ enum PlayerPresentationEvent {
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
 }
 
+private enum PlayerFullscreenOrientationPhase: Equatable {
+    case inline
+    case autoEnterRequested
+    case entering(exitArmed: Bool)
+    case fullscreen(exitArmed: Bool)
+    case exiting(exitArmed: Bool)
+
+    var exitArmed: Bool {
+        switch self {
+        case .inline, .autoEnterRequested:
+            return false
+        case .entering(let value), .fullscreen(let value), .exiting(let value):
+            return value
+        }
+    }
+
+    var isManagedFullscreen: Bool {
+        switch self {
+        case .entering, .fullscreen, .exiting:
+            return true
+        case .inline, .autoEnterRequested:
+            return false
+        }
+    }
+}
+
 private final class PlayerHoldSpeedGestureMaskView: UIView {
     var hitTestingEnabledProvider: () -> Bool = { true }
 
@@ -164,6 +190,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.entersFullScreenWhenPlaybackBegins = false
         vc.exitsFullScreenWhenPlaybackEnds = false
         vc.videoGravity = .resizeAspect
+        vc.isModalInPresentation = true
+        context.coordinator.syncDeviceOrientationMonitoring(controller: vc)
 
         // Mount the danmaku canvas directly into contentOverlayView.
         // Using a raw UIView instead of UIHostingController avoids
@@ -253,10 +281,12 @@ struct PlayerContainer: UIViewControllerRepresentable {
         context.coordinator.danmakuCanvas?.normalFontScale = CGFloat(danmakuFontScale)
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
         context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: true)
+        context.coordinator.syncDeviceOrientationMonitoring(controller: vc)
     }
 
     static func dismantleUIViewController(_ vc: AVPlayerViewController, coordinator: Coordinator) {
         coordinator.prepareForDismantle(controller: vc)
+        Orientation.endPhoneFullscreenLandscapeLock(for: coordinator.parent.sessionID)
         Orientation.clearActivePlayerFullscreenPreference(for: coordinator.parent.sessionID)
     }
 
@@ -268,6 +298,12 @@ struct PlayerContainer: UIViewControllerRepresentable {
         private var transitionSnapshot: PlayerFullscreenTransitionSnapshot?
         private var holdSpeedBadgeIsVisible = false
         private var isDismantled = false
+        private var deviceOrientationObserver: NSObjectProtocol?
+        private weak var playerController: AVPlayerViewController?
+        private var fullscreenOrientationPhase: PlayerFullscreenOrientationPhase = .inline
+        private var lastPortraitAutoExitAt: Date?
+        private var lastAutomaticFullscreenRequestAt: Date?
+        private var automaticFullscreenFallbackWork: DispatchWorkItem?
         init(parent: PlayerContainer) { self.parent = parent }
 
         var shouldAllowHoldSpeedGestureHitTesting: Bool {
@@ -282,6 +318,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
             holdSpeedBadgeView = nil
             danmakuCanvas?.removeFromSuperview()
             danmakuCanvas = nil
+            stopDeviceOrientationMonitoring()
+            cancelAutomaticFullscreenFallback()
             transitionSnapshot = nil
             vc.delegate = nil
             if playerWasAttached {
@@ -355,13 +393,29 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 "playing": String(transitionSnapshot?.wasPlaying ?? false),
                 "requestedMask": requestedFullscreenMask.map(interfaceOrientationMaskDescription) ?? "none",
             ])
+            vc.isModalInPresentation = true
             parent.onPresentationEvent(.fullscreenChanged(true, identity))
             if let requestedFullscreenMask {
-                Orientation.preparePhoneFullscreenLandscape()
+                fullscreenOrientationPhase = .entering(exitArmed: currentDeviceOrientation.isLandscapeForFullscreen)
+                cancelAutomaticFullscreenFallback()
+                Orientation.beginPhoneFullscreenLandscapeLock(for: parent.sessionID)
                 Orientation.requestWithoutMaskChange(requestedFullscreenMask)
             }
-            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
+            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] context in
                 guard let self, let vc else { return }
+                if context.isCancelled {
+                    self.parent.onPresentationEvent(.fullscreenChanged(false, identity))
+                    if requestedFullscreenMask != nil {
+                        self.fullscreenOrientationPhase = .inline
+                    }
+                    Orientation.endPhoneFullscreenLandscapeLock(for: self.parent.sessionID)
+                    Orientation.request(.portrait)
+                    self.restorePlaybackState(on: vc, source: "enter-cancelled")
+                    return
+                }
+                if requestedFullscreenMask != nil {
+                    self.fullscreenOrientationPhase = .fullscreen(exitArmed: self.fullscreenOrientationPhase.exitArmed)
+                }
                 self.restorePlaybackState(on: vc, source: "enter-completion")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
                     guard let self, let vc else { return }
@@ -375,22 +429,38 @@ struct PlayerContainer: UIViewControllerRepresentable {
             guard !isDismantled else { return }
             capturePlaybackState(from: vc)
             let identity = presentationIdentity(for: vc)
+            vc.isModalInPresentation = false
             if transitionSnapshot?.wasPlaying == true {
                 parent.onPresentationEvent(.suppressTransientPauseObservation(identity, .fullscreenExit))
             }
-            let shouldRestorePortraitOnExit = UIDevice.current.userInterfaceIdiom == .phone
-                && Orientation.supportedMask() != .portrait
+            let shouldRestorePortraitOnExit = fullscreenOrientationPhase.isManagedFullscreen
+                || (UIDevice.current.userInterfaceIdiom == .phone
+                    && Orientation.isPhoneFullscreenLandscapeLocked(for: parent.sessionID))
+            let previousFullscreenOrientationPhase = fullscreenOrientationPhase
+            if previousFullscreenOrientationPhase.isManagedFullscreen {
+                fullscreenOrientationPhase = .exiting(exitArmed: previousFullscreenOrientationPhase.exitArmed)
+            }
             AppLog.info("player", "AVKit 即将退出全屏", metadata: [
                 "deviceOrientation": deviceOrientationDescription(UIDevice.current.orientation),
                 "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
                 "rate": String(transitionSnapshot?.playbackRate ?? 1.0),
                 "playing": String(transitionSnapshot?.wasPlaying ?? false),
                 "requestedMask": shouldRestorePortraitOnExit ? interfaceOrientationMaskDescription(.portrait) : "none",
+                "orientationPhase": String(describing: previousFullscreenOrientationPhase),
             ])
-            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] _ in
+            coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] context in
                 guard let self, let vc else { return }
+                if context.isCancelled {
+                    if previousFullscreenOrientationPhase.isManagedFullscreen {
+                        self.fullscreenOrientationPhase = .fullscreen(exitArmed: previousFullscreenOrientationPhase.exitArmed)
+                    }
+                    self.restorePlaybackState(on: vc, source: "exit-cancelled")
+                    return
+                }
                 self.parent.onPresentationEvent(.fullscreenChanged(false, identity))
+                self.fullscreenOrientationPhase = .inline
                 if shouldRestorePortraitOnExit {
+                    Orientation.endPhoneFullscreenLandscapeLock(for: self.parent.sessionID)
                     Orientation.request(.portrait)
                 }
                 self.restorePlaybackState(on: vc, source: "exit-completion")
@@ -449,6 +519,181 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 return .landscapeLeft
             default:
                 return .landscapeRight
+            }
+        }
+
+        func syncDeviceOrientationMonitoring(controller: AVPlayerViewController) {
+            guard UIDevice.current.userInterfaceIdiom == .phone,
+                  parent.prefersLandscapeFullscreen else {
+                stopDeviceOrientationMonitoring()
+                return
+            }
+            playerController = controller
+            guard deviceOrientationObserver == nil else { return }
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            deviceOrientationObserver = NotificationCenter.default.addObserver(
+                forName: UIDevice.orientationDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.handleDeviceOrientationChange()
+            }
+            handleDeviceOrientationChange()
+        }
+
+        private func stopDeviceOrientationMonitoring() {
+            guard let observer = deviceOrientationObserver else { return }
+            NotificationCenter.default.removeObserver(observer)
+            deviceOrientationObserver = nil
+            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+            playerController = nil
+            fullscreenOrientationPhase = .inline
+            lastPortraitAutoExitAt = nil
+        }
+
+        private func handleDeviceOrientationChange() {
+            guard !isDismantled,
+                  UIDevice.current.userInterfaceIdiom == .phone,
+                  parent.prefersLandscapeFullscreen else { return }
+            let orientation = UIDevice.current.orientation
+            if orientation.isLandscapeForFullscreen {
+                handleLandscapeDeviceOrientation(orientation)
+            } else if orientation.isPortraitForFullscreen {
+                handlePortraitDeviceOrientation(orientation)
+            }
+        }
+
+        private func handleLandscapeDeviceOrientation(_ orientation: UIDeviceOrientation) {
+            switch fullscreenOrientationPhase {
+            case .inline:
+                requestAutomaticFullscreen(for: orientation)
+            case .autoEnterRequested:
+                requestPhoneLandscapeOrientation(for: orientation)
+            case .entering(false):
+                fullscreenOrientationPhase = .entering(exitArmed: true)
+                AppLog.debug("player", "全屏方向状态已见到横屏，允许后续竖屏自动退出", metadata: [
+                    "deviceOrientation": deviceOrientationDescription(orientation),
+                    "phase": "entering",
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+            case .fullscreen(false):
+                fullscreenOrientationPhase = .fullscreen(exitArmed: true)
+                AppLog.debug("player", "全屏方向状态已见到横屏，允许后续竖屏自动退出", metadata: [
+                    "deviceOrientation": deviceOrientationDescription(orientation),
+                    "phase": "fullscreen",
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+            case .entering(true), .fullscreen(true), .exiting:
+                break
+            }
+        }
+
+        private func handlePortraitDeviceOrientation(_ orientation: UIDeviceOrientation) {
+            switch fullscreenOrientationPhase {
+            case .autoEnterRequested:
+                fullscreenOrientationPhase = .inline
+                cancelAutomaticFullscreenFallback()
+                Orientation.request(.portrait)
+            case .entering(let exitArmed), .fullscreen(let exitArmed):
+                guard exitArmed else {
+                    AppLog.debug("player", "忽略全屏入口前已有的竖屏姿态", metadata: [
+                        "deviceOrientation": deviceOrientationDescription(orientation),
+                        "phase": String(describing: fullscreenOrientationPhase),
+                        "sessionID": parent.sessionID.uuidString,
+                    ])
+                    return
+                }
+                exitFullscreenForPortraitDeviceOrientation(orientation)
+            case .inline, .exiting:
+                break
+            }
+        }
+
+        private func requestAutomaticFullscreen(for orientation: UIDeviceOrientation) {
+            guard let controller = playerController else { return }
+            let now = Date()
+            if let lastAutomaticFullscreenRequestAt,
+               now.timeIntervalSince(lastAutomaticFullscreenRequestAt) < 0.9 {
+                return
+            }
+            lastAutomaticFullscreenRequestAt = now
+            fullscreenOrientationPhase = .autoEnterRequested
+            requestPhoneLandscapeOrientation(for: orientation)
+            AppLog.info("player", "检测到手机横屏，自动请求 AVKit 全屏", metadata: [
+                "deviceOrientation": deviceOrientationDescription(orientation),
+                "sessionID": parent.sessionID.uuidString,
+            ])
+            guard requestNativeFullscreen(controller: controller, animated: true, reason: "device-landscape") else {
+                fullscreenOrientationPhase = .inline
+                Orientation.request(.portrait)
+                return
+            }
+            scheduleAutomaticFullscreenFallback()
+        }
+
+        private func requestPhoneLandscapeOrientation(for orientation: UIDeviceOrientation) {
+            let mask = requestedPhoneFullscreenMask(for: orientation) ?? .landscapeRight
+            Orientation.preparePhoneFullscreenLandscape()
+            Orientation.requestWithoutMaskChange(mask)
+        }
+
+        private func requestNativeFullscreen(controller: AVPlayerViewController,
+                                             animated: Bool,
+                                             reason: String) -> Bool {
+            let selector = NSSelectorFromString("enterFullScreenAnimated:completionHandler:")
+            guard controller.responds(to: selector),
+                  let implementation = controller.method(for: selector) else {
+                AppLog.warning("player", "当前系统不支持程序化进入 AVKit 全屏", metadata: [
+                    "reason": reason,
+                    "selector": "enterFullScreenAnimated:completionHandler:",
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+                return false
+            }
+            typealias EnterFullscreenFunction = @convention(c) (AnyObject, Selector, Bool, AnyObject?) -> Void
+            let function = unsafeBitCast(implementation, to: EnterFullscreenFunction.self)
+            function(controller, selector, animated, nil)
+            return true
+        }
+
+        private func scheduleAutomaticFullscreenFallback() {
+            cancelAutomaticFullscreenFallback()
+            let requestedSessionID = parent.sessionID
+            let work = DispatchWorkItem { [weak self] in
+                guard let self,
+                      self.parent.sessionID == requestedSessionID,
+                      self.fullscreenOrientationPhase == .autoEnterRequested else { return }
+                self.fullscreenOrientationPhase = .inline
+                if !Orientation.isAVKitFullscreenVisible() {
+                    Orientation.request(.portrait)
+                    AppLog.warning("player", "自动进入 AVKit 全屏未完成，已恢复竖屏", metadata: [
+                        "sessionID": requestedSessionID.uuidString,
+                    ])
+                }
+            }
+            automaticFullscreenFallbackWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+        }
+
+        private func cancelAutomaticFullscreenFallback() {
+            automaticFullscreenFallbackWork?.cancel()
+            automaticFullscreenFallbackWork = nil
+        }
+
+        private func exitFullscreenForPortraitDeviceOrientation(_ orientation: UIDeviceOrientation) {
+            let now = Date()
+            if let lastPortraitAutoExitAt,
+               now.timeIntervalSince(lastPortraitAutoExitAt) < 0.8 {
+                return
+            }
+            lastPortraitAutoExitAt = now
+            fullscreenOrientationPhase = .exiting(exitArmed: true)
+            AppLog.info("player", "检测到手机竖屏，自动退出 AVKit 全屏", metadata: [
+                "deviceOrientation": deviceOrientationDescription(orientation),
+                "sessionID": parent.sessionID.uuidString,
+            ])
+            if !Orientation.dismissAVKitFullscreen(animated: true) {
+                playerController?.dismiss(animated: true)
             }
         }
 

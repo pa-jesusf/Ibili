@@ -529,6 +529,7 @@ private struct DeepLinkPlayerHost: View {
 
     private var isAnyAreaPlayerSwipeBackEnabled: Bool {
         guard router.pending != nil, !isRootDismissInFlight else { return false }
+        guard !Orientation.isAVKitFullscreenVisible() else { return false }
         return router.path.isEmpty
             || router.path.last?.playerRoute != nil
             || router.path.last?.liveRoute != nil
@@ -856,7 +857,9 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         }
 
         func updateEnabled(_ isEnabled: Bool) {
-            let resolvedEnabled = isEnabled && !ModalGestureShield.isActive
+            let resolvedEnabled = isEnabled
+                && !ModalGestureShield.isActive
+                && !Orientation.isAVKitFullscreenVisible()
             pan?.isEnabled = resolvedEnabled
             if !resolvedEnabled {
                 hasBegunSwipe = false
@@ -895,6 +898,7 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard parent.isEnabled,
                   !ModalGestureShield.isActive,
+                  !Orientation.isAVKitFullscreenVisible(),
                   let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
             guard !hasActivePresentedController(from: pan.view) else { return false }
             guard !PlayerSwipeBackGestureExclusions.contains(
@@ -908,7 +912,9 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldReceive touch: UITouch) -> Bool {
-            guard parent.isEnabled, !ModalGestureShield.isActive else { return false }
+            guard parent.isEnabled,
+                  !ModalGestureShield.isActive,
+                  !Orientation.isAVKitFullscreenVisible() else { return false }
             if PlayerSwipeBackGestureExclusions.contains(touch, in: gestureRecognizer.view) {
                 return false
             }

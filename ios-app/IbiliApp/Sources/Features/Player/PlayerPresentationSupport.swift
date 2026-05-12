@@ -6,9 +6,14 @@ import UIKit
 @MainActor
 enum Orientation {
     /// App-level orientation gate for iPhone. Normal pages stay portrait;
-    /// once the native AVKit fullscreen flow starts we temporarily widen
-    /// the mask so the fullscreen controller can rotate to landscape.
+    /// once the native AVKit fullscreen flow starts we temporarily tighten
+    /// the mask so the fullscreen controller stays landscape.
     private static var phoneSupportedMask: UIInterfaceOrientationMask = .portrait
+    /// Stronger than `phoneSupportedMask`: while AVKit is presenting a
+    /// landscape fullscreen controller, this lock prevents unrelated
+    /// SwiftUI lifecycle callbacks from restoring portrait and lets the
+    /// app-level orientation mask continue rejecting portrait auto-rotation.
+    private static var activePhoneFullscreenLandscapeLock: PlayerSessionID?
     private static var activePlayerFullscreenPreference: (sessionID: PlayerSessionID, prefersLandscape: Bool)?
 
     private static func activeForegroundWindowScene() -> UIWindowScene? {
@@ -23,7 +28,8 @@ enum Orientation {
         }
         guard UIDevice.current.userInterfaceIdiom == .phone else { return .all }
         let topViewController = topPresentedViewController(from: window?.rootViewController)
-        if shouldForceLandscapeForExplicitFullscreen(topViewController: topViewController) {
+        if activePhoneFullscreenLandscapeLock != nil
+            || shouldForceLandscapeForExplicitFullscreen(topViewController: topViewController) {
             return .landscape
         }
         return phoneSupportedMask
@@ -39,12 +45,59 @@ enum Orientation {
         activePlayerFullscreenPreference = nil
     }
 
+    static func isAVKitFullscreenVisible() -> Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .contains { containsAVKitFullscreenController($0.rootViewController) }
+    }
+
+    @discardableResult
+    static func dismissAVKitFullscreen(animated: Bool) -> Bool {
+        guard let fullscreenController = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows)
+            .compactMap({ findAVKitFullscreenController($0.rootViewController) })
+            .first else {
+            return false
+        }
+        fullscreenController.dismiss(animated: animated)
+        return true
+    }
+
     private static func shouldForceLandscapeForExplicitFullscreen(topViewController: UIViewController?) -> Bool {
         guard activePlayerFullscreenPreference?.prefersLandscape == true,
               let topViewController else {
             return false
         }
-        return String(describing: type(of: topViewController)) == "AVFullScreenViewController"
+        return containsAVKitFullscreenController(topViewController)
+    }
+
+    private static func containsAVKitFullscreenController(_ rootViewController: UIViewController?) -> Bool {
+        findAVKitFullscreenController(rootViewController) != nil
+    }
+
+    private static func findAVKitFullscreenController(_ rootViewController: UIViewController?) -> UIViewController? {
+        guard let rootViewController else { return nil }
+        if isAVKitFullscreenController(rootViewController) {
+            return rootViewController
+        }
+        if let presentedFullscreen = findAVKitFullscreenController(rootViewController.presentedViewController) {
+            return presentedFullscreen
+        }
+        for child in rootViewController.children {
+            if let childFullscreen = findAVKitFullscreenController(child) {
+                return childFullscreen
+            }
+        }
+        return nil
+    }
+
+    private static func isAVKitFullscreenController(_ viewController: UIViewController) -> Bool {
+        let className = String(describing: type(of: viewController))
+        return className.contains("AVFullScreen")
+            || className.contains("AVFullscreen")
+            || (className.contains("AVPlayer") && className.contains("FullScreen"))
     }
 
     /// Tighten the phone orientation mask to *only* landscape so iOS
@@ -76,6 +129,48 @@ enum Orientation {
         AppLog.debug("player", "收紧手机方向掩码到 landscape，强制系统横屏", metadata: metadata)
     }
 
+    static func beginPhoneFullscreenLandscapeLock(for sessionID: PlayerSessionID) {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        let previousLock = activePhoneFullscreenLandscapeLock
+        activePhoneFullscreenLandscapeLock = sessionID
+        preparePhoneFullscreenLandscape()
+        AppLog.debug("player", "启用手机全屏横屏锁", metadata: [
+            "sessionID": sessionID.uuidString,
+            "previousSessionID": previousLock?.uuidString ?? "nil",
+            "supportedMask": interfaceOrientationMaskDescription(supportedMask()),
+        ])
+    }
+
+    static func endPhoneFullscreenLandscapeLock(for sessionID: PlayerSessionID) {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        guard activePhoneFullscreenLandscapeLock == nil
+                || activePhoneFullscreenLandscapeLock == sessionID else {
+            return
+        }
+        let previousMask = phoneSupportedMask
+        activePhoneFullscreenLandscapeLock = nil
+        phoneSupportedMask = .portrait
+        refreshSupportedInterfaceOrientations()
+        AppLog.debug("player", "解除手机全屏横屏锁", metadata: [
+            "sessionID": sessionID.uuidString,
+            "maskBefore": interfaceOrientationMaskDescription(previousMask),
+            "maskAfter": interfaceOrientationMaskDescription(phoneSupportedMask),
+        ])
+    }
+
+    static func isPhoneFullscreenLandscapeLocked(for sessionID: PlayerSessionID? = nil) -> Bool {
+        guard UIDevice.current.userInterfaceIdiom == .phone,
+              let lock = activePhoneFullscreenLandscapeLock else { return false }
+        guard let sessionID else { return true }
+        return lock == sessionID
+    }
+
+    private static func refreshSupportedInterfaceOrientations() {
+        guard let scene = activeForegroundWindowScene() else { return }
+        let primaryWindow = scene.windows.first(where: \ .isKeyWindow) ?? scene.windows.first
+        primaryWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+    }
+
     /// Request a specific interface-orientation set from the active scene.
     /// On iOS 16+ this is the public API; pre-16 falls back to the legacy
     /// `UIDevice.orientation` setter.
@@ -85,6 +180,14 @@ enum Orientation {
             return
         }
         if UIDevice.current.userInterfaceIdiom == .phone {
+            if activePhoneFullscreenLandscapeLock != nil, !mask.isLandscapeOnly {
+                AppLog.debug("player", "忽略全屏横屏锁期间的非横屏请求", metadata: [
+                    "requestedMask": interfaceOrientationMaskDescription(mask),
+                    "lockedMask": interfaceOrientationMaskDescription(.landscape),
+                ])
+                requestWithoutMaskChange(.landscape)
+                return
+            }
             // Mirror the requested orientation in the mask so the
             // system actually performs the rotation: only landscape
             // when we want landscape, only portrait when we want to
@@ -108,8 +211,17 @@ enum Orientation {
     /// `preparePhoneFullscreenLandscape`) and we just need to
     /// trigger the rotation.
     static func requestWithoutMaskChange(_ mask: UIInterfaceOrientationMask) {
-        let requestMask: UIInterfaceOrientationMask = UIDevice.current.userInterfaceIdiom == .pad ? .landscape : mask
-        let effectiveMask: UIInterfaceOrientationMask = UIDevice.current.userInterfaceIdiom == .pad ? .landscape : phoneSupportedMask
+        let requestMask: UIInterfaceOrientationMask
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            requestMask = .landscape
+        } else if UIDevice.current.userInterfaceIdiom == .phone,
+                  activePhoneFullscreenLandscapeLock != nil,
+                  !mask.isLandscapeOnly {
+            requestMask = .landscape
+        } else {
+            requestMask = mask
+        }
+        let effectiveMask: UIInterfaceOrientationMask = UIDevice.current.userInterfaceIdiom == .pad ? .landscape : supportedMask()
         guard let scene = activeForegroundWindowScene() else {
             AppLog.debug("player", "请求界面方向更新", metadata: [
                 "requestedMask": interfaceOrientationMaskDescription(requestMask),
@@ -239,6 +351,22 @@ func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> 
     if mask == .landscapeLeft { return "landscapeLeft" }
     if mask == .landscapeRight { return "landscapeRight" }
     return "raw(\(mask.rawValue))"
+}
+
+private extension UIInterfaceOrientationMask {
+    var isLandscapeOnly: Bool {
+        self == .landscape || self == .landscapeLeft || self == .landscapeRight
+    }
+}
+
+extension UIDeviceOrientation {
+    var isLandscapeForFullscreen: Bool {
+        self == .landscapeLeft || self == .landscapeRight
+    }
+
+    var isPortraitForFullscreen: Bool {
+        self == .portrait || self == .portraitUpsideDown
+    }
 }
 
 func timeControlStatusDescription(_ status: AVPlayer.TimeControlStatus) -> String {
