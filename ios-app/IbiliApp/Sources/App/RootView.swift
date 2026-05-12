@@ -971,7 +971,6 @@ struct MainTabView: View {
             }
             .tint(IbiliTheme.accent)
             .tabViewStyle(.tabBarOnly)
-            .ibTabViewSearchSelectionOnly()
         } else {
             TabView(selection: $selectedTab) {
                 NavigationStack {
@@ -1005,17 +1004,6 @@ struct MainTabView: View {
         case dynamic
         case profile
         case search
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func ibTabViewSearchSelectionOnly() -> some View {
-        if #available(iOS 26.0, *) {
-            tabViewSearchActivation(.searchTabSelection)
-        } else {
-            self
-        }
     }
 }
 
