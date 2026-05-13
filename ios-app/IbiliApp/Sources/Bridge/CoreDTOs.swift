@@ -1230,6 +1230,39 @@ public struct ReplyItemDTO: Decodable, Hashable, Identifiable {
         self.pictures = pictures
         self.jumpUrls = jumpUrls
     }
+
+    public func withReplyAdded(_ reply: ReplyItemDTO? = nil) -> ReplyItemDTO {
+        var preview = previewReplies
+        if let reply, !preview.contains(where: { $0.rpid == reply.rpid }) {
+            preview.insert(reply, at: 0)
+            if preview.count > 3 {
+                preview = Array(preview.prefix(3))
+            }
+        }
+        return ReplyItemDTO(
+            rpid: rpid,
+            oid: oid,
+            root: root,
+            parent: parent,
+            mid: mid,
+            uname: uname,
+            face: face,
+            level: level,
+            vipStatus: vipStatus,
+            message: message,
+            ctime: ctime,
+            like: like,
+            action: action,
+            replyCount: replyCount + 1,
+            upActionLike: upActionLike,
+            upActionReply: upActionReply,
+            location: location,
+            previewReplies: preview,
+            emotes: emotes,
+            pictures: pictures,
+            jumpUrls: jumpUrls
+        )
+    }
 }
 
 public struct ReplyPageDTO: Decodable {

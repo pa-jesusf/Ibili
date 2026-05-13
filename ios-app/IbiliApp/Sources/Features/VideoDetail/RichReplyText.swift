@@ -26,7 +26,6 @@ struct RichReplyText: View {
         measuredText
             .lineLimit(lineLimit)
             .lineSpacing(2)
-            .foregroundStyle(textColor)
             .task(id: emoteLoadKey) {
                 await loadEmotes()
             }
@@ -91,22 +90,27 @@ struct RichReplyText: View {
     private func render(segment: Segment) -> Text {
         switch segment {
         case .text(let s):
-            return Text(s)
+            return Text(s).foregroundColor(textColor)
         case .emote(let token):
             if let img = emoteImages[token] {
                 return Text(Image(uiImage: img))
             }
             return Text(Image(uiImage: ReplyEmoteImageCache.placeholder(pointSize: emotePointSize(for: token))))
         case .link(let label, let url):
-            // Markdown link → SwiftUI Text picks it up as a tappable
-            // run that emits the URL into the OpenURLAction env.
-            let escaped = label.replacingOccurrences(of: "]", with: "\\]")
-            let md = "[\(escaped)](\(url))"
-            if let attr = try? AttributedString(markdown: md, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-                return Text(attr)
+            var attr = AttributedString(label)
+            if let parsed = URL(string: url) ?? encodedURL(from: url) {
+                attr.link = parsed
             }
-            return Text(label).foregroundColor(IbiliTheme.accent)
+            attr.foregroundColor = IbiliTheme.accent
+            return Text(attr).fontWeight(.medium)
         }
+    }
+
+    private func encodedURL(from raw: String) -> URL? {
+        guard let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            return nil
+        }
+        return URL(string: encoded)
     }
 
     // MARK: - Tokeniser

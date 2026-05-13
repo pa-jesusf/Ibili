@@ -10,7 +10,9 @@ import SwiftUI
 struct CommentThreadSheet: View {
     let root: ReplyItemDTO
     var kind: Int32 = 1
+    var upperMid: Int64 = 0
     var onOpenUser: ((Int64) -> Void)? = nil
+    var onLocalReply: ((ReplyItemDTO, Int64) -> Void)? = nil
 
     @State private var replies: [ReplyItemDTO] = []
     @State private var rootState: ReplyItemDTO?
@@ -18,14 +20,16 @@ struct CommentThreadSheet: View {
     @State private var isLoading = false
     @State private var isEnd = false
     @State private var total: Int64 = 0
+    @State private var composer: CommentThreadComposerContext?
+    @EnvironmentObject private var session: AppSession
 
     private var currentRootItem: ReplyItemDTO {
         rootState ?? root
     }
 
     private var navigationTitleText: String {
-        if root.replyCount > 0 {
-            let visibleTotal = max(total, Int64(root.replyCount))
+        if currentRootItem.replyCount > 0 {
+            let visibleTotal = max(total, Int64(currentRootItem.replyCount))
             return "\(visibleTotal) 条回复"
         }
         return "评论详情"
@@ -66,18 +70,35 @@ struct CommentThreadSheet: View {
             guard root.replyCount > 0 else { return }
             await loadMore()
         }
+        .sheet(item: $composer) { context in
+            CommentSendSheet(
+                oid: currentRootItem.oid,
+                kind: kind,
+                selfMid: session.mid,
+                selfName: "",
+                root: currentRootItem.rpid,
+                parent: context.parent.rpid,
+                replyToName: context.parent.uname
+            ) { echo in
+                insertLocalReply(echo)
+            }
+        }
     }
 
     private func threadRow(for item: ReplyItemDTO) -> AnyView {
         AnyView(
             CommentRow(item: item,
-                       upperMid: 0,
+                       upperMid: upperMid,
                        isPinned: false,
                        messageLineLimit: nil,
                        allowsThreadPresentation: false,
+                       showsPreviewReplies: false,
                        onLike: {
                            Task { await toggleLike(on: item) }
                        },
+                       onReply: session.isLoggedIn ? {
+                           composer = CommentThreadComposerContext(parent: item)
+                       } : nil,
                        onOpenUser: onOpenUser,
                        onOpenThread: {})
                 .padding(.horizontal, 16)
@@ -89,8 +110,10 @@ struct CommentThreadSheet: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let p = try await Task.detached(priority: .userInitiated) { [root, kind, page] in
-                try CoreClient.shared.replyDetail(oid: root.oid, kind: kind, root: root.rpid, page: page)
+            let rootRpid = currentRootItem.rpid
+            let oid = currentRootItem.oid
+            let p = try await Task.detached(priority: .userInitiated) { [oid, kind, rootRpid, page] in
+                try CoreClient.shared.replyDetail(oid: oid, kind: kind, root: rootRpid, page: page)
             }.value
             if page == 1 { total = p.total }
             replies.append(contentsOf: p.items)
@@ -136,4 +159,17 @@ struct CommentThreadSheet: View {
             }
         }
     }
+
+    @MainActor
+    private func insertLocalReply(_ reply: ReplyItemDTO) {
+        replies.insert(reply, at: 0)
+        total += 1
+        rootState = (rootState ?? root).withReplyAdded(reply)
+        onLocalReply?(reply, root.rpid)
+    }
+}
+
+private struct CommentThreadComposerContext: Identifiable {
+    let id = UUID()
+    let parent: ReplyItemDTO
 }

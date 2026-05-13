@@ -269,6 +269,17 @@ struct SettingsView: View {
                 Text("控制视频详情页右下角显示 BV 号或旧版 av 号。")
             }
 
+            Section {
+                Toggle("显示部分回复", isOn: $settings.commentShowPreviewReplies)
+                Toggle("显示账号等级", isOn: $settings.commentShowLevel)
+                Toggle("显示 UP 标记", isOn: $settings.commentShowUPBadge)
+                Toggle("显示 IP 属地", isOn: $settings.commentShowLocation)
+            } header: {
+                Text("评论区")
+            } footer: {
+                Text("这些开关会影响视频、动态、专栏等评论列表的附加信息展示；回复功能始终可用。")
+            }
+
             cardMetaSection(
                 title: "首页卡片显示",
                 showPlay: $settings.homeShowPlay,

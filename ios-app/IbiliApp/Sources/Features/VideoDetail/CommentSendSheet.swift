@@ -17,6 +17,9 @@ struct CommentSendSheet: View {
     /// list to avoid a full refetch).
     let selfMid: Int64
     let selfName: String
+    var root: Int64 = 0
+    var parent: Int64 = 0
+    var replyToName: String?
 
     var onSent: ((ReplyItemDTO) -> Void)? = nil
 
@@ -35,11 +38,18 @@ struct CommentSendSheet: View {
     private let charLimit = 1000
     private let maxImages = 9
 
+    private var placeholderText: String {
+        if let replyToName, !replyToName.isEmpty {
+            return "回复 @\(replyToName)…"
+        }
+        return "发条友善的评论…"
+    }
+
     var body: some View {
         VStack(spacing: 12) {
             CompactComposerCard(
                 text: $text,
-                placeholder: "发条友善的评论…",
+                placeholder: placeholderText,
                 charLimit: charLimit,
                 isSending: isSending,
                 focused: $focused,
@@ -102,9 +112,6 @@ struct CommentSendSheet: View {
         .modifier(MaterialSheetBg())
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: showEmotePanel)
         .animation(.easeOut(duration: 0.18), value: images.count)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
-        }
         .sheet(isPresented: $showPhotoPicker) {
             PrivatePhotoPicker(selectionLimit: maxImages - images.count) { picked in
                 images.append(contentsOf: picked)
@@ -231,10 +238,16 @@ struct CommentSendSheet: View {
                     imgSize: uploaded.size
                 ))
             }
-            let result = try await Task.detached(priority: .userInitiated) { [oid, kind, msg, pictures] in
+            let outgoingMessage: String
+            if root != 0, parent != 0, parent != root, let replyToName, !replyToName.isEmpty {
+                outgoingMessage = "回复 @\(replyToName) : \(msg)"
+            } else {
+                outgoingMessage = msg
+            }
+            let result = try await Task.detached(priority: .userInitiated) { [oid, kind, root, parent, outgoingMessage, pictures] in
                 try CoreClient.shared.replyAdd(
                     oid: oid, kind: kind,
-                    message: msg, root: 0, parent: 0,
+                    message: outgoingMessage, root: root, parent: parent,
                     pictures: pictures
                 )
             }.value
@@ -243,10 +256,12 @@ struct CommentSendSheet: View {
             let echo = ReplyItemDTO(
                 rpid: result.rpid != 0 ? result.rpid : -Int64(Date().timeIntervalSince1970 * 1000),
                 oid: oid,
+                root: root,
+                parent: parent,
                 mid: selfMid,
                 uname: selfName.isEmpty ? "我" : selfName,
                 face: "",
-                message: msg,
+                message: outgoingMessage,
                 ctime: Int64(Date().timeIntervalSince1970),
                 pictures: pictures.map { $0.imgSrc }
             )

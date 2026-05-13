@@ -857,11 +857,13 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         }
 
         func updateEnabled(_ isEnabled: Bool) {
-            let resolvedEnabled = isEnabled
-                && !ModalGestureShield.isActive
-                && !Orientation.isAVKitFullscreenVisible()
-            pan?.isEnabled = resolvedEnabled
-            if !resolvedEnabled {
+            // Keep the recognizer itself alive while AVKit fullscreen or
+            // modal shields are active. Toggling `isEnabled` off here can
+            // leave the window-level recognizer disabled if fullscreen exits
+            // without a SwiftUI update pass; the delegate below performs the
+            // transient gating at gesture-begin time instead.
+            pan?.isEnabled = isEnabled
+            if !isEnabled || ModalGestureShield.isActive || Orientation.isAVKitFullscreenVisible() {
                 hasBegunSwipe = false
             }
         }

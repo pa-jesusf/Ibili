@@ -223,6 +223,11 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.card.search.showAuthor") var searchShowAuthor: Bool = true
     @AppStorage("ibili.card.search.stat") private var searchStatRaw: String = FeedCardStat.danmaku.rawValue
 
+    @AppStorage("ibili.comments.showPreviewReplies") var commentShowPreviewReplies: Bool = true
+    @AppStorage("ibili.comments.showLevel") var commentShowLevel: Bool = true
+    @AppStorage("ibili.comments.showUPBadge") var commentShowUPBadge: Bool = true
+    @AppStorage("ibili.comments.showLocation") var commentShowLocation: Bool = true
+
     var searchCardStat: FeedCardStat {
         get { FeedCardStat(rawValue: searchStatRaw) ?? .danmaku }
         set { searchStatRaw = newValue.rawValue }

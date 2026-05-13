@@ -97,13 +97,13 @@ final class HomeViewModel: ObservableObject {
             case .web:
                 page = targetIdx + 1
             case .app:
-                idx = response.items.last?.aid ?? idx
+                idx = targetIdx + 1
             }
             loadedRecommendSource = source
             isEnd = fresh.isEmpty
             AppLog.info("home", reset ? "首页推荐加载成功" : "首页推荐追加成功", metadata: [
                 "count": String(fresh.count),
-                "nextIdx": String(idx),
+                "nextIdx": String(source == .app ? idx : page),
                 "section": section.rawValue,
                 "source": sourceRaw,
             ])

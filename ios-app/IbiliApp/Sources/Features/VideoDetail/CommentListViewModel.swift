@@ -123,6 +123,18 @@ final class CommentListViewModel: ObservableObject {
         total += 1
     }
 
+    /// A nested reply was posted from the list. Keep the root row fresh
+    /// without forcing a full comment refresh.
+    func noteLocalReply(_ reply: ReplyItemDTO, underRoot rootRpid: Int64) {
+        if top?.rpid == rootRpid {
+            top = top?.withReplyAdded(reply)
+            return
+        }
+        if let idx = items.firstIndex(where: { $0.rpid == rootRpid }) {
+            items[idx] = items[idx].withReplyAdded(reply)
+        }
+    }
+
     private func applyLikeDelta(rpid: Int64, action: Int32) {
         if top?.rpid == rpid, var t = top {
             let prev = t.action

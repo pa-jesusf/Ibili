@@ -20,6 +20,20 @@ private struct CommentContentWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat? = nil
 }
 
+private struct CommentComposerContext: Identifiable {
+    let id = UUID()
+    let root: ReplyItemDTO?
+    let parent: ReplyItemDTO?
+
+    static var topLevel: CommentComposerContext {
+        CommentComposerContext(root: nil, parent: nil)
+    }
+
+    static func reply(root: ReplyItemDTO, parent: ReplyItemDTO) -> CommentComposerContext {
+        CommentComposerContext(root: root, parent: parent)
+    }
+}
+
 /// Top-level comment list. Each row taps into a `CommentThreadSheet`
 /// when the comment has nested replies.
 ///
@@ -38,7 +52,7 @@ struct CommentListView: View {
     @StateObject private var ownedViewModel = CommentListViewModel()
     private let providedViewModel: CommentListViewModel?
     @State private var thread: ReplyItemDTO?
-    @State private var showSendSheet = false
+    @State private var composer: CommentComposerContext?
     @State private var userSpaceMID: Int64?
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var router: DeepLinkRouter
@@ -64,7 +78,8 @@ struct CommentListView: View {
                     kind: kind,
                     viewModel: providedViewModel,
                     thread: $thread,
-                    showSendSheet: $showSendSheet,
+                    onCompose: { composer = .topLevel },
+                    onReply: { root, parent in composer = .reply(root: root, parent: parent) },
                     onOpenUser: openUserSpace
                 )
             } else {
@@ -73,28 +88,44 @@ struct CommentListView: View {
                     kind: kind,
                     viewModel: ownedViewModel,
                     thread: $thread,
-                    showSendSheet: $showSendSheet,
+                    onCompose: { composer = .topLevel },
+                    onReply: { root, parent in composer = .reply(root: root, parent: parent) },
                     onOpenUser: openUserSpace
                 )
             }
         }
         .sheet(item: $thread) { root in
-            CommentThreadSheet(root: root, kind: kind) { mid in
-                thread = nil
-                DispatchQueue.main.async {
-                    openUserSpace(mid: mid)
+            CommentThreadSheet(
+                root: root,
+                kind: kind,
+                upperMid: currentViewModel.upperMid,
+                onOpenUser: { mid in
+                    thread = nil
+                    DispatchQueue.main.async {
+                        openUserSpace(mid: mid)
+                    }
+                },
+                onLocalReply: { echo, rootRpid in
+                    currentViewModel.noteLocalReply(echo, underRoot: rootRpid)
                 }
-            }
-                .presentationDetents([.medium, .large])
+            )
+            .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showSendSheet) {
+        .sheet(item: $composer) { context in
             CommentSendSheet(
                 oid: oid,
                 kind: kind,
                 selfMid: session.mid,
-                selfName: ""
+                selfName: "",
+                root: context.root?.rpid ?? 0,
+                parent: context.parent?.rpid ?? 0,
+                replyToName: context.parent?.uname
             ) { echo in
-                currentViewModel.prependLocal(echo)
+                if let root = context.root {
+                    currentViewModel.noteLocalReply(echo, underRoot: root.rpid)
+                } else {
+                    currentViewModel.prependLocal(echo)
+                }
             }
         }
         .background {
@@ -132,7 +163,8 @@ private struct CommentListContent: View {
     let kind: Int32
     @ObservedObject var viewModel: CommentListViewModel
     @Binding var thread: ReplyItemDTO?
-    @Binding var showSendSheet: Bool
+    let onCompose: () -> Void
+    let onReply: (ReplyItemDTO, ReplyItemDTO) -> Void
     let onOpenUser: (Int64) -> Void
     @EnvironmentObject private var session: AppSession
 
@@ -164,7 +196,7 @@ private struct CommentListContent: View {
             .padding(.bottom, 8)
 
             Button {
-                if session.isLoggedIn { showSendSheet = true }
+                if session.isLoggedIn { onCompose() }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "square.and.pencil")
@@ -188,6 +220,7 @@ private struct CommentListContent: View {
             if let top = viewModel.top {
                 CommentRow(item: top, upperMid: viewModel.upperMid, isPinned: true,
                            onLike: { Task { await viewModel.toggleLike(rpid: top.rpid) } },
+                           onReply: session.isLoggedIn ? { onReply(top, top) } : nil,
                            onOpenUser: onOpenUser) { thread = top }
                 Divider()
             }
@@ -195,6 +228,7 @@ private struct CommentListContent: View {
             ForEach(viewModel.items) { item in
                 CommentRow(item: item, upperMid: viewModel.upperMid, isPinned: false,
                            onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } },
+                           onReply: session.isLoggedIn ? { onReply(item, item) } : nil,
                            onOpenUser: onOpenUser) { thread = item }
                     .onAppear {
                         if item.id == viewModel.items.last?.id, !viewModel.isEnd {
@@ -235,14 +269,26 @@ struct CommentRow: View {
     let isPinned: Bool
     var messageLineLimit: Int? = 6
     var allowsThreadPresentation: Bool = true
+    var showsPreviewReplies: Bool = true
     var onLike: (() -> Void)? = nil
+    var onReply: (() -> Void)? = nil
     var onOpenUser: ((Int64) -> Void)? = nil
     let onOpenThread: () -> Void
 
     @State private var isMessageTruncated = false
+    @EnvironmentObject private var settings: AppSettings
 
     private var canOpenThread: Bool {
         allowsThreadPresentation && (item.replyCount > 0 || isMessageTruncated)
+    }
+
+    private var shouldShowReplyBox: Bool {
+        showsPreviewReplies && item.replyCount > 0
+    }
+
+    private var previewReplies: [ReplyItemDTO] {
+        guard settings.commentShowPreviewReplies else { return [] }
+        return Array(item.previewReplies.prefix(3))
     }
 
     var body: some View {
@@ -264,7 +310,10 @@ struct CommentRow: View {
                     Text(item.uname)
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(item.mid == upperMid ? IbiliTheme.accent : IbiliTheme.textPrimary)
-                    if item.mid == upperMid {
+                    if settings.commentShowLevel, item.level > 0 {
+                        CommentLevelBadge(level: item.level)
+                    }
+                    if settings.commentShowUPBadge, upperMid > 0, item.mid == upperMid {
                         Text("UP")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.white)
@@ -280,6 +329,23 @@ struct CommentRow: View {
                     }
                     Spacer()
                 }
+                HStack(spacing: 4) {
+                    if item.ctime > 0 {
+                        Text(BiliFormat.relativeDate(item.ctime))
+                    }
+                    if settings.commentShowLocation, !item.location.isEmpty {
+                        Text("· \(item.location)")
+                    }
+                    if settings.commentShowUPBadge, item.upActionLike {
+                        Text("· UP主赞过")
+                    }
+                    if settings.commentShowUPBadge, item.upActionReply {
+                        Text("· UP主回复过")
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(IbiliTheme.textSecondary)
+                .lineLimit(1)
                 RichReplyText(message: item.message,
                               emotes: item.emotes,
                               jumpUrls: item.jumpUrls,
@@ -309,22 +375,30 @@ struct CommentRow: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(onLike == nil)
-                    if item.replyCount > 0 {
+                    if let onReply {
                         Button {
-                            onOpenThread()
+                            onReply()
                         } label: {
-                            Label("\(item.replyCount) 条回复", systemImage: "arrowshape.turn.up.left")
+                            Label("回复", systemImage: "arrowshape.turn.up.left")
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(IbiliTheme.textSecondary)
                     }
                     Spacer()
-                    if item.ctime > 0 {
-                        Text(BiliFormat.relativeDate(item.ctime))
-                    }
                 }
                 .font(.caption)
                 .foregroundStyle(IbiliTheme.textSecondary)
+
+                if shouldShowReplyBox {
+                    CommentPreviewReplyBox(
+                        root: item,
+                        upperMid: upperMid,
+                        replies: previewReplies,
+                        onOpenThread: onOpenThread,
+                        onOpenUser: onOpenUser
+                    )
+                    .padding(.top, 2)
+                }
             }
         }
         .padding(.vertical, 6)
@@ -332,6 +406,88 @@ struct CommentRow: View {
         .onTapGesture {
             if canOpenThread { onOpenThread() }
         }
+    }
+}
+
+private struct CommentLevelBadge: View {
+    let level: Int32
+
+    var body: some View {
+        Text("LV\(max(level, 0))")
+            .font(.system(size: 9, weight: .semibold, design: .rounded))
+            .foregroundStyle(IbiliTheme.accent)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(
+                Capsule().fill(IbiliTheme.accent.opacity(0.12))
+            )
+    }
+}
+
+private struct CommentPreviewReplyBox: View {
+    let root: ReplyItemDTO
+    let upperMid: Int64
+    let replies: [ReplyItemDTO]
+    let onOpenThread: () -> Void
+    var onOpenUser: ((Int64) -> Void)?
+
+    @EnvironmentObject private var settings: AppSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(replies) { reply in
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    HStack(spacing: 4) {
+                        Text(reply.uname)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(IbiliTheme.accent)
+                            .lineLimit(1)
+                            .onTapGesture {
+                                if reply.mid > 0 {
+                                    onOpenUser?(reply.mid)
+                                }
+                            }
+
+                        if settings.commentShowUPBadge, upperMid > 0, reply.mid == upperMid {
+                            Text("UP")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 0.5)
+                                .background(Capsule().fill(IbiliTheme.accent))
+                        }
+                    }
+                    Text("：")
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textPrimary.opacity(0.86))
+                    RichReplyText(message: reply.message,
+                                  emotes: reply.emotes,
+                                  jumpUrls: reply.jumpUrls,
+                                  lineLimit: 1,
+                                  font: .caption,
+                                  textColor: IbiliTheme.textPrimary.opacity(0.86),
+                                  onTruncationChange: { _ in })
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    onOpenThread()
+                }
+            }
+
+            Button(action: onOpenThread) {
+                Text("\(settings.commentShowUPBadge && root.upActionReply ? "UP主等人 " : "")共\(root.replyCount)条回复")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(IbiliTheme.accent)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(IbiliTheme.surface)
+        )
     }
 }
 
