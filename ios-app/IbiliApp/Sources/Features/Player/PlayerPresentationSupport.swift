@@ -15,6 +15,7 @@ enum Orientation {
     /// app-level orientation mask continue rejecting portrait auto-rotation.
     private static var activePhoneFullscreenLandscapeLock: PlayerSessionID?
     private static var activePlayerFullscreenPreference: (sessionID: PlayerSessionID, prefersLandscape: Bool)?
+    private static var activePlayerPresentationRoute: PlayerSessionID?
 
     private static func activeForegroundWindowScene() -> UIWindowScene? {
         UIApplication.shared.connectedScenes
@@ -43,6 +44,19 @@ enum Orientation {
     static func clearActivePlayerFullscreenPreference(for sessionID: PlayerSessionID) {
         guard activePlayerFullscreenPreference?.sessionID == sessionID else { return }
         activePlayerFullscreenPreference = nil
+    }
+
+    static func activatePlayerPresentationRoute(_ sessionID: PlayerSessionID) {
+        activePlayerPresentationRoute = sessionID
+    }
+
+    static func deactivatePlayerPresentationRoute(_ sessionID: PlayerSessionID) {
+        guard activePlayerPresentationRoute == sessionID else { return }
+        activePlayerPresentationRoute = nil
+    }
+
+    static func isActivePlayerPresentationRoute(_ sessionID: PlayerSessionID) -> Bool {
+        activePlayerPresentationRoute == sessionID
     }
 
     static func isAVKitFullscreenVisible() -> Bool {

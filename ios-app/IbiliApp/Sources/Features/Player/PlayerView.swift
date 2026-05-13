@@ -1947,6 +1947,13 @@ struct PlayerView: View {
         )
     }
 
+    private var isPresentationRouteActive: Bool {
+        isInlineHostVisible
+            || isFullscreen
+            || presentationState.isFullscreenPresentationActive
+            || presentationState.isAwaitingInlineFullscreenReturn
+    }
+
     private var offlineDetailPlaceholder: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
@@ -1982,6 +1989,7 @@ struct PlayerView: View {
                         sessionID: vm.currentSessionID,
                         title: item.title,
                         prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
+                        isPresentationRouteActive: isPresentationRouteActive,
                         danmaku: danmaku,
                         danmakuEnabled: settings.danmakuEnabled,
                         danmakuOpacity: settings.danmakuOpacity,
@@ -1994,7 +2002,7 @@ struct PlayerView: View {
                         canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
                         beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
                         endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
-                        canRestorePlaybackAfterPresentation: { vm.canRestorePlaybackAfterPresentation },
+                        canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
                         onCreated: { vc in playerVCRef.vc = vc },
                         onPresentationEvent: handlePresentationEvent
                     )
@@ -2166,6 +2174,7 @@ struct PlayerView: View {
                 "isFullscreenPresentationActive": String(presentationState.isFullscreenPresentationActive),
                 "isAwaitingInlineFullscreenReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
             ])
+            Orientation.activatePlayerPresentationRoute(vm.currentSessionID)
             isInlineHostVisible = true
             if presentationState.isAwaitingInlineFullscreenReturn {
                 _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
@@ -2194,6 +2203,7 @@ struct PlayerView: View {
                 danmaku: danmaku
             )
             if !presentationState.isFullscreenPresentationActive {
+                Orientation.deactivatePlayerPresentationRoute(vm.currentSessionID)
                 clearDanmakuTimeObserver()
                 cancelDanmakuSegmentTasks()
             }

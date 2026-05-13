@@ -144,6 +144,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let sessionID: PlayerSessionID
     let title: String
     let prefersLandscapeFullscreen: Bool
+    let isPresentationRouteActive: Bool
     let danmaku: DanmakuController
     let danmakuEnabled: Bool
     let danmakuOpacity: Double
@@ -173,7 +174,6 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.loadViewIfNeeded()
         vc.player = player
         vc.title = title
-        Orientation.setActivePlayerFullscreenPreference(prefersLandscapeFullscreen, for: sessionID)
         // Lock-screen metadata/control is maintained explicitly via
         // PlayerNowPlayingCoordinator. Leaving AVKit auto-sync on here
         // races with our background detach path (`vc.player = nil`) and
@@ -182,6 +182,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.updatesNowPlayingInfoCenter = false
         context.coordinator.assignedPlayerID = ObjectIdentifier(player)
         vc.delegate = context.coordinator
+        context.coordinator.syncActivePresentationPreference()
         DispatchQueue.main.async {
             onCreated(vc)
         }
@@ -257,11 +258,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
         return vc
     }
 
-        func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
-            context.coordinator.parent = self
-            Orientation.setActivePlayerFullscreenPreference(prefersLandscapeFullscreen, for: sessionID)
-            vc.delegate = context.coordinator
-            let incomingPlayerID = ObjectIdentifier(player)
+    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.syncActivePresentationPreference()
+        vc.delegate = context.coordinator
+        let incomingPlayerID = ObjectIdentifier(player)
         if vc.title != title {
             vc.title = title
         }
@@ -288,6 +289,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         coordinator.prepareForDismantle(controller: vc)
         Orientation.endPhoneFullscreenLandscapeLock(for: coordinator.parent.sessionID)
         Orientation.clearActivePlayerFullscreenPreference(for: coordinator.parent.sessionID)
+        Orientation.deactivatePlayerPresentationRoute(coordinator.parent.sessionID)
     }
 
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
@@ -306,8 +308,22 @@ struct PlayerContainer: UIViewControllerRepresentable {
         private var automaticFullscreenFallbackWork: DispatchWorkItem?
         init(parent: PlayerContainer) { self.parent = parent }
 
+        private var isPresentationRouteActive: Bool {
+            !isDismantled
+                && parent.isPresentationRouteActive
+                && Orientation.isActivePlayerPresentationRoute(parent.sessionID)
+        }
+
         var shouldAllowHoldSpeedGestureHitTesting: Bool {
-            !isDismantled && (parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost())
+            isPresentationRouteActive && (parent.isTemporarySpeedBoostActive() || parent.canBeginTemporarySpeedBoost())
+        }
+
+        func syncActivePresentationPreference() {
+            if isPresentationRouteActive {
+                Orientation.setActivePlayerFullscreenPreference(parent.prefersLandscapeFullscreen, for: parent.sessionID)
+            } else {
+                Orientation.clearActivePlayerFullscreenPreference(for: parent.sessionID)
+            }
         }
 
         func prepareForDismantle(controller vc: AVPlayerViewController) {
@@ -349,7 +365,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         @objc func handleHoldSpeedGesture(_ gesture: UILongPressGestureRecognizer) {
-            guard !isDismantled else { return }
+            guard isPresentationRouteActive else { return }
             switch gesture.state {
             case .began:
                 let began = parent.beginTemporarySpeedBoost()
@@ -365,7 +381,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            !isDismantled && parent.canBeginTemporarySpeedBoost()
+            isPresentationRouteActive && parent.canBeginTemporarySpeedBoost()
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
@@ -377,7 +393,12 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func playerViewController(_ vc: AVPlayerViewController,
                                   willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-            guard !isDismantled else { return }
+            guard isPresentationRouteActive else {
+                AppLog.debug("player", "忽略非当前播放器 AVKit 进入全屏回调", metadata: [
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+                return
+            }
             capturePlaybackState(from: vc)
             let identity = presentationIdentity(for: vc)
             if transitionSnapshot?.wasPlaying == true {
@@ -511,6 +532,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         private func requestedPhoneFullscreenMask(for deviceOrientation: UIDeviceOrientation) -> UIInterfaceOrientationMask? {
             guard UIDevice.current.userInterfaceIdiom == .phone,
+                  isPresentationRouteActive,
                   parent.prefersLandscapeFullscreen else { return nil }
             switch deviceOrientation {
             case .landscapeLeft:
@@ -523,7 +545,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func syncDeviceOrientationMonitoring(controller: AVPlayerViewController) {
-            guard UIDevice.current.userInterfaceIdiom == .phone,
+            guard isPresentationRouteActive,
+                  UIDevice.current.userInterfaceIdiom == .phone,
                   parent.prefersLandscapeFullscreen else {
                 stopDeviceOrientationMonitoring()
                 return
@@ -549,10 +572,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
             playerController = nil
             fullscreenOrientationPhase = .inline
             lastPortraitAutoExitAt = nil
+            cancelAutomaticFullscreenFallback()
         }
 
         private func handleDeviceOrientationChange() {
-            guard !isDismantled,
+            guard isPresentationRouteActive,
                   UIDevice.current.userInterfaceIdiom == .phone,
                   parent.prefersLandscapeFullscreen else { return }
             let orientation = UIDevice.current.orientation
@@ -610,7 +634,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func requestAutomaticFullscreen(for orientation: UIDeviceOrientation) {
-            guard let controller = playerController else { return }
+            guard isPresentationRouteActive,
+                  let controller = playerController,
+                  controller.viewIfLoaded?.window != nil else { return }
             let now = Date()
             if let lastAutomaticFullscreenRequestAt,
                now.timeIntervalSince(lastAutomaticFullscreenRequestAt) < 0.9 {
@@ -632,6 +658,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func requestPhoneLandscapeOrientation(for orientation: UIDeviceOrientation) {
+            guard isPresentationRouteActive else { return }
             let mask = requestedPhoneFullscreenMask(for: orientation) ?? .landscapeRight
             Orientation.preparePhoneFullscreenLandscape()
             Orientation.requestWithoutMaskChange(mask)
@@ -640,6 +667,14 @@ struct PlayerContainer: UIViewControllerRepresentable {
         private func requestNativeFullscreen(controller: AVPlayerViewController,
                                              animated: Bool,
                                              reason: String) -> Bool {
+            guard isPresentationRouteActive,
+                  controller.viewIfLoaded?.window != nil else {
+                AppLog.debug("player", "跳过非当前播放器 AVKit 全屏请求", metadata: [
+                    "reason": reason,
+                    "sessionID": parent.sessionID.uuidString,
+                ])
+                return false
+            }
             let selector = NSSelectorFromString("enterFullScreenAnimated:completionHandler:")
             guard controller.responds(to: selector),
                   let implementation = controller.method(for: selector) else {
@@ -661,6 +696,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             let requestedSessionID = parent.sessionID
             let work = DispatchWorkItem { [weak self] in
                 guard let self,
+                      self.isPresentationRouteActive,
                       self.parent.sessionID == requestedSessionID,
                       self.fullscreenOrientationPhase == .autoEnterRequested else { return }
                 self.fullscreenOrientationPhase = .inline
@@ -681,6 +717,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func exitFullscreenForPortraitDeviceOrientation(_ orientation: UIDeviceOrientation) {
+            guard isPresentationRouteActive else { return }
             let now = Date()
             if let lastPortraitAutoExitAt,
                now.timeIntervalSince(lastPortraitAutoExitAt) < 0.8 {
@@ -702,7 +739,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func restorePlaybackState(on vc: AVPlayerViewController, source: String) {
-            guard !isDismantled else { return }
+            guard isPresentationRouteActive else { return }
             guard parent.canRestorePlaybackAfterPresentation() else {
                 AppLog.debug("player", "跳过 AVKit fullscreen 播放恢复", metadata: [
                     "reason": "session-closing",

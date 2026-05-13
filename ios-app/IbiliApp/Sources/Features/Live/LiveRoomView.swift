@@ -286,6 +286,7 @@ struct LiveRoomView: View {
     @State private var loadingDanmakuHistoryRoomID: Int64 = 0
     @State private var isLoadingDanmakuHistory = false
     @State private var isFullscreen = false
+    @State private var isInlineHostVisible = false
     @State private var lifecycleGeneration: UInt64 = 0
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var settings: AppSettings
@@ -346,6 +347,8 @@ struct LiveRoomView: View {
             }
         }
         .onAppear {
+            Orientation.activatePlayerPresentationRoute(vm.sessionID)
+            isInlineHostVisible = true
             if let player = vm.player {
                 danmaku.attach(player)
                 startDanmakuStreamIfNeeded()
@@ -355,7 +358,9 @@ struct LiveRoomView: View {
             }
         }
         .onDisappear {
+            isInlineHostVisible = false
             guard !isFullscreen else { return }
+            Orientation.deactivatePlayerPresentationRoute(vm.sessionID)
             lifecycleGeneration &+= 1
             stopDanmakuPipeline()
             vm.suspendPlayback()
@@ -375,6 +380,7 @@ struct LiveRoomView: View {
                     sessionID: vm.sessionID,
                     title: resolvedTitle,
                     prefersLandscapeFullscreen: true,
+                    isPresentationRouteActive: isPresentationRouteActive,
                     danmaku: danmaku,
                     danmakuEnabled: danmakuEnabled,
                     danmakuOpacity: settings.danmakuOpacity,
@@ -387,7 +393,7 @@ struct LiveRoomView: View {
                     canBeginTemporarySpeedBoost: { false },
                     beginTemporarySpeedBoost: { false },
                     endTemporarySpeedBoost: {},
-                    canRestorePlaybackAfterPresentation: { vm.canRestorePlaybackAfterPresentation },
+                    canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
                     onCreated: { _ in },
                     onPresentationEvent: handlePresentationEvent
                 )
@@ -642,6 +648,10 @@ struct LiveRoomView: View {
         .disabled(vm.isLoading)
         .tint(IbiliTheme.accent)
         .accessibilityLabel("直播清晰度")
+    }
+
+    private var isPresentationRouteActive: Bool {
+        isInlineHostVisible || isFullscreen
     }
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
