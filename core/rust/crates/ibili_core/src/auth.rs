@@ -64,6 +64,7 @@ impl Core {
                 // wbi/playurl call (e.g. user immediately taps a video) is
                 // authenticated, not just future restored sessions.
                 self.http.install_web_cookies(&web_cookies);
+                let _ = self.http.ensure_web_identity_activated();
                 let session = PersistedSession {
                     access_token: d.access_token,
                     refresh_token: d.refresh_token,

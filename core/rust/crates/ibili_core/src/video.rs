@@ -477,7 +477,28 @@ impl Core {
         cdn_selection: &str,
         codec_preference: &str,
     ) -> CoreResult<PlayUrl> {
-        match self.video_playurl_web_with_audio(aid, cid, qn, audio_qn, cdn_selection, codec_preference) {
+        self.video_playurl_with_audio_playback_options_bvid(
+            aid,
+            "",
+            cid,
+            qn,
+            audio_qn,
+            cdn_selection,
+            codec_preference,
+        )
+    }
+
+    pub fn video_playurl_with_audio_playback_options_bvid(
+        &self,
+        aid: i64,
+        bvid: &str,
+        cid: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+        codec_preference: &str,
+    ) -> CoreResult<PlayUrl> {
+        match self.video_playurl_web_with_audio(aid, bvid, cid, qn, audio_qn, cdn_selection, codec_preference) {
             Ok(play) => Ok(play),
             Err(web_err) => {
                 let web_msg = format!("wbi/playurl failed → fell back to tv_durl: {web_err}");
@@ -507,6 +528,27 @@ impl Core {
         cdn_selection: &str,
     ) -> CoreResult<OfflinePlayUrl> {
         let play = self.video_playurl_with_audio_options(aid, cid, qn, audio_qn, cdn_selection)?;
+        Ok(build_offline_playurl(play))
+    }
+
+    pub fn video_offline_playurl_with_bvid(
+        &self,
+        aid: i64,
+        bvid: &str,
+        cid: i64,
+        qn: i64,
+        audio_qn: i64,
+        cdn_selection: &str,
+    ) -> CoreResult<OfflinePlayUrl> {
+        let play = self.video_playurl_with_audio_playback_options_bvid(
+            aid,
+            bvid,
+            cid,
+            qn,
+            audio_qn,
+            cdn_selection,
+            "auto",
+        )?;
         Ok(build_offline_playurl(play))
     }
 
@@ -614,16 +656,19 @@ impl Core {
     fn video_playurl_web_with_audio(
         &self,
         aid: i64,
+        bvid: &str,
         cid: i64,
         qn: i64,
         audio_qn: i64,
         cdn_selection: &str,
         codec_preference: &str,
     ) -> CoreResult<PlayUrl> {
+        let has_access_token = self.session.read().access_key().is_some();
+        let activation = self.http.ensure_web_identity_activated();
+        let identity = self.http.web_session_identity_snapshot(has_access_token);
         let qn = if qn <= 0 { 80 } else { qn };
         let wbi_key = self.fetch_wbi_key()?;
         let mut params = vec![
-            ("avid".into(), aid.to_string()),
             ("cid".into(), cid.to_string()),
             ("qn".into(), qn.to_string()),
             ("fnval".into(), "4048".into()),
@@ -634,9 +679,18 @@ impl Core {
             ("isGaiaAvoided".into(), "true".into()),
             ("web_location".into(), "1315873".into()),
         ];
+        let lookup = if !bvid.is_empty() {
+            params.push(("bvid".into(), bvid.to_string()));
+            "bvid"
+        } else {
+            params.push(("avid".into(), aid.to_string()));
+            "avid"
+        };
         append_playurl_dm_params(&mut params);
         let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
-        build_playurl_from_web_response(response, qn, audio_qn, cdn_selection, codec_preference)
+        let mut play = build_playurl_from_web_response(response, qn, audio_qn, cdn_selection, codec_preference)?;
+        append_playurl_debug_message(&mut play, &activation, &identity, lookup);
+        Ok(play)
     }
 
     fn pgc_playurl_web_with_audio(
@@ -650,6 +704,9 @@ impl Core {
         cdn_selection: &str,
         codec_preference: &str,
     ) -> CoreResult<PlayUrl> {
+        let has_access_token = self.session.read().access_key().is_some();
+        let activation = self.http.ensure_web_identity_activated();
+        let identity = self.http.web_session_identity_snapshot(has_access_token);
         let qn = if qn <= 0 { 80 } else { qn };
         let wbi_key = self.fetch_wbi_key()?;
         let mut params = vec![
@@ -696,6 +753,7 @@ impl Core {
             .map(|status| status.current_watch_progress)
             .unwrap_or(0);
         let mut play = build_playurl_from_web_response(result.video_info, qn, audio_qn, cdn_selection, codec_preference)?;
+        append_playurl_debug_message(&mut play, &activation, &identity, "pgc");
         play.last_play_time_ms = resume_ms;
         play.stream_type = format!("pgc_{}", play.stream_type);
         Ok(play)
@@ -854,6 +912,83 @@ fn build_offline_playurl(play: PlayUrl) -> OfflinePlayUrl {
         can_lossless_remux: true,
         lossless_note,
     }
+}
+
+fn append_playurl_debug_message(
+    play: &mut PlayUrl,
+    activation: &crate::http::WebIdentityActivationSnapshot,
+    identity: &crate::http::WebSessionIdentitySnapshot,
+    lookup: &str,
+) {
+    let has_premium_audio = play
+        .accept_audio_quality
+        .iter()
+        .any(|id| matches!(*id, 100010 | 100009 | 100008 | 30251 | 30250 | 30255));
+    let max_video_qn = play.accept_quality.iter().copied().max().unwrap_or(play.quality);
+    let server_video_degraded = max_video_qn > play.quality && play.quality > 0;
+    let should_attach = activation.attempted_now
+        || !activation.succeeded
+        || !has_premium_audio
+        || server_video_degraded;
+    if !should_attach {
+        return;
+    }
+    let mut parts = Vec::new();
+    parts.push(format!("lookup={}", lookup));
+    parts.push(format!(
+        "buvidActive attempted={} attemptedNow={} succeeded={}",
+        activation.attempted, activation.attempted_now, activation.succeeded
+    ));
+    if let Some(error) = &activation.error {
+        parts.push(format!("buvidActiveError={}", error));
+    }
+    let suffix_len = activation.buvid3.len().min(8);
+    let suffix = &activation.buvid3[activation.buvid3.len().saturating_sub(suffix_len)..];
+    parts.push(format!("buvid3Suffix={}", suffix));
+    parts.push(format!(
+        "webIdentity sessdata={} dedeUserID={} biliJct={} accessToken={} cookieCount={} mid={}",
+        identity.has_sessdata,
+        identity.has_dede_user_id,
+        identity.has_bili_jct,
+        identity.has_access_token,
+        identity.cookie_count,
+        identity
+            .mid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".into())
+    ));
+    parts.push(format!(
+        "serverVideo picked={} maxAccept={} accept={}",
+        play.quality,
+        max_video_qn,
+        if play.accept_quality.is_empty() {
+            "none".to_string()
+        } else {
+            play.accept_quality
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    ));
+    parts.push(format!(
+        "serverAudio={}",
+        if play.accept_audio_quality.is_empty() {
+            "none".to_string()
+        } else {
+            play.accept_audio_quality
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    ));
+    parts.push(format!("serverPremiumAudio={}", has_premium_audio));
+    let extra = parts.join(" ");
+    play.debug_message = Some(match play.debug_message.take() {
+        Some(existing) if !existing.is_empty() => format!("{existing}; {extra}"),
+        _ => extra,
+    });
 }
 
 fn append_playurl_dm_params(params: &mut Vec<(String, String)>) {

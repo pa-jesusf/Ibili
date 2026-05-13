@@ -374,6 +374,7 @@ final class OfflineDownloadService: ObservableObject {
                 }
                 return try CoreClient.shared.offlinePlayUrl(
                     aid: request.item.aid,
+                    bvid: request.item.bvid,
                     cid: request.item.cid,
                     qn: request.qn,
                     audioQn: request.audioQn,

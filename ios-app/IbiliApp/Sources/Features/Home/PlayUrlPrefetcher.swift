@@ -72,6 +72,7 @@ final class PlayUrlPrefetcher {
                 let info: PlayUrlDTO = try await Task.detached {
                     try CoreClient.shared.playUrl(
                         aid: item.aid,
+                        bvid: item.bvid,
                         cid: item.cid,
                         qn: qn,
                         audioQn: audioQn,

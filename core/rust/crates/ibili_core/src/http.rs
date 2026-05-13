@@ -1,10 +1,12 @@
 use crate::error::{CoreError, CoreResult};
 use crate::dto::ApiEnvelope;
+use parking_lot::Mutex;
 use reqwest::Url;
 use reqwest::blocking::Client;
 use reqwest::blocking::RequestBuilder;
 use reqwest::cookie::{CookieStore, Jar};
 use serde::de::DeserializeOwned;
+use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,9 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Matches PiliPlus `Constants.userAgent` (android_hd/TV User-Agent).
 pub const UA_TV: &str = "Mozilla/5.0 BiliDroid/2.0.1 (bbcallen@gmail.com) os/android model/android_hd mobi_app/android_hd build/2001100 channel/master innerVer/2001100 osVer/15 network/2";
 pub const UA_ANDROID_APP: &str = "Mozilla/5.0 BiliDroid/8.43.0 (bbcallen@gmail.com) os/android model/android mobi_app/android build/8430300 channel/master innerVer/8430300 osVer/15 network/2";
-pub const UA_WEB: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15";
+pub const UA_WEB: &str = "Dart/3.6 (dart:io)";
 const WEB_REFERER: &str = "https://www.bilibili.com/";
 const BUVID_URL: &str = "https://api.bilibili.com/";
+const ACTIVATE_BUVID_URL: &str = "https://api.bilibili.com/x/internal/gaia-gateway/ExClimbWuzhi";
 static WEB_IDENTITY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Headers PiliPlus attaches to every app endpoint call.
@@ -67,6 +70,34 @@ fn android_app_headers() -> reqwest::header::HeaderMap {
 pub struct HttpClient {
     pub client: Client,
     pub jar: Arc<Jar>,
+    web_identity_activation: Mutex<WebIdentityActivationState>,
+}
+
+#[derive(Default)]
+struct WebIdentityActivationState {
+    buvid3: Option<String>,
+    attempted: bool,
+    succeeded: bool,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebIdentityActivationSnapshot {
+    pub buvid3: String,
+    pub attempted: bool,
+    pub attempted_now: bool,
+    pub succeeded: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebSessionIdentitySnapshot {
+    pub has_sessdata: bool,
+    pub has_dede_user_id: bool,
+    pub has_bili_jct: bool,
+    pub has_access_token: bool,
+    pub cookie_count: usize,
+    pub mid: Option<i64>,
 }
 
 impl HttpClient {
@@ -82,7 +113,11 @@ impl HttpClient {
             .user_agent(UA_TV)
             .build()
             .map_err(|e| CoreError::Internal(net_msg(&e)))?;
-        Ok(Self { client, jar })
+        Ok(Self {
+            client,
+            jar,
+            web_identity_activation: Mutex::new(WebIdentityActivationState::default()),
+        })
     }
 
     /// Inject web cookies (e.g. SESSDATA / bili_jct / DedeUserID) into the
@@ -98,6 +133,60 @@ impl HttpClient {
                 name, value
             );
             self.jar.add_cookie_str(&cookie, &url);
+        }
+    }
+
+    /// Match upstream PiliPlus's best-effort `buvid3` activation request.
+    /// Bilibili sometimes gates web playback capabilities behind this risk
+    /// fingerprint endpoint; failure is diagnostic only and must not block
+    /// regular playback.
+    pub fn ensure_web_identity_activated(&self) -> WebIdentityActivationSnapshot {
+        let buvid3 = ensure_default_web_identity(&self.jar);
+        {
+            let mut state = self.web_identity_activation.lock();
+            if state.buvid3.as_deref() == Some(&buvid3) && state.attempted {
+                return WebIdentityActivationSnapshot {
+                    buvid3,
+                    attempted: state.attempted,
+                    attempted_now: false,
+                    succeeded: state.succeeded,
+                    error: state.error.clone(),
+                };
+            }
+            state.buvid3 = Some(buvid3.clone());
+            state.attempted = true;
+            state.succeeded = false;
+            state.error = None;
+        }
+
+        let activation_result = self.activate_current_buvid();
+        let mut state = self.web_identity_activation.lock();
+        if state.buvid3.as_deref() == Some(&buvid3) {
+            match activation_result {
+                Ok(()) => {
+                    state.succeeded = true;
+                    state.error = None;
+                }
+                Err(error) => {
+                    state.succeeded = false;
+                    state.error = Some(error);
+                }
+            }
+            WebIdentityActivationSnapshot {
+                buvid3,
+                attempted: state.attempted,
+                attempted_now: true,
+                succeeded: state.succeeded,
+                error: state.error.clone(),
+            }
+        } else {
+            WebIdentityActivationSnapshot {
+                buvid3,
+                attempted: true,
+                attempted_now: true,
+                succeeded: false,
+                error: Some("buvid changed during activation".into()),
+            }
         }
     }
 
@@ -122,6 +211,52 @@ impl HttpClient {
             .into_iter()
             .find(|(k, _)| k == "DedeUserID")
             .and_then(|(_, v)| v.parse::<i64>().ok())
+    }
+
+    pub fn web_session_identity_snapshot(&self, has_access_token: bool) -> WebSessionIdentitySnapshot {
+        let cookies = self.snapshot_cookies();
+        let has_cookie = |name: &str| cookies.iter().any(|(key, value)| key == name && !value.is_empty());
+        let mid = cookies
+            .iter()
+            .find(|(key, _)| key == "DedeUserID")
+            .and_then(|(_, value)| value.parse::<i64>().ok());
+        WebSessionIdentitySnapshot {
+            has_sessdata: has_cookie("SESSDATA"),
+            has_dede_user_id: has_cookie("DedeUserID"),
+            has_bili_jct: has_cookie("bili_jct"),
+            has_access_token,
+            cookie_count: cookies.len(),
+            mid,
+        }
+    }
+
+    fn activate_current_buvid(&self) -> Result<(), String> {
+        let rand_png_end = base64_encode(&buvid_activation_random_bytes());
+        let start = rand_png_end.len().saturating_sub(50);
+        let payload = json!({
+            "3064": 1,
+            "39c8": "333.1387.fp.risk",
+            "3c43": {
+                "adca": "Linux",
+                "bfe9": &rand_png_end[start..],
+            },
+        })
+        .to_string();
+        let resp = apply_default_web_headers(self.client.post(ACTIVATE_BUVID_URL), self)
+            .json(&json!({ "payload": payload }))
+            .send()
+            .map_err(|e| net_msg(&e))?;
+        let status = resp.status();
+        let body = resp.text().map_err(|e| net_msg(&e))?;
+        if !status.is_success() {
+            return Err(format!("http {}: {}", status.as_u16(), body.chars().take(200).collect::<String>()));
+        }
+        let env: ApiEnvelope<serde_json::Value> = serde_json::from_str(&body)
+            .map_err(|e| format!("decode: {e}: {}", body.chars().take(200).collect::<String>()))?;
+        if env.code != 0 {
+            return Err(format!("code={} msg={}", env.code, env.message));
+        }
+        Ok(())
     }
 
     pub fn get_signed_app<T: DeserializeOwned>(
@@ -401,7 +536,7 @@ fn default_web_headers(client: &HttpClient) -> Vec<(&'static str, String)> {
 pub fn default_web_header_map(client: &HttpClient) -> reqwest::header::HeaderMap {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
-    ensure_default_web_identity(&client.jar);
+    let _ = ensure_default_web_identity(&client.jar);
 
     let mut headers = HeaderMap::new();
     let pairs = default_web_headers(client);
@@ -416,59 +551,65 @@ pub fn default_web_header_map(client: &HttpClient) -> reqwest::header::HeaderMap
     headers
 }
 
-fn ensure_default_web_identity(jar: &Jar) {
+fn ensure_default_web_identity(jar: &Jar) -> String {
     let url: Url = BUVID_URL.parse().expect("valid buvid url");
     let current = jar
         .cookies(&url)
         .and_then(|raw| raw.to_str().ok().map(|s| s.to_string()))
         .unwrap_or_default();
-    if !cookie_header_contains(&current, "buvid3") {
+    if let Some(existing) = cookie_header_value(&current, "buvid3") {
+        return existing;
+    }
+    let buvid3 = gen_buvid3();
+    {
         let cookie = format!(
             "buvid3={}; Domain=.bilibili.com; Path=/; Secure",
-            gen_buvid3()
+            buvid3
         );
         jar.add_cookie_str(&cookie, &url);
     }
+    buvid3
 }
 
-fn cookie_header_contains(header: &str, target_name: &str) -> bool {
-    header.split(';').any(|part| {
+fn cookie_header_value(header: &str, target_name: &str) -> Option<String> {
+    header.split(';').find_map(|part| {
         let trimmed = part.trim();
-        trimmed
-            .split_once('=')
-            .map(|(name, _)| name == target_name)
-            .unwrap_or(false)
+        let (name, value) = trimmed.split_once('=')?;
+        (name == target_name).then(|| value.to_string())
     })
 }
 
 fn gen_buvid3() -> String {
-    let seed = web_identity_seed();
-    let part1 = hex_block(seed, 8);
-    let part2 = hex_block(seed.rotate_left(7), 4);
-    let part3 = hex_block(seed.rotate_left(13), 4);
-    let part4 = hex_block(seed.rotate_left(29), 4);
-    let part5 = format!(
-        "{}{:05}infoc",
-        hex_block(seed.rotate_left(37), 12),
-        (seed % 100_000)
-    );
-    format!(
-        "{}-{}-{}-{}-{}",
-        part1, part2, part3, part4, part5
-    )
-}
-
-fn hex_block(seed: u64, len: usize) -> String {
-    let mut state = seed;
-    let mut out = String::with_capacity(len);
-    while out.len() < len {
-        state = state
+    let mut seed = web_identity_seed();
+    let mut bytes = [0u8; 16];
+    for byte in &mut bytes {
+        seed = seed
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        out.push_str(&format!("{:016X}", state));
+        *byte = (seed >> 32) as u8;
     }
-    out.truncate(len);
-    out
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:05}infoc",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+        seed % 100_000
+    )
 }
 
 fn gen_aurora_eid(uid: i64) -> String {
@@ -518,6 +659,25 @@ fn web_identity_seed() -> u64 {
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
     nanos ^ WEB_IDENTITY_COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(11)
+}
+
+fn buvid_activation_random_bytes() -> Vec<u8> {
+    let mut state = web_identity_seed();
+    let mut bytes = Vec::with_capacity(40);
+    for _ in 0..32 {
+        state = state
+            .wrapping_mul(2862933555777941757)
+            .wrapping_add(3037000493);
+        bytes.push((state >> 24) as u8);
+    }
+    bytes.extend([0, 0, 0, 0, 73, 69, 78, 68]);
+    for _ in 0..4 {
+        state = state
+            .wrapping_mul(3202034522624059733)
+            .wrapping_add(1);
+        bytes.push((state >> 32) as u8);
+    }
+    bytes
 }
 
 fn unwrap_envelope<T: DeserializeOwned>(body: String) -> CoreResult<T> {

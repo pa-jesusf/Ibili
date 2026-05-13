@@ -603,6 +603,7 @@ private enum CDNSpeedTester {
 
     struct Sample: Sendable {
         let aid: Int64
+        let bvid: String
         let cid: Int64
         let title: String
     }
@@ -614,19 +615,21 @@ private enum CDNSpeedTester {
         var lastError: Error?
         for item in page.items where item.aid > 0 {
             let aid = item.aid
+            let bvid = item.bvid
             let title = item.title
             do {
                 let cid = try await resolveCid(for: item)
                 _ = try await Task.detached(priority: .utility) {
                     try CoreClient.shared.playUrl(
                         aid: aid,
+                        bvid: bvid,
                         cid: cid,
                         qn: sampleQn,
                         cdn: MediaCDNService.auto.rawValue
                     )
                 }.value
                 let sampleTitle = title.isEmpty ? "av\(aid)" : title
-                return Sample(aid: aid, cid: cid, title: sampleTitle)
+                return Sample(aid: aid, bvid: bvid, cid: cid, title: sampleTitle)
             } catch {
                 lastError = error
                 continue
@@ -640,6 +643,7 @@ private enum CDNSpeedTester {
             let play = try await Task.detached(priority: .utility) {
                 try CoreClient.shared.playUrl(
                     aid: sample.aid,
+                    bvid: sample.bvid,
                     cid: sample.cid,
                     qn: sampleQn,
                     cdn: service.rawValue

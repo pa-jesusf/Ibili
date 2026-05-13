@@ -156,6 +156,8 @@ struct SendLiveDanmakuArgs {
 #[derive(Deserialize)]
 struct PlayurlArgs {
     aid: i64,
+    #[serde(default)]
+    bvid: String,
     cid: i64,
     #[serde(default)]
     ep_id: i64,
@@ -640,13 +642,22 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: PlayurlArgs = serde_json::from_value(args)?;
             to_value(
                 c.inner
-                    .video_playurl_with_audio_playback_options(a.aid, a.cid, a.qn, a.audio_qn, &a.cdn, &a.codec_preference)?,
+                    .video_playurl_with_audio_playback_options_bvid(
+                        a.aid,
+                        &a.bvid,
+                        a.cid,
+                        a.qn,
+                        a.audio_qn,
+                        &a.cdn,
+                        &a.codec_preference,
+                    )?,
             )
         }
         "video.offline_playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
-            to_value(c.inner.video_offline_playurl(
+            to_value(c.inner.video_offline_playurl_with_bvid(
                 a.aid,
+                &a.bvid,
                 a.cid,
                 a.qn,
                 a.audio_qn,

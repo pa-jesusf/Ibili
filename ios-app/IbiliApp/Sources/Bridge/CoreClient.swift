@@ -225,6 +225,7 @@ public final class CoreClient: @unchecked Sendable {
 
     public func playUrl(
         aid: Int64,
+        bvid: String = "",
         cid: Int64,
         qn: Int64 = 0,
         audioQn: Int64 = 0,
@@ -233,6 +234,7 @@ public final class CoreClient: @unchecked Sendable {
     ) throws -> PlayUrlDTO {
         struct A: Encodable {
             let aid: Int64
+            let bvid: String
             let cid: Int64
             let qn: Int64
             let audio_qn: Int64
@@ -243,6 +245,7 @@ public final class CoreClient: @unchecked Sendable {
             "video.playurl",
             args: A(
                 aid: aid,
+                bvid: bvid,
                 cid: cid,
                 qn: qn,
                 audio_qn: audioQn,
@@ -255,6 +258,7 @@ public final class CoreClient: @unchecked Sendable {
 
     public func offlinePlayUrl(
         aid: Int64,
+        bvid: String = "",
         cid: Int64,
         qn: Int64 = 0,
         audioQn: Int64 = 0,
@@ -262,6 +266,7 @@ public final class CoreClient: @unchecked Sendable {
     ) throws -> OfflinePlayUrlDTO {
         struct A: Encodable {
             let aid: Int64
+            let bvid: String
             let cid: Int64
             let qn: Int64
             let audio_qn: Int64
@@ -269,7 +274,7 @@ public final class CoreClient: @unchecked Sendable {
         }
         return try call(
             "video.offline_playurl",
-            args: A(aid: aid, cid: cid, qn: qn, audio_qn: audioQn, cdn: cdn),
+            args: A(aid: aid, bvid: bvid, cid: cid, qn: qn, audio_qn: audioQn, cdn: cdn),
             decoding: OfflinePlayUrlDTO.self
         )
     }

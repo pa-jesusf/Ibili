@@ -53,6 +53,7 @@ impl Core {
         // Re-hydrate web cookies into the http jar so subsequent
         // wbi / nav / view requests authenticate as this user.
         self.http.install_web_cookies(&s.web_cookies);
+        let _ = self.http.ensure_web_identity_activated();
         *self.session.write() = session::Session::from_persisted(s);
     }
 

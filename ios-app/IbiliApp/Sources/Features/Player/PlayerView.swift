@@ -1309,7 +1309,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64) async throws -> PlayUrlDTO {
-        try await fetchPlayUrl(aid: aid, cid: cid, qn: qn, audioQn: currentAudioQn)
+        try await fetchPlayUrl(aid: aid, bvid: bvid, cid: cid, qn: qn, audioQn: currentAudioQn)
     }
 
     private func fetchPlayUrl(for item: FeedItemDTO, qn: Int64) async throws -> PlayUrlDTO {
@@ -1320,10 +1320,14 @@ final class PlayerViewModel: ObservableObject {
         if item.isPGC {
             return try await fetchPgcPlayUrl(item: item, qn: qn, audioQn: audioQn)
         }
-        return try await fetchPlayUrl(aid: item.aid, cid: item.cid, qn: qn, audioQn: audioQn)
+        return try await fetchPlayUrl(aid: item.aid, bvid: item.bvid, cid: item.cid, qn: qn, audioQn: audioQn)
     }
 
     private func fetchPlayUrl(aid: Int64, cid: Int64, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
+        try await fetchPlayUrl(aid: aid, bvid: bvid, cid: cid, qn: qn, audioQn: audioQn)
+    }
+
+    private func fetchPlayUrl(aid: Int64, bvid: String, cid: Int64, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
         let cacheVariant = playURLCacheVariant()
         if self.aid == aid,
            self.cid == cid,
@@ -1339,9 +1343,11 @@ final class PlayerViewModel: ObservableObject {
         }
         let cdnSelection = self.cdnSelection
         let codecPreference = self.playbackCodecPreference
+        let bvidSnapshot = bvid
         let info = try await Task.detached {
             try CoreClient.shared.playUrl(
                 aid: aid,
+                bvid: bvidSnapshot,
                 cid: cid,
                 qn: qn,
                 audioQn: audioQn,
