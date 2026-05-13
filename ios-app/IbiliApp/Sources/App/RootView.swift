@@ -907,6 +907,7 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
                 point: pan.location(in: pan.view),
                 in: pan.view
             ) else { return false }
+            guard !beganInsideHorizontalScrollView(pan) else { return false }
             let velocity = pan.velocity(in: pan.view)
             guard velocity.x > 180 else { return false }
             return abs(velocity.x) > abs(velocity.y) * 1.35
@@ -920,6 +921,9 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
             if PlayerSwipeBackGestureExclusions.contains(touch, in: gestureRecognizer.view) {
                 return false
             }
+            if touch.view?.isInsideHorizontalScrollView == true {
+                return false
+            }
             var view = touch.view
             while let current = view {
                 if current is UIControl {
@@ -928,6 +932,13 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
                 view = current.superview
             }
             return true
+        }
+
+        private func beganInsideHorizontalScrollView(_ pan: UIPanGestureRecognizer) -> Bool {
+            guard let host = pan.view else { return false }
+            let location = pan.location(in: host)
+            guard let hitView = host.hitTest(location, with: nil) else { return false }
+            return hitView.isInsideHorizontalScrollView
         }
 
         private func hasActivePresentedController(from view: UIView?) -> Bool {
@@ -942,6 +953,22 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
             }
             return true
         }
+    }
+}
+
+private extension UIView {
+    var isInsideHorizontalScrollView: Bool {
+        var view: UIView? = self
+        while let current = view {
+            if let scrollView = current as? UIScrollView,
+               scrollView.bounds.width > 0,
+               scrollView.contentSize.width > scrollView.bounds.width + 1,
+               scrollView.alwaysBounceVertical == false {
+                return true
+            }
+            view = current.superview
+        }
+        return false
     }
 }
 

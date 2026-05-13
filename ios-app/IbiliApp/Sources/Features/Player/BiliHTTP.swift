@@ -4,7 +4,7 @@ import Foundation
 /// proxying their bytes through the in-process HLS server. Centralised so
 /// that engine and proxy paths stay in lock-step.
 enum BiliHTTP {
-    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15"
     static let referer = "https://www.bilibili.com/"
 
     static var headers: [String: String] {

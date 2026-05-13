@@ -126,13 +126,25 @@ final class DanmakuCanvasView: UIView {
         let haloLine: CTLine?
         let haloBlur: CGFloat
         let size: CGSize
+        let contentBounds: CGRect
+        let contentSize: CGSize
         let drawInset: CGFloat
 
-        init(line: CTLine, haloLine: CTLine?, haloBlur: CGFloat, size: CGSize, drawInset: CGFloat) {
+        init(
+            line: CTLine,
+            haloLine: CTLine?,
+            haloBlur: CGFloat,
+            size: CGSize,
+            contentBounds: CGRect,
+            contentSize: CGSize,
+            drawInset: CGFloat
+        ) {
             self.line = line
             self.haloLine = haloLine
             self.haloBlur = haloBlur
             self.size = size
+            self.contentBounds = contentBounds
+            self.contentSize = contentSize
             self.drawInset = drawInset
         }
     }
@@ -579,15 +591,24 @@ final class DanmakuCanvasView: UIView {
         // bounds. Reserve enough inset so the cached draw rect never
         // clips the halo even at the largest slider setting.
         let drawInset: CGFloat = max(2, ceil(haloBlur * 2.2) + 1)
+        let contentBounds = CGRect(
+            x: floor(mainBounds.minX),
+            y: floor(mainBounds.minY),
+            width: ceil(mainBounds.maxX) - floor(mainBounds.minX),
+            height: ceil(mainBounds.maxY) - floor(mainBounds.minY)
+        )
+        let contentSize = contentBounds.size
         let size = CGSize(
-            width: ceil(mainBounds.width) + drawInset * 2,
-            height: ceil(mainBounds.height) + drawInset * 2
+            width: contentSize.width + drawInset * 2,
+            height: contentSize.height + drawInset * 2
         )
         return CachedText(
             line: mainLine,
             haloLine: haloLine,
             haloBlur: haloBlur,
             size: size,
+            contentBounds: contentBounds,
+            contentSize: contentSize,
             drawInset: drawInset
         )
     }
@@ -733,14 +754,16 @@ final class DanmakuCanvasView: UIView {
             // Frame the user's own bullet so they can spot it in the
             // crowd. We use the accent tint with a translucent fill so
             // it reads as "yours" without overpowering the text.
-            let inset: CGFloat = 2
+            let horizontalPadding: CGFloat = 4
+            let verticalPadding: CGFloat = 1
+            let baselineY = origin.y + cached.size.height - cached.drawInset
             let frame = CGRect(
-                x: origin.x - inset,
-                y: origin.y - inset,
-                width: cached.size.width + inset * 2,
-                height: cached.size.height + inset * 2
+                x: origin.x + cached.drawInset + cached.contentBounds.minX - horizontalPadding,
+                y: baselineY - cached.contentBounds.maxY - verticalPadding,
+                width: cached.contentSize.width + horizontalPadding * 2,
+                height: cached.contentSize.height + verticalPadding * 2
             )
-            let radius = min(frame.height / 2, 10)
+            let radius = min(frame.height / 2, 8)
             let path = CGPath(
                 roundedRect: frame,
                 cornerWidth: radius,
@@ -754,7 +777,7 @@ final class DanmakuCanvasView: UIView {
             context.fillPath()
             context.addPath(path)
             context.setStrokeColor(UIColor(red: 1.0, green: 0.42, blue: 0.65, alpha: 0.95).cgColor)
-            context.setLineWidth(1.4)
+            context.setLineWidth(1.2)
             context.strokePath()
             context.restoreGState()
         }

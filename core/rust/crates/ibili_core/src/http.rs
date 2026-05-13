@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Matches PiliPlus `Constants.userAgent` (android_hd/TV User-Agent).
 pub const UA_TV: &str = "Mozilla/5.0 BiliDroid/2.0.1 (bbcallen@gmail.com) os/android model/android_hd mobi_app/android_hd build/2001100 channel/master innerVer/2001100 osVer/15 network/2";
 pub const UA_ANDROID_APP: &str = "Mozilla/5.0 BiliDroid/8.43.0 (bbcallen@gmail.com) os/android model/android mobi_app/android build/8430300 channel/master innerVer/8430300 osVer/15 network/2";
-pub const UA_WEB: &str = "Dart/3.6 (dart:io)";
+pub const UA_WEB: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15";
 const WEB_REFERER: &str = "https://www.bilibili.com/";
 const BUVID_URL: &str = "https://api.bilibili.com/";
 const ACTIVATE_BUVID_URL: &str = "https://api.bilibili.com/x/internal/gaia-gateway/ExClimbWuzhi";

@@ -2245,7 +2245,7 @@ struct PlayerView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if !vm.availableAudioQualities.isEmpty {
-                            Section("音质") {
+                            Menu {
                                 ForEach(vm.availableAudioQualities, id: \.qn) { q in
                                     Button {
                                         Task { await vm.switchAudioQuality(to: q.qn) }
@@ -2257,6 +2257,8 @@ struct PlayerView: View {
                                         }
                                     }
                                 }
+                            } label: {
+                                Label("音质", systemImage: "hifispeaker")
                             }
                         }
                         Button {

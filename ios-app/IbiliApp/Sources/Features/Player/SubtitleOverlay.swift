@@ -30,9 +30,33 @@ final class SubtitleController {
     }
 }
 
+private final class PaddedSubtitleLabel: UILabel {
+    var textInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10) {
+        didSet {
+            invalidateIntrinsicContentSize()
+            setNeedsDisplay()
+        }
+    }
+
+    override func textRect(forBounds bounds: CGRect, limitedToNumberOfLines numberOfLines: Int) -> CGRect {
+        let insetBounds = bounds.inset(by: textInsets)
+        let rect = super.textRect(forBounds: insetBounds, limitedToNumberOfLines: numberOfLines)
+        return rect.inset(by: UIEdgeInsets(
+            top: -textInsets.top,
+            left: -textInsets.left,
+            bottom: -textInsets.bottom,
+            right: -textInsets.right
+        ))
+    }
+
+    override func drawText(in rect: CGRect) {
+        super.drawText(in: rect.inset(by: textInsets))
+    }
+}
+
 @MainActor
 final class SubtitleOverlayView: UIView {
-    private let label = UILabel()
+    private let label = PaddedSubtitleLabel()
     private var cues: [SubtitleCueDTO] = []
     private weak var player: AVPlayer?
     private var timeObserver: Any?
@@ -94,6 +118,7 @@ final class SubtitleOverlayView: UIView {
         label.textAlignment = .center
         label.textColor = .white
         label.font = .systemFont(ofSize: 18, weight: .semibold)
+        label.textInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
         label.layer.shadowColor = UIColor.black.cgColor
         label.layer.shadowOpacity = 0.9
         label.layer.shadowRadius = 3
@@ -127,7 +152,7 @@ final class SubtitleOverlayView: UIView {
         }
         if cue.id != lastCueID {
             lastCueID = cue.id
-            label.text = "  \(cue.content)  "
+            label.text = cue.content
         }
         label.isHidden = false
     }

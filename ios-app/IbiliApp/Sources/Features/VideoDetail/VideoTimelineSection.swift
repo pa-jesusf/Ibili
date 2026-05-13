@@ -37,6 +37,8 @@ struct VideoTimelineSection: View {
                 .padding(.horizontal, 1)
                 .padding(.vertical, 1)
             }
+            .background(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: false))
+            .overlay(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: false))
         }
         .padding(12)
         .background(
@@ -75,7 +77,8 @@ private struct TimelineCard: View {
             Text(item.content.isEmpty ? "未命名段落" : item.content)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(isCurrent ? IbiliTheme.accent : IbiliTheme.textPrimary)
-                .lineLimit(2)
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .frame(width: 150, alignment: .leading)
 
             Text("\(BiliFormat.duration(item.fromSec)) - \(BiliFormat.duration(item.toSec))")

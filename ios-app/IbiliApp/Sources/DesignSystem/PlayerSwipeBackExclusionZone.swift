@@ -142,9 +142,11 @@ struct PlayerSwipeBackExclusionZone: UIViewRepresentable {
                 if let old = self.registeredScrollView {
                     PlayerSwipeBackGestureExclusions.unregister(old)
                 }
-                self.registeredScrollView = scrollView
-                if let scrollView {
+                if let scrollView, scrollView.isEffectivelyHorizontalScrollView {
+                    self.registeredScrollView = scrollView
                     PlayerSwipeBackGestureExclusions.register(scrollView)
+                } else {
+                    self.registeredScrollView = nil
                 }
             }
         }
@@ -159,5 +161,14 @@ struct PlayerSwipeBackExclusionZone: UIViewRepresentable {
             }
             return nil
         }
+    }
+}
+
+private extension UIScrollView {
+    var isEffectivelyHorizontalScrollView: Bool {
+        bounds.width > 0
+            && contentSize.width > bounds.width + 1
+            && contentSize.width > contentSize.height
+            && alwaysBounceVertical == false
     }
 }
