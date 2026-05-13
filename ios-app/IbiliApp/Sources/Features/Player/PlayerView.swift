@@ -42,6 +42,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentQn: Int64 = 0
     @Published private(set) var availableAudioQualities: [(qn: Int64, label: String)] = []
     @Published var currentAudioQn: Int64 = 0
+    @Published private(set) var availableSubtitles: [VideoSubtitleDTO] = []
+    @Published private(set) var viewPoints: [VideoViewPointDTO] = []
     @Published private(set) var prefersLandscapeFullscreen = true
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
     @Published private(set) var isTemporarySpeedBoostActive = false
@@ -263,6 +265,8 @@ final class PlayerViewModel: ObservableObject {
         isPlaybackCompleted = false
         currentAudioQn = requestedAudioQn
         isLoading = true; errorText = nil; isVideoReady = false; isPausedForDetailCollapse = false
+        availableSubtitles = []
+        viewPoints = []
         itemStatusObservation = nil
         if isSameVideo {
             stopHeartbeat()
@@ -1415,6 +1419,8 @@ final class PlayerViewModel: ObservableObject {
     private func rememberActivePlayURL(_ info: PlayUrlDTO) {
         currentVideoCodec = info.videoCodec
         isCurrentSourceOffline = info.url.hasPrefix("file://")
+        availableSubtitles = info.subtitles
+        viewPoints = info.viewPoints
     }
 
     private func playURLCacheVariant(codecPreference: String? = nil) -> String {
@@ -1842,6 +1848,7 @@ struct PlayerView: View {
     private let onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))?
     /// Plain reference type — see `DanmakuController` notes.
     @State private var danmaku = DanmakuController()
+    @State private var subtitle = SubtitleController()
     @State private var didBootstrap = false
     @State private var loadedMediaKey: String?
     @State private var isFullscreen = false
@@ -1853,6 +1860,9 @@ struct PlayerView: View {
     @State private var showDanmakuSheet = false
     @State private var showDanmakuStyleSheet = false
     @State private var showOfflineDownloadSheet = false
+    @State private var subtitleEnabled = false
+    @State private var subtitleLoadingID: String?
+    @State private var selectedSubtitleID: String?
     @StateObject private var offlineService = OfflineDownloadService.shared
     @State private var playerActionToast: String?
     @State private var playerActionToastWork: DispatchWorkItem?
@@ -1870,6 +1880,10 @@ struct PlayerView: View {
     @State private var danmakuTimeObserver: Any?
     @State private var danmakuTimeObserverPlayer: AVPlayer?
     @State private var danmakuTimeJumpObserver: NSObjectProtocol?
+    @State private var detailTimelineObserver: Any?
+    @State private var detailTimelineObserverPlayer: AVPlayer?
+    @State private var detailTimelineSeconds: Double = 0
+    @State private var lastDetailTimelineWholeSecond: Int64 = -1
     @State private var detailScrollOffsetForPlayerCollapse: CGFloat = 0
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
@@ -1997,6 +2011,102 @@ struct PlayerView: View {
         return expandedHeight - (expandedHeight - collapsedHeight) * progress
     }
 
+    private func resetSubtitleState() {
+        subtitleEnabled = false
+        subtitleLoadingID = nil
+        selectedSubtitleID = nil
+        subtitle.setTrack(nil)
+        subtitle.setVisible(false)
+    }
+
+    private func disableSubtitle() {
+        resetSubtitleState()
+    }
+
+    private func selectSubtitle(_ track: VideoSubtitleDTO) async {
+        guard subtitleLoadingID == nil else { return }
+        let candidates = subtitleURLCandidates(for: track)
+        guard !candidates.isEmpty else { return }
+        subtitleLoadingID = track.id
+        do {
+            let subtitleTrack = try await loadSubtitleTrack(from: candidates)
+            guard subtitleLoadingID == track.id else { return }
+            selectedSubtitleID = track.id
+            subtitleEnabled = true
+            subtitle.setTrack(subtitleTrack)
+            subtitle.setVisible(true)
+            flashPlayerAction("字幕已切换")
+        } catch {
+            AppLog.error("player", "字幕加载失败", error: error, metadata: [
+                "lan": track.lan,
+                "sources": candidates.map { $0.label }.joined(separator: ","),
+            ])
+            if selectedSubtitleID == nil {
+                subtitleEnabled = false
+                subtitle.setVisible(false)
+            }
+            flashPlayerAction("字幕加载失败")
+        }
+        if subtitleLoadingID == track.id {
+            subtitleLoadingID = nil
+        }
+    }
+
+    private func subtitleURLCandidates(for track: VideoSubtitleDTO) -> [(label: String, url: String)] {
+        var seen = Set<String>()
+        var candidates: [(label: String, url: String)] = []
+        func append(_ label: String, _ raw: String) {
+            let url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !url.isEmpty, seen.insert(url).inserted else { return }
+            candidates.append((label: label, url: url))
+        }
+        // PiliPlus still fetches `subtitle_url`; keep v2 as a fallback
+        // because some subtitle_url_v2 hosts fail TLS on-device.
+        append("subtitle_url", track.subtitleUrl)
+        append("subtitle_url_v2", track.subtitleUrlV2)
+        return candidates
+    }
+
+    private func loadSubtitleTrack(from candidates: [(label: String, url: String)]) async throws -> SubtitleTrackDTO {
+        var lastError: Error?
+        for candidate in candidates {
+            do {
+                let track = try await CoreClient.shared.subtitleTrack(from: candidate.url)
+                guard !track.items.isEmpty else {
+                    lastError = URLError(.zeroByteResource)
+                    AppLog.error("player", "字幕候选为空", error: lastError!, metadata: [
+                        "source": candidate.label,
+                    ])
+                    continue
+                }
+                AppLog.info("player", "字幕加载成功", metadata: [
+                    "source": candidate.label,
+                    "count": String(track.items.count),
+                ])
+                return track
+            } catch {
+                lastError = error
+                AppLog.error("player", "字幕候选加载失败", error: error, metadata: [
+                    "source": candidate.label,
+                ])
+            }
+        }
+        throw lastError ?? URLError(.badURL)
+    }
+
+    private func seekTo(seconds: Int64) {
+        guard let player = vm.player else { return }
+        let target = CMTime(seconds: Double(max(0, seconds)), preferredTimescale: 600)
+        Task { @MainActor in
+            detailTimelineSeconds = Double(max(0, seconds))
+            lastDetailTimelineWholeSecond = seconds
+            await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            if player.rate == 0 {
+                vm.handle(.playbackIntentChanged(.play))
+            }
+        }
+    }
+
     private var offlineDetailPlaceholder: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
@@ -2035,6 +2145,8 @@ struct PlayerView: View {
                             prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
                             isPresentationRouteActive: isPresentationRouteActive,
                             danmaku: danmaku,
+                            subtitle: subtitle,
+                            subtitleEnabled: subtitleEnabled,
                             danmakuEnabled: settings.danmakuEnabled,
                             danmakuOpacity: settings.danmakuOpacity,
                             danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
@@ -2078,10 +2190,13 @@ struct PlayerView: View {
                     VideoDetailContent(item: item,
                                        currentSeasonID: vm.currentSeasonID,
                                        currentEpisodeID: vm.currentEpisodeID,
-                                       detailViewModel: vm.pageCache.detailViewModel,
-                                       commentListViewModel: vm.pageCache.commentListViewModel,
-                                       interactionService: vm.pageCache.interactionService,
-                                       onScrollOffsetChange: { detailScrollOffsetForPlayerCollapse = $0 })
+                                   detailViewModel: vm.pageCache.detailViewModel,
+                                   commentListViewModel: vm.pageCache.commentListViewModel,
+                                   interactionService: vm.pageCache.interactionService,
+                                   viewPoints: vm.viewPoints,
+                                   currentPlaybackSeconds: detailTimelineSeconds,
+                                   onSeekToTime: { seconds in seekTo(seconds: seconds) },
+                                   onScrollOffsetChange: { detailScrollOffsetForPlayerCollapse = $0 })
                         .transition(.opacity)
                 } else {
                     VStack(spacing: 12) {
@@ -2107,6 +2222,20 @@ struct PlayerView: View {
                     )
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    PlayerToolbarSubtitle(
+                        subtitles: vm.availableSubtitles,
+                        selectedID: selectedSubtitleID,
+                        isEnabled: vm.player != nil,
+                        isLoadingID: subtitleLoadingID,
+                        onPick: { track in
+                            Task { await selectSubtitle(track) }
+                        },
+                        onDisable: {
+                            disableSubtitle()
+                        }
+                    )
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     PlayerToolbarVideoQuality(
                         qualities: vm.availableQualities,
                         currentQn: vm.currentQn,
@@ -2114,14 +2243,22 @@ struct PlayerView: View {
                     )
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarAudioQuality(
-                        audioQualities: vm.availableAudioQualities,
-                        currentAudioQn: vm.currentAudioQn,
-                        onPick: { qn in Task { await vm.switchAudioQuality(to: qn) } }
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        if !vm.availableAudioQualities.isEmpty {
+                            Section("音质") {
+                                ForEach(vm.availableAudioQualities, id: \.qn) { q in
+                                    Button {
+                                        Task { await vm.switchAudioQuality(to: q.qn) }
+                                    } label: {
+                                        if q.qn == vm.currentAudioQn {
+                                            Label(q.label, systemImage: "checkmark")
+                                        } else {
+                                            Text(q.label)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Button {
                             showOfflineDownloadSheet = true
                         } label: {
@@ -2171,6 +2308,7 @@ struct PlayerView: View {
             loadedMediaKey = mediaLoadKey
             loadedDanmakuKey = nil
             pendingDanmakuLoadKey = mediaLoadKey
+            resetSubtitleState()
             resetDanmakuSegmentLoading()
             await vm.load(item: item,
                           preferredQn: Int64(settings.resolvedPreferredVideoQn()),
@@ -2191,14 +2329,25 @@ struct PlayerView: View {
             if let p = newPlayer {
                 vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
                 danmaku.attach(p)
+                subtitle.attach(p)
                 configureDanmakuSegmentObserver(for: p)
+                configureDetailTimelineObserver(for: p)
                 vm.handle(.interfaceActivated)
                 if vm.isVideoReady {
                     loadPendingDanmakuIfNeeded()
                 }
             } else {
                 clearDanmakuTimeObserver()
+                clearDetailTimelineObserver()
+                subtitle.detach()
             }
+        }
+        .onChange(of: vm.availableSubtitles) { subtitles in
+            guard let selectedSubtitleID,
+                  !subtitles.contains(where: { $0.id == selectedSubtitleID }) else {
+                return
+            }
+            disableSubtitle()
         }
         .onChange(of: settings.cdnService.rawValue) { _ in
             PlayUrlPrefetcher.shared.clear()
@@ -2254,6 +2403,7 @@ struct PlayerView: View {
             if !presentationState.isFullscreenPresentationActive {
                 Orientation.deactivatePlayerPresentationRoute(vm.currentSessionID)
                 clearDanmakuTimeObserver()
+                clearDetailTimelineObserver()
                 cancelDanmakuSegmentTasks()
             }
         }
@@ -2547,6 +2697,36 @@ struct PlayerView: View {
             NotificationCenter.default.removeObserver(observer)
         }
         danmakuTimeJumpObserver = nil
+    }
+
+    private func configureDetailTimelineObserver(for player: AVPlayer) {
+        clearDetailTimelineObserver()
+        detailTimelineObserverPlayer = player
+        if let seconds = vm.currentElapsedPlaybackTime {
+            detailTimelineSeconds = seconds
+        }
+        detailTimelineObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.6, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            Task { @MainActor in
+                let seconds = time.seconds
+                guard seconds.isFinite, seconds >= 0 else { return }
+                let wholeSecond = Int64(seconds.rounded(.down))
+                guard wholeSecond != lastDetailTimelineWholeSecond else { return }
+                lastDetailTimelineWholeSecond = wholeSecond
+                detailTimelineSeconds = seconds
+            }
+        }
+    }
+
+    private func clearDetailTimelineObserver() {
+        if let observer = detailTimelineObserver, let player = detailTimelineObserverPlayer {
+            player.removeTimeObserver(observer)
+        }
+        detailTimelineObserver = nil
+        detailTimelineObserverPlayer = nil
+        lastDetailTimelineWholeSecond = -1
     }
 
     private func resetDanmakuSegmentLoading() {

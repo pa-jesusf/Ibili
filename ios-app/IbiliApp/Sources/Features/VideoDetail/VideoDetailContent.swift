@@ -21,6 +21,9 @@ struct VideoDetailContent: View {
     private let commentListViewModel: CommentListViewModel
     @ObservedObject private var interaction: VideoInteractionService
     private let onScrollOffsetChange: ((CGFloat) -> Void)?
+    private let viewPoints: [VideoViewPointDTO]
+    private let currentPlaybackSeconds: Double
+    private let onSeekToTime: ((Int64) -> Void)?
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
     @State private var mountedTabs: Set<Tab> = [.intro]
@@ -47,6 +50,9 @@ struct VideoDetailContent: View {
          detailViewModel: VideoDetailViewModel,
          commentListViewModel: CommentListViewModel,
          interactionService: VideoInteractionService,
+         viewPoints: [VideoViewPointDTO] = [],
+         currentPlaybackSeconds: Double = 0,
+         onSeekToTime: ((Int64) -> Void)? = nil,
          onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.item = item
         self.currentSeasonID = currentSeasonID
@@ -54,6 +60,9 @@ struct VideoDetailContent: View {
         self._vm = ObservedObject(wrappedValue: detailViewModel)
         self.commentListViewModel = commentListViewModel
         self._interaction = ObservedObject(wrappedValue: interactionService)
+        self.viewPoints = viewPoints
+        self.currentPlaybackSeconds = currentPlaybackSeconds
+        self.onSeekToTime = onSeekToTime
         self.onScrollOffsetChange = onScrollOffsetChange
     }
 
@@ -341,6 +350,17 @@ struct VideoDetailContent: View {
             } else if let v = vm.view, !v.desc.isEmpty || !v.descV2.isEmpty {
                 VideoDescriptionView(desc: v.desc, descV2: v.descV2)
                     .padding(.horizontal, 16)
+            }
+
+            if !viewPoints.isEmpty {
+                VideoTimelineSection(
+                    viewPoints: viewPoints,
+                    currentSeconds: currentPlaybackSeconds,
+                    onSeek: { seconds in
+                        onSeekToTime?(seconds)
+                    }
+                )
+                .padding(.horizontal, 16)
             }
 
             if !item.isPGC, let v = vm.view {

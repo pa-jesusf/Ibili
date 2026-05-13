@@ -291,28 +291,36 @@ struct CommentRow: View {
         return Array(item.previewReplies.prefix(3))
     }
 
+    private var displayLocation: String {
+        CommentLocationFormatter.displayText(item.location)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Button {
-                onOpenUser?(item.mid)
-            } label: {
-                RemoteImage(url: item.face,
-                            targetPointSize: CGSize(width: 32, height: 32),
-                            quality: 75)
-                    .frame(width: 32, height: 32)
-                    .clipShape(Circle())
+            VStack(spacing: 5) {
+                Button {
+                    onOpenUser?(item.mid)
+                } label: {
+                    RemoteImage(url: item.face,
+                                targetPointSize: CGSize(width: 32, height: 32),
+                                quality: 75)
+                        .frame(width: 32, height: 32)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(item.mid <= 0 || onOpenUser == nil)
+
+                if settings.commentShowLevel, item.level > 0 {
+                    CommentLevelBadge(level: item.level)
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(item.mid <= 0 || onOpenUser == nil)
+            .frame(width: 36)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(item.uname)
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(item.mid == upperMid ? IbiliTheme.accent : IbiliTheme.textPrimary)
-                    if settings.commentShowLevel, item.level > 0 {
-                        CommentLevelBadge(level: item.level)
-                    }
                     if settings.commentShowUPBadge, upperMid > 0, item.mid == upperMid {
                         Text("UP")
                             .font(.caption2.weight(.semibold))
@@ -333,8 +341,8 @@ struct CommentRow: View {
                     if item.ctime > 0 {
                         Text(BiliFormat.relativeDate(item.ctime))
                     }
-                    if settings.commentShowLocation, !item.location.isEmpty {
-                        Text("· \(item.location)")
+                    if settings.commentShowLocation, !displayLocation.isEmpty {
+                        Text("· \(displayLocation)")
                     }
                     if settings.commentShowUPBadge, item.upActionLike {
                         Text("· UP主赞过")
@@ -412,15 +420,83 @@ struct CommentRow: View {
 private struct CommentLevelBadge: View {
     let level: Int32
 
+    private var style: LevelStyle {
+        LevelStyle(level: level)
+    }
+
     var body: some View {
-        Text("LV\(max(level, 0))")
-            .font(.system(size: 9, weight: .semibold, design: .rounded))
-            .foregroundStyle(IbiliTheme.accent)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
+        Text("LV\(min(max(level, 0), 6))")
+            .font(.system(size: 8.5, weight: .heavy, design: .rounded))
+            .foregroundStyle(style.foreground)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(width: 28, height: 13)
             .background(
-                Capsule().fill(IbiliTheme.accent.opacity(0.12))
+                Capsule(style: .continuous)
+                    .fill(style.background)
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(style.border, lineWidth: 0.6)
+                    )
             )
+            .shadow(color: style.background.opacity(0.18), radius: 3, x: 0, y: 1)
+            .accessibilityLabel("等级\(min(max(level, 0), 6))")
+    }
+
+    private struct LevelStyle {
+        let foreground: Color
+        let background: Color
+        let border: Color
+
+        init(level: Int32) {
+            switch level {
+            case 6...:
+                foreground = .white
+                background = Color(red: 0.95, green: 0.25, blue: 0.37)
+                border = Color(red: 1.0, green: 0.72, blue: 0.78)
+            case 5:
+                foreground = .white
+                background = Color(red: 0.94, green: 0.44, blue: 0.17)
+                border = Color(red: 1.0, green: 0.77, blue: 0.48)
+            case 4:
+                foreground = .white
+                background = Color(red: 0.87, green: 0.62, blue: 0.12)
+                border = Color(red: 1.0, green: 0.84, blue: 0.42)
+            case 3:
+                foreground = .white
+                background = Color(red: 0.25, green: 0.68, blue: 0.36)
+                border = Color(red: 0.63, green: 0.87, blue: 0.56)
+            case 2:
+                foreground = .white
+                background = Color(red: 0.17, green: 0.58, blue: 0.86)
+                border = Color(red: 0.55, green: 0.78, blue: 1.0)
+            case 1:
+                foreground = .white
+                background = Color(red: 0.45, green: 0.50, blue: 0.62)
+                border = Color(red: 0.70, green: 0.74, blue: 0.84)
+            default:
+                foreground = IbiliTheme.textSecondary
+                background = Color(.tertiarySystemFill)
+                border = Color(.separator).opacity(0.35)
+            }
+        }
+    }
+}
+
+private enum CommentLocationFormatter {
+    static func displayText(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["IP属地：", "IP属地:", "IP属地 ", "IP 属地：", "IP 属地:"]
+        var didStrip = true
+        while didStrip {
+            didStrip = false
+            for prefix in prefixes where text.hasPrefix(prefix) {
+                text.removeFirst(prefix.count)
+                text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                didStrip = true
+            }
+        }
+        return text
     }
 }
 

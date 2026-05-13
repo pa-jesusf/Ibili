@@ -1,6 +1,6 @@
 use crate::Core;
 use crate::cdn::rank_urls_for_selection;
-use crate::dto::{OfflinePlayUrl, PlayUrl};
+use crate::dto::{OfflinePlayUrl, PlayUrl, VideoSubtitle, VideoViewPoint};
 use crate::dto::{
     PgcEpisode, PgcSeason, PgcStat, RelatedVideoItem, UgcSeason, UgcSeasonEpisode,
     UgcSeasonSection, VideoDescNode, VideoHonor, VideoOwner, VideoPage, VideoStat, VideoView,
@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Deserializer};
 
 const URL_PLAYURL_WEB: &str = "https://api.bilibili.com/x/player/wbi/playurl";
+const URL_PLAYER_INFO: &str = "https://api.bilibili.com/x/player/wbi/v2";
 const URL_PLAYURL_PGC: &str = "https://api.bilibili.com/pgc/player/web/v2/playurl";
 const URL_PLAYURL_TV: &str = "https://api.bilibili.com/x/tv/playurl";
 const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
@@ -32,6 +33,38 @@ struct PlayUrlRoot {
     /// cid; absent / 0 otherwise.
     #[serde(default)] last_play_time: i64,
     #[serde(default)] last_play_cid: i64,
+    #[serde(default)] subtitle: Option<SubtitleInfoWire>,
+    #[serde(default, deserialize_with = "null_as_default")] view_points: Vec<ViewPointWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct PlayerInfoWire {
+    #[serde(default, deserialize_with = "lenient_i64_value")] last_play_cid: i64,
+    #[serde(default)] subtitle: Option<SubtitleInfoWire>,
+    #[serde(default, deserialize_with = "null_as_default")] view_points: Vec<ViewPointWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct SubtitleInfoWire {
+    #[serde(default, deserialize_with = "null_as_default")] subtitles: Vec<SubtitleWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct SubtitleWire {
+    #[serde(default, deserialize_with = "null_as_default")] lan: String,
+    #[serde(default, deserialize_with = "null_as_default")] lan_doc: String,
+    #[serde(default, deserialize_with = "null_as_default")] subtitle_url: String,
+    #[serde(default, deserialize_with = "null_as_default")] subtitle_url_v2: String,
+    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")] kind: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct ViewPointWire {
+    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")] kind: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] from: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")] to: i64,
+    #[serde(default, deserialize_with = "null_as_default")] content: String,
+    #[serde(default, alias = "imgUrl", deserialize_with = "null_as_default")] img_url: String,
 }
 
 #[derive(Deserialize)]
@@ -291,6 +324,74 @@ fn prefer_non_empty_vec<T>(primary: Vec<T>, secondary: Vec<T>) -> Vec<T> {
 
 fn prefer_non_zero(primary: i64, secondary: i64) -> i64 {
     if primary != 0 { primary } else { secondary }
+}
+
+fn map_subtitles(info: Option<SubtitleInfoWire>) -> Vec<VideoSubtitle> {
+    let mut subtitles = info
+        .map(|info| {
+            info.subtitles
+                .into_iter()
+                .filter_map(|s| {
+                    let subtitle_url = s.subtitle_url.trim().to_string();
+                    let subtitle_url_v2 = s.subtitle_url_v2.trim().to_string();
+                    if subtitle_url.is_empty() && subtitle_url_v2.is_empty() {
+                        return None;
+                    }
+                    let is_ai = s.kind == 1;
+                    let mut lan_doc = s.lan_doc.trim().to_string();
+                    if lan_doc.is_empty() {
+                        lan_doc = s.lan.clone();
+                    }
+                    if is_ai && !lan_doc.contains("AI") && !lan_doc.contains("ai") {
+                        lan_doc.push_str("（AI）");
+                    }
+                    Some(VideoSubtitle {
+                        lan: s.lan,
+                        lan_doc,
+                        subtitle_url,
+                        subtitle_url_v2,
+                        is_ai,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    subtitles.sort_by(|a, b| {
+        let a_zh = a.lan.contains("zh");
+        let b_zh = b.lan.contains("zh");
+        b_zh.cmp(&a_zh).then(a.is_ai.cmp(&b.is_ai))
+    });
+    subtitles
+}
+
+fn map_view_points(points: Vec<ViewPointWire>) -> Vec<VideoViewPoint> {
+    points
+        .into_iter()
+        .filter(|p| p.kind == 2 && p.to > p.from && p.from >= 0)
+        .map(|p| VideoViewPoint {
+            kind: p.kind,
+            from_sec: p.from,
+            to_sec: p.to,
+            content: p.content,
+            image_url: p.img_url,
+        })
+        .collect()
+}
+
+fn merge_player_info(play: &mut PlayUrl, info: PlayerInfoWire) {
+    let subtitles = map_subtitles(info.subtitle);
+    if !subtitles.is_empty() {
+        play.subtitles = subtitles;
+    }
+
+    let view_points = map_view_points(info.view_points);
+    if !view_points.is_empty() {
+        play.view_points = view_points;
+    }
+
+    if play.last_play_cid == 0 && info.last_play_cid != 0 {
+        play.last_play_cid = info.last_play_cid;
+    }
 }
 
 impl From<DashVideoWire> for DashVideo {
@@ -689,6 +790,9 @@ impl Core {
         append_playurl_dm_params(&mut params);
         let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
         let mut play = build_playurl_from_web_response(response, qn, audio_qn, cdn_selection, codec_preference)?;
+        if let Ok(info) = self.fetch_player_info(aid, bvid, cid, 0, 0, &wbi_key) {
+            merge_player_info(&mut play, info);
+        }
         append_playurl_debug_message(&mut play, &activation, &identity, lookup);
         Ok(play)
     }
@@ -753,6 +857,9 @@ impl Core {
             .map(|status| status.current_watch_progress)
             .unwrap_or(0);
         let mut play = build_playurl_from_web_response(result.video_info, qn, audio_qn, cdn_selection, codec_preference)?;
+        if let Ok(info) = self.fetch_player_info(aid, "", cid, season_id, ep_id, &wbi_key) {
+            merge_player_info(&mut play, info);
+        }
         append_playurl_debug_message(&mut play, &activation, &identity, "pgc");
         play.last_play_time_ms = resume_ms;
         play.stream_type = format!("pgc_{}", play.stream_type);
@@ -823,6 +930,8 @@ impl Core {
             accept_audio_description: Vec::new(),
             last_play_time_ms: r.last_play_time,
             last_play_cid: r.last_play_cid,
+            subtitles: map_subtitles(r.subtitle),
+            view_points: map_view_points(r.view_points),
         })
     }
 
@@ -885,12 +994,38 @@ impl Core {
             accept_audio_description: Vec::new(),
             last_play_time_ms: r.last_play_time,
             last_play_cid: r.last_play_cid,
+            subtitles: map_subtitles(r.subtitle),
+            view_points: map_view_points(r.view_points),
         })
     }
 
     fn fetch_wbi_key(&self) -> CoreResult<WbiKey> {
         let nav: NavData = self.http.get_web(URL_NAV, &[])?;
         Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+    }
+
+    fn fetch_player_info(
+        &self,
+        aid: i64,
+        bvid: &str,
+        cid: i64,
+        season_id: i64,
+        ep_id: i64,
+        wbi_key: &WbiKey,
+    ) -> CoreResult<PlayerInfoWire> {
+        let mut params = vec![("cid".into(), cid.to_string())];
+        if !bvid.trim().is_empty() {
+            params.push(("bvid".into(), bvid.to_string()));
+        } else if aid > 0 {
+            params.push(("aid".into(), aid.to_string()));
+        }
+        if season_id > 0 {
+            params.push(("season_id".into(), season_id.to_string()));
+        }
+        if ep_id > 0 {
+            params.push(("ep_id".into(), ep_id.to_string()));
+        }
+        self.http.get_signed_web(URL_PLAYER_INFO, params, wbi_key)
     }
 }
 
@@ -1081,6 +1216,8 @@ fn build_playurl_from_web_response(
     cdn_selection: &str,
     codec_preference: &str,
 ) -> CoreResult<PlayUrl> {
+    let subtitles = map_subtitles(response.subtitle);
+    let view_points = map_view_points(response.view_points);
     let accept_quality = if response.accept_quality.is_empty() {
         response.dash.as_ref()
             .map(|dash| collect_dash_qualities(&dash.video))
@@ -1143,6 +1280,8 @@ fn build_playurl_from_web_response(
                     accept_audio_description,
                     last_play_time_ms: response.last_play_time,
                     last_play_cid: response.last_play_cid,
+                    subtitles,
+                    view_points,
                 });
             }
         }
@@ -1180,6 +1319,8 @@ fn build_playurl_from_web_response(
         accept_audio_description: Vec::new(),
         last_play_time_ms: response.last_play_time,
         last_play_cid: response.last_play_cid,
+        subtitles,
+        view_points,
     })
 }
 

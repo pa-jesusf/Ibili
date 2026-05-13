@@ -327,6 +327,8 @@ public struct PlayUrlDTO: Codable {
     /// last watch was on a different page. Currently exposed but not
     /// auto-followed.
     public let lastPlayCid: Int64
+    public let subtitles: [VideoSubtitleDTO]
+    public let viewPoints: [VideoViewPointDTO]
 
     public init(
         url: String,
@@ -351,7 +353,9 @@ public struct PlayUrlDTO: Codable {
         acceptAudioQuality: [Int64],
         acceptAudioDescription: [String],
         lastPlayTimeMs: Int64,
-        lastPlayCid: Int64
+        lastPlayCid: Int64,
+        subtitles: [VideoSubtitleDTO] = [],
+        viewPoints: [VideoViewPointDTO] = []
     ) {
         self.url = url
         self.audioUrl = audioUrl
@@ -376,6 +380,8 @@ public struct PlayUrlDTO: Codable {
         self.acceptAudioDescription = acceptAudioDescription
         self.lastPlayTimeMs = lastPlayTimeMs
         self.lastPlayCid = lastPlayCid
+        self.subtitles = subtitles
+        self.viewPoints = viewPoints
     }
     enum CodingKeys: String, CodingKey {
         case url, format, quality
@@ -399,6 +405,8 @@ public struct PlayUrlDTO: Codable {
         case acceptAudioDescription = "accept_audio_description"
         case lastPlayTimeMs = "last_play_time_ms"
         case lastPlayCid = "last_play_cid"
+        case subtitles
+        case viewPoints = "view_points"
     }
 
     public init(from decoder: Decoder) throws {
@@ -438,6 +446,8 @@ public struct PlayUrlDTO: Codable {
         acceptAudioDescription = try c.decodeIfPresent([String].self, forKey: .acceptAudioDescription) ?? []
         lastPlayTimeMs = try c.decodeIfPresent(Int64.self, forKey: .lastPlayTimeMs) ?? 0
         lastPlayCid = try c.decodeIfPresent(Int64.self, forKey: .lastPlayCid) ?? 0
+        subtitles = try c.decodeIfPresent([VideoSubtitleDTO].self, forKey: .subtitles) ?? []
+        viewPoints = try c.decodeIfPresent([VideoViewPointDTO].self, forKey: .viewPoints) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -465,6 +475,8 @@ public struct PlayUrlDTO: Codable {
         try c.encode(acceptAudioDescription, forKey: .acceptAudioDescription)
         try c.encode(lastPlayTimeMs, forKey: .lastPlayTimeMs)
         try c.encode(lastPlayCid, forKey: .lastPlayCid)
+        try c.encode(subtitles, forKey: .subtitles)
+        try c.encode(viewPoints, forKey: .viewPoints)
     }
 
     public func replacingLocalMediaURLs(videoURL: URL, audioURL: URL?) -> PlayUrlDTO {
@@ -491,9 +503,75 @@ public struct PlayUrlDTO: Codable {
             acceptAudioQuality: acceptAudioQuality,
             acceptAudioDescription: acceptAudioDescription,
             lastPlayTimeMs: 0,
-            lastPlayCid: lastPlayCid
+            lastPlayCid: lastPlayCid,
+            subtitles: subtitles,
+            viewPoints: viewPoints
         )
     }
+}
+
+public struct VideoSubtitleDTO: Codable, Identifiable, Hashable {
+    public var id: String { "\(lan)|\(subtitleUrl)|\(subtitleUrlV2)" }
+    public let lan: String
+    public let lanDoc: String
+    public let subtitleUrl: String
+    public let subtitleUrlV2: String
+    public let isAI: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case lan
+        case lanDoc = "lan_doc"
+        case subtitleUrl = "subtitle_url"
+        case subtitleUrlV2 = "subtitle_url_v2"
+        case isAI = "is_ai"
+    }
+}
+
+public struct VideoViewPointDTO: Codable, Identifiable, Hashable {
+    public var id: String { "\(fromSec)-\(toSec)-\(content)" }
+    public let kind: Int64
+    public let fromSec: Int64
+    public let toSec: Int64
+    public let content: String
+    public let imageUrl: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case fromSec = "from_sec"
+        case toSec = "to_sec"
+        case content
+        case imageUrl = "image_url"
+    }
+}
+
+public struct SubtitleTrackDTO: Hashable {
+    public let items: [SubtitleCueDTO]
+}
+
+public struct SubtitleCueDTO: Hashable, Identifiable {
+    public var id: String { "\(fromSec)-\(toSec)-\(content)" }
+    public let fromSec: Double
+    public let toSec: Double
+    public let content: String
+}
+
+struct SubtitleResponseDTO: Decodable {
+    let body: [SubtitleBodyDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case body
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        body = try c.decodeIfPresent([SubtitleBodyDTO].self, forKey: .body) ?? []
+    }
+}
+
+struct SubtitleBodyDTO: Decodable {
+    let from: Double
+    let to: Double
+    let content: String
 }
 
 private extension String {

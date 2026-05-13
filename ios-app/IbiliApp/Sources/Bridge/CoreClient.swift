@@ -385,6 +385,34 @@ public final class CoreClient: @unchecked Sendable {
         return try call("danmaku.segment", args: A(cid: cid, segment_index: segmentIndex), decoding: DanmakuTrackDTO.self)
     }
 
+    public func subtitleTrack(from urlString: String) async throws -> SubtitleTrackDTO {
+        var resolved = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if resolved.hasPrefix("//") {
+            resolved = "https:" + resolved
+        } else if resolved.hasPrefix("http://") {
+            resolved = "https://" + resolved.dropFirst("http://".count)
+        }
+        guard let url = URL(string: resolved), !resolved.isEmpty else {
+            return SubtitleTrackDTO(items: [])
+        }
+        var request = URLRequest(url: url)
+        for (key, value) in BiliHTTP.headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        let decoded = try JSONDecoder().decode(SubtitleResponseDTO.self, from: data)
+        let items = decoded.body.compactMap { cue -> SubtitleCueDTO? in
+            let text = cue.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard cue.to > cue.from, !text.isEmpty else { return nil }
+            return SubtitleCueDTO(fromSec: cue.from, toSec: cue.to, content: text)
+        }
+        return SubtitleTrackDTO(items: items)
+    }
+
     /// Resolve the canonical playback `cid` for a `bvid` via
     /// `/x/web-interface/view`. Used when navigating from the search
     /// results screen, where the search-by-type endpoint does not

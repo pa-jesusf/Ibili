@@ -382,6 +382,8 @@ struct LiveRoomView: View {
                     prefersLandscapeFullscreen: true,
                     isPresentationRouteActive: isPresentationRouteActive,
                     danmaku: danmaku,
+                    subtitle: nil,
+                    subtitleEnabled: false,
                     danmakuEnabled: danmakuEnabled,
                     danmakuOpacity: settings.danmakuOpacity,
                     danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),

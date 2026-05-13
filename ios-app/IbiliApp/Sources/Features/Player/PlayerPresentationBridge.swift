@@ -146,6 +146,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let prefersLandscapeFullscreen: Bool
     let isPresentationRouteActive: Bool
     let danmaku: DanmakuController
+    let subtitle: SubtitleController?
+    let subtitleEnabled: Bool
     let danmakuEnabled: Bool
     let danmakuOpacity: Double
     let danmakuBlockLevel: Int
@@ -254,6 +256,20 @@ struct PlayerContainer: UIViewControllerRepresentable {
             ])
             context.coordinator.holdSpeedBadgeView = badge
             context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: false)
+
+            if let subtitle {
+                let subtitleOverlay = subtitle.prepareOverlay()
+                subtitleOverlay.translatesAutoresizingMaskIntoConstraints = false
+                subtitleOverlay.setVisible(subtitleEnabled)
+                overlay.addSubview(subtitleOverlay)
+                NSLayoutConstraint.activate([
+                    subtitleOverlay.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
+                    subtitleOverlay.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
+                    subtitleOverlay.topAnchor.constraint(equalTo: overlay.topAnchor),
+                    subtitleOverlay.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
+                ])
+                context.coordinator.subtitleOverlay = subtitleOverlay
+            }
         }
         return vc
     }
@@ -281,6 +297,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         context.coordinator.danmakuCanvas?.normalFontWeight = danmakuFontWeight
         context.coordinator.danmakuCanvas?.normalFontScale = CGFloat(danmakuFontScale)
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
+        context.coordinator.subtitleOverlay?.setVisible(subtitleEnabled)
         context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: true)
         context.coordinator.syncDeviceOrientationMonitoring(controller: vc)
     }
@@ -295,6 +312,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         var parent: PlayerContainer
         weak var danmakuCanvas: DanmakuCanvasView?
+        weak var subtitleOverlay: SubtitleOverlayView?
         fileprivate weak var holdSpeedBadgeView: PlayerHoldSpeedBadgeView?
         var assignedPlayerID: ObjectIdentifier?
         private var transitionSnapshot: PlayerFullscreenTransitionSnapshot?
@@ -332,6 +350,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
             setHoldSpeedBadgeVisible(false, animated: false)
             holdSpeedBadgeView?.removeFromSuperview()
             holdSpeedBadgeView = nil
+            subtitleOverlay?.removeFromSuperview()
+            subtitleOverlay = nil
             danmakuCanvas?.removeFromSuperview()
             danmakuCanvas = nil
             stopDeviceOrientationMonitoring()

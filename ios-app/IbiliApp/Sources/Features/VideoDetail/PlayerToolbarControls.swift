@@ -40,6 +40,75 @@ struct PlayerToolbarDanmaku: View {
     }
 }
 
+struct PlayerToolbarSubtitle: View {
+    let subtitles: [VideoSubtitleDTO]
+    let selectedID: String?
+    var isEnabled: Bool = true
+    let isLoadingID: String?
+    let onPick: (VideoSubtitleDTO) -> Void
+    let onDisable: () -> Void
+
+    var body: some View {
+        Menu {
+            if subtitles.isEmpty {
+                Text("暂无字幕")
+            } else {
+                Button {
+                    onDisable()
+                } label: {
+                    if selectedID == nil {
+                        Label("关闭字幕", systemImage: "checkmark")
+                    } else {
+                        Text("关闭字幕")
+                    }
+                }
+                ForEach(subtitles) { item in
+                    Button {
+                        onPick(item)
+                    } label: {
+                        let title = item.lanDoc.isEmpty ? item.lan : item.lanDoc
+                        if item.id == selectedID {
+                            Label(title, systemImage: "checkmark")
+                        } else if item.id == isLoadingID {
+                            Label(title, systemImage: "arrow.clockwise")
+                        } else {
+                            Text(title)
+                        }
+                    }
+                }
+            }
+        } label: {
+            PlayerToolbarCCIcon(isActive: selectedID != nil)
+        }
+        .disabled(!isEnabled || subtitles.isEmpty)
+        .opacity(isEnabled && !subtitles.isEmpty ? 1 : 0.42)
+        .tint(IbiliTheme.accent)
+        .accessibilityLabel("字幕")
+    }
+}
+
+private struct PlayerToolbarCCIcon: View {
+    let isActive: Bool
+
+    var body: some View {
+        Text("CC")
+            .font(.system(size: 10, weight: .heavy, design: .rounded))
+            .monospaced()
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .foregroundStyle(IbiliTheme.accent)
+            .frame(width: 25, height: 18)
+            .background {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(isActive ? IbiliTheme.accent.opacity(0.18) : Color.clear)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(IbiliTheme.accent, lineWidth: 1.5)
+            }
+    }
+}
+
 struct PlayerToolbarVideoQuality: View {
     let qualities: [(qn: Int64, label: String)]
     let currentQn: Int64

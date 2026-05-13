@@ -217,6 +217,32 @@ pub struct PlayUrl {
     /// layer can offer a "继续观看 P3" prompt.
     #[serde(default)]
     pub last_play_cid: i64,
+    /// Closed-caption subtitle tracks advertised by `/x/player/wbi/v2`.
+    #[serde(default)]
+    pub subtitles: Vec<VideoSubtitle>,
+    /// Bilibili view-point timeline segments. The native AVKit progress
+    /// bar cannot be annotated safely, so the iOS UI presents these as
+    /// tappable timeline rows below the player.
+    #[serde(default)]
+    pub view_points: Vec<VideoViewPoint>,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct VideoSubtitle {
+    pub lan: String,
+    pub lan_doc: String,
+    pub subtitle_url: String,
+    pub subtitle_url_v2: String,
+    pub is_ai: bool,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct VideoViewPoint {
+    pub kind: i64,
+    pub from_sec: i64,
+    pub to_sec: i64,
+    pub content: String,
+    pub image_url: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
