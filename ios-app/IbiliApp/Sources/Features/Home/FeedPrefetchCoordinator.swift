@@ -24,10 +24,12 @@ final class FeedPrefetchCoordinator: ObservableObject {
     private var settleTask: Task<Void, Never>?
 
     var preferredQn: Int64 = 0
+    var preferredAudioQn: Int64 = 0
     private var cdnSelection: String = MediaCDNService.auto.rawValue
 
-    func update(preferredQn: Int64, cdnSelection: String) {
+    func update(preferredQn: Int64, preferredAudioQn: Int64, cdnSelection: String) {
         self.preferredQn = preferredQn
+        self.preferredAudioQn = preferredAudioQn
         self.cdnSelection = cdnSelection
     }
 
@@ -50,6 +52,7 @@ final class FeedPrefetchCoordinator: ObservableObject {
     func touchDown(_ item: FeedItemDTO) {
         PlayUrlPrefetcher.shared.prefetch(item: item,
                                           qn: max(preferredQn, 120),
+                                          audioQn: preferredAudioQn,
                                           cdn: cdnSelection)
     }
 
@@ -72,6 +75,7 @@ final class FeedPrefetchCoordinator: ObservableObject {
         for item in top {
             PlayUrlPrefetcher.shared.prefetch(item: item,
                                               qn: max(preferredQn, 120),
+                                              audioQn: preferredAudioQn,
                                               cdn: cdnSelection)
         }
         // Cancel any in-flight prefetches outside the new visible window

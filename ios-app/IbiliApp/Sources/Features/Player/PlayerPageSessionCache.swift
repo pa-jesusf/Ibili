@@ -33,7 +33,11 @@ final class PlayerPageSessionCache {
         if let exact = playURLs[exactKey] {
             return exact
         }
-        return playURLs.first(where: { $0.key.qn == qn && $0.key.variant == variant })?.value
+        guard audioQn == 0 else { return nil }
+        return playURLs
+            .filter { $0.key.qn == qn && $0.key.variant == variant }
+            .max { audioQualityRank($0.key.audioQn) < audioQualityRank($1.key.audioQn) }?
+            .value
     }
 
     func removePlayURL(qn: Int64, audioQn: Int64, variant: String) {
@@ -43,6 +47,20 @@ final class PlayerPageSessionCache {
             playURLs.keys
                 .filter { $0.qn == qn && $0.variant == variant }
                 .forEach { playURLs.removeValue(forKey: $0) }
+        }
+    }
+
+    private func audioQualityRank(_ qn: Int64) -> Int {
+        switch qn {
+        case 100010: return 800
+        case 100009: return 700
+        case 100008: return 600
+        case 30251: return 500
+        case 30250, 30255: return 400
+        case 30280: return 300
+        case 30232: return 200
+        case 30216: return 100
+        default: return 0
         }
     }
 

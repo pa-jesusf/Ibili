@@ -228,7 +228,8 @@ final class PlayerViewModel: ObservableObject {
         bvid = item.bvid
         lastLoadedItem = item
         lastPreferredQn = preferredQn
-        lastPreferredAudioQn = preferredAudioQn
+        let requestedAudioQn = max(0, preferredAudioQn)
+        lastPreferredAudioQn = requestedAudioQn
         self.cdnSelection = cdnSelection
         playbackCacheVariant = cacheVariant
         autoReloadAttempts = 0
@@ -259,7 +260,7 @@ final class PlayerViewModel: ObservableObject {
             resetCurrentPlaybackForMediaSwitch()
         }
         isPlaybackCompleted = false
-        if preferredAudioQn > 0 { currentAudioQn = preferredAudioQn }
+        currentAudioQn = requestedAudioQn
         isLoading = true; errorText = nil; isVideoReady = false
         itemStatusObservation = nil
         if isSameVideo {
@@ -269,6 +270,7 @@ final class PlayerViewModel: ObservableObject {
             "aid": String(item.aid),
             "cid": String(item.cid),
             "preferredQn": String(preferredQn),
+            "preferredAudioQn": String(requestedAudioQn),
             "cdn": cdnSelection,
             "offlineOnly": String(offlineOnly),
         ])
@@ -276,7 +278,7 @@ final class PlayerViewModel: ObservableObject {
             if let offline = OfflineDownloadService.shared.playbackSource(
                 for: item,
                 preferredQn: preferredQn,
-                audioQn: preferredAudioQn
+                audioQn: requestedAudioQn
             ) {
                 try await loadOfflineSource(
                     offline,
@@ -298,11 +300,12 @@ final class PlayerViewModel: ObservableObject {
                let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                         cid: item.cid,
                                                         qn: discoveryQnTarget,
+                                                        audioQn: requestedAudioQn,
                                                         cdn: cdnSelection) {
                 initial = warm
                 rememberPlayURL(warm)
             } else {
-                initial = try await fetchPlayUrl(for: item, qn: discoveryQnTarget)
+                initial = try await fetchPlayUrl(for: item, qn: discoveryQnTarget, audioQn: requestedAudioQn)
             }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let qualities = normalizedQualities(from: initial)
@@ -314,11 +317,12 @@ final class PlayerViewModel: ObservableObject {
                       let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
                                                                cid: item.cid,
                                                                qn: targetQn,
+                                                               audioQn: requestedAudioQn,
                                                                cdn: cdnSelection) {
                 info = warm
                 rememberPlayURL(warm)
             } else {
-                info = try await fetchPlayUrl(for: item, qn: targetQn)
+                info = try await fetchPlayUrl(for: item, qn: targetQn, audioQn: requestedAudioQn)
             }
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let finalQualities = normalizedQualities(from: info).isEmpty ? qualities : normalizedQualities(from: info)
@@ -367,6 +371,9 @@ final class PlayerViewModel: ObservableObject {
             meta["streamType"] = info.streamType
             meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
             meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
+            meta["audioQuality"] = String(info.audioQuality)
+            meta["audioQualityLabel"] = info.audioQualityLabel.isEmpty ? "-" : info.audioQualityLabel
+            meta["availableAudio"] = availableAudioQualities.map { String($0.qn) }.joined(separator: ",")
             meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
             meta["prepMs"] = String(prep.totalElapsedMs)
             meta["startupMs"] = String(startupMs)
@@ -714,6 +721,9 @@ final class PlayerViewModel: ObservableObject {
             meta["streamType"] = info.streamType
             meta["videoCodec"] = info.videoCodec.isEmpty ? "-" : info.videoCodec
             meta["audioCodec"] = info.audioCodec.isEmpty ? "-" : info.audioCodec
+            meta["audioQuality"] = String(info.audioQuality)
+            meta["audioQualityLabel"] = info.audioQualityLabel.isEmpty ? "-" : info.audioQualityLabel
+            meta["availableAudio"] = availableAudioQualities.map { String($0.qn) }.joined(separator: ",")
             meta["separateAudio"] = info.audioUrl == nil ? "false" : "true"
             meta["prepMs"] = String(prep.totalElapsedMs)
             AppLog.info("player", "清晰度切换成功", metadata: meta)
@@ -1591,9 +1601,47 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func normalizedAudioQualities(from info: PlayUrlDTO) -> [(qn: Int64, label: String)] {
-        guard !info.acceptAudioQuality.isEmpty else { return [] }
-        return zip(info.acceptAudioQuality, info.acceptAudioDescription)
-            .map { (qn: $0.0, label: $0.1) }
+        var merged: [Int64: String] = [:]
+        for (index, qn) in info.acceptAudioQuality.enumerated() {
+            let explicitLabel = index < info.acceptAudioDescription.count ? info.acceptAudioDescription[index] : ""
+            merged[qn] = explicitLabel.isEmpty ? audioQualityLabel(for: qn) : explicitLabel
+        }
+        if info.audioQuality > 0 {
+            merged[info.audioQuality] = info.audioQualityLabel.isEmpty
+                ? audioQualityLabel(for: info.audioQuality)
+                : info.audioQualityLabel
+        }
+        return merged.keys
+            .sorted { audioQualityRank($0) > audioQualityRank($1) }
+            .map { ($0, merged[$0] ?? audioQualityLabel(for: $0)) }
+    }
+
+    private func audioQualityRank(_ qn: Int64) -> Int {
+        switch qn {
+        case 100010: return 800
+        case 100009: return 700
+        case 100008: return 600
+        case 30251: return 500
+        case 30250, 30255: return 400
+        case 30280: return 300
+        case 30232: return 200
+        case 30216: return 100
+        default: return 0
+        }
+    }
+
+    private func audioQualityLabel(for qn: Int64) -> String {
+        switch qn {
+        case 100010: return "100010"
+        case 100009: return "100009"
+        case 100008: return "100008"
+        case 30251: return "Hi-Res无损"
+        case 30250, 30255: return "杜比全景声"
+        case 30280: return "192K"
+        case 30232: return "132K"
+        case 30216: return "64K"
+        default: return "音质 \(qn)"
+        }
     }
 
     func switchAudioQuality(to audioQn: Int64) async {
@@ -2063,7 +2111,7 @@ struct PlayerView: View {
             resetDanmakuSegmentLoading()
             await vm.load(item: item,
                           preferredQn: Int64(settings.resolvedPreferredVideoQn()),
-                          preferredAudioQn: Int64(settings.preferredAudioQn),
+                          preferredAudioQn: Int64(settings.resolvedPreferredAudioQn()),
                           cdnSelection: settings.cdnService.rawValue,
                           cacheVariant: settings.playbackCacheVariantKey(),
                           offlineOnly: offlineOnly)

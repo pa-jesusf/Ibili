@@ -25,6 +25,7 @@ final class PlayUrlPrefetcher {
     struct Cached {
         let info: PlayUrlDTO
         let qn: Int64
+        let audioQn: Int64
         let timestamp: Date
     }
 
@@ -32,6 +33,7 @@ final class PlayUrlPrefetcher {
         let aid: Int64
         let cid: Int64
         let qn: Int64
+        let audioQn: Int64
         let cdn: String
     }
 
@@ -48,9 +50,9 @@ final class PlayUrlPrefetcher {
     private init() {}
 
     /// Fire-and-forget warm-up. Safe to call repeatedly; reschedules at
-    /// most one in-flight fetch per (aid, cid, qn).
-    func prefetch(item: FeedItemDTO, qn: Int64, cdn: String) {
-        let key = Key(aid: item.aid, cid: item.cid, qn: qn, cdn: cdn)
+    /// most one in-flight fetch per (aid, cid, qn, audio qn).
+    func prefetch(item: FeedItemDTO, qn: Int64, audioQn: Int64, cdn: String) {
+        let key = Key(aid: item.aid, cid: item.cid, qn: qn, audioQn: audioQn, cdn: cdn)
         if let cached = cache[key], Date().timeIntervalSince(cached.timestamp) < maxAge {
             touch(key)
             return
@@ -60,6 +62,7 @@ final class PlayUrlPrefetcher {
                 "aid": String(item.aid),
                 "cid": String(item.cid),
                 "qn": String(qn),
+                "audioQn": String(audioQn),
                 "cdn": cdn,
             ])
         let started = CFAbsoluteTimeGetCurrent()
@@ -71,13 +74,14 @@ final class PlayUrlPrefetcher {
                         aid: item.aid,
                         cid: item.cid,
                         qn: qn,
+                        audioQn: audioQn,
                         cdn: cdn
                     )
                 }.value
                 let elapsed = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
                 await MainActor.run {
                     guard let self else { return }
-                    let entry = Cached(info: info, qn: qn, timestamp: Date())
+                    let entry = Cached(info: info, qn: qn, audioQn: audioQn, timestamp: Date())
                     self.cache[key] = entry
                     self.touch(key)
                     self.evictIfNeeded()
@@ -85,6 +89,8 @@ final class PlayUrlPrefetcher {
                         "aid": String(item.aid),
                         "cid": String(item.cid),
                         "qn": String(qn),
+                        "audioQn": String(audioQn),
+                        "resolvedAudioQn": String(info.audioQuality),
                         "cdn": cdn,
                         "elapsedMs": String(elapsed),
                         "size": String(self.cache.count),
@@ -104,8 +110,8 @@ final class PlayUrlPrefetcher {
     /// Consume a previously prefetched playurl, returning it only if
     /// fresh. The entry is removed on take so a stale URL cannot be
     /// reused after a navigation cycle.
-    func take(aid: Int64, cid: Int64, qn: Int64, cdn: String) -> PlayUrlDTO? {
-        let key = Key(aid: aid, cid: cid, qn: qn, cdn: cdn)
+    func take(aid: Int64, cid: Int64, qn: Int64, audioQn: Int64, cdn: String) -> PlayUrlDTO? {
+        let key = Key(aid: aid, cid: cid, qn: qn, audioQn: audioQn, cdn: cdn)
         guard let cached = cache.removeValue(forKey: key) else { return nil }
         recency.removeAll { $0 == key }
         guard Date().timeIntervalSince(cached.timestamp) < maxAge else { return nil }
@@ -113,6 +119,8 @@ final class PlayUrlPrefetcher {
             "aid": String(aid),
             "cid": String(cid),
             "qn": String(qn),
+            "audioQn": String(audioQn),
+            "resolvedAudioQn": String(cached.info.audioQuality),
             "cdn": cdn,
             "ageMs": String(Int(Date().timeIntervalSince(cached.timestamp) * 1000)),
         ])

@@ -7,6 +7,8 @@ use crate::dto::{
 };
 use crate::error::{CoreError, CoreResult};
 use crate::signer::{WbiKey, WbiSigner};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Deserializer};
 
 const URL_PLAYURL_WEB: &str = "https://api.bilibili.com/x/player/wbi/playurl";
@@ -14,6 +16,7 @@ const URL_PLAYURL_PGC: &str = "https://api.bilibili.com/pgc/player/web/v2/playur
 const URL_PLAYURL_TV: &str = "https://api.bilibili.com/x/tv/playurl";
 const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 const URL_PGC_INFO: &str = "https://api.bilibili.com/pgc/view/web/season";
+static DM_PARAM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Deserialize)]
 struct PlayUrlRoot {
@@ -593,8 +596,7 @@ impl Core {
             .http
             .client
             .get(URL_PGC_INFO)
-            .header("User-Agent", crate::http::UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+            .headers(crate::http::default_web_header_map(&self.http))
             .query(&params)
             .send()
             .map_err(|e| CoreError::Network(e.to_string()))?
@@ -620,18 +622,19 @@ impl Core {
     ) -> CoreResult<PlayUrl> {
         let qn = if qn <= 0 { 80 } else { qn };
         let wbi_key = self.fetch_wbi_key()?;
-        let params = vec![
+        let mut params = vec![
             ("avid".into(), aid.to_string()),
             ("cid".into(), cid.to_string()),
             ("qn".into(), qn.to_string()),
             ("fnval".into(), "4048".into()),
             ("fourk".into(), "1".into()),
             ("fnver".into(), "0".into()),
-            ("voice_balance".into(), "1".into()),
+            ("voice_balance".into(), "0".into()),
             ("gaia_source".into(), "pre-load".into()),
             ("isGaiaAvoided".into(), "true".into()),
             ("web_location".into(), "1315873".into()),
         ];
+        append_playurl_dm_params(&mut params);
         let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
         build_playurl_from_web_response(response, qn, audio_qn, cdn_selection, codec_preference)
     }
@@ -655,11 +658,12 @@ impl Core {
             ("fnval".into(), "4048".into()),
             ("fourk".into(), "1".into()),
             ("fnver".into(), "0".into()),
-            ("voice_balance".into(), "1".into()),
+            ("voice_balance".into(), "0".into()),
             ("gaia_source".into(), "pre-load".into()),
             ("isGaiaAvoided".into(), "true".into()),
             ("web_location".into(), "1315873".into()),
         ];
+        append_playurl_dm_params(&mut params);
         if aid > 0 {
             params.push(("avid".into(), aid.to_string()));
         }
@@ -674,8 +678,7 @@ impl Core {
             .http
             .client
             .get(URL_PLAYURL_PGC)
-            .header("User-Agent", crate::http::UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+            .headers(crate::http::default_web_header_map(&self.http))
             .query(&params)
             .send()
             .map_err(|e| CoreError::Network(e.to_string()))?
@@ -851,6 +854,53 @@ fn build_offline_playurl(play: PlayUrl) -> OfflinePlayUrl {
         can_lossless_remux: true,
         lossless_note,
     }
+}
+
+fn append_playurl_dm_params(params: &mut Vec<(String, String)>) {
+    params.push(("dm_img_list".into(), "[]".into()));
+    params.push(("dm_img_str".into(), dm_param_random_base64(16, 64)));
+    params.push(("dm_cover_img_str".into(), dm_param_random_base64(32, 128)));
+    params.push(("dm_img_inter".into(), r#"{"ds":[],"wh":[0,0,0],"of":[0,0,0]}"#.into()));
+}
+
+fn dm_param_random_base64(min_len: usize, max_len: usize) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let span = max_len.saturating_sub(min_len).saturating_add(1).max(1);
+    let seed = dm_param_seed();
+    let raw_len = min_len + (seed as usize % span);
+    let mut state = seed;
+    let mut bytes = Vec::with_capacity(raw_len);
+    for _ in 0..raw_len {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        bytes.push(0x26 + ((state >> 32) % 0x59) as u8);
+    }
+
+    let output_len = ((bytes.len() + 2) / 3) * 4;
+    let mut out = String::with_capacity(output_len);
+    let mut index = 0;
+    while index < bytes.len() {
+        let b0 = bytes[index];
+        let b1 = bytes.get(index + 1).copied().unwrap_or(0);
+        let b2 = bytes.get(index + 2).copied().unwrap_or(0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        out.push(TABLE[(b2 & 0x3f) as usize] as char);
+        index += 3;
+    }
+    let trim = out.len().min(2);
+    out.truncate(out.len() - trim);
+    out
+}
+
+fn dm_param_seed() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ DM_PARAM_COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(17)
 }
 
 impl Dash {
@@ -1115,9 +1165,14 @@ fn is_avc_codec_preference(preference: &str) -> bool {
 /// Map audio stream id to a quality tier for sorting/comparison.
 /// Higher score = better quality. B站's ids are NOT monotonically
 /// ordered by quality: 30280(192K) > 30251(Hi-Res) numerically,
-/// but Hi-Res is higher quality.
+/// but Hi-Res is higher quality. 100010/100009/100008 mirror upstream
+/// PiliPlus's extra audio-quality ids and should sort above Hi-Res when
+/// the API returns them.
 fn audio_quality_rank(id: i64) -> i32 {
     match id {
+        100010 => 800,
+        100009 => 700,
+        100008 => 600,
         30251 => 500,          // Hi-Res无损
         30250 | 30255 => 400,  // 杜比全景声
         30280 => 300,          // 192K
@@ -1159,6 +1214,9 @@ fn collect_audio_qualities(audio: &[DashAudio]) -> (Vec<i64>, Vec<String>) {
 
 fn audio_quality_label(id: i64) -> String {
     match id {
+        100010 => "100010".into(),
+        100009 => "100009".into(),
+        100008 => "100008".into(),
         30251 => "Hi-Res无损".into(),
         30250 | 30255 => "杜比全景声".into(),
         30280 => "192K".into(),

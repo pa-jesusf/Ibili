@@ -183,11 +183,20 @@ private struct HomeFeedPage: View {
             .onAppear {
                 prefetch.update(
                     preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+                    preferredAudioQn: Int64(settings.resolvedPreferredAudioQn()),
                     cdnSelection: settings.cdnService.rawValue
                 )
             }
             .onChange(of: settings.cdnService.rawValue) { _ in
                 updatePrefetchSettings()
+            }
+            .onChange(of: settings.preferredQn) { _ in
+                updatePrefetchSettings()
+                PlayUrlPrefetcher.shared.clear()
+            }
+            .onChange(of: settings.preferredAudioQn) { _ in
+                updatePrefetchSettings()
+                PlayUrlPrefetcher.shared.clear()
             }
         }
     }
@@ -195,6 +204,7 @@ private struct HomeFeedPage: View {
     private func updatePrefetchSettings() {
         prefetch.update(
             preferredQn: Int64(settings.resolvedPreferredVideoQn()),
+            preferredAudioQn: Int64(settings.resolvedPreferredAudioQn()),
             cdnSelection: settings.cdnService.rawValue
         )
     }

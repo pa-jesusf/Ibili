@@ -32,6 +32,10 @@ struct SettingsView: View {
     ]
 
     private let preferredAudioQualityOptions: [(label: String, value: Int)] = [
+        ("默认最高", 0),
+        ("100010", 100010),
+        ("100009", 100009),
+        ("100008", 100008),
         ("Hi-Res无损", 30251),
         ("杜比全景声", 30250),
         ("192K", 30280),
@@ -114,7 +118,10 @@ struct SettingsView: View {
                         Text(opt.label).tag(opt.value)
                     }
                 }
-                Picker("默认音质", selection: $settings.preferredAudioQn) {
+                Picker("默认音质", selection: Binding(
+                    get: { settings.resolvedPreferredAudioQn() },
+                    set: { settings.preferredAudioQn = $0 }
+                )) {
                     ForEach(preferredAudioQualityOptions, id: \.value) { opt in
                         Text(opt.label).tag(opt.value)
                     }

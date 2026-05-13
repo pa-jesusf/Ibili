@@ -2,14 +2,20 @@ use crate::error::{CoreError, CoreResult};
 use crate::dto::ApiEnvelope;
 use reqwest::Url;
 use reqwest::blocking::Client;
+use reqwest::blocking::RequestBuilder;
 use reqwest::cookie::{CookieStore, Jar};
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Matches PiliPlus `Constants.userAgent` (android_hd/TV User-Agent).
 pub const UA_TV: &str = "Mozilla/5.0 BiliDroid/2.0.1 (bbcallen@gmail.com) os/android model/android_hd mobi_app/android_hd build/2001100 channel/master innerVer/2001100 osVer/15 network/2";
 pub const UA_ANDROID_APP: &str = "Mozilla/5.0 BiliDroid/8.43.0 (bbcallen@gmail.com) os/android model/android mobi_app/android build/8430300 channel/master innerVer/8430300 osVer/15 network/2";
 pub const UA_WEB: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15";
+const WEB_REFERER: &str = "https://www.bilibili.com/";
+const BUVID_URL: &str = "https://api.bilibili.com/";
+static WEB_IDENTITY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Headers PiliPlus attaches to every app endpoint call.
 fn app_headers() -> reqwest::header::HeaderMap {
@@ -66,6 +72,7 @@ pub struct HttpClient {
 impl HttpClient {
     pub fn new() -> CoreResult<Self> {
         let jar = Arc::new(Jar::default());
+        ensure_default_web_identity(&jar);
         let client = Client::builder()
             .cookie_provider(jar.clone())
             .gzip(true)
@@ -82,8 +89,9 @@ impl HttpClient {
     /// shared jar so subsequent web-flavoured requests carry them.
     /// `pairs` is `(name, value)`; cookies are scoped to `.bilibili.com`.
     pub fn install_web_cookies(&self, pairs: &[(String, String)]) {
-        if pairs.is_empty() { return; }
         let url: Url = "https://api.bilibili.com/".parse().expect("valid url");
+        ensure_default_web_identity(&self.jar);
+        if pairs.is_empty() { return; }
         for (name, value) in pairs {
             let cookie = format!(
                 "{}={}; Domain=.bilibili.com; Path=/; Secure",
@@ -107,6 +115,13 @@ impl HttpClient {
                 Some((p[..eq].to_string(), p[eq + 1..].to_string()))
             })
             .collect()
+    }
+
+    pub fn web_user_mid(&self) -> Option<i64> {
+        self.snapshot_cookies()
+            .into_iter()
+            .find(|(k, _)| k == "DedeUserID")
+            .and_then(|(_, v)| v.parse::<i64>().ok())
     }
 
     pub fn get_signed_app<T: DeserializeOwned>(
@@ -165,9 +180,7 @@ impl HttpClient {
         &self, url: &str, mut params: Vec<(String, String)>, key: &crate::signer::WbiKey,
     ) -> CoreResult<T> {
         crate::signer::WbiSigner::sign(&mut params, key);
-        let resp = self.client.get(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let resp = apply_default_web_headers(self.client.get(url), self)
             .query(&params)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
@@ -184,9 +197,7 @@ impl HttpClient {
     ) -> CoreResult<T> {
         use reqwest::header::{HeaderName, HeaderValue};
         crate::signer::WbiSigner::sign(&mut params, key);
-        let mut req = self.client.get(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let mut req = apply_default_web_headers(self.client.get(url), self)
             .query(&params);
         for (name, value) in extra_headers {
             if let (Ok(name), Ok(value)) = (
@@ -206,9 +217,7 @@ impl HttpClient {
     pub fn get_web<T: DeserializeOwned>(
         &self, url: &str, params: &[(String, String)],
     ) -> CoreResult<T> {
-        let resp = self.client.get(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let resp = apply_default_web_headers(self.client.get(url), self)
             .query(params)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
@@ -223,9 +232,7 @@ impl HttpClient {
         extra_headers: &[(&str, String)],
     ) -> CoreResult<T> {
         use reqwest::header::{HeaderName, HeaderValue};
-        let mut req = self.client.get(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let mut req = apply_default_web_headers(self.client.get(url), self)
             .query(params);
         for (name, value) in extra_headers {
             if let (Ok(name), Ok(value)) = (
@@ -250,9 +257,7 @@ impl HttpClient {
     pub fn post_form_web<T: DeserializeOwned>(
         &self, url: &str, form: &[(String, String)],
     ) -> CoreResult<T> {
-        let resp = self.client.post(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let resp = apply_default_web_headers(self.client.post(url), self)
             .form(form)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
@@ -266,9 +271,7 @@ impl HttpClient {
     pub fn post_form_web_empty(
         &self, url: &str, form: &[(String, String)],
     ) -> CoreResult<()> {
-        let resp = self.client.post(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let resp = apply_default_web_headers(self.client.post(url), self)
             .form(form)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
@@ -292,9 +295,7 @@ impl HttpClient {
         extra_headers: &[(&str, String)],
     ) -> CoreResult<T> {
         use reqwest::header::{HeaderName, HeaderValue};
-        let mut req = self.client.post(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let mut req = apply_default_web_headers(self.client.post(url), self)
             .query(query)
             .form(form);
         for (name, value) in extra_headers {
@@ -334,9 +335,7 @@ impl HttpClient {
         for (k, v) in text_fields {
             form = form.text(k.to_string(), v.clone());
         }
-        let resp = self.client.post(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let resp = apply_default_web_headers(self.client.post(url), self)
             .multipart(form)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
@@ -358,9 +357,7 @@ impl HttpClient {
     pub fn get_bytes_web(
         &self, url: &str, params: &[(String, String)],
     ) -> CoreResult<Vec<u8>> {
-        let resp = self.client.get(url)
-            .header("User-Agent", UA_WEB)
-            .header("Referer", "https://www.bilibili.com/")
+        let resp = apply_default_web_headers(self.client.get(url), self)
             .query(params)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
@@ -380,6 +377,147 @@ fn net_msg(e: &reqwest::Error) -> String {
         src = std::error::Error::source(s);
     }
     out
+}
+
+fn apply_default_web_headers(builder: RequestBuilder, client: &HttpClient) -> RequestBuilder {
+    builder.headers(default_web_header_map(client))
+}
+
+fn default_web_headers(client: &HttpClient) -> Vec<(&'static str, String)> {
+    let mut headers = vec![
+        ("User-Agent", UA_WEB.to_string()),
+        ("Referer", WEB_REFERER.to_string()),
+        ("env", "prod".to_string()),
+        ("app-key", "android64".to_string()),
+        ("x-bili-aurora-zone", "sh001".to_string()),
+    ];
+    if let Some(mid) = client.web_user_mid().filter(|mid| *mid > 0) {
+        headers.push(("x-bili-mid", mid.to_string()));
+        headers.push(("x-bili-aurora-eid", gen_aurora_eid(mid)));
+    }
+    headers
+}
+
+pub fn default_web_header_map(client: &HttpClient) -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
+    ensure_default_web_identity(&client.jar);
+
+    let mut headers = HeaderMap::new();
+    let pairs = default_web_headers(client);
+    for (name, value) in pairs {
+        if let (Ok(header_name), Ok(header_value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            headers.insert(header_name, header_value);
+        }
+    }
+    headers
+}
+
+fn ensure_default_web_identity(jar: &Jar) {
+    let url: Url = BUVID_URL.parse().expect("valid buvid url");
+    let current = jar
+        .cookies(&url)
+        .and_then(|raw| raw.to_str().ok().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if !cookie_header_contains(&current, "buvid3") {
+        let cookie = format!(
+            "buvid3={}; Domain=.bilibili.com; Path=/; Secure",
+            gen_buvid3()
+        );
+        jar.add_cookie_str(&cookie, &url);
+    }
+}
+
+fn cookie_header_contains(header: &str, target_name: &str) -> bool {
+    header.split(';').any(|part| {
+        let trimmed = part.trim();
+        trimmed
+            .split_once('=')
+            .map(|(name, _)| name == target_name)
+            .unwrap_or(false)
+    })
+}
+
+fn gen_buvid3() -> String {
+    let seed = web_identity_seed();
+    let part1 = hex_block(seed, 8);
+    let part2 = hex_block(seed.rotate_left(7), 4);
+    let part3 = hex_block(seed.rotate_left(13), 4);
+    let part4 = hex_block(seed.rotate_left(29), 4);
+    let part5 = format!(
+        "{}{:05}infoc",
+        hex_block(seed.rotate_left(37), 12),
+        (seed % 100_000)
+    );
+    format!(
+        "{}-{}-{}-{}-{}",
+        part1, part2, part3, part4, part5
+    )
+}
+
+fn hex_block(seed: u64, len: usize) -> String {
+    let mut state = seed;
+    let mut out = String::with_capacity(len);
+    while out.len() < len {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        out.push_str(&format!("{:016X}", state));
+    }
+    out.truncate(len);
+    out
+}
+
+fn gen_aurora_eid(uid: i64) -> String {
+    if uid <= 0 {
+        return String::new();
+    }
+    let mut bytes = uid.to_string().into_bytes();
+    let key = b"ad1va46a7lza";
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte ^= key[index % key.len()];
+    }
+    let mut encoded = base64_encode(&bytes);
+    while encoded.ends_with('=') {
+        encoded.pop();
+    }
+    encoded
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut index = 0;
+    while index < bytes.len() {
+        let b0 = bytes[index];
+        let b1 = bytes.get(index + 1).copied().unwrap_or(0);
+        let b2 = bytes.get(index + 2).copied().unwrap_or(0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if index + 1 < bytes.len() {
+            out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if index + 2 < bytes.len() {
+            out.push(TABLE[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        index += 3;
+    }
+    out
+}
+
+fn web_identity_seed() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ WEB_IDENTITY_COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(11)
 }
 
 fn unwrap_envelope<T: DeserializeOwned>(body: String) -> CoreResult<T> {

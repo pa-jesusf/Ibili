@@ -140,11 +140,15 @@ final class AppSettings: ObservableObject {
     /// 116=1080P60, 125=HDR, 126=杜比, 127=8K.
     @AppStorage("ibili.player.preferredQn") var preferredQn: Int = 0
     /// Preferred audio quality (Bilibili audio stream id).
-    /// 30251=Hi-Res, 30250=杜比全景声, 30280=192K, 30232=132K, 30216=64K.
-    @AppStorage("ibili.player.preferredAudioQn") var preferredAudioQn: Int = 30251
+    /// `0` means "use the highest audio quality available for this video".
+    /// Common values: 30251=Hi-Res, 30250=杜比全景声, 30280=192K, 30232=132K, 30216=64K.
+    @AppStorage("ibili.player.preferredAudioQn") var preferredAudioQn: Int = 0
     /// One-shot migration for older builds that hard-coded `64` (720P) as the
     /// implicit default. New default behaviour is "highest available".
     @AppStorage("ibili.player.preferredQnMigrated") private var preferredQnMigrated: Bool = false
+    /// One-shot migration from the previous hard-coded Hi-Res default to
+    /// the new "highest available" behaviour.
+    @AppStorage("ibili.player.preferredAudioQnMigrated") private var preferredAudioQnMigrated: Bool = false
     /// Whether to show danmaku overlay during playback.
     @AppStorage("ibili.player.danmakuEnabled") var danmakuEnabled: Bool = true
     /// Show a transient "长按可发送弹幕" hint when danmaku is enabled.
@@ -299,6 +303,16 @@ final class AppSettings: ObservableObject {
             preferredQnMigrated = true
         }
         return preferredQn
+    }
+
+    func resolvedPreferredAudioQn() -> Int {
+        if !preferredAudioQnMigrated && preferredAudioQn == 30251 {
+            preferredAudioQn = 0
+            preferredAudioQnMigrated = true
+        } else if !preferredAudioQnMigrated {
+            preferredAudioQnMigrated = true
+        }
+        return preferredAudioQn
     }
 
     func resolvedDanmakuBlockLevel() -> Int {
