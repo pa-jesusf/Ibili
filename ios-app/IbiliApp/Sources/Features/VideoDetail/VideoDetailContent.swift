@@ -20,6 +20,7 @@ struct VideoDetailContent: View {
     @ObservedObject private var vm: VideoDetailViewModel
     private let commentListViewModel: CommentListViewModel
     @ObservedObject private var interaction: VideoInteractionService
+    private let onScrollOffsetChange: ((CGFloat) -> Void)?
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
     @State private var mountedTabs: Set<Tab> = [.intro]
@@ -45,13 +46,15 @@ struct VideoDetailContent: View {
          currentEpisodeID: Int64 = 0,
          detailViewModel: VideoDetailViewModel,
          commentListViewModel: CommentListViewModel,
-         interactionService: VideoInteractionService) {
+         interactionService: VideoInteractionService,
+         onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.item = item
         self.currentSeasonID = currentSeasonID
         self.currentEpisodeID = currentEpisodeID
         self._vm = ObservedObject(wrappedValue: detailViewModel)
         self.commentListViewModel = commentListViewModel
         self._interaction = ObservedObject(wrappedValue: interactionService)
+        self.onScrollOffsetChange = onScrollOffsetChange
     }
 
     enum Tab: String, CaseIterable, Identifiable, Hashable {
@@ -508,14 +511,16 @@ struct VideoDetailContent: View {
     }
 
     private func handleDetailScrollOffsetChange(_ newValue: CGFloat) {
-        detailScrollOffset = newValue
+        let clampedOffset = max(0, newValue)
+        detailScrollOffset = clampedOffset
+        onScrollOffsetChange?(clampedOffset)
 
-        if newValue <= Self.upwardRefreshResetOffset {
+        if clampedOffset <= Self.upwardRefreshResetOffset {
             didTriggerUpwardRefreshSinceTop = false
             return
         }
 
-        guard newValue >= Self.upwardRefreshTriggerOffset,
+        guard clampedOffset >= Self.upwardRefreshTriggerOffset,
               !didTriggerUpwardRefreshSinceTop,
               !isRefreshingMetadata,
               Date().timeIntervalSince(lastMetadataRefreshAt) >= Self.metadataRefreshCooldown else {

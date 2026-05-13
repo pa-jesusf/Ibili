@@ -45,6 +45,7 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var prefersLandscapeFullscreen = true
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
     @Published private(set) var isTemporarySpeedBoostActive = false
+    @Published private(set) var isPausedForDetailCollapse = false
     private let holdSpeedRate: Float = 2.0
     private var temporaryPlaybackRateOverride: Float?
     /// Linear `AVPlayer.volume` value derived from the user's
@@ -261,7 +262,7 @@ final class PlayerViewModel: ObservableObject {
         }
         isPlaybackCompleted = false
         currentAudioQn = requestedAudioQn
-        isLoading = true; errorText = nil; isVideoReady = false
+        isLoading = true; errorText = nil; isVideoReady = false; isPausedForDetailCollapse = false
         itemStatusObservation = nil
         if isSameVideo {
             stopHeartbeat()
@@ -832,6 +833,7 @@ final class PlayerViewModel: ObservableObject {
             isPlaybackCompleted = false
         }
         player = newPlayer
+        updatePausedForDetailCollapse(from: newPlayer)
         if let newPlayer {
             newPlayer.volume = audioVolumeLinear
             observePlayerTimeControl(newPlayer)
@@ -898,10 +900,22 @@ final class PlayerViewModel: ObservableObject {
             }
             return
         }
+        updatePausedForDetailCollapse(from: observedPlayer)
         if status == .playing || status == .waitingToPlayAtSpecifiedRate {
             cancelSuppressedObservedPauseConfirmation()
         }
         handle(.observedTimeControlStatus(status))
+    }
+
+    private func updatePausedForDetailCollapse(from observedPlayer: AVPlayer? = nil) {
+        guard !isClosing,
+              isVideoReady,
+              let targetPlayer = observedPlayer ?? player,
+              targetPlayer === player else {
+            isPausedForDetailCollapse = false
+            return
+        }
+        isPausedForDetailCollapse = targetPlayer.timeControlStatus == .paused && targetPlayer.rate == 0
     }
 
     func armTransientPauseSuppression(for context: PlayerTransientPauseSuppressionContext) {
@@ -1196,6 +1210,7 @@ final class PlayerViewModel: ObservableObject {
                 case .readyToPlay:
                     self.isPlaybackCompleted = false
                     self.isVideoReady = true
+                    self.updatePausedForDetailCollapse()
                     // Seek to the server-recorded resume position
                     // exactly once per load. Cleared so a later
                     // quality-switch readyToPlay event keeps the
@@ -1855,6 +1870,7 @@ struct PlayerView: View {
     @State private var danmakuTimeObserver: Any?
     @State private var danmakuTimeObserverPlayer: AVPlayer?
     @State private var danmakuTimeJumpObserver: NSObjectProtocol?
+    @State private var detailScrollOffsetForPlayerCollapse: CGFloat = 0
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -1954,6 +1970,33 @@ struct PlayerView: View {
             || presentationState.isAwaitingInlineFullscreenReturn
     }
 
+    private var canCollapsePlayerForDetailScroll: Bool {
+        !offlineOnly
+            && shouldMountDetailContent
+            && vm.isPausedForDetailCollapse
+            && !isFullscreen
+            && !presentationState.isFullscreenPresentationActive
+            && !presentationState.isAwaitingInlineFullscreenReturn
+    }
+
+    private func collapsedPlayerHeight(expandedHeight: CGFloat) -> CGFloat {
+        min(expandedHeight, max(72, expandedHeight * 0.42))
+    }
+
+    private func playerCollapseProgress(expandedHeight: CGFloat) -> CGFloat {
+        guard canCollapsePlayerForDetailScroll else { return 0 }
+        let collapsedHeight = collapsedPlayerHeight(expandedHeight: expandedHeight)
+        let scrollDistance = max(60, expandedHeight - collapsedHeight)
+        return min(max(detailScrollOffsetForPlayerCollapse / scrollDistance, 0), 1)
+    }
+
+    private func playerHeight(for width: CGFloat) -> CGFloat {
+        let expandedHeight = width * 9.0 / 16.0
+        let collapsedHeight = collapsedPlayerHeight(expandedHeight: expandedHeight)
+        let progress = playerCollapseProgress(expandedHeight: expandedHeight)
+        return expandedHeight - (expandedHeight - collapsedHeight) * progress
+    }
+
     private var offlineDetailPlaceholder: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
@@ -1980,72 +2023,78 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Color.black
-                if let p = vm.player {
-                    PlayerContainer(
-                        player: p,
-                        sessionID: vm.currentSessionID,
-                        title: item.title,
-                        prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
-                        isPresentationRouteActive: isPresentationRouteActive,
-                        danmaku: danmaku,
-                        danmakuEnabled: settings.danmakuEnabled,
-                        danmakuOpacity: settings.danmakuOpacity,
-                        danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
-                        danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
-                        danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
-                        danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
-                        danmakuFontScale: settings.resolvedDanmakuFontScale(),
-                        isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
-                        canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
-                        beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
-                        endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
-                        canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
-                        onCreated: { vc in playerVCRef.vc = vc },
-                        onPresentationEvent: handlePresentationEvent
-                    )
-                    // Cover the native chrome until the first frame is
-                    // ready, otherwise users see a misleading pause icon
-                    // hovering over a black surface during buffering.
-                    if !vm.isVideoReady {
-                        Color.black.opacity(0.85)
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                ZStack {
+                    Color.black
+                    if let p = vm.player {
+                        PlayerContainer(
+                            player: p,
+                            sessionID: vm.currentSessionID,
+                            title: item.title,
+                            prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
+                            isPresentationRouteActive: isPresentationRouteActive,
+                            danmaku: danmaku,
+                            danmakuEnabled: settings.danmakuEnabled,
+                            danmakuOpacity: settings.danmakuOpacity,
+                            danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
+                            danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
+                            danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
+                            danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
+                            danmakuFontScale: settings.resolvedDanmakuFontScale(),
+                            isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
+                            canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
+                            beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
+                            endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
+                            canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
+                            onCreated: { vc in playerVCRef.vc = vc },
+                            onPresentationEvent: handlePresentationEvent
+                        )
+                        // Cover the native chrome until the first frame is
+                        // ready, otherwise users see a misleading pause icon
+                        // hovering over a black surface during buffering.
+                        if !vm.isVideoReady {
+                            Color.black.opacity(0.85)
+                            ProgressView().tint(.white)
+                        }
+                    } else if vm.isLoading {
                         ProgressView().tint(.white)
-                    }
-                } else if vm.isLoading {
-                    ProgressView().tint(.white)
-                } else if let err = vm.errorText {
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle").font(.largeTitle)
-                            .foregroundStyle(.yellow)
-                        Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
-                            .padding(.horizontal)
+                    } else if let err = vm.errorText {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle").font(.largeTitle)
+                                .foregroundStyle(.yellow)
+                            Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                        }
                     }
                 }
-            }
-            .aspectRatio(16.0/9.0, contentMode: .fit)
+                .frame(width: proxy.size.width, height: playerHeight(for: proxy.size.width))
+                .clipped()
+                .animation(.spring(response: 0.26, dampingFraction: 0.92), value: vm.isPausedForDetailCollapse)
 
-            if offlineOnly {
-                offlineDetailPlaceholder
-            } else if shouldMountDetailContent {
-                VideoDetailContent(item: item,
-                                   currentSeasonID: vm.currentSeasonID,
-                                   currentEpisodeID: vm.currentEpisodeID,
-                                   detailViewModel: vm.pageCache.detailViewModel,
-                                   commentListViewModel: vm.pageCache.commentListViewModel,
-                                   interactionService: vm.pageCache.interactionService)
-                    .transition(.opacity)
-            } else {
-                VStack(spacing: 12) {
-                    ProgressView().tint(IbiliTheme.accent)
-                    Text("正在准备详情")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                if offlineOnly {
+                    offlineDetailPlaceholder
+                } else if shouldMountDetailContent {
+                    VideoDetailContent(item: item,
+                                       currentSeasonID: vm.currentSeasonID,
+                                       currentEpisodeID: vm.currentEpisodeID,
+                                       detailViewModel: vm.pageCache.detailViewModel,
+                                       commentListViewModel: vm.pageCache.commentListViewModel,
+                                       interactionService: vm.pageCache.interactionService,
+                                       onScrollOffsetChange: { detailScrollOffsetForPlayerCollapse = $0 })
+                        .transition(.opacity)
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView().tint(IbiliTheme.accent)
+                        Text("正在准备详情")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 160)
+                    .background(IbiliTheme.background)
                 }
-                .frame(maxWidth: .infinity, minHeight: 160)
-                .background(IbiliTheme.background)
             }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

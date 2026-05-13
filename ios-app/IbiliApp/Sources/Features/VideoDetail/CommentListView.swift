@@ -434,7 +434,7 @@ private struct CommentPreviewReplyBox: View {
     @EnvironmentObject private var settings: AppSettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: replies.isEmpty ? 0 : 5) {
             ForEach(replies) { reply in
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
                     HStack(spacing: 4) {
@@ -479,8 +479,10 @@ private struct CommentPreviewReplyBox: View {
                 Text("\(settings.commentShowUPBadge && root.upActionReply ? "UP主等人 " : "")共\(root.replyCount)条回复")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(IbiliTheme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
