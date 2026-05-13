@@ -183,7 +183,11 @@ struct RichReplyText: View {
     /// Translate the upstream `pc_url` into our internal `ibili://` scheme
     /// when possible, so the OpenURLAction handler can route in-app.
     private func mapJumpURL(keyword: String, raw: String) -> String {
-        LinkRouter.mapToInternalURL(raw, keyword: keyword)
+        let mapped = LinkRouter.mapToInternalURL(raw, keyword: keyword)
+        if mapped == raw, looksLikeSearchTag(keyword: keyword, raw: raw) {
+            return LinkRouter.searchURL(keyword: cleanedSearchKeyword(keyword))
+        }
+        return mapped
     }
 
     private func detectInlineLink(chars: [Character], start: Int) -> (label: String, url: String, end: Int)? {
@@ -193,6 +197,7 @@ struct RichReplyText: View {
             #"(?i)^av\d+"#,
             #"(?i)^cv\d+"#,
             #"(?i)^opus\d+"#,
+            #"^#[^#\s\u{3000}][^#\n\r]*#"#,
             #"^https?://[^\s\u{3000}]+"#,
             #"^www\.[^\s\u{3000}]+"#
         ]
@@ -203,10 +208,33 @@ struct RichReplyText: View {
                   match.range.location == 0,
                   let swiftRange = Range(match.range, in: remaining) else { continue }
             let label = String(remaining[swiftRange])
+            if label.hasPrefix("#"), label.hasSuffix("#"), label.count > 2 {
+                let keyword = String(label.dropFirst().dropLast())
+                return (label, LinkRouter.searchURL(keyword: keyword), start + label.count)
+            }
             let rawURL = label.hasPrefix("www.") ? "https://\(label)" : label
             return (label, LinkRouter.mapToInternalURL(rawURL, keyword: label), start + label.count)
         }
         return nil
+    }
+
+    private func looksLikeSearchTag(keyword: String, raw: String) -> Bool {
+        let source = raw.isEmpty ? keyword : raw
+        let lower = source.lowercased()
+        return lower.contains("search.bilibili.com")
+            || lower.contains("word_search")
+            || lower.contains("wordsearch")
+            || lower.contains("search_type")
+            || (!keyword.isEmpty && raw.isEmpty)
+    }
+
+    private func cleanedSearchKeyword(_ keyword: String) -> String {
+        var text = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("#"), text.hasSuffix("#"), text.count > 2 {
+            text.removeFirst()
+            text.removeLast()
+        }
+        return text
     }
 
     // MARK: - Async emote fetch

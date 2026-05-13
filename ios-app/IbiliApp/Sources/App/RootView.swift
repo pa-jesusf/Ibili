@@ -493,7 +493,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, nil:
+        case .dynamicDetail, .userSpace, .article, .search, nil:
             break
         }
     }
@@ -504,7 +504,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, nil:
+        case .userSpace, .dynamicDetail, .article, .search, nil:
             break
         }
     }
@@ -607,6 +607,8 @@ private struct DeepLinkRouteContent {
             DynamicDetailView(item: detailRoute.item)
         case .article(let articleRoute):
             ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
+        case .search(let searchRoute):
+            SearchRouteView(keyword: searchRoute.keyword)
         }
     }
 
@@ -632,6 +634,8 @@ private struct DeepLinkRouteContent {
             UserSpaceView(mid: userSpaceRoute.mid)
         case .article(let articleRoute):
             ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
+        case .search(let searchRoute):
+            SearchRouteView(keyword: searchRoute.keyword)
         }
     }
 
@@ -755,7 +759,7 @@ private struct DeepLinkSplitHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, nil:
+        case .dynamicDetail, .userSpace, .article, .search, nil:
             break
         }
     }
@@ -766,7 +770,7 @@ private struct DeepLinkSplitHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, nil:
+        case .userSpace, .dynamicDetail, .article, .search, nil:
             break
         }
     }

@@ -110,12 +110,23 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
+    struct SearchRoute: Hashable, Identifiable {
+        let id: UUID
+        let keyword: String
+
+        init(id: UUID = UUID(), keyword: String) {
+            self.id = id
+            self.keyword = keyword
+        }
+    }
+
     enum SessionRoute: Hashable, Identifiable {
         case player(PlayerRoute)
         case live(LiveRoute)
         case userSpace(UserSpaceRoute)
         case dynamicDetail(DynamicDetailRoute)
         case article(ArticleRoute)
+        case search(SearchRoute)
 
         var id: UUID {
             switch self {
@@ -128,6 +139,8 @@ final class DeepLinkRouter: ObservableObject {
             case .dynamicDetail(let route):
                 return route.id
             case .article(let route):
+                return route.id
+            case .search(let route):
                 return route.id
             }
         }
@@ -149,6 +162,7 @@ final class DeepLinkRouter: ObservableObject {
         case dynamicDetail(DynamicDetailRoute)
         case userSpace(UserSpaceRoute)
         case article(ArticleRoute)
+        case search(SearchRoute)
 
         var id: UUID {
             switch self {
@@ -161,6 +175,8 @@ final class DeepLinkRouter: ObservableObject {
             case .userSpace(let route):
                 return route.id
             case .article(let route):
+                return route.id
+            case .search(let route):
                 return route.id
             }
         }
@@ -350,6 +366,28 @@ final class DeepLinkRouter: ObservableObject {
         pending = .article(ArticleRoute(articleID: trimmed, kind: normalizedKind))
     }
 
+    func openSearch(keyword: String) {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let route = SearchRoute(keyword: trimmed)
+        guard pending != nil, !isClosingRootSession else {
+            path.removeAll()
+            isClosingRootSession = false
+            pending = .search(route)
+            return
+        }
+        path.append(.search(route))
+    }
+
+    func selectSearch(keyword: String) {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .search(SearchRoute(keyword: trimmed))
+    }
+
     func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, mode: OpenMode = .push) {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
@@ -468,6 +506,13 @@ final class DeepLinkRouter: ObservableObject {
         case "opus":
             if let opusID = Self.extractFirstNumber(from: path) {
                 openArticle(id: opusID, kind: "opus")
+            }
+            return .handled
+        case "search":
+            let keyword = url.queryParameters["keyword"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let keyword, !keyword.isEmpty {
+                openSearch(keyword: keyword)
             }
             return .handled
         default:
@@ -600,7 +645,7 @@ final class DeepLinkRouter: ObservableObject {
                 PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
             case .live(let liveRoute):
                 LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-            case .userSpace, .dynamicDetail, .article:
+            case .userSpace, .dynamicDetail, .article, .search:
                 break
             }
         }
@@ -609,8 +654,18 @@ final class DeepLinkRouter: ObservableObject {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, nil:
+        case .dynamicDetail, .userSpace, .article, .search, nil:
             break
         }
+    }
+}
+
+private extension URL {
+    var queryParameters: [String: String] {
+        URLComponents(url: self, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .reduce(into: [String: String]()) { partialResult, item in
+                partialResult[item.name] = item.value ?? ""
+            } ?? [:]
     }
 }
