@@ -20,88 +20,179 @@ enum AnimeCollectionKind: Int64, CaseIterable, Identifiable {
     }
 }
 
+private enum AnimeHomeSection: String, CaseIterable, Identifiable {
+    case collection
+    case explore
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .collection: return "收藏"
+        case .explore: return "探索"
+        }
+    }
+}
+
 struct AnimeHomeView: View {
     @EnvironmentObject private var session: AppSession
-    @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.openURL) private var openURL
+    @Environment(\.horizontalSizeClass) private var hSizeClass
     @StateObject private var vm = AnimeHomeViewModel()
     @StateObject private var sourceStore = AnimeSourceStore.shared
+    @State private var section: AnimeHomeSection = .collection
     @State private var selectedKind: AnimeCollectionKind = .doing
     @State private var searchText = ""
     @State private var isSearching = false
     @State private var showsSourceSheet = false
     @State private var showsLogoutConfirmation = false
-    @Environment(\.openURL) private var openURL
+    @State private var headerCollapseProgress: CGFloat = 0
+    @State private var switcherCollapseProgress: CGFloat = 0
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                accountSection
-                controlsSection
-                if !vm.searchResults.isEmpty || isSearching {
-                    searchResultsSection
-                }
-                collectionSection
+        content
+            .background(IbiliTheme.background.ignoresSafeArea())
+            .overlay(alignment: .top) {
+                FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 32)
-        }
-        .background(IbiliTheme.background)
-        .navigationTitle("追番")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showsSourceSheet = true
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
+            .overlay(alignment: .top) {
+                FeedFloatingSegmentedControlOverlay(
+                    tabs: Array(AnimeHomeSection.allCases),
+                    title: { $0.title },
+                    selection: $section,
+                    collapseProgress: switcherCollapseProgress,
+                    positionProgress: headerCollapseProgress
+                )
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showsSourceSheet) {
+                NavigationStack {
+                    AnimeSourceSettingsView(store: sourceStore)
                 }
             }
+            .confirmationDialog("退出 Bangumi？", isPresented: $showsLogoutConfirmation, titleVisibility: .visible) {
+                Button("退出登录", role: .destructive) {
+                    session.logoutBangumi()
+                    vm.resetCollection()
+                    vm.searchResults = []
+                }
+                Button("取消", role: .cancel) {}
+            }
+            .task {
+                await sourceStore.ensureDefaultSubscriptionsLoaded()
+            }
+            .task(id: session.bangumiUser?.username ?? "") {
+                await session.refreshBangumiIfNeeded(
+                    clientID: BangumiOAuthConfig.clientID,
+                    clientSecret: BangumiOAuthConfig.clientSecret
+                )
+                await vm.load(kind: selectedKind, session: session, force: true)
+            }
+            .onChange(of: section) { _ in
+                headerCollapseProgress = 0
+                switcherCollapseProgress = 0
+            }
+            .tint(IbiliTheme.accent)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch section {
+        case .collection:
+            collectionPage
+        case .explore:
+            explorePage
         }
-        .task {
-            await sourceStore.ensureDefaultSubscriptionsLoaded()
-        }
-        .task(id: session.bangumiUser?.username ?? "") {
-            await session.refreshBangumiIfNeeded(
-                clientID: BangumiOAuthConfig.clientID,
-                clientSecret: BangumiOAuthConfig.clientSecret
-            )
-            await vm.load(kind: selectedKind, session: session)
-        }
-        .refreshable {
-            await vm.load(kind: selectedKind, session: session, force: true)
-        }
-        .sheet(isPresented: $showsSourceSheet) {
-            NavigationStack {
-                AnimeSourceSettingsView(store: sourceStore)
+    }
+
+    private var collectionPage: some View {
+        GeometryReader { geo in
+            ScrollView {
+                if #unavailable(iOS 18.0) {
+                    ScrollHeaderOffsetReader(coordinateSpace: "anime-collection-scroll")
+                }
+                FeedTitleHeader(title: "追番", collapseProgress: headerCollapseProgress, showsBackground: false)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    accountSection
+                    Picker("分组", selection: $selectedKind) {
+                        ForEach(AnimeCollectionKind.allCases) { kind in
+                            Text(kind.title).tag(kind)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: selectedKind) { kind in
+                        Task { await vm.load(kind: kind, session: session, force: true) }
+                    }
+
+                    collectionContent(cardWidth: max(1, geo.size.width - 24))
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
+            }
+            .coordinateSpace(name: "anime-collection-scroll")
+            .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: $switcherCollapseProgress))
+            .modifier(ProMotionScrollHint())
+            .refreshable {
+                await vm.load(kind: selectedKind, session: session, force: true)
             }
         }
-        .confirmationDialog("退出 Bangumi？", isPresented: $showsLogoutConfirmation, titleVisibility: .visible) {
-            Button("退出登录", role: .destructive) {
-                session.logoutBangumi()
-                vm.items = []
-                vm.searchResults = []
+    }
+
+    private var explorePage: some View {
+        GeometryReader { geo in
+            ScrollView {
+                if #unavailable(iOS 18.0) {
+                    ScrollHeaderOffsetReader(coordinateSpace: "anime-explore-scroll")
+                }
+                FeedTitleHeader(title: "追番", collapseProgress: headerCollapseProgress, showsBackground: false)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    searchBar
+                    if let errorText = vm.errorText, !errorText.isEmpty, vm.searchResults.isEmpty {
+                        emptyState(title: "搜索失败", symbol: "wifi.exclamationmark", message: errorText)
+                            .padding(.top, 40)
+                    } else if isSearching {
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                    } else if vm.searchResults.isEmpty {
+                        emptyState(title: "搜索 Bangumi 条目", symbol: "magnifyingglass")
+                            .padding(.top, 52)
+                    } else {
+                        LazyVStack(spacing: 12) {
+                            ForEach(vm.searchResults) { subject in
+                                animeCardButton(subject: subject, cardWidth: max(1, geo.size.width - 24), style: .detailed)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
             }
-            Button("取消", role: .cancel) {}
+            .coordinateSpace(name: "anime-explore-scroll")
+            .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: $switcherCollapseProgress))
+            .modifier(ProMotionScrollHint())
         }
-        .tint(IbiliTheme.accent)
     }
 
     private var accountSection: some View {
         Group {
             if let user = session.bangumiUser {
                 HStack(spacing: 12) {
-                    RemoteImage(url: user.avatar, targetPointSize: CGSize(width: 96, height: 96), quality: 82)
-                        .frame(width: 48, height: 48)
+                    RemoteImage(url: user.avatar, targetPointSize: CGSize(width: 88, height: 88), quality: 82)
+                        .frame(width: 44, height: 44)
                         .clipShape(Circle())
                     VStack(alignment: .leading, spacing: 3) {
                         Text(user.nickname.isEmpty ? user.username : user.nickname)
-                            .font(.headline)
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(IbiliTheme.textPrimary)
+                            .lineLimit(1)
                         Text("@\(user.username)")
                             .font(.caption)
                             .foregroundStyle(IbiliTheme.textSecondary)
+                            .lineLimit(1)
                     }
                     Spacer()
                     Button {
@@ -109,25 +200,25 @@ struct AnimeHomeView: View {
                     } label: {
                         Image(systemName: "rectangle.portrait.and.arrow.right")
                             .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                            .frame(width: 34, height: 34)
                     }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .buttonStyle(.plain)
                 }
             } else {
                 HStack(spacing: 12) {
                     Image(systemName: "person.crop.circle.badge.key.fill")
-                        .font(.title2.weight(.semibold))
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(IbiliTheme.accent)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 42, height: 42)
                         .background(IbiliTheme.accent.opacity(0.12), in: Circle())
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("登录 Bangumi")
-                            .font(.headline)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Bangumi")
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(IbiliTheme.textPrimary)
-                        Text(oauthHint)
-                            .font(.footnote)
+                        Text("未登录")
+                            .font(.caption)
                             .foregroundStyle(IbiliTheme.textSecondary)
-                            .lineLimit(2)
                     }
                     Spacer()
                     Button("登录") { startOAuth() }
@@ -137,141 +228,115 @@ struct AnimeHomeView: View {
                 }
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(IbiliTheme.surface))
+        .padding(12)
+        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    private var controlsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IbiliSectionHeader(title: "添加条目", systemImage: "magnifyingglass", iconColor: IbiliTheme.accent) {
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(IbiliTheme.textSecondary)
+            TextField("搜索条目", text: $searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit { Task { await search() } }
+            if isSearching {
+                ProgressView().controlSize(.small)
+            } else if !searchText.isEmpty {
                 Button {
-                    showsSourceSheet = true
+                    searchText = ""
+                    vm.searchResults = []
+                    vm.errorText = nil
                 } label: {
-                    Label(sourceSummaryText, systemImage: "slider.horizontal.3")
-                        .font(.caption.weight(.semibold))
+                    Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(IbiliTheme.textSecondary)
                 }
                 .buttonStyle(.plain)
             }
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(IbiliTheme.textSecondary)
-                TextField("搜索 Bangumi 条目", text: $searchText)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.search)
-                    .onSubmit { Task { await search() } }
-                if isSearching {
-                    ProgressView().controlSize(.small)
-                } else if !searchText.isEmpty {
+            Button {
+                Task { await search() }
+            } label: {
+                Image(systemName: "arrow.right.circle.fill")
+                    .font(.title3.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .disabled(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSearching)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func collectionContent(cardWidth: CGFloat) -> some View {
+        if session.bangumiUser == nil {
+            emptyState(title: "需要登录", symbol: "person.crop.circle.badge.exclamationmark")
+                .padding(.top, 44)
+        } else if vm.isLoading && vm.items.isEmpty {
+            ProgressView().frame(maxWidth: .infinity).padding(.top, 44)
+        } else if let errorText = vm.errorText, !errorText.isEmpty, vm.items.isEmpty {
+            emptyState(title: "加载失败", symbol: "wifi.exclamationmark", message: errorText)
+                .padding(.top, 44)
+        } else if vm.items.isEmpty {
+            emptyState(title: "\(selectedKind.title)为空", symbol: "play.tv")
+                .padding(.top, 44)
+        } else {
+            LazyVStack(spacing: 12) {
+                ForEach(vm.items) { item in
+                    animeCardButton(
+                        subject: item.subject,
+                        cardWidth: cardWidth,
+                        style: .compact,
+                        primaryLine: item.collectionLabel,
+                        secondaryLine: progressText(for: item)
+                    )
+                }
+                if vm.hasMore {
                     Button {
-                        searchText = ""
-                        vm.searchResults = []
+                        Task { await vm.loadMore(kind: selectedKind, session: session) }
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                Button {
-                    Task { await search() }
-                } label: {
-                    Text("搜索")
-                        .font(.subheadline.weight(.semibold))
-                }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .disabled(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSearching)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-    }
-
-    private var searchResultsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            IbiliSectionHeader(title: "搜索结果", systemImage: "plus.circle", iconColor: IbiliTheme.accent)
-            ForEach(vm.searchResults) { subject in
-                Button {
-                    router.openAnimeSubject(subject)
-                } label: {
-                    AnimeSubjectRow(subject: subject, subtitle: subject.date)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private var collectionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IbiliSectionHeader(title: "我的收藏", systemImage: "play.tv", iconColor: IbiliTheme.accent)
-            Picker("分组", selection: $selectedKind) {
-                ForEach(AnimeCollectionKind.allCases) { kind in
-                    Text(kind.title).tag(kind)
-                }
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: selectedKind) { kind in
-                Task { await vm.load(kind: kind, session: session, force: true) }
-            }
-
-            if session.bangumiUser == nil {
-                emptyState(
-                    title: "需要 Bangumi 登录",
-                    symbol: "person.crop.circle.badge.exclamationmark",
-                    message: "登录后会同步你的在看、想看、看过等分组。"
-                )
-                .padding(.vertical, 24)
-            } else if vm.isLoading && vm.items.isEmpty {
-                ProgressView().frame(maxWidth: .infinity).padding(.vertical, 32)
-            } else if vm.items.isEmpty {
-                emptyState(
-                    title: "\(selectedKind.title)为空",
-                    symbol: "play.tv",
-                    message: "可以通过上方搜索添加新条目。"
-                )
-                .padding(.vertical, 24)
-            } else {
-                LazyVStack(spacing: 10) {
-                    ForEach(vm.items) { item in
-                        Button {
-                            router.openAnimeSubject(item.subject)
-                        } label: {
-                            AnimeSubjectRow(
-                                subject: item.subject,
-                                subtitle: "\(item.collectionLabel) · 已看 \(item.epStatus)/\(max(item.subject.totalEpisodes, 0))"
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if vm.hasMore {
-                        Button {
-                            Task { await vm.loadMore(kind: selectedKind, session: session) }
-                        } label: {
-                            HStack {
-                                if vm.isLoading {
-                                    ProgressView().controlSize(.small)
-                                }
-                                Text(vm.isLoading ? "加载中" : "加载更多")
+                        HStack {
+                            if vm.isLoading {
+                                ProgressView().controlSize(.small)
                             }
-                            .frame(maxWidth: .infinity)
+                            Text(vm.isLoading ? "加载中" : "加载更多")
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(vm.isLoading)
+                        .frame(maxWidth: .infinity)
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(vm.isLoading)
                 }
             }
         }
     }
 
-    private var oauthHint: String {
-        "使用 Bangumi OAuth 维护收藏和单集看过状态。"
-    }
-
-    private var sourceSummaryText: String {
-        let enabled = sourceStore.sources.filter(\.enabled).count
-        return sourceStore.sources.isEmpty ? "规则源" : "\(enabled)/\(sourceStore.sources.count)"
+    private func animeCardButton(
+        subject: AnimeSubjectDTO,
+        cardWidth: CGFloat,
+        style: PgcPosterCardView.Style,
+        primaryLine: String? = nil,
+        secondaryLine: String? = nil
+    ) -> some View {
+        Button {
+            router.openAnimeSubject(subject)
+        } label: {
+            PgcPosterCardView(
+                data: PgcPosterCardData(
+                    id: subject.id,
+                    title: subject.displayTitle,
+                    cover: subject.coverURL,
+                    score: subject.ratingScore > 0 ? String(format: "%.1f", subject.ratingScore) : "",
+                    primaryLine: primaryLine ?? subjectPrimaryLine(subject),
+                    secondaryLine: secondaryLine ?? subjectSecondaryLine(subject),
+                    description: subject.summary
+                ),
+                cardWidth: cardWidth,
+                imageQuality: 82,
+                style: style
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func startOAuth() {
@@ -295,6 +360,22 @@ struct AnimeHomeView: View {
         defer { isSearching = false }
         await vm.search(keyword: keyword)
     }
+
+    private func progressText(for item: AnimeCollectionItemDTO) -> String {
+        let total = item.subject.totalEpisodes
+        guard total > 0 else { return "已看 \(item.epStatus)" }
+        return "已看 \(item.epStatus)/\(total)"
+    }
+
+    private func subjectPrimaryLine(_ subject: AnimeSubjectDTO) -> String {
+        [subject.date, subject.totalEpisodes > 0 ? "\(subject.totalEpisodes) 集" : ""]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
+    private func subjectSecondaryLine(_ subject: AnimeSubjectDTO) -> String {
+        subject.tags.prefix(3).joined(separator: " · ")
+    }
 }
 
 @MainActor
@@ -306,21 +387,30 @@ final class AnimeHomeViewModel: ObservableObject {
 
     private var page: Int64 = 1
     private var total: Int64 = 0
+    private var loadedKind: AnimeCollectionKind?
     private let pageSize: Int64 = 20
 
     var hasMore: Bool {
         Int64(items.count) < total
     }
 
+    func resetCollection() {
+        items = []
+        total = 0
+        page = 1
+        loadedKind = nil
+        errorText = nil
+    }
+
     func load(kind: AnimeCollectionKind, session: AppSession, force: Bool = false) async {
         guard let user = session.bangumiUser else {
-            items = []
-            total = 0
+            resetCollection()
             return
         }
         if isLoading { return }
-        if !force, !items.isEmpty { return }
+        if !force, loadedKind == kind, !items.isEmpty { return }
         page = 1
+        loadedKind = kind
         isLoading = true
         defer { isLoading = false }
         do {
@@ -341,6 +431,8 @@ final class AnimeHomeViewModel: ObservableObject {
             total = result.total
             errorText = nil
         } catch {
+            items = []
+            total = 0
             errorText = error.localizedDescription
         }
     }
@@ -365,8 +457,10 @@ final class AnimeHomeViewModel: ObservableObject {
                 )
             }.value
             page = nextPage
+            loadedKind = kind
             items.append(contentsOf: result.items)
             total = result.total
+            errorText = nil
         } catch {
             errorText = error.localizedDescription
         }
@@ -380,49 +474,9 @@ final class AnimeHomeViewModel: ObservableObject {
             searchResults = result.items
             errorText = nil
         } catch {
+            searchResults = []
             errorText = error.localizedDescription
         }
-    }
-}
-
-struct AnimeSubjectRow: View {
-    let subject: AnimeSubjectDTO
-    let subtitle: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            RemoteImage(url: subject.coverURL, targetPointSize: CGSize(width: 112, height: 150), quality: 82)
-                .frame(width: 56, height: 75)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 5) {
-                Text(subject.displayTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(2)
-                Text([subtitle, scoreText].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.caption)
-                    .foregroundStyle(IbiliTheme.textSecondary)
-                    .lineLimit(1)
-                if !subject.summary.isEmpty {
-                    Text(subject.summary)
-                        .font(.caption)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                        .lineLimit(2)
-                }
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(IbiliTheme.textSecondary)
-        }
-        .padding(10)
-        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private var scoreText: String {
-        subject.ratingScore > 0 ? String(format: "%.1f", subject.ratingScore) : ""
     }
 }
 
@@ -442,21 +496,14 @@ private struct AnimeSourceSettingsView: View {
                     Task { await refreshDefaultSubscriptions() }
                 } label: {
                     HStack {
-                        Text("刷新默认订阅源")
+                        Text("刷新默认源")
                         Spacer()
                         if isLoading { ProgressView().controlSize(.small) }
                     }
                 }
                 .disabled(isLoading)
-                LabeledContent("默认订阅") {
-                    Text("bt1 + css1")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                }
             } header: {
                 Text("默认源")
-            } footer: {
-                Text("与 animeko 默认订阅源一致。BT/磁力资源第一版会显示为暂不支持，可播放的 HLS/MP4 会正常进入播放器。")
             }
 
             Section {
@@ -503,7 +550,7 @@ private struct AnimeSourceSettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(source.name)
                                     .foregroundStyle(IbiliTheme.textPrimary)
-                                Text(sourceDescription(source))
+                                Text(source.factoryID == "rss" ? "RSS" : "Web Selector")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -566,10 +613,5 @@ private struct AnimeSourceSettingsView: View {
         } catch {
             errorText = error.localizedDescription
         }
-    }
-
-    private func sourceDescription(_ source: AnimeSourceDTO) -> String {
-        let type = source.factoryID == "rss" ? "RSS" : "Web Selector"
-        return source.description.isEmpty ? type : "\(type) · \(source.description)"
     }
 }

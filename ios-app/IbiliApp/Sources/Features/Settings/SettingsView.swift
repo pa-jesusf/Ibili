@@ -288,8 +288,6 @@ struct SettingsView: View {
                     .autocorrectionDisabled()
             } header: {
                 Text("追番")
-            } footer: {
-                Text("Bangumi OAuth 已内置应用配置，回调使用 ibili://bangumi-oauth。规则源兼容 animeko 导出结构，第一版只播放 HLS/MP4。")
             }
 
             cardMetaSection(

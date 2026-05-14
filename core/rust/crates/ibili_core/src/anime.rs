@@ -4,7 +4,8 @@ use crate::Core;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use scraper::{Html, Selector};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -146,6 +147,18 @@ pub struct AnimeMediaCandidate {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AnimeMediaFetchResult {
     pub candidates: Vec<AnimeMediaCandidate>,
+    pub diagnostics: AnimeMediaFetchDiagnostics,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeMediaFetchDiagnostics {
+    pub enabled_sources: i64,
+    pub attempted_queries: i64,
+    pub succeeded_queries: i64,
+    pub failed_queries: i64,
+    pub unsupported_candidates: i64,
+    pub supported_candidates: i64,
+    pub messages: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -174,9 +187,9 @@ struct OAuthTokenRaw {
 struct BangumiUserRaw {
     #[serde(default)]
     id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     username: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     nickname: String,
     #[serde(default)]
     avatar: BangumiAvatarRaw,
@@ -210,7 +223,7 @@ struct BangumiCollectionRaw {
     subject: BangumiSubjectRaw,
     #[serde(default)]
     r#type: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     updated_at: String,
     #[serde(default)]
     ep_status: i64,
@@ -220,13 +233,13 @@ struct BangumiCollectionRaw {
 struct BangumiSubjectRaw {
     #[serde(default)]
     id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     name_cn: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     date: String,
     #[serde(default)]
     images: Option<BangumiImagesRaw>,
@@ -248,15 +261,15 @@ struct BangumiSubjectRaw {
 
 #[derive(Deserialize, Default)]
 struct BangumiImagesRaw {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     large: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     common: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     medium: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     small: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     grid: String,
 }
 
@@ -276,13 +289,13 @@ struct BangumiSubjectCollectionStatRaw {
 
 #[derive(Deserialize, Default)]
 struct BangumiTagRaw {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     name: String,
 }
 
 #[derive(Deserialize, Default)]
 struct BangumiInfoBoxItemRaw {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     key: String,
     #[serde(default)]
     value: Value,
@@ -296,15 +309,15 @@ struct BangumiEpisodeRaw {
     sort: f64,
     #[serde(default)]
     ep: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     name_cn: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     duration: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     airdate: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     desc: String,
     #[serde(default)]
     collection: Option<BangumiEpisodeCollectionRaw>,
@@ -567,27 +580,50 @@ impl Core {
         let keywords = build_search_keywords(&subject_names);
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
+        let enabled_sources = update.sources.iter().filter(|s| s.enabled).count() as i64;
+        let mut diagnostics = AnimeMediaFetchDiagnostics {
+            enabled_sources,
+            ..Default::default()
+        };
         for source in update.sources.iter().filter(|s| s.enabled) {
             if source.factory_id == "rss" {
                 for keyword in &keywords {
-                    if let Ok(mut items) = self.fetch_rss_candidates(source, keyword, episode_sort, episode_name) {
-                        push_unique(&mut candidates, &mut seen, &mut items);
+                    diagnostics.attempted_queries += 1;
+                    match self.fetch_rss_candidates(source, keyword, episode_sort, episode_name) {
+                        Ok(mut items) => {
+                            diagnostics.succeeded_queries += 1;
+                            push_unique(&mut candidates, &mut seen, &mut items);
+                        }
+                        Err(error) => {
+                            diagnostics.failed_queries += 1;
+                            push_diagnostic_message(&mut diagnostics.messages, source, keyword, &error);
+                        }
                     }
                 }
             } else if source.factory_id == "web-selector" {
                 for keyword in &keywords {
-                    if let Ok(mut items) = self.fetch_selector_candidates(source, keyword, episode_sort, episode_name) {
-                        push_unique(&mut candidates, &mut seen, &mut items);
+                    diagnostics.attempted_queries += 1;
+                    match self.fetch_selector_candidates(source, keyword, episode_sort, episode_name) {
+                        Ok(mut items) => {
+                            diagnostics.succeeded_queries += 1;
+                            push_unique(&mut candidates, &mut seen, &mut items);
+                        }
+                        Err(error) => {
+                            diagnostics.failed_queries += 1;
+                            push_diagnostic_message(&mut diagnostics.messages, source, keyword, &error);
+                        }
                     }
                 }
             }
         }
+        diagnostics.supported_candidates = candidates.iter().filter(|c| c.is_supported).count() as i64;
+        diagnostics.unsupported_candidates = candidates.len() as i64 - diagnostics.supported_candidates;
         candidates.sort_by(|a, b| {
             b.is_supported.cmp(&a.is_supported)
                 .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
                 .then_with(|| a.source_name.cmp(&b.source_name))
         });
-        Ok(AnimeMediaFetchResult { candidates })
+        Ok(AnimeMediaFetchResult { candidates, diagnostics })
     }
 
     pub fn anime_media_resolve(
@@ -1129,6 +1165,13 @@ fn push_unique(target: &mut Vec<AnimeMediaCandidate>, seen: &mut HashSet<String>
     }
 }
 
+fn push_diagnostic_message(messages: &mut Vec<String>, source: &AnimeSource, keyword: &str, error: &CoreError) {
+    if messages.len() >= 8 {
+        return;
+    }
+    messages.push(format!("{} · {} · {}", source.name, keyword, error));
+}
+
 fn simplify_keyword(text: &str) -> String {
     let mut value = text.replace(['：', ':', '·'], " ");
     if let Some((head, _)) = value.split_once('(') {
@@ -1152,6 +1195,14 @@ fn stable_hash(text: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
 fn now_secs() -> i64 {

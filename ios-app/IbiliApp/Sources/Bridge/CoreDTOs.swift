@@ -719,6 +719,27 @@ public struct AnimeMediaCandidateDTO: Codable, Hashable, Identifiable {
 
 public struct AnimeMediaFetchResultDTO: Codable {
     public let candidates: [AnimeMediaCandidateDTO]
+    public let diagnostics: AnimeMediaFetchDiagnosticsDTO
+}
+
+public struct AnimeMediaFetchDiagnosticsDTO: Codable, Hashable {
+    public let enabledSources: Int64
+    public let attemptedQueries: Int64
+    public let succeededQueries: Int64
+    public let failedQueries: Int64
+    public let unsupportedCandidates: Int64
+    public let supportedCandidates: Int64
+    public let messages: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case messages
+        case enabledSources = "enabled_sources"
+        case attemptedQueries = "attempted_queries"
+        case succeededQueries = "succeeded_queries"
+        case failedQueries = "failed_queries"
+        case unsupportedCandidates = "unsupported_candidates"
+        case supportedCandidates = "supported_candidates"
+    }
 }
 
 public struct AnimePlayUrlDTO: Codable, Hashable {

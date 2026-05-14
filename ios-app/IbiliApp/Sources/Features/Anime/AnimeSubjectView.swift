@@ -3,12 +3,14 @@ import SwiftUI
 struct AnimeSubjectView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var sourceStore = AnimeSourceStore.shared
     @State private var subject: AnimeSubjectDTO?
     @State private var isLoading = false
     @State private var errorText: String?
     @State private var selectedEpisode: AnimeEpisodeDTO?
     @State private var candidates: [AnimeMediaCandidateDTO] = []
+    @State private var mediaDiagnostics: AnimeMediaFetchDiagnosticsDTO?
     @State private var isFetchingMedia = false
     @State private var showsPicker = false
 
@@ -49,6 +51,7 @@ struct AnimeSubjectView: View {
                         subject: subject,
                         episode: episode,
                         candidates: candidates,
+                        diagnostics: mediaDiagnostics,
                         isLoading: isFetchingMedia,
                         onRefresh: {
                             Task { await fetchMedia(for: episode, showSheet: true) }
@@ -59,6 +62,10 @@ struct AnimeSubjectView: View {
                     )
                 }
             }
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active, needsMetadataReload else { return }
+            Task { await load() }
         }
         .tint(IbiliTheme.accent)
     }
@@ -114,13 +121,8 @@ struct AnimeSubjectView: View {
     private func episodeSection(_ subject: AnimeSubjectDTO) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("选集")
-                        .font(.headline)
-                    Text("点击后从规则源查找可播放资源")
-                        .font(.caption)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                }
+                Text("选集")
+                    .font(.headline)
                 Spacer()
                 if isFetchingMedia {
                     ProgressView().controlSize(.small)
@@ -176,6 +178,9 @@ struct AnimeSubjectView: View {
     }
 
     private func load() async {
+        if subject == nil {
+            subject = initialSubject
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -231,10 +236,26 @@ struct AnimeSubjectView: View {
                 )
             }.value
             candidates = result.candidates
+            mediaDiagnostics = result.diagnostics
+            AppLog.info("anime", "追番资源检索完成", metadata: [
+                "subjectID": String(subject.id),
+                "episodeID": String(episode.id),
+                "enabledSources": String(result.diagnostics.enabledSources),
+                "attemptedQueries": String(result.diagnostics.attemptedQueries),
+                "succeededQueries": String(result.diagnostics.succeededQueries),
+                "failedQueries": String(result.diagnostics.failedQueries),
+                "supportedCandidates": String(result.diagnostics.supportedCandidates),
+                "unsupportedCandidates": String(result.diagnostics.unsupportedCandidates),
+            ])
             errorText = nil
         } catch {
             candidates = []
+            mediaDiagnostics = nil
             errorText = error.localizedDescription
+            AppLog.error("anime", "追番资源检索失败", error: error, metadata: [
+                "subjectID": String(subject.id),
+                "episodeID": String(episode.id),
+            ])
         }
     }
 
@@ -254,6 +275,12 @@ struct AnimeSubjectView: View {
                 errorText = error.localizedDescription
             }
         }
+    }
+
+    private var needsMetadataReload: Bool {
+        guard !isLoading else { return false }
+        guard let subject else { return true }
+        return subject.episodes.isEmpty
     }
 }
 
@@ -302,6 +329,7 @@ private struct AnimeSourcePickerSheet: View {
     let subject: AnimeSubjectDTO
     let episode: AnimeEpisodeDTO
     let candidates: [AnimeMediaCandidateDTO]
+    let diagnostics: AnimeMediaFetchDiagnosticsDTO?
     let isLoading: Bool
     let onRefresh: () -> Void
     let onPick: (AnimeMediaCandidateDTO) -> Void
@@ -326,8 +354,8 @@ private struct AnimeSourcePickerSheet: View {
             }
             Section {
                 if candidates.isEmpty && !isLoading {
-                    Text("没有找到可用资源。请检查规则源，或等待源站更新。")
-                        .foregroundStyle(.secondary)
+                    emptyState(title: "没有找到资源", symbol: "magnifyingglass")
+                        .padding(.vertical, 18)
                 } else {
                     ForEach(candidates) { candidate in
                         Button {
@@ -357,6 +385,23 @@ private struct AnimeSourcePickerSheet: View {
                         }
                         .disabled(!candidate.isSupported)
                     }
+                }
+            }
+            if let diagnostics {
+                Section {
+                    LabeledContent("规则源", value: "\(diagnostics.enabledSources)")
+                    LabeledContent("查询", value: "\(diagnostics.succeededQueries)/\(diagnostics.attemptedQueries)")
+                    LabeledContent("可播放", value: "\(diagnostics.supportedCandidates)")
+                    if diagnostics.failedQueries > 0 {
+                        LabeledContent("失败", value: "\(diagnostics.failedQueries)")
+                    }
+                    ForEach(diagnostics.messages.prefix(4), id: \.self) { message in
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("诊断")
                 }
             }
         }
