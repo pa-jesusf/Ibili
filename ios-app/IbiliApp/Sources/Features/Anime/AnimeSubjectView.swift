@@ -8,11 +8,6 @@ struct AnimeSubjectView: View {
     @State private var subject: AnimeSubjectDTO?
     @State private var isLoading = false
     @State private var errorText: String?
-    @State private var selectedEpisode: AnimeEpisodeDTO?
-    @State private var candidates: [AnimeMediaCandidateDTO] = []
-    @State private var mediaDiagnostics: AnimeMediaFetchDiagnosticsDTO?
-    @State private var isFetchingMedia = false
-    @State private var showsPicker = false
 
     let subjectID: Int64
     let initialSubject: AnimeSubjectDTO?
@@ -42,26 +37,8 @@ struct AnimeSubjectView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: subjectID) {
             subject = initialSubject
+            await sourceStore.ensureDefaultSubscriptionsLoaded()
             await load()
-        }
-        .sheet(isPresented: $showsPicker) {
-            if let subject, let episode = selectedEpisode {
-                NavigationStack {
-                    AnimeSourcePickerSheet(
-                        subject: subject,
-                        episode: episode,
-                        candidates: candidates,
-                        diagnostics: mediaDiagnostics,
-                        isLoading: isFetchingMedia,
-                        onRefresh: {
-                            Task { await fetchMedia(for: episode, showSheet: true) }
-                        },
-                        onPick: { candidate in
-                            resolve(candidate: candidate, subject: subject, episode: episode)
-                        }
-                    )
-                }
-            }
         }
         .onChange(of: scenePhase) { phase in
             guard phase == .active, needsMetadataReload else { return }
@@ -124,9 +101,6 @@ struct AnimeSubjectView: View {
                 Text("选集")
                     .font(.headline)
                 Spacer()
-                if isFetchingMedia {
-                    ProgressView().controlSize(.small)
-                }
             }
 
             if subject.episodes.isEmpty {
@@ -141,9 +115,9 @@ struct AnimeSubjectView: View {
                             AnimeEpisodeChip(
                                 episode: episode,
                                 index: index + 1,
-                                isWatched: episode.collectionType == 2
+                                stateLabel: episodeStateLabel(episode.collectionType)
                             ) {
-                                Task { await fetchMedia(for: episode, showSheet: true) }
+                                openEpisode(episode, reason: "tap")
                             }
                         }
                     }
@@ -159,19 +133,35 @@ struct AnimeSubjectView: View {
 
     private func statusSection(_ subject: AnimeSubjectDTO) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("收藏状态")
-                .font(.headline)
             HStack {
+                Text("收藏状态")
+                    .font(.headline)
+                Spacer()
+            }
+            LazyVGrid(columns: [
+                GridItem(.adaptive(minimum: 72), spacing: 8)
+            ], alignment: .leading, spacing: 8) {
                 ForEach([(3, "在看"), (1, "想看"), (2, "看过"), (4, "搁置"), (5, "抛弃")], id: \.0) { value, label in
+                    let isSelected = subject.collectionType == Int64(value)
                     Button(label) {
                         Task { await updateCollection(value) }
                     }
                     .font(.caption.weight(.semibold))
-                    .buttonStyle(.bordered)
-                    .tint(subject.collectionType == Int64(value) ? IbiliTheme.accent : .secondary)
+                    .foregroundStyle(isSelected ? IbiliTheme.accent : IbiliTheme.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(isSelected ? IbiliTheme.accent.opacity(0.12) : Color(.tertiarySystemFill))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(isSelected ? IbiliTheme.accent.opacity(0.7) : Color.clear, lineWidth: 1)
+                    )
+                    .buttonStyle(.plain)
                 }
             }
-            .buttonBorderShape(.capsule)
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(IbiliTheme.surface))
@@ -218,63 +208,22 @@ struct AnimeSubjectView: View {
         }
     }
 
-    private func fetchMedia(for episode: AnimeEpisodeDTO, showSheet: Bool) async {
-        guard let subject else { return }
-        selectedEpisode = episode
-        if showSheet { showsPicker = true }
-        isFetchingMedia = true
-        defer { isFetchingMedia = false }
-        do {
-            let sourcesJSON = try sourceStore.enabledSourcesJSON()
-            let names = [subject.nameCn, subject.name] + subject.aliases
-            let result = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.animeMediaFetch(
-                    sourcesJSON: sourcesJSON,
-                    subjectNames: names,
-                    episodeSort: episode.sort,
-                    episodeName: episode.displayTitle
-                )
-            }.value
-            candidates = result.candidates
-            mediaDiagnostics = result.diagnostics
-            AppLog.info("anime", "追番资源检索完成", metadata: [
-                "subjectID": String(subject.id),
+    private func openEpisode(_ episode: AnimeEpisodeDTO, reason: String) {
+        guard let subject else {
+            AppLog.warning("anime", "追番集数打开跳过：缺少条目元数据", metadata: [
+                "subjectID": String(subjectID),
                 "episodeID": String(episode.id),
-                "enabledSources": String(result.diagnostics.enabledSources),
-                "attemptedQueries": String(result.diagnostics.attemptedQueries),
-                "succeededQueries": String(result.diagnostics.succeededQueries),
-                "failedQueries": String(result.diagnostics.failedQueries),
-                "supportedCandidates": String(result.diagnostics.supportedCandidates),
-                "unsupportedCandidates": String(result.diagnostics.unsupportedCandidates),
+                "reason": reason,
             ])
-            errorText = nil
-        } catch {
-            candidates = []
-            mediaDiagnostics = nil
-            errorText = error.localizedDescription
-            AppLog.error("anime", "追番资源检索失败", error: error, metadata: [
-                "subjectID": String(subject.id),
-                "episodeID": String(episode.id),
-            ])
+            return
         }
-    }
-
-    private func resolve(candidate: AnimeMediaCandidateDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO) {
-        Task {
-            do {
-                let play = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.animeMediaResolve(
-                        candidate: candidate,
-                        title: "\(subject.displayTitle) · \(episode.displayTitle)",
-                        cover: subject.coverURL
-                    )
-                }.value
-                showsPicker = false
-                router.openAnimePlayer(play: play, subject: subject, episode: episode)
-            } catch {
-                errorText = error.localizedDescription
-            }
-        }
+        AppLog.info("anime", "追番集数已选择", metadata: [
+            "subjectID": String(subject.id),
+            "episodeID": String(episode.id),
+            "episodeSort": String(format: "%.2f", episode.sort),
+            "reason": reason,
+        ])
+        router.openAnimeEpisode(subject: subject, episode: episode)
     }
 
     private var needsMetadataReload: Bool {
@@ -282,13 +231,28 @@ struct AnimeSubjectView: View {
         guard let subject else { return true }
         return subject.episodes.isEmpty
     }
+
+    private func episodeStateLabel(_ value: Int64) -> String {
+        switch value {
+        case 1: return "想看"
+        case 2: return "看过"
+        case 3: return "在看"
+        case 4: return "搁置"
+        case 5: return "抛弃"
+        default: return ""
+        }
+    }
 }
 
 private struct AnimeEpisodeChip: View {
     let episode: AnimeEpisodeDTO
     let index: Int
-    let isWatched: Bool
+    let stateLabel: String
     let onTap: () -> Void
+
+    private var hasState: Bool {
+        !stateLabel.isEmpty
+    }
 
     var body: some View {
         Button(action: onTap) {
@@ -296,129 +260,37 @@ private struct AnimeEpisodeChip: View {
                 HStack(spacing: 5) {
                     Text(String(format: "%02d", index))
                         .font(.caption2.weight(.bold).monospacedDigit())
-                    if isWatched {
+                    if hasState {
                         Image(systemName: "checkmark.circle.fill")
                             .imageScale(.small)
                     }
                 }
-                .foregroundStyle(isWatched ? IbiliTheme.accent : IbiliTheme.textSecondary)
+                .foregroundStyle(hasState ? IbiliTheme.accent : IbiliTheme.textSecondary)
 
                 Text(episode.displayTitle)
                     .font(.footnote.weight(.medium))
-                    .foregroundStyle(isWatched ? IbiliTheme.accent : IbiliTheme.textPrimary)
+                    .foregroundStyle(hasState ? IbiliTheme.accent : IbiliTheme.textPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+                if hasState {
+                    Text(stateLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(IbiliTheme.accent)
+                        .lineLimit(1)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 9)
-            .frame(width: 124, height: 72, alignment: .topLeading)
+            .frame(width: 124, height: 80, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isWatched ? IbiliTheme.accent.opacity(0.12) : Color(.tertiarySystemFill))
+                    .fill(hasState ? IbiliTheme.accent.opacity(0.12) : Color(.tertiarySystemFill))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(isWatched ? IbiliTheme.accent.opacity(0.7) : Color.clear, lineWidth: 1)
+                    .stroke(hasState ? IbiliTheme.accent.opacity(0.7) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
-    }
-}
-
-private struct AnimeSourcePickerSheet: View {
-    let subject: AnimeSubjectDTO
-    let episode: AnimeEpisodeDTO
-    let candidates: [AnimeMediaCandidateDTO]
-    let diagnostics: AnimeMediaFetchDiagnosticsDTO?
-    let isLoading: Bool
-    let onRefresh: () -> Void
-    let onPick: (AnimeMediaCandidateDTO) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        List {
-            Section {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(episode.displayTitle)
-                            .font(.headline)
-                        Text(subject.displayTitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if isLoading {
-                        ProgressView().controlSize(.small)
-                    }
-                }
-            }
-            Section {
-                if candidates.isEmpty && !isLoading {
-                    emptyState(title: "没有找到资源", symbol: "magnifyingglass")
-                        .padding(.vertical, 18)
-                } else {
-                    ForEach(candidates) { candidate in
-                        Button {
-                            guard candidate.isSupported else { return }
-                            onPick(candidate)
-                        } label: {
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: candidate.isSupported ? "play.circle.fill" : "exclamationmark.triangle")
-                                    .foregroundStyle(candidate.isSupported ? IbiliTheme.accent : .secondary)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(candidate.title)
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(IbiliTheme.textPrimary)
-                                        .lineLimit(2)
-                                    Text([candidate.sourceName, candidate.qualityLabel, candidate.kind.uppercased()]
-                                        .filter { !$0.isEmpty }
-                                        .joined(separator: " · "))
-                                        .font(.caption)
-                                        .foregroundStyle(IbiliTheme.textSecondary)
-                                    if !candidate.isSupported {
-                                        Text(candidate.unsupportedReason)
-                                            .font(.caption)
-                                            .foregroundStyle(.red)
-                                    }
-                                }
-                            }
-                        }
-                        .disabled(!candidate.isSupported)
-                    }
-                }
-            }
-            if let diagnostics {
-                Section {
-                    LabeledContent("规则源", value: "\(diagnostics.enabledSources)")
-                    LabeledContent("查询", value: "\(diagnostics.succeededQueries)/\(diagnostics.attemptedQueries)")
-                    LabeledContent("可播放", value: "\(diagnostics.supportedCandidates)")
-                    if diagnostics.failedQueries > 0 {
-                        LabeledContent("失败", value: "\(diagnostics.failedQueries)")
-                    }
-                    ForEach(diagnostics.messages.prefix(4), id: \.self) { message in
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("诊断")
-                }
-            }
-        }
-        .navigationTitle("选择资源")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("关闭") { dismiss() }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    onRefresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .disabled(isLoading)
-            }
-        }
     }
 }

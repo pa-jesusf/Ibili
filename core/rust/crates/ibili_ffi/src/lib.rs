@@ -303,6 +303,21 @@ struct AnimeMediaResolveArgs {
     cover: String,
 }
 
+#[derive(Deserialize)]
+struct AnimeEpisodePlayArgs {
+    sources_json: String,
+    #[serde(default)]
+    subject_names: Vec<String>,
+    #[serde(default)]
+    episode_sort: f64,
+    #[serde(default)]
+    episode_name: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    cover: String,
+}
+
 fn default_qn() -> i64 {
     0
 }
@@ -775,6 +790,17 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "anime.media.resolve" => {
             let a: AnimeMediaResolveArgs = serde_json::from_value(args)?;
             to_value(c.inner.anime_media_resolve(a.candidate, &a.title, &a.cover)?)
+        }
+        "anime.episode.play" => {
+            let a: AnimeEpisodePlayArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_episode_play(
+                &a.sources_json,
+                a.subject_names,
+                a.episode_sort,
+                &a.episode_name,
+                &a.title,
+                &a.cover,
+            )?)
         }
         "auth.tv_qr.start" => to_value(c.inner.auth_tv_qr_start()?),
         "auth.tv_qr.poll" => {

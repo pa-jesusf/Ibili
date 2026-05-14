@@ -341,6 +341,36 @@ public final class CoreClient: @unchecked Sendable {
         )
     }
 
+    public func animeEpisodePlay(
+        sourcesJSON: String,
+        subjectNames: [String],
+        episodeSort: Double,
+        episodeName: String,
+        title: String,
+        cover: String
+    ) throws -> AnimeEpisodePlayResultDTO {
+        struct A: Encodable {
+            let sources_json: String
+            let subject_names: [String]
+            let episode_sort: Double
+            let episode_name: String
+            let title: String
+            let cover: String
+        }
+        return try call(
+            "anime.episode.play",
+            args: A(
+                sources_json: sourcesJSON,
+                subject_names: subjectNames,
+                episode_sort: episodeSort,
+                episode_name: episodeName,
+                title: title,
+                cover: cover
+            ),
+            decoding: AnimeEpisodePlayResultDTO.self
+        )
+    }
+
     public func feedHome(idx: Int64 = 0, ps: Int64 = 20, source: String = "web") throws -> FeedPageDTO {
         struct A: Encodable { let idx: Int64; let ps: Int64; let source: String }
         return try call("feed.home", args: A(idx: idx, ps: ps, source: source), decoding: FeedPageDTO.self)

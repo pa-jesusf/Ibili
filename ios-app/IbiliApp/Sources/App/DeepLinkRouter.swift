@@ -134,15 +134,15 @@ final class DeepLinkRouter: ObservableObject {
 
     struct AnimePlayerRoute: Hashable, Identifiable {
         let id: UUID
-        let play: AnimePlayUrlDTO
         let subject: AnimeSubjectDTO
         let episode: AnimeEpisodeDTO
+        let initialPlay: AnimePlayUrlDTO?
 
-        init(id: UUID = UUID(), play: AnimePlayUrlDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO) {
+        init(id: UUID = UUID(), subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO, initialPlay: AnimePlayUrlDTO? = nil) {
             self.id = id
-            self.play = play
             self.subject = subject
             self.episode = episode
+            self.initialPlay = initialPlay
         }
     }
 
@@ -456,7 +456,7 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     func openAnimePlayer(play: AnimePlayUrlDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO, mode: OpenMode = .push) {
-        let route = AnimePlayerRoute(play: play, subject: subject, episode: episode)
+        let route = AnimePlayerRoute(subject: subject, episode: episode, initialPlay: play)
         guard pending != nil, !isClosingRootSession else {
             path.removeAll()
             isClosingRootSession = false
@@ -475,7 +475,30 @@ final class DeepLinkRouter: ObservableObject {
         prepareCurrentRootForReplacement()
         path.removeAll()
         isClosingRootSession = false
-        pending = .animePlayer(AnimePlayerRoute(play: play, subject: subject, episode: episode))
+        pending = .animePlayer(AnimePlayerRoute(subject: subject, episode: episode, initialPlay: play))
+    }
+
+    func openAnimeEpisode(subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO, mode: OpenMode = .push) {
+        let route = AnimePlayerRoute(subject: subject, episode: episode)
+        guard pending != nil, !isClosingRootSession else {
+            path.removeAll()
+            isClosingRootSession = false
+            pending = .animePlayer(route)
+            return
+        }
+        switch mode {
+        case .push:
+            path.append(.animePlayer(route))
+        case .replaceCurrent:
+            replaceCurrentGeneric(with: .animePlayer(route), root: .animePlayer(route))
+        }
+    }
+
+    func selectAnimeEpisode(subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO) {
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .animePlayer(AnimePlayerRoute(subject: subject, episode: episode))
     }
 
     func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, mode: OpenMode = .push) {

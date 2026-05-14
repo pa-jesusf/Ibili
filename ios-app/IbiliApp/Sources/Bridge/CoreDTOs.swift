@@ -730,6 +730,7 @@ public struct AnimeMediaFetchDiagnosticsDTO: Codable, Hashable {
     public let unsupportedCandidates: Int64
     public let supportedCandidates: Int64
     public let messages: [String]
+    public let sourceReports: [AnimeMediaSourceReportDTO]
 
     enum CodingKeys: String, CodingKey {
         case messages
@@ -739,6 +740,34 @@ public struct AnimeMediaFetchDiagnosticsDTO: Codable, Hashable {
         case failedQueries = "failed_queries"
         case unsupportedCandidates = "unsupported_candidates"
         case supportedCandidates = "supported_candidates"
+        case sourceReports = "source_reports"
+    }
+}
+
+public struct AnimeMediaSourceReportDTO: Codable, Hashable, Identifiable {
+    public let sourceID: String
+    public let sourceName: String
+    public let factoryID: String
+    public let attemptedQueries: Int64
+    public let succeededQueries: Int64
+    public let failedQueries: Int64
+    public let candidateCount: Int64
+    public let supportedCount: Int64
+    public let status: String
+    public let message: String
+
+    public var id: String { sourceID }
+
+    enum CodingKeys: String, CodingKey {
+        case status, message
+        case sourceID = "source_id"
+        case sourceName = "source_name"
+        case factoryID = "factory_id"
+        case attemptedQueries = "attempted_queries"
+        case succeededQueries = "succeeded_queries"
+        case failedQueries = "failed_queries"
+        case candidateCount = "candidate_count"
+        case supportedCount = "supported_count"
     }
 }
 
@@ -756,6 +785,12 @@ public struct AnimePlayUrlDTO: Codable, Hashable {
         case userAgent = "user_agent"
         case durationMs = "duration_ms"
     }
+}
+
+public struct AnimeEpisodePlayResultDTO: Codable {
+    public let play: AnimePlayUrlDTO?
+    public let candidates: [AnimeMediaCandidateDTO]
+    public let diagnostics: AnimeMediaFetchDiagnosticsDTO
 }
 
 public enum AnyCodableValue: Codable, Hashable {

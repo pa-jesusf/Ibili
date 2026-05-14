@@ -3,12 +3,15 @@ use crate::http::UA_WEB;
 use crate::Core;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use regex::Regex;
+use reqwest::blocking::Client;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::{HashMap, HashSet};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 const BANGUMI_API: &str = "https://api.bgm.tv";
@@ -18,6 +21,11 @@ pub const DEFAULT_MEDIA_SOURCE_SUBSCRIPTIONS: [&str; 2] = [
     "https://sub.creamycake.org/v1/bt1.json",
     "https://sub.creamycake.org/v1/css1.json",
 ];
+const MEDIA_FETCH_REQUEST_TIMEOUT_SECS: u64 = 4;
+const MEDIA_FETCH_BATCH_SIZE: usize = 24;
+const MEDIA_FETCH_STOP_AFTER_SUPPORTED: usize = 12;
+const MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY: usize = 3;
+const MEDIA_FETCH_MAX_EPISODE_PAGES_PER_QUERY: usize = 5;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AnimeOAuthStart {
@@ -159,6 +167,21 @@ pub struct AnimeMediaFetchDiagnostics {
     pub unsupported_candidates: i64,
     pub supported_candidates: i64,
     pub messages: Vec<String>,
+    pub source_reports: Vec<AnimeMediaSourceReport>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeMediaSourceReport {
+    pub source_id: String,
+    pub source_name: String,
+    pub factory_id: String,
+    pub attempted_queries: i64,
+    pub succeeded_queries: i64,
+    pub failed_queries: i64,
+    pub candidate_count: i64,
+    pub supported_count: i64,
+    pub status: String,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -170,6 +193,13 @@ pub struct AnimePlayUrl {
     pub referer: String,
     pub user_agent: String,
     pub duration_ms: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeEpisodePlayResult {
+    pub play: Option<AnimePlayUrl>,
+    pub candidates: Vec<AnimeMediaCandidate>,
+    pub diagnostics: AnimeMediaFetchDiagnostics,
 }
 
 #[derive(Deserialize)]
@@ -248,8 +278,6 @@ struct BangumiSubjectRaw {
     #[serde(default)]
     rank: i64,
     #[serde(default)]
-    collection: Option<BangumiSubjectCollectionStatRaw>,
-    #[serde(default)]
     eps: i64,
     #[serde(default)]
     total_episodes: i64,
@@ -279,12 +307,6 @@ struct BangumiRatingRaw {
     score: f64,
     #[serde(default)]
     total: i64,
-}
-
-#[derive(Deserialize, Default)]
-struct BangumiSubjectCollectionStatRaw {
-    #[serde(default)]
-    doing: i64,
 }
 
 #[derive(Deserialize, Default)]
@@ -585,39 +607,66 @@ impl Core {
             enabled_sources,
             ..Default::default()
         };
-        for source in update.sources.iter().filter(|s| s.enabled) {
-            if source.factory_id == "rss" {
-                for keyword in &keywords {
-                    diagnostics.attempted_queries += 1;
-                    match self.fetch_rss_candidates(source, keyword, episode_sort, episode_name) {
-                        Ok(mut items) => {
-                            diagnostics.succeeded_queries += 1;
-                            push_unique(&mut candidates, &mut seen, &mut items);
-                        }
-                        Err(error) => {
-                            diagnostics.failed_queries += 1;
-                            push_diagnostic_message(&mut diagnostics.messages, source, keyword, &error);
+        let jobs = build_media_fetch_jobs(&update.sources, &keywords);
+        let mut reports = reports_for_sources(&update.sources);
+        if jobs.is_empty() {
+            diagnostics.source_reports = reports.into_values().collect();
+            return Ok(AnimeMediaFetchResult { candidates, diagnostics });
+        }
+        let client = self.http.client.clone();
+        for batch in jobs.chunks(MEDIA_FETCH_BATCH_SIZE) {
+            diagnostics.attempted_queries += batch.len() as i64;
+            let handles = batch.iter().cloned().map(|job| {
+                let client = client.clone();
+                let episode_name = episode_name.to_string();
+                thread::spawn(move || {
+                    let result = fetch_media_job(&client, &job, episode_sort, &episode_name);
+                    MediaFetchJobResult { job, result }
+                })
+            }).collect::<Vec<_>>();
+
+            for handle in handles {
+                match handle.join() {
+                    Ok(job_result) => {
+                        update_source_report_attempt(&mut reports, &job_result.job);
+                        match job_result.result {
+                            Ok(mut items) => {
+                                diagnostics.succeeded_queries += 1;
+                                update_source_report_success(&mut reports, &job_result.job, &items);
+                                push_unique(&mut candidates, &mut seen, &mut items);
+                            }
+                            Err(error) => {
+                                diagnostics.failed_queries += 1;
+                                update_source_report_failure(&mut reports, &job_result.job, &error);
+                                push_diagnostic_message(
+                                    &mut diagnostics.messages,
+                                    &job_result.job.source,
+                                    &job_result.job.keyword,
+                                    &error,
+                                );
+                            }
                         }
                     }
-                }
-            } else if source.factory_id == "web-selector" {
-                for keyword in &keywords {
-                    diagnostics.attempted_queries += 1;
-                    match self.fetch_selector_candidates(source, keyword, episode_sort, episode_name) {
-                        Ok(mut items) => {
-                            diagnostics.succeeded_queries += 1;
-                            push_unique(&mut candidates, &mut seen, &mut items);
-                        }
-                        Err(error) => {
-                            diagnostics.failed_queries += 1;
-                            push_diagnostic_message(&mut diagnostics.messages, source, keyword, &error);
+                    Err(_) => {
+                        diagnostics.failed_queries += 1;
+                        if diagnostics.messages.len() < 8 {
+                            diagnostics.messages.push("规则源线程异常退出".into());
                         }
                     }
                 }
             }
+
+            let supported_count = candidates.iter().filter(|c| c.is_supported).count();
+            if supported_count >= MEDIA_FETCH_STOP_AFTER_SUPPORTED {
+                if diagnostics.messages.len() < 8 {
+                    diagnostics.messages.push("已优先返回可播放资源，部分慢源仍可手动刷新再试".into());
+                }
+                break;
+            }
         }
         diagnostics.supported_candidates = candidates.iter().filter(|c| c.is_supported).count() as i64;
         diagnostics.unsupported_candidates = candidates.len() as i64 - diagnostics.supported_candidates;
+        diagnostics.source_reports = sorted_source_reports(reports);
         candidates.sort_by(|a, b| {
             b.is_supported.cmp(&a.is_supported)
                 .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
@@ -647,6 +696,30 @@ impl Core {
             referer: if candidate.referer.is_empty() { candidate.page_url } else { candidate.referer },
             user_agent: if candidate.user_agent.is_empty() { UA_WEB.to_string() } else { candidate.user_agent },
             duration_ms: 0,
+        })
+    }
+
+    pub fn anime_episode_play(
+        &self,
+        sources_json: &str,
+        subject_names: Vec<String>,
+        episode_sort: f64,
+        episode_name: &str,
+        title: &str,
+        cover: &str,
+    ) -> CoreResult<AnimeEpisodePlayResult> {
+        let fetch = self.anime_media_fetch(sources_json, subject_names, episode_sort, episode_name)?;
+        let play = fetch
+            .candidates
+            .iter()
+            .find(|candidate| candidate.is_supported)
+            .cloned()
+            .map(|candidate| self.anime_media_resolve(candidate, title, cover))
+            .transpose()?;
+        Ok(AnimeEpisodePlayResult {
+            play,
+            candidates: fetch.candidates,
+            diagnostics: fetch.diagnostics,
         })
     }
 
@@ -731,70 +804,6 @@ impl Core {
         Err(CoreError::Api { code: status as i64, msg: bangumi_error_message(&text) })
     }
 
-    fn fetch_rss_candidates(
-        &self,
-        source: &AnimeSource,
-        keyword: &str,
-        episode_sort: f64,
-        episode_name: &str,
-    ) -> CoreResult<Vec<AnimeMediaCandidate>> {
-        let Some(search_url) = source.arguments.pointer("/searchConfig/searchUrl").and_then(Value::as_str) else {
-            return Ok(Vec::new());
-        };
-        let url = fill_search_url(search_url, keyword, 1);
-        if url.is_empty() {
-            return Ok(Vec::new());
-        }
-        let text = self.http.client
-            .get(&url)
-            .header("User-Agent", UA_WEB)
-            .header("Accept", "application/rss+xml, application/xml, text/xml, */*")
-            .send()?
-            .error_for_status()
-            .map_err(|e| CoreError::Network(e.to_string()))?
-            .text()
-            .map_err(|e| CoreError::Network(e.to_string()))?;
-        let filter_by_episode = source.arguments
-            .pointer("/searchConfig/filterByEpisodeSort")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        Ok(parse_rss_candidates(source, &text, &url, episode_sort, episode_name, filter_by_episode))
-    }
-
-    fn fetch_selector_candidates(
-        &self,
-        source: &AnimeSource,
-        keyword: &str,
-        episode_sort: f64,
-        episode_name: &str,
-    ) -> CoreResult<Vec<AnimeMediaCandidate>> {
-        let Some(search_url) = source.arguments.pointer("/searchConfig/searchUrl").and_then(Value::as_str) else {
-            return Ok(Vec::new());
-        };
-        let url = fill_search_url(search_url, keyword, 1);
-        if url.is_empty() {
-            return Ok(Vec::new());
-        }
-        let ua = source.arguments
-            .pointer("/searchConfig/matchVideo/addHeadersToVideo/userAgent")
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(UA_WEB);
-        let text = self.http.client
-            .get(&url)
-            .header("User-Agent", ua)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .send()?
-            .error_for_status()
-            .map_err(|e| CoreError::Network(e.to_string()))?
-            .text()
-            .map_err(|e| CoreError::Network(e.to_string()))?;
-        let filter_by_episode = source.arguments
-            .pointer("/searchConfig/filterByEpisodeSort")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        Ok(parse_selector_candidates(source, &text, &url, episode_sort, episode_name, filter_by_episode))
-    }
 }
 
 fn decode_bangumi_response<T: for<'de> Deserialize<'de>>(response: reqwest::blocking::Response) -> CoreResult<T> {
@@ -804,6 +813,836 @@ fn decode_bangumi_response<T: for<'de> Deserialize<'de>>(response: reqwest::bloc
         return Err(CoreError::Api { code: status as i64, msg: bangumi_error_message(&text) });
     }
     serde_json::from_str(&text).map_err(CoreError::from)
+}
+
+#[derive(Clone)]
+struct MediaFetchJob {
+    source: AnimeSource,
+    keyword: String,
+}
+
+struct MediaFetchJobResult {
+    job: MediaFetchJob,
+    result: CoreResult<Vec<AnimeMediaCandidate>>,
+}
+
+#[derive(Clone)]
+struct SelectorSubjectHit {
+    title: String,
+    url: String,
+}
+
+#[derive(Clone)]
+struct SelectorEpisodeHit {
+    title: String,
+    url: String,
+    channel: String,
+}
+
+fn build_media_fetch_jobs(sources: &[AnimeSource], keywords: &[String]) -> Vec<MediaFetchJob> {
+    let mut jobs = Vec::new();
+    for source in sources.iter().filter(|source| source.enabled) {
+        if !matches!(source.factory_id.as_str(), "rss" | "web-selector") || !source_supports_avkit(source) {
+            continue;
+        }
+        for keyword in keywords {
+            jobs.push(MediaFetchJob {
+                source: source.clone(),
+                keyword: selector_search_keyword(source, keyword),
+            });
+        }
+    }
+    jobs
+}
+
+fn fetch_media_job(
+    client: &Client,
+    job: &MediaFetchJob,
+    episode_sort: f64,
+    episode_name: &str,
+) -> CoreResult<Vec<AnimeMediaCandidate>> {
+    match job.source.factory_id.as_str() {
+        "rss" => fetch_rss_candidates_with_client(client, &job.source, &job.keyword, episode_sort, episode_name),
+        "web-selector" => fetch_selector_candidates_with_client(client, &job.source, &job.keyword, episode_sort, episode_name),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn fetch_rss_candidates_with_client(
+    client: &Client,
+    source: &AnimeSource,
+    keyword: &str,
+    episode_sort: f64,
+    episode_name: &str,
+) -> CoreResult<Vec<AnimeMediaCandidate>> {
+    let Some(search_url) = source.arguments.pointer("/searchConfig/searchUrl").and_then(Value::as_str) else {
+        return Ok(Vec::new());
+    };
+    let url = fill_search_url(search_url, keyword, 1);
+    if url.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = http_get_text(
+        client,
+        &url,
+        UA_WEB,
+        "application/rss+xml, application/xml, text/xml, */*",
+    )?;
+    let filter_by_episode = source.arguments
+        .pointer("/searchConfig/filterByEpisodeSort")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    Ok(parse_rss_candidates(source, &text, &url, episode_sort, episode_name, filter_by_episode))
+}
+
+fn fetch_selector_candidates_with_client(
+    client: &Client,
+    source: &AnimeSource,
+    keyword: &str,
+    episode_sort: f64,
+    episode_name: &str,
+) -> CoreResult<Vec<AnimeMediaCandidate>> {
+    let Some(search_url) = source.arguments.pointer("/searchConfig/searchUrl").and_then(Value::as_str) else {
+        return Ok(Vec::new());
+    };
+    let url = fill_search_url(search_url, keyword, 1);
+    if url.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ua = selector_user_agent(source);
+    let text = http_get_text(
+        client,
+        &url,
+        ua,
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    )?;
+    let filter_by_episode = source.arguments
+        .pointer("/searchConfig/filterByEpisodeSort")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mut candidates = parse_selector_candidates(source, &text, &url, episode_sort, episode_name, filter_by_episode);
+    let subjects = parse_selector_subjects(source, &text, &url, keyword);
+    for subject in subjects.into_iter().take(MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY) {
+        let subject_html = match http_get_text(
+            client,
+            &subject.url,
+            ua,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ) {
+            Ok(html) => html,
+            Err(_) => continue,
+        };
+        let episodes = parse_selector_episode_hits(
+            source,
+            &subject_html,
+            &subject.url,
+            episode_sort,
+            episode_name,
+            filter_by_episode,
+        );
+        let mut subject_has_playable = false;
+        for episode in episodes.into_iter().take(MEDIA_FETCH_MAX_EPISODE_PAGES_PER_QUERY) {
+            let candidate_title = selector_candidate_title(&subject.title, &episode);
+            if is_supported_media_url(&episode.url) {
+                subject_has_playable = true;
+                candidates.push(make_candidate(
+                    source,
+                    candidate_title,
+                    episode.url,
+                    subject.url.clone(),
+                    selector_referer(source, &subject.url),
+                ));
+                continue;
+            }
+            let episode_html = match http_get_text(
+                client,
+                &episode.url,
+                ua,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ) {
+                Ok(html) => html,
+                Err(_) => continue,
+            };
+            let mut urls = extract_selector_media_urls(&episode_html, &episode.url);
+            if urls.is_empty() {
+                urls = fetch_nested_selector_media_urls(client, source, &episode_html, &episode.url, ua);
+            }
+            for media_url in urls {
+                subject_has_playable = true;
+                candidates.push(make_candidate(
+                    source,
+                    candidate_title.clone(),
+                    media_url,
+                    episode.url.clone(),
+                    selector_referer(source, &episode.url),
+                ));
+            }
+            if subject_has_playable {
+                break;
+            }
+        }
+        if subject_has_playable {
+            break;
+        }
+    }
+    dedupe_candidates(candidates)
+}
+
+fn http_get_text(client: &Client, url: &str, user_agent: &str, accept: &str) -> CoreResult<String> {
+    client
+        .get(url)
+        .timeout(Duration::from_secs(MEDIA_FETCH_REQUEST_TIMEOUT_SECS))
+        .header("User-Agent", user_agent)
+        .header("Accept", accept)
+        .send()?
+        .error_for_status()
+        .map_err(|e| CoreError::Network(e.to_string()))?
+        .text()
+        .map_err(|e| CoreError::Network(e.to_string()))
+}
+
+fn parse_selector_subjects(
+    source: &AnimeSource,
+    html: &str,
+    page_url: &str,
+    keyword: &str,
+) -> Vec<SelectorSubjectHit> {
+    let document = Html::parse_document(html);
+    let format_id = source.arguments
+        .pointer("/searchConfig/subjectFormatId")
+        .and_then(Value::as_str)
+        .unwrap_or("a");
+    let mut items = match format_id {
+        "indexed" => parse_indexed_subject_hits(source, &document, page_url),
+        "json-path-indexed" => parse_json_path_subject_hits(source, html, page_url),
+        _ => parse_anchor_subject_hits(source, &document, page_url),
+    };
+    let normalized_keyword = simplify_keyword(keyword).to_lowercase();
+    items.sort_by(|a, b| {
+        let a_score = subject_title_score(&a.title, &normalized_keyword);
+        let b_score = subject_title_score(&b.title, &normalized_keyword);
+        b_score.cmp(&a_score)
+            .then_with(|| a.title.len().cmp(&b.title.len()))
+    });
+    dedupe_subject_hits(items)
+}
+
+fn parse_anchor_subject_hits(source: &AnimeSource, document: &Html, page_url: &str) -> Vec<SelectorSubjectHit> {
+    let selector_text = source.arguments
+        .pointer("/searchConfig/selectorSubjectFormatA/selectLists")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("a");
+    let Ok(selector) = Selector::parse(selector_text) else {
+        return Vec::new();
+    };
+    document
+        .select(&selector)
+        .filter_map(|element| {
+            let href = element.value().attr("href")?;
+            let url = resolve_url(page_url, href)?;
+            let title = element_text_or_title(&element);
+            if title.is_empty() {
+                None
+            } else {
+                Some(SelectorSubjectHit { title, url })
+            }
+        })
+        .collect()
+}
+
+fn parse_json_path_subject_hits(source: &AnimeSource, html: &str, page_url: &str) -> Vec<SelectorSubjectHit> {
+    let Ok(value) = serde_json::from_str::<Value>(html) else {
+        return Vec::new();
+    };
+    let names_path = source.arguments
+        .pointer("/searchConfig/selectorSubjectFormatJsonPathIndexed/selectNames")
+        .and_then(Value::as_str)
+        .unwrap_or("$[*]['title','name']");
+    let links_path = source.arguments
+        .pointer("/searchConfig/selectorSubjectFormatJsonPathIndexed/selectLinks")
+        .and_then(Value::as_str)
+        .unwrap_or("$[*]['url','link']");
+    let names = json_path_strings(&value, names_path);
+    let links = json_path_strings(&value, links_path);
+    names
+        .into_iter()
+        .zip(links)
+        .filter_map(|(title, href)| {
+            let title = title.trim().to_string();
+            if title.is_empty() {
+                return None;
+            }
+            let url = resolve_url(page_url, &href)?;
+            Some(SelectorSubjectHit { title, url })
+        })
+        .collect()
+}
+
+fn parse_indexed_subject_hits(source: &AnimeSource, document: &Html, page_url: &str) -> Vec<SelectorSubjectHit> {
+    let Some(names_selector_text) = source.arguments
+        .pointer("/searchConfig/selectorSubjectFormatIndexed/selectNames")
+        .and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let Some(links_selector_text) = source.arguments
+        .pointer("/searchConfig/selectorSubjectFormatIndexed/selectLinks")
+        .and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let (Ok(names_selector), Ok(links_selector)) = (
+        Selector::parse(names_selector_text),
+        Selector::parse(links_selector_text),
+    ) else {
+        return Vec::new();
+    };
+    let names = document
+        .select(&names_selector)
+        .map(|element| element_text_or_title(&element))
+        .collect::<Vec<_>>();
+    let links = document
+        .select(&links_selector)
+        .filter_map(|element| element.value().attr("href").and_then(|href| resolve_url(page_url, href)))
+        .collect::<Vec<_>>();
+    names
+        .into_iter()
+        .zip(links)
+        .filter_map(|(title, url)| if title.is_empty() { None } else { Some(SelectorSubjectHit { title, url }) })
+        .collect()
+}
+
+fn parse_selector_episode_hits(
+    source: &AnimeSource,
+    html: &str,
+    subject_url: &str,
+    episode_sort: f64,
+    episode_name: &str,
+    filter_by_episode: bool,
+) -> Vec<SelectorEpisodeHit> {
+    let document = Html::parse_document(html);
+    let channel_format = source.arguments
+        .pointer("/searchConfig/channelFormatId")
+        .and_then(Value::as_str)
+        .unwrap_or("index-grouped");
+    let base_url = selector_base_url(subject_url);
+    match channel_format {
+        "no-channel" => {
+            let episodes_selector = source.arguments
+                .pointer("/searchConfig/selectorChannelFormatNoChannel/selectEpisodes")
+                .and_then(Value::as_str)
+                .unwrap_or("a");
+            let links_selector = source.arguments
+                .pointer("/searchConfig/selectorChannelFormatNoChannel/selectEpisodeLinks")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let match_regex = source.arguments
+                .pointer("/searchConfig/selectorChannelFormatNoChannel/matchEpisodeSortFromName")
+                .and_then(Value::as_str);
+            parse_episode_hits_from_parent(
+                &document,
+                base_url,
+                episodes_selector,
+                links_selector,
+                match_regex,
+                episode_sort,
+                episode_name,
+                filter_by_episode,
+            )
+        }
+        _ => {
+            let lists_selector_text = source.arguments
+                .pointer("/searchConfig/selectorChannelFormatFlattened/selectEpisodeLists")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let episodes_selector = source.arguments
+                .pointer("/searchConfig/selectorChannelFormatFlattened/selectEpisodesFromList")
+                .and_then(Value::as_str)
+                .unwrap_or("a");
+            let links_selector = source.arguments
+                .pointer("/searchConfig/selectorChannelFormatFlattened/selectEpisodeLinksFromList")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let match_regex = source.arguments
+                .pointer("/searchConfig/selectorChannelFormatFlattened/matchEpisodeSortFromName")
+                .and_then(Value::as_str);
+            let Ok(lists_selector) = Selector::parse(lists_selector_text) else {
+                return Vec::new();
+            };
+            let lists = document.select(&lists_selector).collect::<Vec<_>>();
+            let channels = parse_channel_names(source, &document);
+            lists
+                .into_iter()
+                .enumerate()
+                .flat_map(|(index, list)| {
+                    let channel = channels.get(index).cloned().unwrap_or_default();
+                    parse_episode_hits_from_parent(
+                        &list,
+                        base_url,
+                        episodes_selector,
+                        links_selector,
+                        match_regex,
+                        episode_sort,
+                        episode_name,
+                        filter_by_episode,
+                    )
+                    .into_iter()
+                    .map(move |mut hit| {
+                        hit.channel = channel.clone();
+                        hit
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
+fn parse_channel_names(source: &AnimeSource, document: &Html) -> Vec<String> {
+    let selector_text = source.arguments
+        .pointer("/searchConfig/selectorChannelFormatFlattened/selectChannelNames")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let match_text = source.arguments
+        .pointer("/searchConfig/selectorChannelFormatFlattened/matchChannelName")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Ok(selector) = Selector::parse(selector_text) else {
+        return Vec::new();
+    };
+    let regex = if match_text.is_empty() {
+        None
+    } else {
+        Regex::new(match_text).ok()
+    };
+    document
+        .select(&selector)
+        .filter_map(|element| {
+            let text = element_text_or_title(&element);
+            if text.is_empty() {
+                return None;
+            }
+            if let Some(regex) = regex.as_ref() {
+                let captures = regex.captures(&text)?;
+                captures
+                    .name("ch")
+                    .map(|m| m.as_str().trim().to_string())
+                    .or_else(|| captures.get(0).map(|m| m.as_str().trim().to_string()))
+                    .filter(|s| !s.is_empty())
+            } else {
+                Some(text)
+            }
+        })
+        .collect()
+}
+
+trait SelectableNode {
+    fn select_node(&self, selector: &Selector) -> Vec<scraper::ElementRef<'_>>;
+}
+
+impl SelectableNode for Html {
+    fn select_node(&self, selector: &Selector) -> Vec<scraper::ElementRef<'_>> {
+        self.select(selector).collect()
+    }
+}
+
+impl<'a> SelectableNode for scraper::ElementRef<'a> {
+    fn select_node(&self, selector: &Selector) -> Vec<scraper::ElementRef<'_>> {
+        self.select(selector).collect()
+    }
+}
+
+fn parse_episode_hits_from_parent(
+    parent: &dyn SelectableNode,
+    base_url: &str,
+    episodes_selector_text: &str,
+    links_selector_text: &str,
+    match_regex: Option<&str>,
+    episode_sort: f64,
+    episode_name: &str,
+    filter_by_episode: bool,
+) -> Vec<SelectorEpisodeHit>
+{
+    let Ok(episodes_selector) = Selector::parse(episodes_selector_text) else {
+        return Vec::new();
+    };
+    let links = select_links_from_parent(parent, links_selector_text, base_url);
+    let match_regex = match_regex
+        .and_then(|pattern| if pattern.trim().is_empty() { None } else { Regex::new(pattern).ok() });
+    parent
+        .select_node(&episodes_selector)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, element)| {
+            let title = element_text_or_title(&element);
+            if title.is_empty() {
+                return None;
+            }
+            if !episode_hit_matches(&title, episode_sort, episode_name, filter_by_episode, match_regex.as_ref()) {
+                return None;
+            }
+            let raw_href = links
+                .as_ref()
+                .and_then(|items| items.get(index).cloned())
+                .or_else(|| element.value().attr("href").map(str::to_string))
+                .or_else(|| element.value().attr("src").map(str::to_string))?;
+            let url = resolve_url(base_url, &raw_href)?;
+            Some(SelectorEpisodeHit { title, url, channel: String::new() })
+        })
+        .collect()
+}
+
+fn select_links_from_parent(parent: &dyn SelectableNode, selector_text: &str, base_url: &str) -> Option<Vec<String>> {
+    let selector_text = selector_text.trim();
+    if selector_text.is_empty() {
+        return None;
+    }
+    let selector = Selector::parse(selector_text).ok()?;
+    Some(
+        parent
+            .select_node(&selector)
+            .into_iter()
+            .filter_map(|element| {
+                element.value()
+                    .attr("href")
+                    .or_else(|| element.value().attr("src"))
+                    .and_then(|href| resolve_url(base_url, href))
+            })
+            .collect(),
+    )
+}
+
+fn episode_hit_matches(
+    title: &str,
+    episode_sort: f64,
+    episode_name: &str,
+    filter_by_episode: bool,
+    match_regex: Option<&Regex>,
+) -> bool {
+    if !filter_by_episode {
+        return true;
+    }
+    if let Some(regex) = match_regex {
+        if let Some(captures) = regex.captures(title) {
+            let raw = captures
+                .name("ep")
+                .map(|m| m.as_str())
+                .or_else(|| captures.get(0).map(|m| m.as_str()))
+                .unwrap_or(title);
+            if episode_sort_matches_raw(raw, episode_sort) {
+                return true;
+            }
+        }
+    }
+    should_include_title(title, episode_sort, episode_name, true)
+}
+
+fn episode_sort_matches_raw(raw: &str, episode_sort: f64) -> bool {
+    if episode_sort <= 0.0 {
+        return true;
+    }
+    let sort = episode_sort.round() as i64;
+    let cleaned = raw.trim().trim_start_matches('第').trim_end_matches(['话', '集']);
+    if let Ok(value) = cleaned.parse::<i64>() {
+        return value == sort;
+    }
+    let normalized = cleaned.to_lowercase();
+    let padded = format!("{:02}", sort);
+    normalized == sort.to_string()
+        || normalized == padded
+        || normalized.contains(&format!("ep{}", sort))
+        || normalized.contains(&format!("ep{}", padded))
+}
+
+fn extract_selector_media_urls(html: &str, page_url: &str) -> Vec<String> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("video[src], source[src], a[href]").expect("valid media selector");
+    let mut urls = Vec::new();
+    for element in document.select(&selector) {
+        let href = element.value().attr("src").or_else(|| element.value().attr("href")).unwrap_or("");
+        if let Some(url) = resolve_url(page_url, href) {
+            if is_supported_media_url(&url) {
+                urls.push(url);
+            }
+        }
+    }
+    let quoted = Regex::new(r#"https?://[^"'\\\s<>]+(?:\.m3u8|\.mp4|\.m4v)(?:\?[^"'\\\s<>]*)?"#).expect("media url regex");
+    for hit in quoted.find_iter(html) {
+        if let Some(url) = resolve_url(page_url, hit.as_str()) {
+            urls.push(url);
+        }
+    }
+    dedupe_strings(urls)
+}
+
+fn fetch_nested_selector_media_urls(
+    client: &Client,
+    source: &AnimeSource,
+    html: &str,
+    page_url: &str,
+    ua: &str,
+) -> Vec<String> {
+    let nested_regex = source.arguments
+        .pointer("/searchConfig/matchVideo/matchNestedUrl")
+        .and_then(Value::as_str)
+        .and_then(|pattern| Regex::new(pattern).ok());
+    let Some(nested_regex) = nested_regex else {
+        return Vec::new();
+    };
+    let mut nested_pages = Vec::new();
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("iframe[src], script[src], a[href]").expect("valid nested selector");
+    for element in document.select(&selector) {
+        let href = element.value().attr("src").or_else(|| element.value().attr("href")).unwrap_or("");
+        if let Some(url) = resolve_url(page_url, href) {
+            if nested_regex.is_match(&url) {
+                nested_pages.push(url);
+            }
+        }
+    }
+    let mut urls = Vec::new();
+    for nested_url in nested_pages.into_iter().take(2) {
+        if let Ok(nested_html) = http_get_text(
+            client,
+            &nested_url,
+            ua,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ) {
+            urls.extend(extract_selector_media_urls(&nested_html, &nested_url));
+        }
+    }
+    dedupe_strings(urls)
+}
+
+fn dedupe_candidates(items: Vec<AnimeMediaCandidate>) -> CoreResult<Vec<AnimeMediaCandidate>> {
+    let mut seen = HashSet::new();
+    Ok(items.into_iter().filter(|item| seen.insert(item.url.clone())).collect())
+}
+
+fn dedupe_subject_hits(items: Vec<SelectorSubjectHit>) -> Vec<SelectorSubjectHit> {
+    let mut seen = HashSet::new();
+    items.into_iter().filter(|item| seen.insert(item.url.clone())).collect()
+}
+
+fn dedupe_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items.into_iter().filter(|item| seen.insert(item.clone())).collect()
+}
+
+fn selector_candidate_title(subject_title: &str, episode: &SelectorEpisodeHit) -> String {
+    if episode.channel.is_empty() {
+        format!("{} · {}", subject_title, episode.title)
+    } else {
+        format!("{} · {} · {}", subject_title, episode.channel, episode.title)
+    }
+}
+
+fn element_text_or_title(element: &scraper::ElementRef<'_>) -> String {
+    element.value()
+        .attr("title")
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| element.text().collect::<Vec<_>>().join("").trim().to_string())
+}
+
+fn selector_base_url(subject_url: &str) -> &str {
+    if subject_url.ends_with('/') {
+        subject_url.trim_end_matches('/')
+    } else {
+        subject_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(subject_url)
+    }
+}
+
+fn json_path_strings(value: &Value, path: &str) -> Vec<String> {
+    let Some(field_names) = json_path_field_names(path) else {
+        return Vec::new();
+    };
+    let items = match value {
+        Value::Array(items) => items.iter().collect::<Vec<_>>(),
+        Value::Object(_) => vec![value],
+        _ => Vec::new(),
+    };
+    items
+        .into_iter()
+        .filter_map(|item| {
+            for field in &field_names {
+                if let Some(value) = item.get(field).and_then(Value::as_str) {
+                    if !value.trim().is_empty() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+fn json_path_field_names(path: &str) -> Option<Vec<String>> {
+    let bracket = Regex::new(r#"'([^']+)'"#).expect("json path bracket regex");
+    let fields = bracket
+        .captures_iter(path)
+        .filter_map(|captures| captures.get(1).map(|m| m.as_str().to_string()))
+        .collect::<Vec<_>>();
+    if !fields.is_empty() {
+        return Some(fields);
+    }
+    if let Some((_, field)) = path.rsplit_once('.') {
+        let field = field.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
+        if !field.is_empty() {
+            return Some(vec![field.to_string()]);
+        }
+    }
+    None
+}
+
+fn selector_search_keyword(source: &AnimeSource, keyword: &str) -> String {
+    let mut value = keyword.trim().to_string();
+    let remove_special = source.arguments
+        .pointer("/searchConfig/searchRemoveSpecial")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if remove_special {
+        value = simplify_keyword(&value);
+    }
+    let use_first_word = source.arguments
+        .pointer("/searchConfig/searchUseOnlyFirstWord")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if use_first_word {
+        value = value.split_whitespace().next().unwrap_or(&value).to_string();
+    }
+    value
+}
+
+fn selector_user_agent(source: &AnimeSource) -> &str {
+    source.arguments
+        .pointer("/searchConfig/matchVideo/addHeadersToVideo/userAgent")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(UA_WEB)
+}
+
+fn selector_referer(source: &AnimeSource, fallback: &str) -> Option<String> {
+    let referer = source.arguments
+        .pointer("/searchConfig/matchVideo/addHeadersToVideo/referer")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if referer.trim().is_empty() {
+        Some(fallback.to_string())
+    } else {
+        Some(referer.to_string())
+    }
+}
+
+fn source_supports_avkit(source: &AnimeSource) -> bool {
+    let players = source.arguments
+        .pointer("/searchConfig/onlySupportsPlayers")
+        .and_then(Value::as_array);
+    let Some(players) = players else { return true };
+    if players.is_empty() {
+        return true;
+    }
+    players.iter().any(|value| value.as_str() == Some("avkit"))
+}
+
+fn subject_title_score(title: &str, normalized_keyword: &str) -> i32 {
+    let normalized_title = simplify_keyword(title).to_lowercase();
+    if normalized_title == normalized_keyword {
+        100
+    } else if !normalized_keyword.is_empty() && normalized_title.contains(normalized_keyword) {
+        80
+    } else {
+        0
+    }
+}
+
+fn reports_for_sources(sources: &[AnimeSource]) -> HashMap<String, AnimeMediaSourceReport> {
+    sources.iter().filter(|source| source.enabled).map(|source| {
+        (source.id.clone(), AnimeMediaSourceReport {
+            source_id: source.id.clone(),
+            source_name: source.name.clone(),
+            factory_id: source.factory_id.clone(),
+            status: if matches!(source.factory_id.as_str(), "rss" | "web-selector") && source_supports_avkit(source) {
+                "pending".into()
+            } else {
+                "unsupported".into()
+            },
+            message: if matches!(source.factory_id.as_str(), "rss" | "web-selector") && source_supports_avkit(source) {
+                String::new()
+            } else {
+                "暂不支持该规则源类型".into()
+            },
+            ..Default::default()
+        })
+    }).collect()
+}
+
+fn update_source_report_attempt(reports: &mut HashMap<String, AnimeMediaSourceReport>, job: &MediaFetchJob) {
+    if let Some(report) = reports.get_mut(&job.source.id) {
+        report.attempted_queries += 1;
+        if report.status == "pending" {
+            report.status = "searching".into();
+        }
+    }
+}
+
+fn update_source_report_success(
+    reports: &mut HashMap<String, AnimeMediaSourceReport>,
+    job: &MediaFetchJob,
+    items: &[AnimeMediaCandidate],
+) {
+    if let Some(report) = reports.get_mut(&job.source.id) {
+        report.succeeded_queries += 1;
+        report.candidate_count += items.len() as i64;
+        report.supported_count += items.iter().filter(|item| item.is_supported).count() as i64;
+        report.status = if report.supported_count > 0 {
+            "found".into()
+        } else if report.candidate_count > 0 {
+            "unsupported".into()
+        } else {
+            "empty".into()
+        };
+        report.message = if report.supported_count > 0 {
+            format!("找到 {} 个可播放资源", report.supported_count)
+        } else if report.candidate_count > 0 {
+            "有结果但格式暂不支持".into()
+        } else {
+            "没有匹配结果".into()
+        };
+    }
+}
+
+fn update_source_report_failure(
+    reports: &mut HashMap<String, AnimeMediaSourceReport>,
+    job: &MediaFetchJob,
+    error: &CoreError,
+) {
+    if let Some(report) = reports.get_mut(&job.source.id) {
+        report.failed_queries += 1;
+        if report.supported_count == 0 && report.candidate_count == 0 {
+            report.status = "failed".into();
+            report.message = error.to_string();
+        }
+    }
+}
+
+fn sorted_source_reports(reports: HashMap<String, AnimeMediaSourceReport>) -> Vec<AnimeMediaSourceReport> {
+    let mut values = reports.into_values().collect::<Vec<_>>();
+    values.sort_by(|a, b| {
+        source_status_rank(&a.status).cmp(&source_status_rank(&b.status))
+            .then_with(|| b.supported_count.cmp(&a.supported_count))
+            .then_with(|| a.source_name.cmp(&b.source_name))
+    });
+    values
+}
+
+fn source_status_rank(status: &str) -> i32 {
+    match status {
+        "found" => 0,
+        "searching" => 1,
+        "empty" => 2,
+        "unsupported" => 3,
+        "failed" => 4,
+        _ => 5,
+    }
 }
 
 fn parse_sources(json_text: &str) -> CoreResult<AnimeSourceUpdate> {
@@ -1019,7 +1858,7 @@ fn convert_subject(raw: BangumiSubjectRaw, collection_type: i64, ep_status: i64)
         collection_type,
         collection_label: subject_collection_label(collection_type).to_string(),
         ep_status,
-        total_episodes: raw.total_episodes.max(raw.eps).max(raw.collection.map(|c| c.doing).unwrap_or(0)),
+        total_episodes: raw.total_episodes.max(raw.eps),
         tags: raw.tags.into_iter().map(|tag| tag.name).filter(|s| !s.is_empty()).collect(),
         aliases,
         episodes: Vec::new(),
@@ -1151,6 +1990,10 @@ fn score_quality(label: &str) -> i32 {
 }
 
 fn resolve_url(base: &str, href: &str) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty() {
+        return Some(base.to_string());
+    }
     if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("magnet:") {
         return Some(href.to_string());
     }
@@ -1325,6 +2168,20 @@ mod anime_tests {
     }
 
     #[test]
+    fn subject_total_episodes_ignores_collection_stats() {
+        let raw = BangumiSubjectRaw {
+            id: 1,
+            name: "Test".into(),
+            total_episodes: 12,
+            eps: 0,
+            ..Default::default()
+        };
+        let subject = convert_subject(raw, 0, 9999);
+        assert_eq!(subject.total_episodes, 12);
+        assert_eq!(subject.ep_status, 9999);
+    }
+
+    #[test]
     fn rss_candidates_mark_torrent_unsupported_and_hls_supported() {
         let source = test_source("rss");
         let xml = r#"
@@ -1379,6 +2236,65 @@ mod anime_tests {
         let web = items.iter().find(|item| item.kind == "web").unwrap();
         assert!(!web.is_supported);
         assert_eq!(web.unsupported_reason, "需要网页解析/验证码，第一版暂不支持");
+    }
+
+    #[test]
+    fn selector_episode_hits_fallback_when_channel_names_missing() {
+        let source = AnimeSource {
+            arguments: json!({
+                "searchConfig": {
+                    "channelFormatId": "index-grouped",
+                    "selectorChannelFormatFlattened": {
+                        "selectChannelNames": ".missing-channel",
+                        "selectEpisodeLists": ".module-list",
+                        "selectEpisodesFromList": "a",
+                        "selectEpisodeLinksFromList": "",
+                        "matchEpisodeSortFromName": "第\\s*(?<ep>.+)\\s*[话集]"
+                    }
+                }
+            }),
+            ..test_source("web-selector")
+        };
+        let html = r#"
+          <div class="module-list">
+            <a href="/play/1">第1集</a>
+            <a href="/play/2">第2集</a>
+          </div>
+        "#;
+        let hits = parse_selector_episode_hits(
+            &source,
+            html,
+            "https://example.test/detail/season.html",
+            2.0,
+            "",
+            true,
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "第2集");
+        assert_eq!(hits[0].channel, "");
+        assert_eq!(hits[0].url, "https://example.test/play/2");
+    }
+
+    #[test]
+    fn json_path_subject_hits_support_animeko_simple_paths() {
+        let source = AnimeSource {
+            arguments: json!({
+                "searchConfig": {
+                    "subjectFormatId": "json-path-indexed",
+                    "selectorSubjectFormatJsonPathIndexed": {
+                        "selectNames": "$[*]['title','name']",
+                        "selectLinks": "$[*]['url','link']"
+                    }
+                }
+            }),
+            ..test_source("web-selector")
+        };
+        let html = r#"[{"title":"测试番","url":"/detail/1"},{"name":"备用名","link":"https://cdn.example/detail/2"}]"#;
+        let hits = parse_selector_subjects(&source, html, "https://example.test/search?q=a", "测试番");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "测试番");
+        assert_eq!(hits[0].url, "https://example.test/detail/1");
+        assert_eq!(hits[1].url, "https://cdn.example/detail/2");
     }
 
     #[test]
