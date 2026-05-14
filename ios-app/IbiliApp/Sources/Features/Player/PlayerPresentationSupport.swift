@@ -18,9 +18,20 @@ enum Orientation {
     private static var activePlayerPresentationRoute: PlayerSessionID?
 
     private static func activeForegroundWindowScene() -> UIWindowScene? {
-        UIApplication.shared.connectedScenes
+        let foregroundScenes = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })
+            .filter { $0.activationState == .foregroundActive }
+        return foregroundScenes.first(where: { scene in
+            scene.windows.contains(where: { window in
+                window.isKeyWindow
+                    && window.rootViewController != nil
+                    && String(describing: type(of: window.rootViewController!)).contains("UIHostingController")
+            })
+        })
+        ?? foregroundScenes.first(where: { scene in
+            scene.windows.contains(where: { $0.isKeyWindow && $0.rootViewController != nil })
+        })
+        ?? foregroundScenes.first
     }
 
     static func supportedMask(for window: UIWindow? = nil) -> UIInterfaceOrientationMask {

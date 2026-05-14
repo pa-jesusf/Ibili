@@ -434,14 +434,20 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 "playing": String(transitionSnapshot?.wasPlaying ?? false),
                 "requestedMask": requestedFullscreenMask.map(interfaceOrientationMaskDescription) ?? "none",
             ])
-            vc.isModalInPresentation = true
-            parent.onPresentationEvent(.fullscreenChanged(true, identity))
             if let requestedFullscreenMask {
                 fullscreenOrientationPhase = .entering(exitArmed: currentDeviceOrientation.isLandscapeForFullscreen)
                 cancelAutomaticFullscreenFallback()
                 Orientation.beginPhoneFullscreenLandscapeLock(for: parent.sessionID)
                 Orientation.requestWithoutMaskChange(requestedFullscreenMask)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.isPresentationRouteActive,
+                          self.fullscreenOrientationPhase.isManagedFullscreen else { return }
+                    Orientation.requestWithoutMaskChange(requestedFullscreenMask)
+                }
             }
+            vc.isModalInPresentation = true
+            parent.onPresentationEvent(.fullscreenChanged(true, identity))
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] context in
                 guard let self, let vc else { return }
                 if context.isCancelled {
@@ -454,12 +460,17 @@ struct PlayerContainer: UIViewControllerRepresentable {
                     self.restorePlaybackState(on: vc, source: "enter-cancelled")
                     return
                 }
-                if requestedFullscreenMask != nil {
+                if let requestedFullscreenMask {
                     self.fullscreenOrientationPhase = .fullscreen(exitArmed: self.fullscreenOrientationPhase.exitArmed)
+                    Orientation.requestWithoutMaskChange(requestedFullscreenMask)
                 }
                 self.restorePlaybackState(on: vc, source: "enter-completion")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
                     guard let self, let vc else { return }
+                    if let requestedFullscreenMask,
+                       self.fullscreenOrientationPhase.isManagedFullscreen {
+                        Orientation.requestWithoutMaskChange(requestedFullscreenMask)
+                    }
                     self.restorePlaybackState(on: vc, source: "enter-delayed")
                 }
             }
@@ -560,7 +571,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             case .landscapeRight:
                 return .landscapeLeft
             default:
-                return .landscapeRight
+                return .landscape
             }
         }
 
