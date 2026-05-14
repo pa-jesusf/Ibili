@@ -59,3 +59,7 @@ upstream-piliplus/ios/.symlinks/
 
 # Memory / session scratch
 .memory-cache/
+
+# other lib
+upstream-piliplus/
+animeko/

@@ -380,6 +380,7 @@ private struct DeepLinkPlayerHost: View {
             }
             syncPlayerSessions()
             animateHostInIfNeeded(for: router.pending?.id)
+            revealHostIfNeeded(reason: "appear")
         }
         .onChange(of: router.pending?.id) { newRouteID in
             cancelPendingDismiss(resetRouterDismissal: true)
@@ -387,6 +388,7 @@ private struct DeepLinkPlayerHost: View {
                 isRootDismissInFlight = false
                 router.cancelRootSessionDismissal()
                 animateHostInIfNeeded(for: newRouteID)
+                revealHostIfNeeded(reason: "pending")
             } else {
                 animatedInRouteID = nil
             }
@@ -397,6 +399,7 @@ private struct DeepLinkPlayerHost: View {
             if router.pending != nil {
                 isRootDismissInFlight = false
                 router.cancelRootSessionDismissal()
+                revealHostIfNeeded(reason: "path")
             }
             syncPlayerSessions()
         }
@@ -480,6 +483,19 @@ private struct DeepLinkPlayerHost: View {
             offsetX = 0
         }
         animatedInRouteID = routeID
+    }
+
+    private func revealHostIfNeeded(reason: String) {
+        guard router.pending != nil, offsetX > 0.5 else { return }
+        AppLog.debug("router", "恢复播放器宿主可见", metadata: [
+            "reason": reason,
+            "offsetX": String(format: "%.1f", offsetX),
+            "pendingID": router.pending?.id.uuidString ?? "nil",
+            "pathDepth": String(router.path.count),
+        ])
+        withAnimation(Self.slideSpring) {
+            offsetX = 0
+        }
     }
 
     private func syncPlayerSessions() {
