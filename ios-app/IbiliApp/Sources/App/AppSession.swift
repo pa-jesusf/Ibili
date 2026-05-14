@@ -6,6 +6,7 @@ import Combine
 final class AppSession: ObservableObject {
     @Published private(set) var isLoggedIn: Bool = false
     @Published private(set) var mid: Int64 = 0
+    @Published private(set) var bangumiSession: BangumiSessionDTO?
 
     let core = CoreClient.shared
 
@@ -29,6 +30,7 @@ final class AppSession: ObservableObject {
         } else {
             AppLog.info("session", "本地没有可恢复的登录态")
         }
+        bangumiSession = BangumiSessionStore.load()
         refresh()
     }
 
@@ -59,6 +61,64 @@ final class AppSession: ObservableObject {
         refresh()
     }
 
+    var bangumiAccessToken: String {
+        bangumiSession?.accessToken ?? ""
+    }
+
+    var bangumiUser: AnimeBangumiUserDTO? {
+        bangumiSession?.user
+    }
+
+    func restoreBangumiSession() {
+        bangumiSession = BangumiSessionStore.load()
+    }
+
+    func startBangumiOAuth(clientID: String, redirectURI: String) async throws -> URL {
+        let start = try await Task.detached(priority: .userInitiated) {
+            try CoreClient.shared.animeOAuthStart(clientID: clientID, redirectURI: redirectURI)
+        }.value
+        guard let url = URL(string: start.authorizeUrl) else {
+            throw CoreError(category: "invalid_argument", message: "Bangumi OAuth URL 无效", code: nil)
+        }
+        return url
+    }
+
+    func completeBangumiOAuth(clientID: String, clientSecret: String, redirectURI: String, code: String) async throws {
+        let token = try await Task.detached(priority: .userInitiated) {
+            try CoreClient.shared.animeOAuthExchange(
+                clientID: clientID,
+                clientSecret: clientSecret,
+                redirectURI: redirectURI,
+                code: code
+            )
+        }.value
+        try await persistBangumiToken(token)
+    }
+
+    func refreshBangumiIfNeeded(clientID: String, clientSecret: String) async {
+        guard let session = bangumiSession, session.isExpired, !session.refreshToken.isEmpty else { return }
+        do {
+            let token = try await Task.detached(priority: .utility) {
+                try CoreClient.shared.animeOAuthRefresh(
+                    clientID: clientID,
+                    clientSecret: clientSecret,
+                    refreshToken: session.refreshToken
+                )
+            }.value
+            try await persistBangumiToken(token)
+        } catch {
+            AppLog.warning("session", "Bangumi token 刷新失败", metadata: [
+                "error": error.localizedDescription,
+            ])
+        }
+    }
+
+    func logoutBangumi() {
+        BangumiSessionStore.clear()
+        bangumiSession = nil
+        AppLog.info("session", "Bangumi 已退出")
+    }
+
     private func handleLoginExpired(method: String?) {
         guard isLoggedIn else { return }
         AppLog.warning("session", "检测到登录过期，清理本地登录态", metadata: [
@@ -68,5 +128,23 @@ final class AppSession: ObservableObject {
         core.logout()
         SessionStore.clear()
         refresh()
+    }
+
+    private func persistBangumiToken(_ token: AnimeOAuthTokenDTO) async throws {
+        let user = try await Task.detached(priority: .userInitiated) {
+            try CoreClient.shared.animeMe(accessToken: token.accessToken)
+        }.value
+        let persisted = BangumiSessionDTO(
+            accessToken: token.accessToken,
+            refreshToken: token.refreshToken,
+            tokenType: token.tokenType,
+            expiresAt: token.expiresAt,
+            user: user
+        )
+        BangumiSessionStore.save(persisted)
+        bangumiSession = persisted
+        AppLog.info("session", "Bangumi 登录成功", metadata: [
+            "username": user.username,
+        ])
     }
 }

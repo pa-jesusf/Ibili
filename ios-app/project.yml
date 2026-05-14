@@ -77,6 +77,10 @@ targets:
         CFBundleLocalizations:
           - zh-Hans
           - en
+        CFBundleURLTypes:
+          - CFBundleURLName: app.ibili.client
+            CFBundleURLSchemes:
+              - ibili
         LSRequiresIPhoneOS: true
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true

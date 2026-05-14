@@ -154,7 +154,8 @@ fn feed_item_serializes_with_snake_case_fields() {
     let item = FeedItem {
         aid: 1, bvid: "BV1".into(), cid: 2, title: "t".into(),
         cover: "c".into(), author: "a".into(), duration_sec: 60,
-        play: 0, danmaku: 0, pubdate: 0,
+        ep_id: 0, season_id: 0, is_pgc: false, owner_mid: 0,
+        play: 0, danmaku: 0, pubdate: 0, is_followed: false,
     };
     let json = serde_json::to_value(&item).unwrap();
     assert!(json.get("duration_sec").is_some(), "FFI relies on snake_case for Swift CodingKeys");

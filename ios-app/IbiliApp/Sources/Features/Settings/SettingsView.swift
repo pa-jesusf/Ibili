@@ -280,6 +280,18 @@ struct SettingsView: View {
                 Text("这些开关会影响视频、动态、专栏等评论列表的附加信息展示；回复功能始终可用。")
             }
 
+            Section {
+                Toggle("启用追番 Tab", isOn: $settings.animeTrackingEnabled)
+                TextField("规则订阅 URL", text: $settings.animeSourceSubscriptionURL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("追番")
+            } footer: {
+                Text("Bangumi OAuth 已内置应用配置，回调使用 ibili://bangumi-oauth。规则源兼容 animeko 导出结构，第一版只播放 HLS/MP4。")
+            }
+
             cardMetaSection(
                 title: "首页卡片显示",
                 showPlay: $settings.homeShowPlay,

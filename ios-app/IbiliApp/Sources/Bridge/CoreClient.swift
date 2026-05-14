@@ -161,6 +161,186 @@ public final class CoreClient: @unchecked Sendable {
         try call("auth.tv_qr.poll", args: ["auth_code": authCode], decoding: TvQrPollDTO.self)
     }
 
+    public func animeOAuthStart(clientID: String, redirectURI: String) throws -> AnimeOAuthStartDTO {
+        struct A: Encodable { let client_id: String; let redirect_uri: String }
+        return try call(
+            "anime.oauth.start",
+            args: A(client_id: clientID, redirect_uri: redirectURI),
+            decoding: AnimeOAuthStartDTO.self
+        )
+    }
+
+    public func animeOAuthExchange(
+        clientID: String,
+        clientSecret: String,
+        redirectURI: String,
+        code: String
+    ) throws -> AnimeOAuthTokenDTO {
+        struct A: Encodable {
+            let client_id: String
+            let client_secret: String
+            let redirect_uri: String
+            let code: String
+        }
+        return try call(
+            "anime.oauth.exchange",
+            args: A(client_id: clientID, client_secret: clientSecret, redirect_uri: redirectURI, code: code),
+            decoding: AnimeOAuthTokenDTO.self
+        )
+    }
+
+    public func animeOAuthRefresh(
+        clientID: String,
+        clientSecret: String,
+        refreshToken: String
+    ) throws -> AnimeOAuthTokenDTO {
+        struct A: Encodable {
+            let client_id: String
+            let client_secret: String
+            let refresh_token: String
+        }
+        return try call(
+            "anime.oauth.refresh",
+            args: A(client_id: clientID, client_secret: clientSecret, refresh_token: refreshToken),
+            decoding: AnimeOAuthTokenDTO.self
+        )
+    }
+
+    public func animeMe(accessToken: String) throws -> AnimeBangumiUserDTO {
+        struct A: Encodable { let access_token: String }
+        return try call("anime.me", args: A(access_token: accessToken), decoding: AnimeBangumiUserDTO.self)
+    }
+
+    public func animeCollectionList(
+        accessToken: String,
+        username: String,
+        collectionType: Int64,
+        page: Int64 = 1,
+        pageSize: Int64 = 20
+    ) throws -> AnimeCollectionPageDTO {
+        struct A: Encodable {
+            let access_token: String
+            let username: String
+            let collection_type: Int64
+            let page: Int64
+            let page_size: Int64
+        }
+        return try call(
+            "anime.collection.list",
+            args: A(
+                access_token: accessToken,
+                username: username,
+                collection_type: collectionType,
+                page: page,
+                page_size: pageSize
+            ),
+            decoding: AnimeCollectionPageDTO.self
+        )
+    }
+
+    public func animeCollectionUpdate(
+        accessToken: String,
+        subjectID: Int64,
+        collectionType: Int64
+    ) throws {
+        struct A: Encodable {
+            let access_token: String
+            let subject_id: Int64
+            let collection_type: Int64
+        }
+        try callVoid(
+            "anime.collection.update",
+            args: A(access_token: accessToken, subject_id: subjectID, collection_type: collectionType)
+        )
+    }
+
+    public func animeEpisodeUpdate(
+        accessToken: String,
+        subjectID: Int64,
+        episodeID: Int64,
+        collectionType: Int64 = 2
+    ) throws {
+        struct A: Encodable {
+            let access_token: String
+            let subject_id: Int64
+            let episode_id: Int64
+            let collection_type: Int64
+        }
+        try callVoid(
+            "anime.episode.update",
+            args: A(access_token: accessToken, subject_id: subjectID, episode_id: episodeID, collection_type: collectionType)
+        )
+    }
+
+    public func animeSubjectDetail(accessToken: String = "", subjectID: Int64) throws -> AnimeSubjectDTO {
+        struct A: Encodable { let access_token: String; let subject_id: Int64 }
+        return try call(
+            "anime.subject.detail",
+            args: A(access_token: accessToken, subject_id: subjectID),
+            decoding: AnimeSubjectDTO.self
+        )
+    }
+
+    public func animeSubjectSearch(keyword: String, page: Int64 = 1, pageSize: Int64 = 20) throws -> AnimeSubjectSearchPageDTO {
+        struct A: Encodable { let keyword: String; let page: Int64; let page_size: Int64 }
+        return try call(
+            "anime.subject.search",
+            args: A(keyword: keyword, page: page, page_size: pageSize),
+            decoding: AnimeSubjectSearchPageDTO.self
+        )
+    }
+
+    public func animeSourceSubscriptionUpdate(url: String) throws -> AnimeSourceUpdateDTO {
+        struct A: Encodable { let url: String }
+        return try call("anime.source.subscription.update", args: A(url: url), decoding: AnimeSourceUpdateDTO.self)
+    }
+
+    public func animeSourceImport(jsonText: String) throws -> AnimeSourceUpdateDTO {
+        struct A: Encodable { let json_text: String }
+        return try call("anime.source.import", args: A(json_text: jsonText), decoding: AnimeSourceUpdateDTO.self)
+    }
+
+    public func animeMediaFetch(
+        sourcesJSON: String,
+        subjectNames: [String],
+        episodeSort: Double,
+        episodeName: String
+    ) throws -> AnimeMediaFetchResultDTO {
+        struct A: Encodable {
+            let sources_json: String
+            let subject_names: [String]
+            let episode_sort: Double
+            let episode_name: String
+        }
+        return try call(
+            "anime.media.fetch",
+            args: A(
+                sources_json: sourcesJSON,
+                subject_names: subjectNames,
+                episode_sort: episodeSort,
+                episode_name: episodeName
+            ),
+            decoding: AnimeMediaFetchResultDTO.self
+        )
+    }
+
+    public func animeMediaResolve(
+        candidate: AnimeMediaCandidateDTO,
+        title: String,
+        cover: String
+    ) throws -> AnimePlayUrlDTO {
+        struct A: Encodable {
+            let candidate: AnimeMediaCandidateDTO
+            let title: String
+            let cover: String
+        }
+        return try call(
+            "anime.media.resolve",
+            args: A(candidate: candidate, title: title, cover: cover),
+            decoding: AnimePlayUrlDTO.self
+        )
+    }
+
     public func feedHome(idx: Int64 = 0, ps: Int64 = 20, source: String = "web") throws -> FeedPageDTO {
         struct A: Encodable { let idx: Int64; let ps: Int64; let source: String }
         return try call("feed.home", args: A(idx: idx, ps: ps, source: source), decoding: FeedPageDTO.self)

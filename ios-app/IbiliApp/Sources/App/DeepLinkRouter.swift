@@ -120,6 +120,32 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
+    struct AnimeSubjectRoute: Hashable, Identifiable {
+        let id: UUID
+        let subjectID: Int64
+        let initialSubject: AnimeSubjectDTO?
+
+        init(id: UUID = UUID(), subjectID: Int64, initialSubject: AnimeSubjectDTO? = nil) {
+            self.id = id
+            self.subjectID = subjectID
+            self.initialSubject = initialSubject
+        }
+    }
+
+    struct AnimePlayerRoute: Hashable, Identifiable {
+        let id: UUID
+        let play: AnimePlayUrlDTO
+        let subject: AnimeSubjectDTO
+        let episode: AnimeEpisodeDTO
+
+        init(id: UUID = UUID(), play: AnimePlayUrlDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO) {
+            self.id = id
+            self.play = play
+            self.subject = subject
+            self.episode = episode
+        }
+    }
+
     enum SessionRoute: Hashable, Identifiable {
         case player(PlayerRoute)
         case live(LiveRoute)
@@ -127,6 +153,8 @@ final class DeepLinkRouter: ObservableObject {
         case dynamicDetail(DynamicDetailRoute)
         case article(ArticleRoute)
         case search(SearchRoute)
+        case animeSubject(AnimeSubjectRoute)
+        case animePlayer(AnimePlayerRoute)
 
         var id: UUID {
             switch self {
@@ -141,6 +169,10 @@ final class DeepLinkRouter: ObservableObject {
             case .article(let route):
                 return route.id
             case .search(let route):
+                return route.id
+            case .animeSubject(let route):
+                return route.id
+            case .animePlayer(let route):
                 return route.id
             }
         }
@@ -163,6 +195,8 @@ final class DeepLinkRouter: ObservableObject {
         case userSpace(UserSpaceRoute)
         case article(ArticleRoute)
         case search(SearchRoute)
+        case animeSubject(AnimeSubjectRoute)
+        case animePlayer(AnimePlayerRoute)
 
         var id: UUID {
             switch self {
@@ -177,6 +211,10 @@ final class DeepLinkRouter: ObservableObject {
             case .article(let route):
                 return route.id
             case .search(let route):
+                return route.id
+            case .animeSubject(let route):
+                return route.id
+            case .animePlayer(let route):
                 return route.id
             }
         }
@@ -388,6 +426,58 @@ final class DeepLinkRouter: ObservableObject {
         pending = .search(SearchRoute(keyword: trimmed))
     }
 
+    func openAnimeSubject(_ subject: AnimeSubjectDTO, mode: OpenMode = .push) {
+        openAnimeSubject(subjectID: subject.id, initialSubject: subject, mode: mode)
+    }
+
+    func openAnimeSubject(subjectID: Int64, initialSubject: AnimeSubjectDTO? = nil, mode: OpenMode = .push) {
+        guard subjectID > 0 else { return }
+        let route = AnimeSubjectRoute(subjectID: subjectID, initialSubject: initialSubject)
+        guard pending != nil, !isClosingRootSession else {
+            path.removeAll()
+            isClosingRootSession = false
+            pending = .animeSubject(route)
+            return
+        }
+        switch mode {
+        case .push:
+            path.append(.animeSubject(route))
+        case .replaceCurrent:
+            replaceCurrentGeneric(with: .animeSubject(route), root: .animeSubject(route))
+        }
+    }
+
+    func selectAnimeSubject(_ subject: AnimeSubjectDTO) {
+        guard subject.id > 0 else { return }
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .animeSubject(AnimeSubjectRoute(subjectID: subject.id, initialSubject: subject))
+    }
+
+    func openAnimePlayer(play: AnimePlayUrlDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO, mode: OpenMode = .push) {
+        let route = AnimePlayerRoute(play: play, subject: subject, episode: episode)
+        guard pending != nil, !isClosingRootSession else {
+            path.removeAll()
+            isClosingRootSession = false
+            pending = .animePlayer(route)
+            return
+        }
+        switch mode {
+        case .push:
+            path.append(.animePlayer(route))
+        case .replaceCurrent:
+            replaceCurrentGeneric(with: .animePlayer(route), root: .animePlayer(route))
+        }
+    }
+
+    func selectAnimePlayer(play: AnimePlayUrlDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO) {
+        prepareCurrentRootForReplacement()
+        path.removeAll()
+        isClosingRootSession = false
+        pending = .animePlayer(AnimePlayerRoute(play: play, subject: subject, episode: episode))
+    }
+
     func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, mode: OpenMode = .push) {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
@@ -513,6 +603,11 @@ final class DeepLinkRouter: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let keyword, !keyword.isEmpty {
                 openSearch(keyword: keyword)
+            }
+            return .handled
+        case "anime", "subject":
+            if let subjectID = Int64(path) {
+                openAnimeSubject(subjectID: subjectID)
             }
             return .handled
         default:
@@ -645,7 +740,7 @@ final class DeepLinkRouter: ObservableObject {
                 PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
             case .live(let liveRoute):
                 LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-            case .userSpace, .dynamicDetail, .article, .search:
+            case .userSpace, .dynamicDetail, .article, .search, .animeSubject, .animePlayer:
                 break
             }
         }
@@ -654,13 +749,21 @@ final class DeepLinkRouter: ObservableObject {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, nil:
+        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, .animePlayer, nil:
             break
+        }
+    }
+
+    private func replaceCurrentGeneric(with route: SessionRoute, root: RootRoute) {
+        if !path.isEmpty {
+            path[path.index(before: path.endIndex)] = route
+        } else {
+            pending = root
         }
     }
 }
 
-private extension URL {
+extension URL {
     var queryParameters: [String: String] {
         URLComponents(url: self, resolvingAgainstBaseURL: false)?
             .queryItems?

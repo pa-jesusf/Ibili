@@ -4,7 +4,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use ibili_core::{Core, CoreError};
+use ibili_core::{anime::AnimeMediaCandidate, Core, CoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -196,6 +196,111 @@ struct SubscriptionCancelArgs {
     id: i64,
     #[serde(default)]
     kind: i64,
+}
+
+#[derive(Deserialize)]
+struct AnimeOAuthStartArgs {
+    client_id: String,
+    redirect_uri: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeOAuthExchangeArgs {
+    client_id: String,
+    client_secret: String,
+    redirect_uri: String,
+    code: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeOAuthRefreshArgs {
+    client_id: String,
+    client_secret: String,
+    refresh_token: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeTokenArgs {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeCollectionListArgs {
+    access_token: String,
+    username: String,
+    #[serde(default)]
+    collection_type: i64,
+    #[serde(default = "default_one_i64")]
+    page: i64,
+    #[serde(default = "default_ps")]
+    page_size: i64,
+}
+
+#[derive(Deserialize)]
+struct AnimeCollectionUpdateArgs {
+    access_token: String,
+    subject_id: i64,
+    collection_type: i64,
+}
+
+#[derive(Deserialize)]
+struct AnimeEpisodeUpdateArgs {
+    access_token: String,
+    #[serde(default)]
+    subject_id: i64,
+    episode_id: i64,
+    #[serde(default = "default_episode_watched")]
+    collection_type: i64,
+}
+
+fn default_episode_watched() -> i64 {
+    2
+}
+
+#[derive(Deserialize)]
+struct AnimeSubjectDetailArgs {
+    #[serde(default)]
+    access_token: String,
+    subject_id: i64,
+}
+
+#[derive(Deserialize)]
+struct AnimeSubjectSearchArgs {
+    keyword: String,
+    #[serde(default = "default_one_i64")]
+    page: i64,
+    #[serde(default = "default_ps")]
+    page_size: i64,
+}
+
+#[derive(Deserialize)]
+struct AnimeSourceURLArgs {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeSourceImportArgs {
+    json_text: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeMediaFetchArgs {
+    sources_json: String,
+    #[serde(default)]
+    subject_names: Vec<String>,
+    #[serde(default)]
+    episode_sort: f64,
+    #[serde(default)]
+    episode_name: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeMediaResolveArgs {
+    candidate: AnimeMediaCandidate,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    cover: String,
 }
 
 fn default_qn() -> i64 {
@@ -590,6 +695,86 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "session.logout" => {
             c.inner.logout();
             Ok(Value::Object(Default::default()))
+        }
+        "anime.oauth.start" => {
+            let a: AnimeOAuthStartArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_oauth_start(&a.client_id, &a.redirect_uri)?)
+        }
+        "anime.oauth.exchange" => {
+            let a: AnimeOAuthExchangeArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_oauth_exchange(
+                &a.client_id,
+                &a.client_secret,
+                &a.redirect_uri,
+                &a.code,
+            )?)
+        }
+        "anime.oauth.refresh" => {
+            let a: AnimeOAuthRefreshArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_oauth_refresh(
+                &a.client_id,
+                &a.client_secret,
+                &a.refresh_token,
+            )?)
+        }
+        "anime.me" => {
+            let a: AnimeTokenArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_me(&a.access_token)?)
+        }
+        "anime.collection.list" => {
+            let a: AnimeCollectionListArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_collection_list(
+                &a.access_token,
+                &a.username,
+                a.collection_type,
+                a.page,
+                a.page_size,
+            )?)
+        }
+        "anime.collection.update" => {
+            let a: AnimeCollectionUpdateArgs = serde_json::from_value(args)?;
+            c.inner
+                .anime_collection_update(&a.access_token, a.subject_id, a.collection_type)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "anime.episode.update" => {
+            let a: AnimeEpisodeUpdateArgs = serde_json::from_value(args)?;
+            c.inner.anime_episode_update(
+                &a.access_token,
+                a.subject_id,
+                a.episode_id,
+                a.collection_type,
+            )?;
+            Ok(Value::Object(Default::default()))
+        }
+        "anime.subject.detail" => {
+            let a: AnimeSubjectDetailArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_subject_detail(&a.access_token, a.subject_id)?)
+        }
+        "anime.subject.search" => {
+            let a: AnimeSubjectSearchArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_subject_search(&a.keyword, a.page, a.page_size)?)
+        }
+        "anime.source.subscription.update" => {
+            let a: AnimeSourceURLArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_source_subscription_update(&a.url)?)
+        }
+        "anime.source.import" => {
+            let a: AnimeSourceImportArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_source_import(&a.json_text)?)
+        }
+        "anime.media.fetch" => {
+            let a: AnimeMediaFetchArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_media_fetch(
+                &a.sources_json,
+                a.subject_names,
+                a.episode_sort,
+                &a.episode_name,
+            )?)
+        }
+        "anime.media.resolve" => {
+            let a: AnimeMediaResolveArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_media_resolve(a.candidate, &a.title, &a.cover)?)
         }
         "auth.tv_qr.start" => to_value(c.inner.auth_tv_qr_start()?),
         "auth.tv_qr.poll" => {

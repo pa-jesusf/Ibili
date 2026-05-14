@@ -22,6 +22,7 @@ pub mod packaging;
 pub mod user_space;
 pub mod dynamic;
 pub mod article;
+pub mod anime;
 
 use std::sync::Arc;
 

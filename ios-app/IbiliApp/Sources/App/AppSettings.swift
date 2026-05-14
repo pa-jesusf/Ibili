@@ -185,6 +185,8 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.player.audioGainDb") var audioGainDb: Double = -15
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
     @AppStorage("ibili.home.recommendSource") private var homeRecommendSourceRaw: String = HomeRecommendSource.web.rawValue
+    @AppStorage("ibili.anime.trackingEnabled") var animeTrackingEnabled: Bool = true
+    @AppStorage("ibili.anime.sourceSubscriptionURL") var animeSourceSubscriptionURL: String = ""
 
     /// Whether the video detail page displays the canonical BV id or
     /// the legacy `av<aid>` form. Mirrors the upstream toggle.

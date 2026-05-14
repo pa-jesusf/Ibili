@@ -510,6 +510,277 @@ public struct PlayUrlDTO: Codable {
     }
 }
 
+// MARK: - Bangumi / Anime Tracking
+
+public struct AnimeOAuthStartDTO: Codable {
+    public let authorizeUrl: String
+
+    enum CodingKeys: String, CodingKey {
+        case authorizeUrl = "authorize_url"
+    }
+}
+
+public struct AnimeOAuthTokenDTO: Codable {
+    public let accessToken: String
+    public let refreshToken: String
+    public let tokenType: String
+    public let expiresIn: Int64
+    public let expiresAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case tokenType = "token_type"
+        case expiresIn = "expires_in"
+        case expiresAt = "expires_at"
+    }
+}
+
+public struct AnimeBangumiUserDTO: Codable, Hashable {
+    public let id: Int64
+    public let username: String
+    public let nickname: String
+    public let avatar: String
+}
+
+public struct AnimeSubjectImageDTO: Codable, Hashable {
+    public let large: String
+    public let common: String
+    public let medium: String
+    public let small: String
+    public let grid: String
+}
+
+public struct AnimeEpisodeDTO: Codable, Hashable, Identifiable {
+    public let id: Int64
+    public let subjectID: Int64
+    public let sort: Double
+    public let ep: Double
+    public let name: String
+    public let nameCn: String
+    public let duration: String
+    public let airdate: String
+    public let desc: String
+    public let collectionType: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case id, sort, ep, name, duration, airdate, desc
+        case subjectID = "subject_id"
+        case nameCn = "name_cn"
+        case collectionType = "collection_type"
+    }
+
+    public var displayTitle: String {
+        if !nameCn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nameCn }
+        if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return name }
+        let number = Int(sort.rounded())
+        return number > 0 ? "第 \(number) 集" : "正片"
+    }
+}
+
+public struct AnimeSubjectDTO: Codable, Hashable, Identifiable {
+    public let id: Int64
+    public let name: String
+    public let nameCn: String
+    public let summary: String
+    public let date: String
+    public let image: AnimeSubjectImageDTO
+    public let ratingScore: Double
+    public let ratingTotal: Int64
+    public let rank: Int64
+    public let collectionType: Int64
+    public let collectionLabel: String
+    public let epStatus: Int64
+    public let totalEpisodes: Int64
+    public let tags: [String]
+    public let aliases: [String]
+    public let episodes: [AnimeEpisodeDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, summary, date, image, rank, tags, aliases, episodes
+        case nameCn = "name_cn"
+        case ratingScore = "rating_score"
+        case ratingTotal = "rating_total"
+        case collectionType = "collection_type"
+        case collectionLabel = "collection_label"
+        case epStatus = "ep_status"
+        case totalEpisodes = "total_episodes"
+    }
+
+    public var displayTitle: String {
+        nameCn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? name : nameCn
+    }
+
+    public var coverURL: String {
+        [image.large, image.common, image.medium, image.small, image.grid]
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? ""
+    }
+}
+
+public struct AnimeCollectionItemDTO: Codable, Hashable, Identifiable {
+    public var id: Int64 { subject.id }
+    public let subject: AnimeSubjectDTO
+    public let collectionType: Int64
+    public let collectionLabel: String
+    public let updatedAt: String
+    public let epStatus: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case subject
+        case collectionType = "collection_type"
+        case collectionLabel = "collection_label"
+        case updatedAt = "updated_at"
+        case epStatus = "ep_status"
+    }
+}
+
+public struct AnimeCollectionPageDTO: Codable {
+    public let total: Int64
+    public let page: Int64
+    public let pageSize: Int64
+    public let items: [AnimeCollectionItemDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case total, page, items
+        case pageSize = "page_size"
+    }
+}
+
+public struct AnimeSubjectSearchPageDTO: Codable {
+    public let total: Int64
+    public let page: Int64
+    public let pageSize: Int64
+    public let items: [AnimeSubjectDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case total, page, items
+        case pageSize = "page_size"
+    }
+}
+
+public struct AnimeSourceDTO: Codable, Hashable, Identifiable {
+    public let id: String
+    public let factoryID: String
+    public let version: Int64
+    public let name: String
+    public let description: String
+    public let iconURL: String
+    public let tier: String
+    public var enabled: Bool
+    public let arguments: AnyCodableValue
+
+    enum CodingKeys: String, CodingKey {
+        case id, version, name, description, tier, enabled, arguments
+        case factoryID = "factory_id"
+        case iconURL = "icon_url"
+    }
+}
+
+public struct AnimeSourceUpdateDTO: Codable {
+    public let sources: [AnimeSourceDTO]
+    public let updatedAt: Int64
+
+    public init(sources: [AnimeSourceDTO], updatedAt: Int64) {
+        self.sources = sources
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sources
+        case updatedAt = "updated_at"
+    }
+}
+
+public struct AnimeMediaCandidateDTO: Codable, Hashable, Identifiable {
+    public let id: String
+    public let sourceID: String
+    public let sourceName: String
+    public let title: String
+    public let url: String
+    public let pageURL: String
+    public let kind: String
+    public let qualityLabel: String
+    public let isSupported: Bool
+    public let unsupportedReason: String
+    public let referer: String
+    public let userAgent: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, url, kind, referer
+        case sourceID = "source_id"
+        case sourceName = "source_name"
+        case pageURL = "page_url"
+        case qualityLabel = "quality_label"
+        case isSupported = "is_supported"
+        case unsupportedReason = "unsupported_reason"
+        case userAgent = "user_agent"
+    }
+}
+
+public struct AnimeMediaFetchResultDTO: Codable {
+    public let candidates: [AnimeMediaCandidateDTO]
+}
+
+public struct AnimePlayUrlDTO: Codable, Hashable {
+    public let url: String
+    public let format: String
+    public let title: String
+    public let cover: String
+    public let referer: String
+    public let userAgent: String
+    public let durationMs: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case url, format, title, cover, referer
+        case userAgent = "user_agent"
+        case durationMs = "duration_ms"
+    }
+}
+
+public enum AnyCodableValue: Codable, Hashable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([AnyCodableValue])
+    case object([String: AnyCodableValue])
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([AnyCodableValue].self) {
+            self = .array(value)
+        } else {
+            self = .object(try container.decode([String: AnyCodableValue].self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null:
+            try container.encodeNil()
+        case .bool(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .string(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        }
+    }
+}
+
 public struct VideoSubtitleDTO: Codable, Identifiable, Hashable {
     public var id: String { "\(lan)|\(subtitleUrl)|\(subtitleUrlV2)" }
     public let lan: String

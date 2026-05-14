@@ -509,7 +509,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, nil:
+        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, .animePlayer, nil:
             break
         }
     }
@@ -520,7 +520,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, nil:
+        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, .animePlayer, nil:
             break
         }
     }
@@ -625,6 +625,10 @@ private struct DeepLinkRouteContent {
             ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
         case .search(let searchRoute):
             SearchRouteView(keyword: searchRoute.keyword)
+        case .animeSubject(let animeRoute):
+            AnimeSubjectView(subjectID: animeRoute.subjectID, initialSubject: animeRoute.initialSubject)
+        case .animePlayer(let animeRoute):
+            AnimePlayerView(route: animeRoute)
         }
     }
 
@@ -652,6 +656,10 @@ private struct DeepLinkRouteContent {
             ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
         case .search(let searchRoute):
             SearchRouteView(keyword: searchRoute.keyword)
+        case .animeSubject(let animeRoute):
+            AnimeSubjectView(subjectID: animeRoute.subjectID, initialSubject: animeRoute.initialSubject)
+        case .animePlayer(let animeRoute):
+            AnimePlayerView(route: animeRoute)
         }
     }
 
@@ -775,7 +783,7 @@ private struct DeepLinkSplitHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, nil:
+        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, .animePlayer, nil:
             break
         }
     }
@@ -786,7 +794,7 @@ private struct DeepLinkSplitHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, nil:
+        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, .animePlayer, nil:
             break
         }
     }
@@ -994,6 +1002,7 @@ private extension UIView {
 
 struct MainTabView: View {
     @State private var selectedTab: MainTab = .home
+    @EnvironmentObject private var settings: AppSettings
 
     var body: some View {
         // On iOS 18+ we use the new `Tab(role: .search)` initializer
@@ -1013,6 +1022,13 @@ struct MainTabView: View {
                 Tab("动态", systemImage: "sparkles", value: MainTab.dynamic) {
                     NavigationStack {
                         DynamicFeedView()
+                    }
+                }
+                if settings.animeTrackingEnabled {
+                    Tab("追番", systemImage: "play.tv.fill", value: MainTab.anime) {
+                        NavigationStack {
+                            AnimeHomeView()
+                        }
                     }
                 }
                 Tab("我的", systemImage: "person.crop.circle", value: MainTab.profile) {
@@ -1040,6 +1056,14 @@ struct MainTabView: View {
                 .tabItem { Label("动态", systemImage: "sparkles") }
                 .tag(MainTab.dynamic)
 
+                if settings.animeTrackingEnabled {
+                    NavigationStack {
+                        AnimeHomeView()
+                    }
+                    .tabItem { Label("追番", systemImage: "play.tv.fill") }
+                    .tag(MainTab.anime)
+                }
+
                 SearchView()
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                     .tag(MainTab.search)
@@ -1057,6 +1081,7 @@ struct MainTabView: View {
     private enum MainTab: Hashable {
         case home
         case dynamic
+        case anime
         case profile
         case search
     }
