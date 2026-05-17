@@ -295,6 +295,21 @@ struct AnimeMediaFetchArgs {
 }
 
 #[derive(Deserialize)]
+struct AnimeMediaFetchOptionsArgs {
+    sources_json: String,
+    #[serde(default)]
+    subject_names: Vec<String>,
+    #[serde(default)]
+    episode_sort: f64,
+    #[serde(default)]
+    episode_name: String,
+    #[serde(default)]
+    max_sources: i64,
+    #[serde(default)]
+    stop_after_supported: i64,
+}
+
+#[derive(Deserialize)]
 struct AnimeMediaResolveArgs {
     candidate: AnimeMediaCandidate,
     #[serde(default)]
@@ -785,6 +800,17 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
                 a.subject_names,
                 a.episode_sort,
                 &a.episode_name,
+            )?)
+        }
+        "anime.media.fetch_options" => {
+            let a: AnimeMediaFetchOptionsArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_media_fetch_options(
+                &a.sources_json,
+                a.subject_names,
+                a.episode_sort,
+                &a.episode_name,
+                a.max_sources,
+                a.stop_after_supported,
             )?)
         }
         "anime.media.resolve" => {

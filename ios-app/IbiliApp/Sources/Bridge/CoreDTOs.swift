@@ -551,6 +551,12 @@ public struct AnimeSubjectImageDTO: Codable, Hashable {
     public let grid: String
 }
 
+public struct AnimeInfoItemDTO: Codable, Hashable, Identifiable {
+    public var id: String { "\(key)-\(value)" }
+    public let key: String
+    public let value: String
+}
+
 public struct AnimeEpisodeDTO: Codable, Hashable, Identifiable {
     public let id: Int64
     public let subjectID: Int64
@@ -562,6 +568,30 @@ public struct AnimeEpisodeDTO: Codable, Hashable, Identifiable {
     public let airdate: String
     public let desc: String
     public let collectionType: Int64
+
+    public init(
+        id: Int64,
+        subjectID: Int64,
+        sort: Double,
+        ep: Double,
+        name: String,
+        nameCn: String,
+        duration: String,
+        airdate: String,
+        desc: String,
+        collectionType: Int64
+    ) {
+        self.id = id
+        self.subjectID = subjectID
+        self.sort = sort
+        self.ep = ep
+        self.name = name
+        self.nameCn = nameCn
+        self.duration = duration
+        self.airdate = airdate
+        self.desc = desc
+        self.collectionType = collectionType
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, sort, ep, name, duration, airdate, desc
@@ -594,7 +624,46 @@ public struct AnimeSubjectDTO: Codable, Hashable, Identifiable {
     public let totalEpisodes: Int64
     public let tags: [String]
     public let aliases: [String]
+    public let infoItems: [AnimeInfoItemDTO]
     public let episodes: [AnimeEpisodeDTO]
+
+    public init(
+        id: Int64,
+        name: String,
+        nameCn: String,
+        summary: String,
+        date: String,
+        image: AnimeSubjectImageDTO,
+        ratingScore: Double,
+        ratingTotal: Int64,
+        rank: Int64,
+        collectionType: Int64,
+        collectionLabel: String,
+        epStatus: Int64,
+        totalEpisodes: Int64,
+        tags: [String],
+        aliases: [String],
+        infoItems: [AnimeInfoItemDTO],
+        episodes: [AnimeEpisodeDTO]
+    ) {
+        self.id = id
+        self.name = name
+        self.nameCn = nameCn
+        self.summary = summary
+        self.date = date
+        self.image = image
+        self.ratingScore = ratingScore
+        self.ratingTotal = ratingTotal
+        self.rank = rank
+        self.collectionType = collectionType
+        self.collectionLabel = collectionLabel
+        self.epStatus = epStatus
+        self.totalEpisodes = totalEpisodes
+        self.tags = tags
+        self.aliases = aliases
+        self.infoItems = infoItems
+        self.episodes = episodes
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, name, summary, date, image, rank, tags, aliases, episodes
@@ -605,6 +674,7 @@ public struct AnimeSubjectDTO: Codable, Hashable, Identifiable {
         case collectionLabel = "collection_label"
         case epStatus = "ep_status"
         case totalEpisodes = "total_episodes"
+        case infoItems = "info_items"
     }
 
     public var displayTitle: String {
@@ -669,6 +739,28 @@ public struct AnimeSourceDTO: Codable, Hashable, Identifiable {
     public var enabled: Bool
     public let arguments: AnyCodableValue
 
+    public init(
+        id: String,
+        factoryID: String,
+        version: Int64,
+        name: String,
+        description: String,
+        iconURL: String,
+        tier: String,
+        enabled: Bool,
+        arguments: AnyCodableValue
+    ) {
+        self.id = id
+        self.factoryID = factoryID
+        self.version = version
+        self.name = name
+        self.description = description
+        self.iconURL = iconURL
+        self.tier = tier
+        self.enabled = enabled
+        self.arguments = arguments
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, version, name, description, tier, enabled, arguments
         case factoryID = "factory_id"
@@ -704,9 +796,10 @@ public struct AnimeMediaCandidateDTO: Codable, Hashable, Identifiable {
     public let unsupportedReason: String
     public let referer: String
     public let userAgent: String
+    public let headers: [String: String]
 
     enum CodingKeys: String, CodingKey {
-        case id, title, url, kind, referer
+        case id, title, url, kind, referer, headers
         case sourceID = "source_id"
         case sourceName = "source_name"
         case pageURL = "page_url"
@@ -755,6 +848,8 @@ public struct AnimeMediaSourceReportDTO: Codable, Hashable, Identifiable {
     public let supportedCount: Int64
     public let status: String
     public let message: String
+    public let captchaURL: String
+    public let captchaKind: String
 
     public var id: String { sourceID }
 
@@ -768,6 +863,8 @@ public struct AnimeMediaSourceReportDTO: Codable, Hashable, Identifiable {
         case failedQueries = "failed_queries"
         case candidateCount = "candidate_count"
         case supportedCount = "supported_count"
+        case captchaURL = "captcha_url"
+        case captchaKind = "captcha_kind"
     }
 }
 
@@ -778,10 +875,11 @@ public struct AnimePlayUrlDTO: Codable, Hashable {
     public let cover: String
     public let referer: String
     public let userAgent: String
+    public let headers: [String: String]
     public let durationMs: Int64
 
     enum CodingKeys: String, CodingKey {
-        case url, format, title, cover, referer
+        case url, format, title, cover, referer, headers
         case userAgent = "user_agent"
         case durationMs = "duration_ms"
     }

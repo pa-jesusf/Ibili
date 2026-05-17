@@ -48,6 +48,12 @@ final class AnimeSourceStore: ObservableObject {
         save()
     }
 
+    func updateCookie(_ cookie: String, forSourceID sourceID: String) {
+        guard let index = sources.firstIndex(where: { $0.id == sourceID }) else { return }
+        sources[index] = sources[index].withVideoCookie(cookie)
+        save()
+    }
+
     func importJSON(_ text: String) async throws {
         let update = try await Task.detached(priority: .userInitiated) {
             try CoreClient.shared.animeSourceImport(jsonText: text)
@@ -118,5 +124,38 @@ final class AnimeSourceStore: ObservableObject {
             }
         }
         return AnimeSourceUpdateDTO(sources: merged, updatedAt: updatedAt)
+    }
+}
+
+private extension AnimeSourceDTO {
+    func withVideoCookie(_ cookie: String) -> AnimeSourceDTO {
+        var root = arguments.objectValue
+        var searchConfig = root["searchConfig"]?.objectValue ?? [:]
+        var matchVideo = searchConfig["matchVideo"]?.objectValue ?? [:]
+        var addHeaders = matchVideo["addHeadersToVideo"]?.objectValue ?? [:]
+        addHeaders["cookie"] = .string(cookie)
+        matchVideo["addHeadersToVideo"] = .object(addHeaders)
+        searchConfig["matchVideo"] = .object(matchVideo)
+        root["searchConfig"] = .object(searchConfig)
+        return AnimeSourceDTO(
+            id: id,
+            factoryID: factoryID,
+            version: version,
+            name: name,
+            description: description,
+            iconURL: iconURL,
+            tier: tier,
+            enabled: enabled,
+            arguments: .object(root)
+        )
+    }
+}
+
+private extension AnyCodableValue {
+    var objectValue: [String: AnyCodableValue] {
+        if case .object(let value) = self {
+            return value
+        }
+        return [:]
     }
 }

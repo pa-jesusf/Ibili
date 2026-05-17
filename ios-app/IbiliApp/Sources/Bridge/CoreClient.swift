@@ -324,6 +324,36 @@ public final class CoreClient: @unchecked Sendable {
         )
     }
 
+    public func animeMediaFetchOptions(
+        sourcesJSON: String,
+        subjectNames: [String],
+        episodeSort: Double,
+        episodeName: String,
+        maxSources: Int64,
+        stopAfterSupported: Int64
+    ) throws -> AnimeMediaFetchResultDTO {
+        struct A: Encodable {
+            let sources_json: String
+            let subject_names: [String]
+            let episode_sort: Double
+            let episode_name: String
+            let max_sources: Int64
+            let stop_after_supported: Int64
+        }
+        return try call(
+            "anime.media.fetch_options",
+            args: A(
+                sources_json: sourcesJSON,
+                subject_names: subjectNames,
+                episode_sort: episodeSort,
+                episode_name: episodeName,
+                max_sources: maxSources,
+                stop_after_supported: stopAfterSupported
+            ),
+            decoding: AnimeMediaFetchResultDTO.self
+        )
+    }
+
     public func animeMediaResolve(
         candidate: AnimeMediaCandidateDTO,
         title: String,

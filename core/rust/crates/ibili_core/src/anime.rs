@@ -59,6 +59,12 @@ pub struct AnimeSubjectImage {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeInfoItem {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AnimeSubject {
     pub id: i64,
     pub name: String,
@@ -75,6 +81,7 @@ pub struct AnimeSubject {
     pub total_episodes: i64,
     pub tags: Vec<String>,
     pub aliases: Vec<String>,
+    pub info_items: Vec<AnimeInfoItem>,
     pub episodes: Vec<AnimeEpisode>,
 }
 
@@ -150,6 +157,7 @@ pub struct AnimeMediaCandidate {
     pub unsupported_reason: String,
     pub referer: String,
     pub user_agent: String,
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -182,6 +190,8 @@ pub struct AnimeMediaSourceReport {
     pub supported_count: i64,
     pub status: String,
     pub message: String,
+    pub captcha_url: String,
+    pub captcha_kind: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -192,6 +202,7 @@ pub struct AnimePlayUrl {
     pub cover: String,
     pub referer: String,
     pub user_agent: String,
+    pub headers: HashMap<String, String>,
     pub duration_ms: i64,
 }
 
@@ -530,7 +541,8 @@ impl Core {
                 ("offset".to_string(), "0".to_string()),
             ],
         )?;
-        let mut converted = convert_subject(subject, 0, 0);
+        let (collection_type, ep_status) = self.bangumi_subject_collection_state(access_token, subject_id);
+        let mut converted = convert_subject(subject, collection_type, ep_status);
         converted.episodes = episodes.data.into_iter()
             .map(|episode| convert_episode(subject_id, episode))
             .collect();
@@ -600,79 +612,39 @@ impl Core {
     ) -> CoreResult<AnimeMediaFetchResult> {
         let update = parse_sources(sources_json)?;
         let keywords = build_search_keywords(&subject_names);
-        let mut candidates = Vec::new();
-        let mut seen = HashSet::new();
-        let enabled_sources = update.sources.iter().filter(|s| s.enabled).count() as i64;
-        let mut diagnostics = AnimeMediaFetchDiagnostics {
-            enabled_sources,
-            ..Default::default()
-        };
-        let jobs = build_media_fetch_jobs(&update.sources, &keywords);
-        let mut reports = reports_for_sources(&update.sources);
-        if jobs.is_empty() {
-            diagnostics.source_reports = reports.into_values().collect();
-            return Ok(AnimeMediaFetchResult { candidates, diagnostics });
-        }
-        let client = self.http.client.clone();
-        for batch in jobs.chunks(MEDIA_FETCH_BATCH_SIZE) {
-            diagnostics.attempted_queries += batch.len() as i64;
-            let handles = batch.iter().cloned().map(|job| {
-                let client = client.clone();
-                let episode_name = episode_name.to_string();
-                thread::spawn(move || {
-                    let result = fetch_media_job(&client, &job, episode_sort, &episode_name);
-                    MediaFetchJobResult { job, result }
-                })
-            }).collect::<Vec<_>>();
+        self.anime_media_fetch_with_options(
+            update.sources,
+            &keywords,
+            episode_sort,
+            episode_name,
+            AnimeMediaFetchOptions {
+                max_sources: 0,
+                stop_after_supported: MEDIA_FETCH_STOP_AFTER_SUPPORTED,
+            },
+        )
+    }
 
-            for handle in handles {
-                match handle.join() {
-                    Ok(job_result) => {
-                        update_source_report_attempt(&mut reports, &job_result.job);
-                        match job_result.result {
-                            Ok(mut items) => {
-                                diagnostics.succeeded_queries += 1;
-                                update_source_report_success(&mut reports, &job_result.job, &items);
-                                push_unique(&mut candidates, &mut seen, &mut items);
-                            }
-                            Err(error) => {
-                                diagnostics.failed_queries += 1;
-                                update_source_report_failure(&mut reports, &job_result.job, &error);
-                                push_diagnostic_message(
-                                    &mut diagnostics.messages,
-                                    &job_result.job.source,
-                                    &job_result.job.keyword,
-                                    &error,
-                                );
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        diagnostics.failed_queries += 1;
-                        if diagnostics.messages.len() < 8 {
-                            diagnostics.messages.push("规则源线程异常退出".into());
-                        }
-                    }
-                }
-            }
-
-            let supported_count = candidates.iter().filter(|c| c.is_supported).count();
-            if supported_count >= MEDIA_FETCH_STOP_AFTER_SUPPORTED {
-                if diagnostics.messages.len() < 8 {
-                    diagnostics.messages.push("已优先返回可播放资源，部分慢源仍可手动刷新再试".into());
-                }
-                break;
-            }
-        }
-        diagnostics.supported_candidates = candidates.iter().filter(|c| c.is_supported).count() as i64;
-        diagnostics.unsupported_candidates = candidates.len() as i64 - diagnostics.supported_candidates;
-        diagnostics.source_reports = sorted_source_reports(reports);
-        candidates.sort_by(|a, b| {
-            b.is_supported.cmp(&a.is_supported)
-                .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
-                .then_with(|| a.source_name.cmp(&b.source_name))
-        });
-        Ok(AnimeMediaFetchResult { candidates, diagnostics })
+    pub fn anime_media_fetch_options(
+        &self,
+        sources_json: &str,
+        subject_names: Vec<String>,
+        episode_sort: f64,
+        episode_name: &str,
+        max_sources: i64,
+        stop_after_supported: i64,
+    ) -> CoreResult<AnimeMediaFetchResult> {
+        let update = parse_sources(sources_json)?;
+        let keywords = build_search_keywords(&subject_names);
+        self.anime_media_fetch_with_options(
+            update.sources,
+            &keywords,
+            episode_sort,
+            episode_name,
+            AnimeMediaFetchOptions {
+                max_sources: max_sources.max(0) as usize,
+                stop_after_supported: stop_after_supported.max(0) as usize,
+            },
+        )
     }
 
     pub fn anime_media_resolve(
@@ -688,13 +660,17 @@ impl Core {
         if format != "hls" && format != "mp4" {
             return Err(CoreError::InvalidArgument("暂不支持该资源格式".into()));
         }
+        let referer = if candidate.referer.is_empty() { candidate.page_url.clone() } else { candidate.referer.clone() };
+        let user_agent = if candidate.user_agent.is_empty() { UA_WEB.to_string() } else { candidate.user_agent.clone() };
+        let headers = candidate_headers(&candidate);
         Ok(AnimePlayUrl {
             url: candidate.url,
             format,
             title: title.to_string(),
             cover: cover.to_string(),
-            referer: if candidate.referer.is_empty() { candidate.page_url } else { candidate.referer },
-            user_agent: if candidate.user_agent.is_empty() { UA_WEB.to_string() } else { candidate.user_agent },
+            referer,
+            user_agent,
+            headers,
             duration_ms: 0,
         })
     }
@@ -804,6 +780,124 @@ impl Core {
         Err(CoreError::Api { code: status as i64, msg: bangumi_error_message(&text) })
     }
 
+    fn bangumi_subject_collection_state(&self, access_token: &str, subject_id: i64) -> (i64, i64) {
+        if access_token.trim().is_empty() {
+            return (0, 0);
+        }
+        let url = format!("{BANGUMI_API}/v0/users/-/collections/{subject_id}");
+        let Ok(response) = self.http.client
+            .get(url)
+            .header("User-Agent", APP_UA)
+            .header("Accept", "application/json")
+            .bearer_auth(access_token.trim())
+            .send()
+        else {
+            return (0, 0);
+        };
+        if response.status().as_u16() == 404 {
+            return (0, 0);
+        }
+        let Ok(text) = response.text() else {
+            return (0, 0);
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            return (0, 0);
+        };
+        let collection_type = value
+            .get("type")
+            .and_then(Value::as_i64)
+            .or_else(|| value.get("collection_type").and_then(Value::as_i64))
+            .unwrap_or(0);
+        let ep_status = value
+            .get("ep_status")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        (collection_type, ep_status)
+    }
+
+    fn anime_media_fetch_with_options(
+        &self,
+        sources: Vec<AnimeSource>,
+        keywords: &[String],
+        episode_sort: f64,
+        episode_name: &str,
+        options: AnimeMediaFetchOptions,
+    ) -> CoreResult<AnimeMediaFetchResult> {
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        let enabled_sources = sources.iter().filter(|s| s.enabled).count() as i64;
+        let mut diagnostics = AnimeMediaFetchDiagnostics {
+            enabled_sources,
+            ..Default::default()
+        };
+        let jobs = build_media_fetch_jobs(&sources, keywords, options.max_sources);
+        let mut reports = reports_for_sources(&sources);
+        if jobs.is_empty() {
+            diagnostics.source_reports = reports.into_values().collect();
+            return Ok(AnimeMediaFetchResult { candidates, diagnostics });
+        }
+        let client = self.http.client.clone();
+        for batch in jobs.chunks(MEDIA_FETCH_BATCH_SIZE) {
+            diagnostics.attempted_queries += batch.len() as i64;
+            let handles = batch.iter().cloned().map(|job| {
+                let client = client.clone();
+                let episode_name = episode_name.to_string();
+                thread::spawn(move || {
+                    let result = fetch_media_job(&client, &job, episode_sort, &episode_name);
+                    MediaFetchJobResult { job, result }
+                })
+            }).collect::<Vec<_>>();
+
+            for handle in handles {
+                match handle.join() {
+                    Ok(job_result) => {
+                        update_source_report_attempt(&mut reports, &job_result.job);
+                        match job_result.result {
+                            Ok(mut items) => {
+                                diagnostics.succeeded_queries += 1;
+                                update_source_report_success(&mut reports, &job_result.job, &items);
+                                push_unique(&mut candidates, &mut seen, &mut items);
+                            }
+                            Err(error) => {
+                                diagnostics.failed_queries += 1;
+                                update_source_report_failure(&mut reports, &job_result.job, &error);
+                                push_diagnostic_message(
+                                    &mut diagnostics.messages,
+                                    &job_result.job.source,
+                                    &job_result.job.keyword,
+                                    &error,
+                                );
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        diagnostics.failed_queries += 1;
+                        if diagnostics.messages.len() < 8 {
+                            diagnostics.messages.push("规则源线程异常退出".into());
+                        }
+                    }
+                }
+            }
+
+            let supported_count = candidates.iter().filter(|c| c.is_supported).count();
+            if options.stop_after_supported > 0 && supported_count >= options.stop_after_supported {
+                if diagnostics.messages.len() < 8 {
+                    diagnostics.messages.push("已优先返回可播放资源，继续刷新可补全更多慢源".into());
+                }
+                break;
+            }
+        }
+        diagnostics.supported_candidates = candidates.iter().filter(|c| c.is_supported).count() as i64;
+        diagnostics.unsupported_candidates = candidates.len() as i64 - diagnostics.supported_candidates;
+        diagnostics.source_reports = sorted_source_reports(reports);
+        candidates.sort_by(|a, b| {
+            b.is_supported.cmp(&a.is_supported)
+                .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
+                .then_with(|| a.source_name.cmp(&b.source_name))
+        });
+        Ok(AnimeMediaFetchResult { candidates, diagnostics })
+    }
+
 }
 
 fn decode_bangumi_response<T: for<'de> Deserialize<'de>>(response: reqwest::blocking::Response) -> CoreResult<T> {
@@ -826,6 +920,12 @@ struct MediaFetchJobResult {
     result: CoreResult<Vec<AnimeMediaCandidate>>,
 }
 
+#[derive(Clone, Copy)]
+struct AnimeMediaFetchOptions {
+    max_sources: usize,
+    stop_after_supported: usize,
+}
+
 #[derive(Clone)]
 struct SelectorSubjectHit {
     title: String,
@@ -839,12 +939,17 @@ struct SelectorEpisodeHit {
     channel: String,
 }
 
-fn build_media_fetch_jobs(sources: &[AnimeSource], keywords: &[String]) -> Vec<MediaFetchJob> {
+fn build_media_fetch_jobs(sources: &[AnimeSource], keywords: &[String], max_sources: usize) -> Vec<MediaFetchJob> {
     let mut jobs = Vec::new();
+    let mut included_sources = 0usize;
     for source in sources.iter().filter(|source| source.enabled) {
         if !matches!(source.factory_id.as_str(), "rss" | "web-selector") || !source_supports_avkit(source) {
             continue;
         }
+        if max_sources > 0 && included_sources >= max_sources {
+            break;
+        }
+        included_sources += 1;
         for keyword in keywords {
             jobs.push(MediaFetchJob {
                 source: source.clone(),
@@ -887,6 +992,7 @@ fn fetch_rss_candidates_with_client(
         &url,
         UA_WEB,
         "application/rss+xml, application/xml, text/xml, */*",
+        source_cookie(source),
     )?;
     let filter_by_episode = source.arguments
         .pointer("/searchConfig/filterByEpisodeSort")
@@ -915,6 +1021,7 @@ fn fetch_selector_candidates_with_client(
         &url,
         ua,
         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        source_cookie(source),
     )?;
     let filter_by_episode = source.arguments
         .pointer("/searchConfig/filterByEpisodeSort")
@@ -928,6 +1035,7 @@ fn fetch_selector_candidates_with_client(
             &subject.url,
             ua,
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            source_cookie(source),
         ) {
             Ok(html) => html,
             Err(_) => continue,
@@ -959,6 +1067,7 @@ fn fetch_selector_candidates_with_client(
                 &episode.url,
                 ua,
                 "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                source_cookie(source),
             ) {
                 Ok(html) => html,
                 Err(_) => continue,
@@ -988,17 +1097,100 @@ fn fetch_selector_candidates_with_client(
     dedupe_candidates(candidates)
 }
 
-fn http_get_text(client: &Client, url: &str, user_agent: &str, accept: &str) -> CoreResult<String> {
-    client
+fn http_get_text(
+    client: &Client,
+    url: &str,
+    user_agent: &str,
+    accept: &str,
+    cookie: Option<&str>,
+) -> CoreResult<String> {
+    let mut request = client
         .get(url)
         .timeout(Duration::from_secs(MEDIA_FETCH_REQUEST_TIMEOUT_SECS))
         .header("User-Agent", user_agent)
-        .header("Accept", accept)
-        .send()?
-        .error_for_status()
-        .map_err(|e| CoreError::Network(e.to_string()))?
+        .header("Accept", accept);
+    if let Some(cookie) = cookie.filter(|value| !value.trim().is_empty()) {
+        request = request.header("Cookie", cookie);
+    }
+    let response = request.send()?;
+    let status = response.status().as_u16();
+    let text = response
         .text()
-        .map_err(|e| CoreError::Network(e.to_string()))
+        .map_err(|e| CoreError::Network(e.to_string()))?;
+    if (200..300).contains(&status) {
+        if let Some(kind) = detect_web_captcha(url, &text) {
+            return Err(CoreError::Api { code: 468, msg: format!("需要处理{kind}") });
+        }
+        return Ok(text);
+    }
+    if matches!(status, 403 | 429 | 468) {
+        let kind = detect_web_captcha(url, &text).unwrap_or("验证码");
+        return Err(CoreError::Api { code: 468, msg: format!("需要处理{kind}") });
+    }
+    Err(CoreError::Network(format!("HTTP {status}: {url}")))
+}
+
+fn detect_web_captcha(page_url: &str, html: &str) -> Option<&'static str> {
+    let lower_html = html.to_lowercase();
+    let lower_url = page_url.to_lowercase();
+    if lower_html.contains("cf-turnstile")
+        || lower_html.contains("turnstile.render")
+        || lower_html.contains("challenges.cloudflare.com/turnstile")
+    {
+        return Some("Cloudflare Turnstile 验证");
+    }
+    let has_challenge_url_marker = lower_url.contains("__cf_chl_")
+        || lower_url.contains("/cdn-cgi/challenge-platform/h/")
+        || lower_url.contains("/cdn-cgi/challenge-platform/orchestrate/");
+    let has_blocking_title = lower_html.contains("<title>just a moment")
+        || lower_html.contains("checking your browser before accessing");
+    let has_blocking_text = lower_html.contains("challenge-error-text")
+        || lower_html.contains("enable javascript and cookies to continue")
+        || lower_html.contains("cf-browser-verification")
+        || lower_html.contains("id=\"cf-challenge\"")
+        || lower_html.contains("id='cf-challenge'");
+    let has_challenge_script = lower_html.contains("window._cf_chl_opt")
+        || lower_html.contains("__cf_chl_")
+        || lower_html.contains("/cdn-cgi/challenge-platform/h/")
+        || lower_html.contains("/cdn-cgi/challenge-platform/orchestrate/");
+    if has_challenge_url_marker
+        || has_blocking_text
+        || has_challenge_script
+        || (has_blocking_title && (lower_html.contains("challenge-platform") || lower_html.contains("cf-ray")))
+    {
+        return Some("Cloudflare 验证");
+    }
+    let safeline = lower_html.contains("/.safeline/static/favicon.png")
+        || lower_html.contains("id=\"slg-box\"")
+        || lower_html.contains("id=\"slg-title\"")
+        || (lower_html.contains("window.product_data") && lower_html.contains("slg-bg"));
+    if safeline {
+        return Some("验证码");
+    }
+    let has_inline_verify_input = lower_html.contains("name=\"verify\"")
+        || lower_html.contains("name='verify'")
+        || html.contains("placeholder=\"请输入验证码\"")
+        || html.contains("placeholder='请输入验证码'")
+        || html.contains("placeholder=\"請輸入驗證碼\"")
+        || html.contains("placeholder='請輸入驗證碼'");
+    let has_inline_verify_image = lower_html.contains("class=\"ds-verify-img\"")
+        || lower_html.contains("class='ds-verify-img'")
+        || lower_html.contains("/verify/index.html");
+    let has_inline_verify_submit = lower_html.contains("class=\"verify-submit\"")
+        || lower_html.contains("class='verify-submit'")
+        || lower_html.contains("data-type=\"search\"")
+        || lower_html.contains("data-type='search'")
+        || html.contains("提交验证")
+        || html.contains("提交驗證");
+    if has_inline_verify_image && has_inline_verify_input && has_inline_verify_submit {
+        return Some("图片验证码");
+    }
+    if lower_html.contains("captcha")
+        && (lower_html.contains("<img") || lower_html.contains("verification code") || lower_html.contains("verify"))
+    {
+        return Some("图片验证码");
+    }
+    None
 }
 
 fn parse_selector_subjects(
@@ -1405,6 +1597,7 @@ fn fetch_nested_selector_media_urls(
             &nested_url,
             ua,
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            source_cookie(source),
         ) {
             urls.extend(extract_selector_media_urls(&nested_html, &nested_url));
         }
@@ -1520,6 +1713,13 @@ fn selector_user_agent(source: &AnimeSource) -> &str {
         .unwrap_or(UA_WEB)
 }
 
+fn source_cookie(source: &AnimeSource) -> Option<&str> {
+    source.arguments
+        .pointer("/searchConfig/matchVideo/addHeadersToVideo/cookie")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+}
+
 fn selector_referer(source: &AnimeSource, fallback: &str) -> Option<String> {
     let referer = source.arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/referer")
@@ -1618,8 +1818,16 @@ fn update_source_report_failure(
     if let Some(report) = reports.get_mut(&job.source.id) {
         report.failed_queries += 1;
         if report.supported_count == 0 && report.candidate_count == 0 {
-            report.status = "failed".into();
+            report.status = if is_captcha_error(error) { "captcha".into() } else { "failed".into() };
             report.message = error.to_string();
+            if is_captcha_error(error) {
+                report.captcha_kind = captcha_kind_from_error(error).to_string();
+                report.captcha_url = job.source.arguments
+                    .pointer("/searchConfig/searchUrl")
+                    .and_then(Value::as_str)
+                    .map(|url| fill_search_url(url, &job.keyword, 1))
+                    .unwrap_or_default();
+            }
         }
     }
 }
@@ -1638,10 +1846,25 @@ fn source_status_rank(status: &str) -> i32 {
     match status {
         "found" => 0,
         "searching" => 1,
+        "captcha" => 2,
         "empty" => 2,
         "unsupported" => 3,
         "failed" => 4,
         _ => 5,
+    }
+}
+
+fn is_captcha_error(error: &CoreError) -> bool {
+    matches!(error, CoreError::Api { code: 468, .. })
+        || error.to_string().contains("需要处理")
+}
+
+fn captcha_kind_from_error(error: &CoreError) -> &str {
+    match error {
+        CoreError::Api { msg, .. } if msg.contains("Cloudflare Turnstile") => "Cloudflare Turnstile 验证",
+        CoreError::Api { msg, .. } if msg.contains("Cloudflare") => "Cloudflare 验证",
+        CoreError::Api { msg, .. } if msg.contains("图片") => "图片验证码",
+        _ => "验证码",
     }
 }
 
@@ -1802,6 +2025,14 @@ fn make_candidate(
         "暂不支持该资源格式".into()
     };
     let quality_label = infer_quality(&title, &url);
+    let user_agent = source.arguments
+        .pointer("/searchConfig/matchVideo/addHeadersToVideo/userAgent")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(UA_WEB)
+        .to_string();
+    let referer = referer.unwrap_or_else(|| page_url.clone());
+    let headers = source_video_headers(source, &referer, &user_agent);
     AnimeMediaCandidate {
         id: format!("{}:{}", source.id, stable_hash(&url)),
         source_id: source.id.clone(),
@@ -1813,32 +2044,73 @@ fn make_candidate(
         quality_label,
         is_supported,
         unsupported_reason,
-        referer: referer.unwrap_or(page_url),
-        user_agent: source.arguments
-            .pointer("/searchConfig/matchVideo/addHeadersToVideo/userAgent")
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(UA_WEB)
-            .to_string(),
+        referer,
+        user_agent,
+        headers,
     }
+}
+
+fn source_video_headers(source: &AnimeSource, referer: &str, user_agent: &str) -> HashMap<String, String> {
+    let mut headers = HashMap::new();
+    headers.insert("User-Agent".to_string(), user_agent.to_string());
+    if !referer.trim().is_empty() {
+        headers.insert("Referer".to_string(), referer.to_string());
+    }
+    headers.insert("Accept".to_string(), "*/*".to_string());
+    headers.insert("Sec-Fetch-Dest".to_string(), "video".to_string());
+    headers.insert("Sec-Fetch-Mode".to_string(), "no-cors".to_string());
+    headers.insert("Sec-Fetch-Site".to_string(), "cross-site".to_string());
+    if let Some(value) = source.arguments
+        .pointer("/searchConfig/matchVideo/addHeadersToVideo/cookie")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
+        headers.insert("Cookie".to_string(), value.to_string());
+    }
+    if let Some(object) = source.arguments
+        .pointer("/searchConfig/matchVideo/addHeadersToVideo/headers")
+        .and_then(Value::as_object)
+    {
+        for (key, value) in object {
+            if let Some(value) = value.as_str().filter(|s| !s.trim().is_empty()) {
+                headers.insert(key.clone(), value.to_string());
+            }
+        }
+    }
+    headers
+}
+
+fn candidate_headers(candidate: &AnimeMediaCandidate) -> HashMap<String, String> {
+    let mut headers = candidate.headers.clone();
+    let user_agent = if candidate.user_agent.is_empty() { UA_WEB } else { &candidate.user_agent };
+    headers.entry("User-Agent".into()).or_insert_with(|| user_agent.to_string());
+    if !candidate.referer.is_empty() {
+        headers.entry("Referer".into()).or_insert_with(|| candidate.referer.clone());
+    } else if !candidate.page_url.is_empty() {
+        headers.entry("Referer".into()).or_insert_with(|| candidate.page_url.clone());
+    }
+    headers.entry("Accept".into()).or_insert_with(|| "*/*".to_string());
+    headers
 }
 
 fn convert_subject(raw: BangumiSubjectRaw, collection_type: i64, ep_status: i64) -> AnimeSubject {
     let images = raw.images.unwrap_or_default();
     let rating = raw.rating.unwrap_or_default();
-    let aliases = raw.infobox.into_iter()
-        .filter(|item| item.key == "别名")
-        .flat_map(|item| match item.value {
-            Value::String(s) => vec![s],
-            Value::Array(values) => values.into_iter().filter_map(|v| {
-                v.as_str().map(str::to_string).or_else(|| {
-                    v.get("v").and_then(Value::as_str).map(str::to_string)
-                })
-            }).collect(),
-            _ => Vec::new(),
-        })
-        .filter(|s| !s.trim().is_empty())
-        .collect::<Vec<_>>();
+    let mut aliases = Vec::new();
+    let mut info_items = Vec::new();
+    for item in raw.infobox {
+        let key = item.key.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        if key == "别名" {
+            aliases.extend(info_alias_values(&item.value));
+        }
+        let value = info_value_to_string(&item.value);
+        if !value.is_empty() {
+            info_items.push(AnimeInfoItem { key, value });
+        }
+    }
     AnimeSubject {
         id: raw.id,
         name: raw.name,
@@ -1861,7 +2133,51 @@ fn convert_subject(raw: BangumiSubjectRaw, collection_type: i64, ep_status: i64)
         total_episodes: raw.total_episodes.max(raw.eps),
         tags: raw.tags.into_iter().map(|tag| tag.name).filter(|s| !s.is_empty()).collect(),
         aliases,
+        info_items,
         episodes: Vec::new(),
+    }
+}
+
+fn info_alias_values(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(s) => vec![s.trim().to_string()],
+        Value::Array(values) => values.iter()
+            .filter_map(|v| v.as_str()
+                .map(str::to_string)
+                .or_else(|| v.get("v").and_then(Value::as_str).map(str::to_string)))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn info_value_to_string(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::Bool(v) => v.to_string(),
+        Value::Number(v) => v.to_string(),
+        Value::String(v) => v.trim().to_string(),
+        Value::Array(values) => values.iter()
+            .map(info_value_to_string)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / "),
+        Value::Object(object) => {
+            for key in ["v", "value", "name", "title"] {
+                if let Some(value) = object.get(key) {
+                    let text = info_value_to_string(value);
+                    if !text.is_empty() {
+                        return text;
+                    }
+                }
+            }
+            object.values()
+                .map(info_value_to_string)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" / ")
+        }
     }
 }
 
