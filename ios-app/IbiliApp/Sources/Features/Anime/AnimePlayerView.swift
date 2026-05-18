@@ -4,6 +4,7 @@ import SwiftUI
 struct AnimePlayerView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.dismissPlayerHost) private var dismissPlayerHost
     @StateObject private var sourceStore = AnimeSourceStore.shared
     @StateObject private var vm = AnimePlayerViewModel()
     @State private var presentationRouteActive = false
@@ -39,6 +40,7 @@ struct AnimePlayerView: View {
         .background(IbiliTheme.background)
         .navigationTitle(route.episode.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .task(id: route.id) {
             await sourceStore.ensureDefaultSubscriptionsLoaded()
             await vm.load(
@@ -125,16 +127,21 @@ struct AnimePlayerView: View {
             webResolverRequest = request
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: dismissPlayerHost) {
+                    Label("返回", systemImage: "chevron.backward")
+                        .labelStyle(.iconOnly)
+                }
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     showsCandidates = true
                 } label: {
-                    Image(systemName: "server.rack")
+                    Label("选择数据源", systemImage: "server.rack")
+                        .labelStyle(.iconOnly)
                 }
                 .disabled(vm.candidates.isEmpty && vm.isLoading)
-                .tint(IbiliTheme.accent)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
+
                 Button {
                     Task {
                         await vm.refresh(
@@ -143,10 +150,10 @@ struct AnimePlayerView: View {
                         )
                     }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Label("刷新资源", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
                 }
                 .disabled(vm.isLoading)
-                .tint(IbiliTheme.accent)
             }
         }
         .tint(.white)

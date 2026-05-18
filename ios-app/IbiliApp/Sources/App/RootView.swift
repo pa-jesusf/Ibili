@@ -26,6 +26,11 @@ extension EnvironmentValues {
         get { self[SplitPreviewLeftWidthKey.self] }
         set { self[SplitPreviewLeftWidthKey.self] = newValue }
     }
+
+    var dismissPlayerHost: () -> Void {
+        get { self[DismissPlayerHostKey.self] }
+        set { self[DismissPlayerHostKey.self] = newValue }
+    }
 }
 
 private struct IsInPlayerHostNavigationKey: EnvironmentKey {
@@ -46,6 +51,10 @@ private struct SplitFeedColumnLimitKey: EnvironmentKey {
 
 private struct SplitPreviewLeftWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat? = nil
+}
+
+private struct DismissPlayerHostKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
 }
 
 /// Top-level shell. Switches between login and main tab interface.
@@ -349,23 +358,15 @@ private struct DeepLinkPlayerHost: View {
                 if let route = router.pending {
                     rootDestination(for: route)
                         .id(route.id)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarLeading) {
-                                Button {
-                                    dismiss()
-                                } label: {
-                                    Image(systemName: "chevron.backward")
-                                        .fontWeight(.semibold)
-                                }
-                                .tint(.white)
-                            }
-                        }
+                        .environment(\.dismissPlayerHost, dismiss)
+                        .toolbar { rootDismissToolbar(for: route) }
                 } else {
                     Color.clear
                 }
             }
             .navigationDestination(for: DeepLinkRouter.SessionRoute.self) { route in
                 destinationView(for: route)
+                    .environment(\.dismissPlayerHost, dismiss)
             }
         }
         .tint(.white)
@@ -465,6 +466,21 @@ private struct DeepLinkPlayerHost: View {
         // thread. By the time the teardown runs, the host is already
         // off-screen, so the user never sees the freeze.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.34, execute: work)
+    }
+
+    @ToolbarContentBuilder
+    private func rootDismissToolbar(for route: DeepLinkRouter.RootRoute) -> some ToolbarContent {
+        if !route.usesOwnPlayerHostToolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.backward")
+                        .fontWeight(.semibold)
+                }
+                .tint(.white)
+            }
+        }
     }
 
     private func cancelPendingDismiss(resetRouterDismissal: Bool) {
@@ -707,17 +723,8 @@ private struct DeepLinkSplitHost: View {
                         onPictureInPictureRestore: restorePictureInPicture
                     )
                     .id(route.id)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                dismiss()
-                            } label: {
-                                Image(systemName: router.path.isEmpty ? "xmark" : "chevron.backward")
-                                    .fontWeight(.semibold)
-                            }
-                            .tint(.white)
-                        }
-                    }
+                    .environment(\.dismissPlayerHost, dismiss)
+                    .toolbar { rootDismissToolbar(for: route) }
                 } else {
                     splitEmptyState
                 }
@@ -728,6 +735,7 @@ private struct DeepLinkSplitHost: View {
                     onPictureInPictureActiveChange: handlePictureInPictureChange,
                     onPictureInPictureRestore: restorePictureInPicture
                 )
+                .environment(\.dismissPlayerHost, dismiss)
             }
         }
         .tint(.white)
@@ -770,6 +778,21 @@ private struct DeepLinkSplitHost: View {
         }
         prepareRootRouteForDismissal(router.pending)
         onRootDismiss()
+    }
+
+    @ToolbarContentBuilder
+    private func rootDismissToolbar(for route: DeepLinkRouter.RootRoute) -> some ToolbarContent {
+        if !route.usesOwnPlayerHostToolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: router.path.isEmpty ? "xmark" : "chevron.backward")
+                        .fontWeight(.semibold)
+                }
+                .tint(.white)
+            }
+        }
     }
 
     private func syncPlayerSessions() {

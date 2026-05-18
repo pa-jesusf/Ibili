@@ -228,6 +228,15 @@ final class DeepLinkRouter: ObservableObject {
             guard case .live(let route) = self else { return nil }
             return route
         }
+
+        var usesOwnPlayerHostToolbar: Bool {
+            switch self {
+            case .animePlayer:
+                return true
+            case .player, .live, .dynamicDetail, .userSpace, .article, .search, .animeSubject:
+                return false
+            }
+        }
     }
 
     struct SessionSnapshot {
