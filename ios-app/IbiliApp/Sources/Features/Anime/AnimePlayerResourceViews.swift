@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct AnimePlayerPlaceholder: View {
@@ -307,11 +308,54 @@ private struct AnimeResourceSourceGroupView: View {
     let activePlayURL: String?
     let onPick: (AnimeMediaCandidateDTO) -> Void
     let onSolveCaptcha: (AnimeMediaSourceReportDTO) -> Void
-    private var resourceColumns: [GridItem] {
-        [GridItem(.adaptive(minimum: 96, maximum: 160), spacing: 8, alignment: .leading)]
-    }
 
     var body: some View {
+        content
+        .padding(12)
+        .background(ResourceGroupBackground(isActive: hasActiveCandidate), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(hasActiveCandidate ? IbiliTheme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if mode == .simple {
+            simpleContent
+        } else {
+            detailContent
+        }
+    }
+
+    private var simpleContent: some View {
+        HStack(alignment: .top, spacing: 12) {
+            HStack(spacing: 8) {
+                sourceBadge
+                    .frame(width: 22, height: 22)
+                Text(group.report.sourceName)
+                    .font(.headline)
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: 118, alignment: .leading)
+
+            if group.candidates.isEmpty {
+                emptySimpleStatus
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                FlowLayout(spacing: 8, lineSpacing: 8) {
+                    ForEach(group.candidates) { candidate in
+                        resourceButton(for: candidate)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var detailContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 sourceBadge
@@ -333,49 +377,74 @@ private struct AnimeResourceSourceGroupView: View {
 
             if group.candidates.isEmpty {
                 if group.report.status == "captcha" {
-                    Button("打开验证") {
-                        onSolveCaptcha(group.report)
-                    }
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.orange.opacity(0.12), in: Capsule())
-                    .buttonStyle(.plain)
-                } else if mode == .detail {
+                    captchaButton
+                } else {
                     AnimeSourceReportRow(report: group.report, showsCaptchaButton: true) {
                         onSolveCaptcha(group.report)
                     }
                 }
             } else {
-                LazyVGrid(columns: resourceColumns, alignment: .leading, spacing: 8) {
+                FlowLayout(spacing: 8, lineSpacing: 8) {
                     ForEach(group.candidates) { candidate in
-                        Button {
-                            guard candidate.isPlayableOrSniffable else { return }
-                            onPick(candidate)
-                        } label: {
-                            AnimeResourceChip(
-                                candidate: candidate,
-                                isActive: isActive(candidate)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!candidate.isPlayableOrSniffable || isLoading)
+                        resourceButton(for: candidate)
                     }
                 }
-                if mode == .detail {
-                    AnimeSourceReportRow(report: group.report, showsCaptchaButton: true) {
-                        onSolveCaptcha(group.report)
-                    }
+                AnimeSourceReportRow(report: group.report, showsCaptchaButton: true) {
+                    onSolveCaptcha(group.report)
                 }
             }
         }
-        .padding(12)
-        .background(ResourceGroupBackground(isActive: hasActiveCandidate), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(hasActiveCandidate ? IbiliTheme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
-        )
+    }
+
+    @ViewBuilder
+    private var emptySimpleStatus: some View {
+        if group.report.status == "captcha" {
+            Button {
+                onSolveCaptcha(group.report)
+            } label: {
+                Text("需要处理验证码")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text(statusText)
+                .font(.subheadline)
+                .foregroundStyle(IbiliTheme.textSecondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 4)
+        }
+    }
+
+    private var captchaButton: some View {
+        Button("打开验证") {
+            onSolveCaptcha(group.report)
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color.orange.opacity(0.12), in: Capsule())
+        .buttonStyle(.plain)
+    }
+
+    private func resourceButton(for candidate: AnimeMediaCandidateDTO) -> some View {
+        Button {
+            guard candidate.isPlayableOrSniffable else { return }
+            onPick(candidate)
+        } label: {
+            AnimeResourceChip(
+                candidate: candidate,
+                isActive: isActive(candidate),
+                mode: mode
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!candidate.isPlayableOrSniffable || isLoading)
     }
 
     private var hasActiveCandidate: Bool {
@@ -420,28 +489,22 @@ private struct AnimeResourceSourceGroupView: View {
 private struct AnimeResourceChip: View {
     let candidate: AnimeMediaCandidateDTO
     let isActive: Bool
+    let mode: AnimeResourceViewMode
 
     var body: some View {
-        HStack(alignment: .top, spacing: 5) {
-            if isActive {
-                Image(systemName: "checkmark")
-                    .font(.caption.weight(.bold))
-            } else if candidate.isSniffableWeb {
-                Image(systemName: "globe")
-                    .font(.caption.weight(.semibold))
-            } else if !candidate.isSupported {
-                Image(systemName: "slash.circle")
-                    .font(.caption.weight(.semibold))
-            }
+        HStack(spacing: 5) {
+            leadingIcon
             Text(chipTitle)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .font(mode == .simple ? .callout.weight(.semibold) : .subheadline.weight(.semibold))
+                .lineLimit(mode == .simple ? 1 : 2)
+                .truncationMode(.tail)
+                .minimumScaleFactor(mode == .simple ? 0.86 : 1)
         }
-        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .frame(minHeight: 34, alignment: .leading)
         .foregroundStyle(isActive ? .white : (candidate.isPlayableOrSniffable ? IbiliTheme.textPrimary : IbiliTheme.textSecondary))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
+        .frame(maxWidth: mode == .simple ? 150 : 220, alignment: .leading)
+        .padding(.horizontal, mode == .simple ? 12 : 13)
+        .padding(.vertical, mode == .simple ? 7 : 8)
         .background(isActive ? IbiliTheme.accent : Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -450,15 +513,22 @@ private struct AnimeResourceChip: View {
         .opacity(candidate.isPlayableOrSniffable ? 1 : 0.65)
     }
 
-    private var chipTitle: String {
-        if !candidate.qualityLabel.isEmpty { return candidate.qualityLabel }
-        if !candidate.title.isEmpty {
-            return candidate.title
-                .replacingOccurrences(of: candidate.sourceName, with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+    @ViewBuilder
+    private var leadingIcon: some View {
+        if isActive {
+            Image(systemName: "checkmark")
+                .font(.caption.weight(.bold))
+        } else if mode == .detail, candidate.isSniffableWeb {
+            Image(systemName: "globe")
+                .font(.caption.weight(.semibold))
+        } else if mode == .detail, !candidate.isSupported {
+            Image(systemName: "slash.circle")
+                .font(.caption.weight(.semibold))
         }
-        if candidate.isSniffableWeb { return "网页嗅探" }
-        return candidate.kind.uppercased()
+    }
+
+    private var chipTitle: String {
+        mode == .simple ? candidate.resourceCapsuleTitle : candidate.resourceDetailTitle
     }
 }
 
@@ -469,6 +539,89 @@ extension AnimeMediaCandidateDTO {
 
     var isPlayableOrSniffable: Bool {
         isSupported || isSniffableWeb
+    }
+
+    var resourceCapsuleTitle: String {
+        if let channel = extractedChannelTitle {
+            return channel
+        }
+        if !qualityLabel.isEmpty {
+            return qualityLabel
+        }
+        if let short = extractedShortTitle {
+            return short
+        }
+        if isSniffableWeb {
+            return "网页嗅探"
+        }
+        return kind.uppercased()
+    }
+
+    var resourceDetailTitle: String {
+        if let channel = extractedChannelTitle {
+            if !qualityLabel.isEmpty {
+                return "\(channel) · \(qualityLabel)"
+            }
+            return channel
+        }
+        if !qualityLabel.isEmpty {
+            return qualityLabel
+        }
+        if let short = extractedShortTitle {
+            return short
+        }
+        if isSniffableWeb {
+            return "网页嗅探"
+        }
+        return kind.uppercased()
+    }
+
+    private var titleParts: [String] {
+        title
+            .components(separatedBy: "·")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != sourceName }
+    }
+
+    private var extractedChannelTitle: String? {
+        let parts = titleParts
+        if parts.count >= 3 {
+            let channel = parts[parts.count - 2]
+            if !channel.isEpisodeLikeLabel {
+                return channel
+            }
+        }
+        if let match = title.firstMatch(
+            #"((?:独家|超快|高清|蓝光|巨卡|备用|播放|线路|路线|主线|新番主线|自建蓝光|TT备用|FF备用|ZJ蓝光)[^·\s，,。]*)"#
+        ), !match.isEmpty {
+            return match
+        }
+        return nil
+    }
+
+    private var extractedShortTitle: String? {
+        let parts = titleParts
+        if let last = parts.last, last.count <= 8 {
+            return last
+        }
+        return nil
+    }
+}
+
+private extension String {
+    var isEpisodeLikeLabel: Bool {
+        range(of: #"^(?:第?\s*\d+(?:[话話集期]|$)|EP\s*\d+|\d+\s*$)"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    func firstMatch(_ pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(startIndex..<endIndex, in: self)
+        guard let match = regex.firstMatch(in: self, range: range),
+              match.numberOfRanges > 1,
+              let swiftRange = Range(match.range(at: 1), in: self) else {
+            return nil
+        }
+        return String(self[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
