@@ -4,17 +4,14 @@ import Foundation
 final class AnimeSourceStore: ObservableObject {
     static let shared = AnimeSourceStore()
 
-    static let defaultSubscriptionURLs = [
-        "https://sub.creamycake.org/v1/bt1.json",
-        "https://sub.creamycake.org/v1/css1.json",
-    ]
+    static let defaultSubscriptionURLs = AppSettings.defaultAnimeSourceSubscriptionURLs
 
     @Published private(set) var sources: [AnimeSourceDTO] = []
     @Published private(set) var updatedAt: Int64 = 0
 
     private let sourcesKey = "ibili.anime.sources"
     private let updatedAtKey = "ibili.anime.sources.updatedAt"
-    private let defaultLoadedKey = "ibili.anime.sources.defaultLoaded.v1"
+    private let defaultLoadedKey = "ibili.anime.sources.defaultLoaded.v2"
 
     init() {
         load()
@@ -22,7 +19,27 @@ final class AnimeSourceStore: ObservableObject {
 
     func enabledSourcesJSON() throws -> String {
         let enabled = sources.filter(\.enabled)
-        let mediaSources = enabled.map { source -> AnyCodableValue in
+        return try sourcesJSON(for: enabled)
+    }
+
+    func sourceJSON(forSourceID sourceID: String) throws -> String {
+        let selected = sources.filter { $0.enabled && $0.id == sourceID }
+        guard !selected.isEmpty else {
+            throw NSError(
+                domain: "AnimeSourceStore",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "未找到可用的数据源"]
+            )
+        }
+        return try sourcesJSON(for: selected)
+    }
+
+    func sourceJSON(for source: AnimeSourceDTO) throws -> String {
+        try sourcesJSON(for: [source])
+    }
+
+    private func sourcesJSON(for sources: [AnimeSourceDTO]) throws -> String {
+        let mediaSources = sources.map { source -> AnyCodableValue in
             .object([
                 "factoryId": .string(source.factoryID),
                 "version": .number(Double(source.version)),
@@ -65,21 +82,37 @@ final class AnimeSourceStore: ObservableObject {
         let update = try await Task.detached(priority: .userInitiated) {
             try CoreClient.shared.animeSourceSubscriptionUpdate(url: url)
         }.value
-        replace(with: update)
+        sources = mergeRemote(combined([
+            update,
+            AnimeSourceUpdateDTO(sources: sources, updatedAt: updatedAt),
+        ]).sources)
+        updatedAt = max(updatedAt, update.updatedAt)
+        save()
     }
 
     func ensureDefaultSubscriptionsLoaded() async {
-        guard !UserDefaults.standard.bool(forKey: defaultLoadedKey), sources.isEmpty else { return }
+        AppSettings.shared.ensureDefaultAnimeSourceSubscriptionURLs()
+        guard !UserDefaults.standard.bool(forKey: defaultLoadedKey) || sources.isEmpty else { return }
         do {
-            try await refreshDefaultSubscriptions()
+            try await refreshConfiguredSubscriptions()
             UserDefaults.standard.set(true, forKey: defaultLoadedKey)
         } catch {
             AppLog.error("anime", "默认追番规则源加载失败", error: error)
         }
     }
 
+    func refreshConfiguredSubscriptions() async throws {
+        AppSettings.shared.ensureDefaultAnimeSourceSubscriptionURLs()
+        try await refreshSubscriptions(urls: AppSettings.shared.animeSourceSubscriptionURLs)
+    }
+
     func refreshDefaultSubscriptions() async throws {
-        let urls = Self.defaultSubscriptionURLs
+        AppSettings.shared.customAnimeSourceSubscriptionURLs = []
+        try await refreshConfiguredSubscriptions()
+    }
+
+    func refreshSubscriptions(urls: [String]) async throws {
+        let urls = normalizedURLs(urls)
         let updates = try await Task.detached(priority: .userInitiated) {
             try urls.map { try CoreClient.shared.animeSourceSubscriptionUpdate(url: $0) }
         }.value
@@ -125,6 +158,15 @@ final class AnimeSourceStore: ObservableObject {
         }
         return AnimeSourceUpdateDTO(sources: merged, updatedAt: updatedAt)
     }
+
+    private func normalizedURLs(_ urls: [String]) -> [String] {
+        var seen = Set<String>()
+        return urls.compactMap { raw -> String? in
+            let url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !url.isEmpty, seen.insert(url).inserted else { return nil }
+            return url
+        }
+    }
 }
 
 private extension AnimeSourceDTO {
@@ -148,14 +190,5 @@ private extension AnimeSourceDTO {
             enabled: enabled,
             arguments: .object(root)
         )
-    }
-}
-
-private extension AnyCodableValue {
-    var objectValue: [String: AnyCodableValue] {
-        if case .object(let value) = self {
-            return value
-        }
-        return [:]
     }
 }

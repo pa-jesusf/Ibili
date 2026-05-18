@@ -5,6 +5,7 @@ use reqwest::Url;
 use reqwest::blocking::Client;
 use reqwest::blocking::RequestBuilder;
 use reqwest::cookie::{CookieStore, Jar};
+use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::sync::Arc;
@@ -107,6 +108,7 @@ impl HttpClient {
         let client = Client::builder()
             .cookie_provider(jar.clone())
             .gzip(true)
+            .redirect(Policy::limited(10))
             .timeout(std::time::Duration::from_secs(20))
             .connect_timeout(std::time::Duration::from_secs(10))
             .danger_accept_invalid_certs(false)

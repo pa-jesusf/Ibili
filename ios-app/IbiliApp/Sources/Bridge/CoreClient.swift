@@ -121,7 +121,15 @@ public final class CoreClient: @unchecked Sendable {
             let data = try JSONEncoder().encode(AnyEncodable(a))
             argsJson = String(data: data, encoding: .utf8) ?? "{}"
         }
-        lock.lock(); defer { lock.unlock() }
+        let needsExclusiveCoreAccess = !Self.concurrentSafeMethods.contains(method)
+        if needsExclusiveCoreAccess {
+            lock.lock()
+        }
+        defer {
+            if needsExclusiveCoreAccess {
+                lock.unlock()
+            }
+        }
         let resultPtr: UnsafeMutablePointer<CChar>? = method.withCString { mPtr in
             argsJson.withCString { aPtr in
                 ibili_call(handle, mPtr, aPtr)
@@ -138,6 +146,11 @@ public final class CoreClient: @unchecked Sendable {
         }
         return s
     }
+
+    private static let concurrentSafeMethods: Set<String> = [
+        "anime.media.source_fetch",
+        "anime.media.source_parse_page",
+    ]
 
     // MARK: - High-level methods
 
@@ -300,22 +313,22 @@ public final class CoreClient: @unchecked Sendable {
         return try call("anime.source.import", args: A(json_text: jsonText), decoding: AnimeSourceUpdateDTO.self)
     }
 
-    public func animeMediaFetch(
-        sourcesJSON: String,
+    public func animeMediaSourceFetch(
+        sourceJSON: String,
         subjectNames: [String],
         episodeSort: Double,
         episodeName: String
     ) throws -> AnimeMediaFetchResultDTO {
         struct A: Encodable {
-            let sources_json: String
+            let source_json: String
             let subject_names: [String]
             let episode_sort: Double
             let episode_name: String
         }
         return try call(
-            "anime.media.fetch",
+            "anime.media.source_fetch",
             args: A(
-                sources_json: sourcesJSON,
+                source_json: sourceJSON,
                 subject_names: subjectNames,
                 episode_sort: episodeSort,
                 episode_name: episodeName
@@ -324,31 +337,31 @@ public final class CoreClient: @unchecked Sendable {
         )
     }
 
-    public func animeMediaFetchOptions(
-        sourcesJSON: String,
+    public func animeMediaSourceParsePage(
+        sourceJSON: String,
+        pageURL: String,
+        html: String,
         subjectNames: [String],
         episodeSort: Double,
-        episodeName: String,
-        maxSources: Int64,
-        stopAfterSupported: Int64
+        episodeName: String
     ) throws -> AnimeMediaFetchResultDTO {
         struct A: Encodable {
-            let sources_json: String
+            let source_json: String
+            let page_url: String
+            let html: String
             let subject_names: [String]
             let episode_sort: Double
             let episode_name: String
-            let max_sources: Int64
-            let stop_after_supported: Int64
         }
         return try call(
-            "anime.media.fetch_options",
+            "anime.media.source_parse_page",
             args: A(
-                sources_json: sourcesJSON,
+                source_json: sourceJSON,
+                page_url: pageURL,
+                html: html,
                 subject_names: subjectNames,
                 episode_sort: episodeSort,
-                episode_name: episodeName,
-                max_sources: maxSources,
-                stop_after_supported: stopAfterSupported
+                episode_name: episodeName
             ),
             decoding: AnimeMediaFetchResultDTO.self
         )
@@ -368,36 +381,6 @@ public final class CoreClient: @unchecked Sendable {
             "anime.media.resolve",
             args: A(candidate: candidate, title: title, cover: cover),
             decoding: AnimePlayUrlDTO.self
-        )
-    }
-
-    public func animeEpisodePlay(
-        sourcesJSON: String,
-        subjectNames: [String],
-        episodeSort: Double,
-        episodeName: String,
-        title: String,
-        cover: String
-    ) throws -> AnimeEpisodePlayResultDTO {
-        struct A: Encodable {
-            let sources_json: String
-            let subject_names: [String]
-            let episode_sort: Double
-            let episode_name: String
-            let title: String
-            let cover: String
-        }
-        return try call(
-            "anime.episode.play",
-            args: A(
-                sources_json: sourcesJSON,
-                subject_names: subjectNames,
-                episode_sort: episodeSort,
-                episode_name: episodeName,
-                title: title,
-                cover: cover
-            ),
-            decoding: AnimeEpisodePlayResultDTO.self
         )
     }
 

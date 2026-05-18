@@ -35,6 +35,7 @@ private enum AnimeHomeSection: String, CaseIterable, Identifiable {
 }
 
 struct AnimeHomeView: View {
+    @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.openURL) private var openURL
@@ -68,8 +69,9 @@ struct AnimeHomeView: View {
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showsSourceSheet) {
                 NavigationStack {
-                    AnimeSourceSettingsView(store: sourceStore)
+                    AnimeSourceSettingsView(store: sourceStore, showsDoneButton: true)
                 }
+                .environmentObject(settings)
             }
             .confirmationDialog("退出 Bangumi？", isPresented: $showsLogoutConfirmation, titleVisibility: .visible) {
                 Button("退出登录", role: .destructive) {
@@ -480,49 +482,72 @@ final class AnimeHomeViewModel: ObservableObject {
     }
 }
 
-private struct AnimeSourceSettingsView: View {
+struct AnimeSourceSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @ObservedObject var store: AnimeSourceStore
     @Environment(\.dismiss) private var dismiss
     @State private var importText = ""
-    @State private var isLoading = false
+    @State private var newSubscriptionURL = ""
+    @State private var isRefreshingAll = false
+    @State private var refreshingURL: String?
+    @State private var isImporting = false
     @State private var errorText: String?
     @FocusState private var importEditorFocused: Bool
+
+    var showsDoneButton = false
 
     var body: some View {
         Form {
             Section {
                 Button {
-                    Task { await refreshDefaultSubscriptions() }
+                    Task { await refreshAllSubscriptions() }
                 } label: {
                     HStack {
-                        Text("刷新默认源")
+                        Text("刷新全部订阅")
                         Spacer()
-                        if isLoading { ProgressView().controlSize(.small) }
+                        if isRefreshingAll { ProgressView().controlSize(.small) }
                     }
                 }
-                .disabled(isLoading)
+                .disabled(isBusy)
+
+                Button("恢复默认订阅") {
+                    Task { await restoreDefaultSubscriptions() }
+                }
+                .disabled(isBusy)
             } header: {
-                Text("默认源")
+                Text("订阅")
             }
 
             Section {
-                TextField("订阅 URL", text: $settings.animeSourceSubscriptionURL)
+                ForEach(AppSettings.defaultAnimeSourceSubscriptionURLs, id: \.self) { url in
+                    subscriptionRow(url: url, isDefault: true)
+                }
+
+                let customURLs = settings.customAnimeSourceSubscriptionURLs
+                if !customURLs.isEmpty {
+                    ForEach(customURLs, id: \.self) { url in
+                        subscriptionRow(url: url, isDefault: false)
+                    }
+                    .onDelete { offsets in
+                        settings.removeCustomAnimeSourceSubscriptionURLs(at: offsets)
+                        Task { await refreshAllSubscriptions() }
+                    }
+                }
+            } header: {
+                Text("订阅地址")
+            }
+
+            Section {
+                TextField("https://", text: $newSubscriptionURL)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Button {
-                    Task { await updateSubscription() }
-                } label: {
-                    HStack {
-                        Text("刷新订阅")
-                        Spacer()
-                        if isLoading { ProgressView().controlSize(.small) }
-                    }
+                Button("添加并刷新") {
+                    Task { await addSubscription() }
                 }
-                .disabled(isLoading || settings.animeSourceSubscriptionURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(isBusy || newSubscriptionURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } header: {
-                Text("自定义订阅")
+                Text("新增订阅")
             }
 
             Section {
@@ -532,7 +557,7 @@ private struct AnimeSourceSettingsView: View {
                 Button("导入 JSON") {
                     Task { await importJSON() }
                 }
-                .disabled(isLoading || importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(isBusy || importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } header: {
                 Text("手动导入")
             }
@@ -550,7 +575,7 @@ private struct AnimeSourceSettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(source.name)
                                     .foregroundStyle(IbiliTheme.textPrimary)
-                                Text(source.factoryID == "rss" ? "RSS" : "Web Selector")
+                                Text(sourceTypeLabel(source.factoryID))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -558,7 +583,11 @@ private struct AnimeSourceSettingsView: View {
                     }
                 }
             } header: {
-                Text("来源")
+                Text("数据源")
+            } footer: {
+                if !store.sources.isEmpty {
+                    Text("已启用 \(store.sources.filter(\.enabled).count) / \(store.sources.count)")
+                }
             }
 
             if let errorText {
@@ -568,11 +597,13 @@ private struct AnimeSourceSettingsView: View {
                 }
             }
         }
-        .navigationTitle("规则源")
+        .navigationTitle("数据源")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("完成") { dismiss() }
+            if showsDoneButton {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
             }
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
@@ -581,20 +612,70 @@ private struct AnimeSourceSettingsView: View {
         }
     }
 
-    private func updateSubscription() async {
-        isLoading = true
-        defer { isLoading = false }
+    private var isBusy: Bool {
+        isRefreshingAll || refreshingURL != nil || isImporting
+    }
+
+    @ViewBuilder
+    private func subscriptionRow(url: String, isDefault: Bool) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(isDefault ? "默认订阅" : "自定义订阅")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                Text(url)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 8)
+            Button {
+                Task { await refreshSubscription(url) }
+            } label: {
+                if refreshingURL == url {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.borderless)
+            .disabled(isBusy)
+        }
+    }
+
+    private func addSubscription() async {
+        let added = settings.addAnimeSourceSubscriptionURL(newSubscriptionURL)
+        newSubscriptionURL = ""
+        guard added else { return }
+        await refreshAllSubscriptions()
+    }
+
+    private func refreshSubscription(_ url: String) async {
+        refreshingURL = url
+        defer { refreshingURL = nil }
         do {
-            try await store.updateSubscription(url: settings.animeSourceSubscriptionURL)
+            try await store.updateSubscription(url: url)
             errorText = nil
         } catch {
             errorText = error.localizedDescription
         }
     }
 
-    private func refreshDefaultSubscriptions() async {
-        isLoading = true
-        defer { isLoading = false }
+    private func refreshAllSubscriptions() async {
+        isRefreshingAll = true
+        defer { isRefreshingAll = false }
+        do {
+            try await store.refreshConfiguredSubscriptions()
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func restoreDefaultSubscriptions() async {
+        isRefreshingAll = true
+        defer { isRefreshingAll = false }
         do {
             try await store.refreshDefaultSubscriptions()
             errorText = nil
@@ -604,14 +685,22 @@ private struct AnimeSourceSettingsView: View {
     }
 
     private func importJSON() async {
-        isLoading = true
-        defer { isLoading = false }
+        isImporting = true
+        defer { isImporting = false }
         do {
             try await store.importJSON(importText)
             importText = ""
             errorText = nil
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+
+    private func sourceTypeLabel(_ factoryID: String) -> String {
+        switch factoryID {
+        case "rss": return "RSS"
+        case "web-selector": return "Web Selector"
+        default: return factoryID
         }
     }
 }

@@ -841,6 +841,9 @@ public struct AnimeMediaSourceReportDTO: Codable, Hashable, Identifiable {
     public let sourceID: String
     public let sourceName: String
     public let factoryID: String
+    public let stateID: String
+    public let isWorking: Bool
+    public let isTemporarilyEnabled: Bool
     public let attemptedQueries: Int64
     public let succeededQueries: Int64
     public let failedQueries: Int64
@@ -858,6 +861,9 @@ public struct AnimeMediaSourceReportDTO: Codable, Hashable, Identifiable {
         case sourceID = "source_id"
         case sourceName = "source_name"
         case factoryID = "factory_id"
+        case stateID = "state_id"
+        case isWorking = "is_working"
+        case isTemporarilyEnabled = "is_temporarily_enabled"
         case attemptedQueries = "attempted_queries"
         case succeededQueries = "succeeded_queries"
         case failedQueries = "failed_queries"
@@ -866,6 +872,30 @@ public struct AnimeMediaSourceReportDTO: Codable, Hashable, Identifiable {
         case captchaURL = "captcha_url"
         case captchaKind = "captcha_kind"
     }
+}
+
+public struct AnimeCaptchaSessionDTO: Codable, Hashable {
+    public let sourceID: String
+    public let pageURL: String
+    public let finalURL: String
+    public let cookies: String
+    public let html: String
+    public let captchaKind: String
+
+    enum CodingKeys: String, CodingKey {
+        case cookies, html
+        case sourceID = "source_id"
+        case pageURL = "page_url"
+        case finalURL = "final_url"
+        case captchaKind = "captcha_kind"
+    }
+}
+
+public struct AnimeMediaSessionSnapshotDTO: Hashable {
+    public let diagnostics: AnimeMediaFetchDiagnosticsDTO
+    public let candidates: [AnimeMediaCandidateDTO]
+    public let currentCandidateID: String?
+    public let isComplete: Bool
 }
 
 public struct AnimePlayUrlDTO: Codable, Hashable {
@@ -878,17 +908,31 @@ public struct AnimePlayUrlDTO: Codable, Hashable {
     public let headers: [String: String]
     public let durationMs: Int64
 
+    public init(
+        url: String,
+        format: String,
+        title: String,
+        cover: String,
+        referer: String,
+        userAgent: String,
+        headers: [String: String],
+        durationMs: Int64
+    ) {
+        self.url = url
+        self.format = format
+        self.title = title
+        self.cover = cover
+        self.referer = referer
+        self.userAgent = userAgent
+        self.headers = headers
+        self.durationMs = durationMs
+    }
+
     enum CodingKeys: String, CodingKey {
         case url, format, title, cover, referer, headers
         case userAgent = "user_agent"
         case durationMs = "duration_ms"
     }
-}
-
-public struct AnimeEpisodePlayResultDTO: Codable {
-    public let play: AnimePlayUrlDTO?
-    public let candidates: [AnimeMediaCandidateDTO]
-    public let diagnostics: AnimeMediaFetchDiagnosticsDTO
 }
 
 public enum AnyCodableValue: Codable, Hashable {

@@ -284,8 +284,8 @@ struct AnimeSourceImportArgs {
 }
 
 #[derive(Deserialize)]
-struct AnimeMediaFetchArgs {
-    sources_json: String,
+struct AnimeMediaSourceFetchArgs {
+    source_json: String,
     #[serde(default)]
     subject_names: Vec<String>,
     #[serde(default)]
@@ -295,38 +295,21 @@ struct AnimeMediaFetchArgs {
 }
 
 #[derive(Deserialize)]
-struct AnimeMediaFetchOptionsArgs {
-    sources_json: String,
+struct AnimeMediaSourceParsePageArgs {
+    source_json: String,
+    page_url: String,
+    html: String,
     #[serde(default)]
     subject_names: Vec<String>,
     #[serde(default)]
     episode_sort: f64,
     #[serde(default)]
     episode_name: String,
-    #[serde(default)]
-    max_sources: i64,
-    #[serde(default)]
-    stop_after_supported: i64,
 }
 
 #[derive(Deserialize)]
 struct AnimeMediaResolveArgs {
     candidate: AnimeMediaCandidate,
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    cover: String,
-}
-
-#[derive(Deserialize)]
-struct AnimeEpisodePlayArgs {
-    sources_json: String,
-    #[serde(default)]
-    subject_names: Vec<String>,
-    #[serde(default)]
-    episode_sort: f64,
-    #[serde(default)]
-    episode_name: String,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -793,40 +776,29 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: AnimeSourceImportArgs = serde_json::from_value(args)?;
             to_value(c.inner.anime_source_import(&a.json_text)?)
         }
-        "anime.media.fetch" => {
-            let a: AnimeMediaFetchArgs = serde_json::from_value(args)?;
-            to_value(c.inner.anime_media_fetch(
-                &a.sources_json,
+        "anime.media.source_fetch" => {
+            let a: AnimeMediaSourceFetchArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_media_source_fetch(
+                &a.source_json,
                 a.subject_names,
                 a.episode_sort,
                 &a.episode_name,
             )?)
         }
-        "anime.media.fetch_options" => {
-            let a: AnimeMediaFetchOptionsArgs = serde_json::from_value(args)?;
-            to_value(c.inner.anime_media_fetch_options(
-                &a.sources_json,
+        "anime.media.source_parse_page" => {
+            let a: AnimeMediaSourceParsePageArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_media_source_parse_page(
+                &a.source_json,
+                &a.page_url,
+                &a.html,
                 a.subject_names,
                 a.episode_sort,
                 &a.episode_name,
-                a.max_sources,
-                a.stop_after_supported,
             )?)
         }
         "anime.media.resolve" => {
             let a: AnimeMediaResolveArgs = serde_json::from_value(args)?;
             to_value(c.inner.anime_media_resolve(a.candidate, &a.title, &a.cover)?)
-        }
-        "anime.episode.play" => {
-            let a: AnimeEpisodePlayArgs = serde_json::from_value(args)?;
-            to_value(c.inner.anime_episode_play(
-                &a.sources_json,
-                a.subject_names,
-                a.episode_sort,
-                &a.episode_name,
-                &a.title,
-                &a.cover,
-            )?)
         }
         "auth.tv_qr.start" => to_value(c.inner.auth_tv_qr_start()?),
         "auth.tv_qr.poll" => {

@@ -128,6 +128,10 @@ struct FeedCardMetaConfig: Equatable {
 @MainActor
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
+    static let defaultAnimeSourceSubscriptionURLs = [
+        "https://sub.creamycake.org/v1/bt1.json",
+        "https://sub.creamycake.org/v1/css1.json",
+    ]
 
     /// `0` means "auto" — pick by size class. Otherwise an explicit column count.
     @AppStorage("ibili.feed.columns") var columnsRaw: Int = 0
@@ -186,7 +190,8 @@ final class AppSettings: ObservableObject {
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
     @AppStorage("ibili.home.recommendSource") private var homeRecommendSourceRaw: String = HomeRecommendSource.web.rawValue
     @AppStorage("ibili.anime.trackingEnabled") var animeTrackingEnabled: Bool = true
-    @AppStorage("ibili.anime.sourceSubscriptionURL") var animeSourceSubscriptionURL: String = ""
+    @AppStorage("ibili.anime.sourceSubscriptionURL") private var legacyAnimeSourceSubscriptionURL: String = ""
+    @AppStorage("ibili.anime.sourceSubscriptionURLs") private var animeSourceSubscriptionURLsRaw: String = ""
 
     /// Whether the video detail page displays the canonical BV id or
     /// the legacy `av<aid>` form. Mirrors the upstream toggle.
@@ -204,6 +209,62 @@ final class AppSettings: ObservableObject {
     var homeRecommendSource: HomeRecommendSource {
         get { HomeRecommendSource(rawValue: homeRecommendSourceRaw) ?? .web }
         set { homeRecommendSourceRaw = newValue.rawValue }
+    }
+
+    var animeSourceSubscriptionURLs: [String] {
+        get {
+            Self.normalizedAnimeSourceURLs(
+                Self.defaultAnimeSourceSubscriptionURLs
+                    + customAnimeSourceSubscriptionURLs
+            )
+        }
+        set {
+            let custom = Self.normalizedAnimeSourceURLs(newValue).filter { url in
+                !Self.defaultAnimeSourceSubscriptionURLs.contains(url)
+            }
+            animeSourceSubscriptionURLsRaw = Self.encodeAnimeSourceURLs(custom)
+        }
+    }
+
+    var customAnimeSourceSubscriptionURLs: [String] {
+        get {
+            var urls = Self.decodeAnimeSourceURLs(animeSourceSubscriptionURLsRaw)
+            let legacy = legacyAnimeSourceSubscriptionURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !legacy.isEmpty {
+                urls.append(legacy)
+            }
+            return Self.normalizedAnimeSourceURLs(urls).filter { url in
+                !Self.defaultAnimeSourceSubscriptionURLs.contains(url)
+            }
+        }
+        set {
+            let custom = Self.normalizedAnimeSourceURLs(newValue).filter { url in
+                !Self.defaultAnimeSourceSubscriptionURLs.contains(url)
+            }
+            animeSourceSubscriptionURLsRaw = Self.encodeAnimeSourceURLs(custom)
+            legacyAnimeSourceSubscriptionURL = ""
+        }
+    }
+
+    @discardableResult
+    func addAnimeSourceSubscriptionURL(_ url: String) -> Bool {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        var custom = customAnimeSourceSubscriptionURLs
+        guard !animeSourceSubscriptionURLs.contains(trimmed) else { return false }
+        custom.append(trimmed)
+        customAnimeSourceSubscriptionURLs = custom
+        return true
+    }
+
+    func removeCustomAnimeSourceSubscriptionURLs(at offsets: IndexSet) {
+        var custom = customAnimeSourceSubscriptionURLs
+        custom.remove(atOffsets: offsets)
+        customAnimeSourceSubscriptionURLs = custom
+    }
+
+    func ensureDefaultAnimeSourceSubscriptionURLs() {
+        customAnimeSourceSubscriptionURLs = customAnimeSourceSubscriptionURLs
     }
 
     func playbackCacheVariantKey() -> String {
@@ -377,5 +438,30 @@ final class AppSettings: ObservableObject {
     /// `1.0` means unattenuated, `0.316` is roughly -10 dB.
     func resolvedAudioVolumeLinear() -> Float {
         Float(pow(10.0, resolvedAudioGainDb() / 20.0))
+    }
+
+    private static func normalizedAnimeSourceURLs(_ urls: [String]) -> [String] {
+        var seen = Set<String>()
+        return urls.compactMap { raw -> String? in
+            let url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !url.isEmpty, seen.insert(url).inserted else { return nil }
+            return url
+        }
+    }
+
+    private static func decodeAnimeSourceURLs(_ raw: String) -> [String] {
+        guard let data = raw.data(using: .utf8),
+              let urls = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return urls
+    }
+
+    private static func encodeAnimeSourceURLs(_ urls: [String]) -> String {
+        guard let data = try? JSONEncoder().encode(normalizedAnimeSourceURLs(urls)),
+              let text = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return text
     }
 }

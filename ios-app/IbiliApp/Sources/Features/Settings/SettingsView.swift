@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @StateObject private var cacheVM = ImageCacheViewModel()
     @StateObject private var cdnSpeedVM = CDNSpeedTestViewModel()
+    @StateObject private var animeSourceStore = AnimeSourceStore.shared
     @State private var showsCDNSpeedSheet = false
 
     private let columnOptions: [(label: String, value: Int)] = [
@@ -282,10 +283,16 @@ struct SettingsView: View {
 
             Section {
                 Toggle("启用追番 Tab", isOn: $settings.animeTrackingEnabled)
-                TextField("规则订阅 URL", text: $settings.animeSourceSubscriptionURL)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                NavigationLink {
+                    AnimeSourceSettingsView(store: animeSourceStore)
+                } label: {
+                    HStack {
+                        Text("数据源")
+                        Spacer()
+                        Text("\(animeSourceStore.sources.filter(\.enabled).count)/\(animeSourceStore.sources.count)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } header: {
                 Text("追番")
             }

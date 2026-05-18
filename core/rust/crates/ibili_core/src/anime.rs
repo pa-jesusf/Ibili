@@ -10,7 +10,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
@@ -22,8 +21,6 @@ pub const DEFAULT_MEDIA_SOURCE_SUBSCRIPTIONS: [&str; 2] = [
     "https://sub.creamycake.org/v1/css1.json",
 ];
 const MEDIA_FETCH_REQUEST_TIMEOUT_SECS: u64 = 4;
-const MEDIA_FETCH_BATCH_SIZE: usize = 24;
-const MEDIA_FETCH_STOP_AFTER_SUPPORTED: usize = 12;
 const MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY: usize = 3;
 const MEDIA_FETCH_MAX_EPISODE_PAGES_PER_QUERY: usize = 5;
 
@@ -183,6 +180,9 @@ pub struct AnimeMediaSourceReport {
     pub source_id: String,
     pub source_name: String,
     pub factory_id: String,
+    pub state_id: String,
+    pub is_working: bool,
+    pub is_temporarily_enabled: bool,
     pub attempted_queries: i64,
     pub succeeded_queries: i64,
     pub failed_queries: i64,
@@ -191,6 +191,16 @@ pub struct AnimeMediaSourceReport {
     pub status: String,
     pub message: String,
     pub captcha_url: String,
+    pub captcha_kind: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeCaptchaSession {
+    pub source_id: String,
+    pub page_url: String,
+    pub final_url: String,
+    pub cookies: String,
+    pub html: String,
     pub captcha_kind: String,
 }
 
@@ -204,13 +214,6 @@ pub struct AnimePlayUrl {
     pub user_agent: String,
     pub headers: HashMap<String, String>,
     pub duration_ms: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct AnimeEpisodePlayResult {
-    pub play: Option<AnimePlayUrl>,
-    pub candidates: Vec<AnimeMediaCandidate>,
-    pub diagnostics: AnimeMediaFetchDiagnostics,
 }
 
 #[derive(Deserialize)]
@@ -603,48 +606,30 @@ impl Core {
         parse_sources(json_text)
     }
 
-    pub fn anime_media_fetch(
+    pub fn anime_media_source_fetch(
         &self,
-        sources_json: &str,
+        source_json: &str,
         subject_names: Vec<String>,
         episode_sort: f64,
         episode_name: &str,
     ) -> CoreResult<AnimeMediaFetchResult> {
-        let update = parse_sources(sources_json)?;
+        let source = parse_single_source(source_json)?;
         let keywords = build_search_keywords(&subject_names);
-        self.anime_media_fetch_with_options(
-            update.sources,
-            &keywords,
-            episode_sort,
-            episode_name,
-            AnimeMediaFetchOptions {
-                max_sources: 0,
-                stop_after_supported: MEDIA_FETCH_STOP_AFTER_SUPPORTED,
-            },
-        )
+        self.anime_media_fetch_single_source(source, &keywords, episode_sort, episode_name)
     }
 
-    pub fn anime_media_fetch_options(
+    pub fn anime_media_source_parse_page(
         &self,
-        sources_json: &str,
+        source_json: &str,
+        page_url: &str,
+        html: &str,
         subject_names: Vec<String>,
         episode_sort: f64,
         episode_name: &str,
-        max_sources: i64,
-        stop_after_supported: i64,
     ) -> CoreResult<AnimeMediaFetchResult> {
-        let update = parse_sources(sources_json)?;
+        let source = parse_single_source(source_json)?;
         let keywords = build_search_keywords(&subject_names);
-        self.anime_media_fetch_with_options(
-            update.sources,
-            &keywords,
-            episode_sort,
-            episode_name,
-            AnimeMediaFetchOptions {
-                max_sources: max_sources.max(0) as usize,
-                stop_after_supported: stop_after_supported.max(0) as usize,
-            },
-        )
+        self.anime_media_parse_single_source_page(source, page_url, html, &keywords, episode_sort, episode_name)
     }
 
     pub fn anime_media_resolve(
@@ -672,30 +657,6 @@ impl Core {
             user_agent,
             headers,
             duration_ms: 0,
-        })
-    }
-
-    pub fn anime_episode_play(
-        &self,
-        sources_json: &str,
-        subject_names: Vec<String>,
-        episode_sort: f64,
-        episode_name: &str,
-        title: &str,
-        cover: &str,
-    ) -> CoreResult<AnimeEpisodePlayResult> {
-        let fetch = self.anime_media_fetch(sources_json, subject_names, episode_sort, episode_name)?;
-        let play = fetch
-            .candidates
-            .iter()
-            .find(|candidate| candidate.is_supported)
-            .cloned()
-            .map(|candidate| self.anime_media_resolve(candidate, title, cover))
-            .transpose()?;
-        Ok(AnimeEpisodePlayResult {
-            play,
-            candidates: fetch.candidates,
-            diagnostics: fetch.diagnostics,
         })
     }
 
@@ -815,87 +776,137 @@ impl Core {
         (collection_type, ep_status)
     }
 
-    fn anime_media_fetch_with_options(
+    fn anime_media_fetch_single_source(
         &self,
-        sources: Vec<AnimeSource>,
+        source: AnimeSource,
         keywords: &[String],
         episode_sort: f64,
         episode_name: &str,
-        options: AnimeMediaFetchOptions,
     ) -> CoreResult<AnimeMediaFetchResult> {
-        let mut candidates = Vec::new();
-        let mut seen = HashSet::new();
-        let enabled_sources = sources.iter().filter(|s| s.enabled).count() as i64;
-        let mut diagnostics = AnimeMediaFetchDiagnostics {
-            enabled_sources,
-            ..Default::default()
-        };
-        let jobs = build_media_fetch_jobs(&sources, keywords, options.max_sources);
-        let mut reports = reports_for_sources(&sources);
-        if jobs.is_empty() {
-            diagnostics.source_reports = reports.into_values().collect();
-            return Ok(AnimeMediaFetchResult { candidates, diagnostics });
+        let mut result = AnimeMediaFetchResult::default();
+        result.diagnostics.enabled_sources = if source.enabled { 1 } else { 0 };
+        let mut report = report_for_source(&source);
+        if !source.enabled {
+            report.status = "disabled".into();
+            report.state_id = "disabled".into();
+            report.message = "数据源已停用".into();
+            result.diagnostics.source_reports = vec![report];
+            return Ok(result);
         }
+        if !matches!(source.factory_id.as_str(), "rss" | "web-selector") || !source_supports_avkit(&source) {
+            result.diagnostics.source_reports = vec![report];
+            return Ok(result);
+        }
+
         let client = self.http.client.clone();
-        for batch in jobs.chunks(MEDIA_FETCH_BATCH_SIZE) {
-            diagnostics.attempted_queries += batch.len() as i64;
-            let handles = batch.iter().cloned().map(|job| {
-                let client = client.clone();
-                let episode_name = episode_name.to_string();
-                thread::spawn(move || {
-                    let result = fetch_media_job(&client, &job, episode_sort, &episode_name);
-                    MediaFetchJobResult { job, result }
-                })
-            }).collect::<Vec<_>>();
-
-            for handle in handles {
-                match handle.join() {
-                    Ok(job_result) => {
-                        update_source_report_attempt(&mut reports, &job_result.job);
-                        match job_result.result {
-                            Ok(mut items) => {
-                                diagnostics.succeeded_queries += 1;
-                                update_source_report_success(&mut reports, &job_result.job, &items);
-                                push_unique(&mut candidates, &mut seen, &mut items);
-                            }
-                            Err(error) => {
-                                diagnostics.failed_queries += 1;
-                                update_source_report_failure(&mut reports, &job_result.job, &error);
-                                push_diagnostic_message(
-                                    &mut diagnostics.messages,
-                                    &job_result.job.source,
-                                    &job_result.job.keyword,
-                                    &error,
-                                );
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        diagnostics.failed_queries += 1;
-                        if diagnostics.messages.len() < 8 {
-                            diagnostics.messages.push("规则源线程异常退出".into());
-                        }
+        let mut seen = HashSet::new();
+        for keyword in keywords {
+            let job = MediaFetchJob {
+                source: source.clone(),
+                keyword: selector_search_keyword(&source, keyword),
+            };
+            result.diagnostics.attempted_queries += 1;
+            update_report_attempt(&mut report);
+            match fetch_media_job(&client, &job, episode_sort, episode_name) {
+                Ok(mut items) => {
+                    result.diagnostics.succeeded_queries += 1;
+                    update_report_success(&mut report, &items);
+                    push_unique(&mut result.candidates, &mut seen, &mut items);
+                }
+                Err(error) => {
+                    result.diagnostics.failed_queries += 1;
+                    update_report_failure(&mut report, &job, &error);
+                    push_diagnostic_message(
+                        &mut result.diagnostics.messages,
+                        &job.source,
+                        &job.keyword,
+                        &error,
+                    );
+                    if is_captcha_error(&error) {
+                        break;
                     }
                 }
-            }
-
-            let supported_count = candidates.iter().filter(|c| c.is_supported).count();
-            if options.stop_after_supported > 0 && supported_count >= options.stop_after_supported {
-                if diagnostics.messages.len() < 8 {
-                    diagnostics.messages.push("已优先返回可播放资源，继续刷新可补全更多慢源".into());
-                }
-                break;
             }
         }
-        diagnostics.supported_candidates = candidates.iter().filter(|c| c.is_supported).count() as i64;
-        diagnostics.unsupported_candidates = candidates.len() as i64 - diagnostics.supported_candidates;
-        diagnostics.source_reports = sorted_source_reports(reports);
-        candidates.sort_by(|a, b| {
-            b.is_supported.cmp(&a.is_supported)
-                .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
-                .then_with(|| a.source_name.cmp(&b.source_name))
-        });
-        Ok(AnimeMediaFetchResult { candidates, diagnostics })
+
+        finalize_single_source_fetch(result, report)
+    }
+
+    fn anime_media_parse_single_source_page(
+        &self,
+        source: AnimeSource,
+        page_url: &str,
+        html: &str,
+        keywords: &[String],
+        episode_sort: f64,
+        episode_name: &str,
+    ) -> CoreResult<AnimeMediaFetchResult> {
+        let mut result = AnimeMediaFetchResult::default();
+        result.diagnostics.enabled_sources = if source.enabled { 1 } else { 0 };
+        let mut report = report_for_source(&source);
+        if !source.enabled {
+            report.status = "disabled".into();
+            report.state_id = "disabled".into();
+            report.message = "数据源已停用".into();
+            result.diagnostics.source_reports = vec![report];
+            return Ok(result);
+        }
+        if source.factory_id != "web-selector" {
+            report.status = "unsupported".into();
+            report.state_id = "unsupported".into();
+            report.message = "该数据源不支持页面解析".into();
+            result.diagnostics.source_reports = vec![report];
+            return Ok(result);
+        }
+        if let Some(kind) = detect_web_captcha(page_url, html) {
+            let job = MediaFetchJob {
+                source: source.clone(),
+                keyword: keywords.first().cloned().unwrap_or_default(),
+            };
+            update_report_attempt(&mut report);
+            update_report_failure(
+                &mut report,
+                &job,
+                &CoreError::Api { code: 468, msg: format!("需要处理{kind}") },
+            );
+            result.diagnostics.attempted_queries = 1;
+            result.diagnostics.failed_queries = 1;
+            result.diagnostics.messages.push(format!("{} · 仍需处理{kind}", source.name));
+            return finalize_single_source_fetch(result, report);
+        }
+
+        let filter_by_episode = source.arguments
+            .pointer("/searchConfig/filterByEpisodeSort")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        update_report_attempt(&mut report);
+        result.diagnostics.attempted_queries = 1;
+        let mut candidates = parse_selector_candidates(&source, html, page_url, episode_sort, episode_name, filter_by_episode);
+        let subjects = keywords
+            .iter()
+            .flat_map(|keyword| parse_selector_subjects(&source, html, page_url, keyword))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() && subjects.is_empty() {
+            update_report_success(&mut report, &[]);
+            result.diagnostics.succeeded_queries = 1;
+            return finalize_single_source_fetch(result, report);
+        }
+        if !subjects.is_empty() {
+            for subject in subjects.into_iter().take(MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY) {
+                candidates.push(make_candidate(
+                    &source,
+                    subject.title,
+                    subject.url,
+                    page_url.to_string(),
+                    selector_referer(&source, page_url),
+                ));
+            }
+        }
+        candidates = dedupe_candidates(candidates)?;
+        result.diagnostics.succeeded_queries = 1;
+        update_report_success(&mut report, &candidates);
+        result.candidates = candidates;
+        finalize_single_source_fetch(result, report)
     }
 
 }
@@ -915,15 +926,10 @@ struct MediaFetchJob {
     keyword: String,
 }
 
-struct MediaFetchJobResult {
-    job: MediaFetchJob,
-    result: CoreResult<Vec<AnimeMediaCandidate>>,
-}
-
-#[derive(Clone, Copy)]
-struct AnimeMediaFetchOptions {
-    max_sources: usize,
-    stop_after_supported: usize,
+fn parse_single_source(json_text: &str) -> CoreResult<AnimeSource> {
+    let update = parse_sources(json_text)?;
+    update.sources.into_iter().next()
+        .ok_or_else(|| CoreError::InvalidArgument("missing anime media source".into()))
 }
 
 #[derive(Clone)]
@@ -937,27 +943,6 @@ struct SelectorEpisodeHit {
     title: String,
     url: String,
     channel: String,
-}
-
-fn build_media_fetch_jobs(sources: &[AnimeSource], keywords: &[String], max_sources: usize) -> Vec<MediaFetchJob> {
-    let mut jobs = Vec::new();
-    let mut included_sources = 0usize;
-    for source in sources.iter().filter(|source| source.enabled) {
-        if !matches!(source.factory_id.as_str(), "rss" | "web-selector") || !source_supports_avkit(source) {
-            continue;
-        }
-        if max_sources > 0 && included_sources >= max_sources {
-            break;
-        }
-        included_sources += 1;
-        for keyword in keywords {
-            jobs.push(MediaFetchJob {
-                source: source.clone(),
-                keyword: selector_search_keyword(source, keyword),
-            });
-        }
-    }
-    jobs
 }
 
 fn fetch_media_job(
@@ -1754,104 +1739,89 @@ fn subject_title_score(title: &str, normalized_keyword: &str) -> i32 {
     }
 }
 
-fn reports_for_sources(sources: &[AnimeSource]) -> HashMap<String, AnimeMediaSourceReport> {
-    sources.iter().filter(|source| source.enabled).map(|source| {
-        (source.id.clone(), AnimeMediaSourceReport {
-            source_id: source.id.clone(),
-            source_name: source.name.clone(),
-            factory_id: source.factory_id.clone(),
-            status: if matches!(source.factory_id.as_str(), "rss" | "web-selector") && source_supports_avkit(source) {
-                "pending".into()
-            } else {
-                "unsupported".into()
-            },
-            message: if matches!(source.factory_id.as_str(), "rss" | "web-selector") && source_supports_avkit(source) {
-                String::new()
-            } else {
-                "暂不支持该规则源类型".into()
-            },
-            ..Default::default()
-        })
-    }).collect()
+fn report_for_source(source: &AnimeSource) -> AnimeMediaSourceReport {
+    let supported = matches!(source.factory_id.as_str(), "rss" | "web-selector") && source_supports_avkit(source);
+    let status = if supported { "pending" } else { "unsupported" };
+    AnimeMediaSourceReport {
+        source_id: source.id.clone(),
+        source_name: source.name.clone(),
+        factory_id: source.factory_id.clone(),
+        state_id: status.into(),
+        is_working: false,
+        is_temporarily_enabled: false,
+        status: status.into(),
+        message: if supported { String::new() } else { "暂不支持该规则源类型".into() },
+        ..Default::default()
+    }
 }
 
-fn update_source_report_attempt(reports: &mut HashMap<String, AnimeMediaSourceReport>, job: &MediaFetchJob) {
-    if let Some(report) = reports.get_mut(&job.source.id) {
-        report.attempted_queries += 1;
-        if report.status == "pending" {
-            report.status = "searching".into();
+fn update_report_attempt(report: &mut AnimeMediaSourceReport) {
+    report.attempted_queries += 1;
+    report.is_working = true;
+    if report.status == "pending" {
+        report.status = "searching".into();
+        report.state_id = "working".into();
+    }
+}
+
+fn update_report_success(report: &mut AnimeMediaSourceReport, items: &[AnimeMediaCandidate]) {
+    report.succeeded_queries += 1;
+    report.is_working = false;
+    report.candidate_count += items.len() as i64;
+    report.supported_count += items.iter().filter(|item| item.is_supported || item.kind == "web").count() as i64;
+    report.status = if report.supported_count > 0 {
+        "found".into()
+    } else if report.candidate_count > 0 {
+        "unsupported".into()
+    } else {
+        "empty".into()
+    };
+    report.state_id = report.status.clone();
+    report.message = if report.supported_count > 0 {
+        format!("找到 {} 个可播放资源", report.supported_count)
+    } else if report.candidate_count > 0 {
+        "有结果但格式暂不支持".into()
+    } else {
+        "没有匹配结果".into()
+    };
+}
+
+fn update_report_failure(report: &mut AnimeMediaSourceReport, job: &MediaFetchJob, error: &CoreError) {
+    report.failed_queries += 1;
+    report.is_working = false;
+    if report.supported_count == 0 && report.candidate_count == 0 {
+        report.status = if is_captcha_error(error) { "captcha".into() } else { "failed".into() };
+        report.state_id = report.status.clone();
+        report.message = error.to_string();
+        if is_captcha_error(error) {
+            report.captcha_kind = captcha_kind_from_error(error).to_string();
+            report.captcha_url = job.source.arguments
+                .pointer("/searchConfig/searchUrl")
+                .and_then(Value::as_str)
+                .map(|url| fill_search_url(url, &job.keyword, 1))
+                .unwrap_or_default();
         }
     }
 }
 
-fn update_source_report_success(
-    reports: &mut HashMap<String, AnimeMediaSourceReport>,
-    job: &MediaFetchJob,
-    items: &[AnimeMediaCandidate],
-) {
-    if let Some(report) = reports.get_mut(&job.source.id) {
-        report.succeeded_queries += 1;
-        report.candidate_count += items.len() as i64;
-        report.supported_count += items.iter().filter(|item| item.is_supported).count() as i64;
-        report.status = if report.supported_count > 0 {
-            "found".into()
-        } else if report.candidate_count > 0 {
-            "unsupported".into()
-        } else {
-            "empty".into()
-        };
-        report.message = if report.supported_count > 0 {
-            format!("找到 {} 个可播放资源", report.supported_count)
-        } else if report.candidate_count > 0 {
-            "有结果但格式暂不支持".into()
-        } else {
-            "没有匹配结果".into()
-        };
-    }
-}
-
-fn update_source_report_failure(
-    reports: &mut HashMap<String, AnimeMediaSourceReport>,
-    job: &MediaFetchJob,
-    error: &CoreError,
-) {
-    if let Some(report) = reports.get_mut(&job.source.id) {
-        report.failed_queries += 1;
-        if report.supported_count == 0 && report.candidate_count == 0 {
-            report.status = if is_captcha_error(error) { "captcha".into() } else { "failed".into() };
-            report.message = error.to_string();
-            if is_captcha_error(error) {
-                report.captcha_kind = captcha_kind_from_error(error).to_string();
-                report.captcha_url = job.source.arguments
-                    .pointer("/searchConfig/searchUrl")
-                    .and_then(Value::as_str)
-                    .map(|url| fill_search_url(url, &job.keyword, 1))
-                    .unwrap_or_default();
-            }
-        }
-    }
-}
-
-fn sorted_source_reports(reports: HashMap<String, AnimeMediaSourceReport>) -> Vec<AnimeMediaSourceReport> {
-    let mut values = reports.into_values().collect::<Vec<_>>();
-    values.sort_by(|a, b| {
-        source_status_rank(&a.status).cmp(&source_status_rank(&b.status))
-            .then_with(|| b.supported_count.cmp(&a.supported_count))
+fn finalize_single_source_fetch(
+    mut result: AnimeMediaFetchResult,
+    mut report: AnimeMediaSourceReport,
+) -> CoreResult<AnimeMediaFetchResult> {
+    report.is_working = false;
+    result.candidates.sort_by(|a, b| {
+        b.is_supported.cmp(&a.is_supported)
+            .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
             .then_with(|| a.source_name.cmp(&b.source_name))
     });
-    values
-}
-
-fn source_status_rank(status: &str) -> i32 {
-    match status {
-        "found" => 0,
-        "searching" => 1,
-        "captcha" => 2,
-        "empty" => 2,
-        "unsupported" => 3,
-        "failed" => 4,
-        _ => 5,
-    }
+    result.diagnostics.supported_candidates = result
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.is_supported || candidate.kind == "web")
+        .count() as i64;
+    result.diagnostics.unsupported_candidates = result.candidates.len() as i64 - result.diagnostics.supported_candidates;
+    result.diagnostics.source_reports = vec![report];
+    Ok(result)
 }
 
 fn is_captcha_error(error: &CoreError) -> bool {
@@ -2021,6 +1991,8 @@ fn make_candidate(
         String::new()
     } else if kind == "torrent" {
         "BT/磁力资源第一版暂不支持".into()
+    } else if kind == "web" {
+        "可尝试 WebView 嗅探".into()
     } else {
         "暂不支持该资源格式".into()
     };
