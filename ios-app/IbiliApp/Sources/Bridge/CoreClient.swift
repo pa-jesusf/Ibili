@@ -150,6 +150,8 @@ public final class CoreClient: @unchecked Sendable {
     private static let concurrentSafeMethods: Set<String> = [
         "anime.media.source_fetch",
         "anime.media.source_parse_page",
+        "anime.bili_source.fetch",
+        "anime.danmaku.fetch",
     ]
 
     // MARK: - High-level methods
@@ -381,6 +383,59 @@ public final class CoreClient: @unchecked Sendable {
             "anime.media.resolve",
             args: A(candidate: candidate, title: title, cover: cover),
             decoding: AnimePlayUrlDTO.self
+        )
+    }
+
+    public func animeBiliSourceFetch(
+        subjectNames: [String],
+        episodeSort: Double,
+        episodeName: String
+    ) throws -> AnimeMediaFetchResultDTO {
+        struct A: Encodable {
+            let subject_names: [String]
+            let episode_sort: Double
+            let episode_name: String
+        }
+        return try call(
+            "anime.bili_source.fetch",
+            args: A(subject_names: subjectNames, episode_sort: episodeSort, episode_name: episodeName),
+            decoding: AnimeMediaFetchResultDTO.self
+        )
+    }
+
+    public func animeDanmakuFetch(
+        appID: String,
+        appSecret: String,
+        subjectPrimaryName: String,
+        subjectNames: [String],
+        subjectAirDate: String,
+        episodeSort: Double,
+        episodeEp: Double,
+        episodeName: String
+    ) throws -> DanmakuTrackDTO {
+        struct A: Encodable {
+            let app_id: String
+            let app_secret: String
+            let subject_primary_name: String
+            let subject_names: [String]
+            let subject_air_date: String
+            let episode_sort: Double
+            let episode_ep: Double
+            let episode_name: String
+        }
+        return try call(
+            "anime.danmaku.fetch",
+            args: A(
+                app_id: appID,
+                app_secret: appSecret,
+                subject_primary_name: subjectPrimaryName,
+                subject_names: subjectNames,
+                subject_air_date: subjectAirDate,
+                episode_sort: episodeSort,
+                episode_ep: episodeEp,
+                episode_name: episodeName
+            ),
+            decoding: DanmakuTrackDTO.self
         )
     }
 

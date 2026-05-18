@@ -538,10 +538,13 @@ extension AnimeMediaCandidateDTO {
     }
 
     var isPlayableOrSniffable: Bool {
-        isSupported || isSniffableWeb
+        isSupported || isSniffableWeb || isBiliCandidate
     }
 
     var resourceCapsuleTitle: String {
+        if isBiliCandidate {
+            return kind == "bili_pgc" ? "官方番剧" : String(format: "UGC %.0f", matchScore)
+        }
         if let channel = extractedChannelTitle {
             return channel
         }
@@ -558,6 +561,9 @@ extension AnimeMediaCandidateDTO {
     }
 
     var resourceDetailTitle: String {
+        if isBiliCandidate {
+            return kind == "bili_pgc" ? "官方番剧" : String(format: "UGC 匹配 %.0f", matchScore)
+        }
         if let channel = extractedChannelTitle {
             if !qualityLabel.isEmpty {
                 return "\(channel) · \(qualityLabel)"

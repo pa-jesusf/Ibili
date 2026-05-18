@@ -799,6 +799,14 @@ public struct AnimeMediaCandidateDTO: Codable, Hashable, Identifiable {
     public let headers: [String: String]
     public let matchVideoURL: String
     public let matchNestedURL: String
+    public let biliKind: String
+    public let aid: Int64
+    public let bvid: String
+    public let cid: Int64
+    public let epID: Int64
+    public let seasonID: Int64
+    public let matchScore: Double
+    public let danmakuCid: Int64
 
     enum CodingKeys: String, CodingKey {
         case id, title, url, kind, referer, headers
@@ -811,6 +819,66 @@ public struct AnimeMediaCandidateDTO: Codable, Hashable, Identifiable {
         case userAgent = "user_agent"
         case matchVideoURL = "match_video_url"
         case matchNestedURL = "match_nested_url"
+        case biliKind = "bili_kind"
+        case aid, bvid, cid
+        case epID = "ep_id"
+        case seasonID = "season_id"
+        case matchScore = "match_score"
+        case danmakuCid = "danmaku_cid"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        sourceID = try c.decode(String.self, forKey: .sourceID)
+        sourceName = try c.decode(String.self, forKey: .sourceName)
+        title = try c.decode(String.self, forKey: .title)
+        url = try c.decode(String.self, forKey: .url)
+        pageURL = try c.decode(String.self, forKey: .pageURL)
+        kind = try c.decode(String.self, forKey: .kind)
+        qualityLabel = try c.decode(String.self, forKey: .qualityLabel)
+        isSupported = try c.decode(Bool.self, forKey: .isSupported)
+        unsupportedReason = try c.decode(String.self, forKey: .unsupportedReason)
+        referer = try c.decode(String.self, forKey: .referer)
+        userAgent = try c.decode(String.self, forKey: .userAgent)
+        headers = try c.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+        matchVideoURL = try c.decodeIfPresent(String.self, forKey: .matchVideoURL) ?? ""
+        matchNestedURL = try c.decodeIfPresent(String.self, forKey: .matchNestedURL) ?? ""
+        biliKind = try c.decodeIfPresent(String.self, forKey: .biliKind) ?? ""
+        aid = try c.decodeIfPresent(Int64.self, forKey: .aid) ?? 0
+        bvid = try c.decodeIfPresent(String.self, forKey: .bvid) ?? ""
+        cid = try c.decodeIfPresent(Int64.self, forKey: .cid) ?? 0
+        epID = try c.decodeIfPresent(Int64.self, forKey: .epID) ?? 0
+        seasonID = try c.decodeIfPresent(Int64.self, forKey: .seasonID) ?? 0
+        matchScore = try c.decodeIfPresent(Double.self, forKey: .matchScore) ?? 0
+        danmakuCid = try c.decodeIfPresent(Int64.self, forKey: .danmakuCid) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(sourceID, forKey: .sourceID)
+        try c.encode(sourceName, forKey: .sourceName)
+        try c.encode(title, forKey: .title)
+        try c.encode(url, forKey: .url)
+        try c.encode(pageURL, forKey: .pageURL)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(qualityLabel, forKey: .qualityLabel)
+        try c.encode(isSupported, forKey: .isSupported)
+        try c.encode(unsupportedReason, forKey: .unsupportedReason)
+        try c.encode(referer, forKey: .referer)
+        try c.encode(userAgent, forKey: .userAgent)
+        try c.encode(headers, forKey: .headers)
+        try c.encode(matchVideoURL, forKey: .matchVideoURL)
+        try c.encode(matchNestedURL, forKey: .matchNestedURL)
+        try c.encode(biliKind, forKey: .biliKind)
+        try c.encode(aid, forKey: .aid)
+        try c.encode(bvid, forKey: .bvid)
+        try c.encode(cid, forKey: .cid)
+        try c.encode(epID, forKey: .epID)
+        try c.encode(seasonID, forKey: .seasonID)
+        try c.encode(matchScore, forKey: .matchScore)
+        try c.encode(danmakuCid, forKey: .danmakuCid)
     }
 }
 

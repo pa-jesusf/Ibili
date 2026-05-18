@@ -98,6 +98,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        DANDANPLAY_APP_ID: "$(DANDANPLAY_APP_ID)"
+        DANDANPLAY_APP_SECRET: "$(DANDANPLAY_APP_SECRET)"
         UIBackgroundModes:
           - audio
         NSPhotoLibraryAddUsageDescription: 需要相册权限以保存图片和视频封面到相册

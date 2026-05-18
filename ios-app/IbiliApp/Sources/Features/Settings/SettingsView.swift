@@ -283,6 +283,7 @@ struct SettingsView: View {
 
             Section {
                 Toggle("启用追番 Tab", isOn: $settings.animeTrackingEnabled)
+                Toggle("启用 B站数据源", isOn: $settings.animeBiliSourceEnabled)
                 NavigationLink {
                     AnimeSourceSettingsView(store: animeSourceStore)
                 } label: {

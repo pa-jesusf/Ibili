@@ -7,11 +7,14 @@ struct AnimePlayerView: View {
     @Environment(\.dismissPlayerHost) private var dismissPlayerHost
     @StateObject private var sourceStore = AnimeSourceStore.shared
     @StateObject private var vm = AnimePlayerViewModel()
-    @State private var presentationRouteActive = false
+    @State private var isFullscreen = false
+    @State private var presentationState = PlayerPresentationState()
+    @State private var isInlineHostVisible = false
     @State private var lifecycleID = UUID()
-    @State private var createdController: AVPlayerViewController?
+    @State private var playerVCRef = PlayerVCBox()
     @State private var showsCandidates = false
     @State private var showsSourceSettings = false
+    @State private var showsDanmakuStyle = false
     @State private var captchaRequest: AnimeCaptchaRequest?
     @State private var webResolverRequest: AnimeWebVideoResolveRequest?
 
@@ -50,11 +53,36 @@ struct AnimePlayerView: View {
         }
         .onAppear {
             lifecycleID = UUID()
+            AppLog.debug("anime", "追番播放页 onAppear", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "isFullscreen": String(isFullscreen),
+                "isFullscreenPresentationActive": String(presentationState.isFullscreenPresentationActive),
+                "isAwaitingInlineFullscreenReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
+            ])
+            Orientation.activatePlayerPresentationRoute(route.id)
+            isInlineHostVisible = true
+            if presentationState.isAwaitingInlineFullscreenReturn {
+                _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
+            }
         }
         .onDisappear {
             let id = lifecycleID
+            AppLog.debug("anime", "追番播放页 onDisappear", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "isFullscreen": String(isFullscreen),
+                "isFullscreenPresentationActive": String(presentationState.isFullscreenPresentationActive),
+                "isAwaitingInlineFullscreenReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
+            ])
+            isInlineHostVisible = false
+            if !isNativePlayerPresentationActive {
+                Orientation.deactivatePlayerPresentationRoute(route.id)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 guard id == lifecycleID else { return }
+                guard !isPresentationRouteActive else { return }
+                Orientation.deactivatePlayerPresentationRoute(route.id)
                 PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: vm)
                 vm.stop()
             }
@@ -126,34 +154,54 @@ struct AnimePlayerView: View {
         .onReceive(vm.webResolveRequests) { request in
             webResolverRequest = request
         }
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button(action: dismissPlayerHost) {
-                    Label("返回", systemImage: "chevron.backward")
-                        .labelStyle(.iconOnly)
-                }
+        .onChange(of: settings.danmakuEnabled) { enabled in
+            if enabled {
+                Task { await vm.loadDanmakuIfNeeded(route: route) }
+            } else {
+                vm.danmaku.clear()
             }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    showsCandidates = true
-                } label: {
-                    Label("选择数据源", systemImage: "server.rack")
-                        .labelStyle(.iconOnly)
-                }
-                .disabled(vm.candidates.isEmpty && vm.isLoading)
-
-                Button {
-                    Task {
-                        await vm.refresh(
-                            route: route,
-                            enabledSourcesProvider: { sourceStore.sources.filter(\.enabled) }
-                        )
+        }
+        .sheet(isPresented: $showsDanmakuStyle) {
+            DanmakuStyleSettingsView()
+                .environmentObject(settings)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .toolbar {
+            if !isFullscreen {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: dismissPlayerHost) {
+                        Label("返回", systemImage: "chevron.backward")
+                            .labelStyle(.iconOnly)
                     }
-                } label: {
-                    Label("刷新资源", systemImage: "arrow.clockwise")
-                        .labelStyle(.iconOnly)
                 }
-                .disabled(vm.isLoading)
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    PlayerToolbarDanmaku(
+                        danmakuEnabled: $settings.danmakuEnabled,
+                        isEnabled: vm.player != nil,
+                        onLongPress: { showsDanmakuStyle = true }
+                    )
+                    Button {
+                        showsCandidates = true
+                    } label: {
+                        Label("选择数据源", systemImage: "server.rack")
+                            .labelStyle(.iconOnly)
+                    }
+                    .disabled(vm.candidates.isEmpty && vm.isLoading)
+
+                    Button {
+                        Task {
+                            await vm.refresh(
+                                route: route,
+                                enabledSourcesProvider: { sourceStore.sources.filter(\.enabled) }
+                            )
+                        }
+                    } label: {
+                        Label("刷新资源", systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
+                    }
+                    .disabled(vm.isLoading)
+                }
             }
         }
         .tint(.white)
@@ -169,11 +217,11 @@ struct AnimePlayerView: View {
                     sessionID: route.id,
                     title: play.title,
                     prefersLandscapeFullscreen: true,
-                    isPresentationRouteActive: presentationRouteActive,
+                    isPresentationRouteActive: isPresentationRouteActive,
                     danmaku: vm.danmaku,
                     subtitle: nil,
                     subtitleEnabled: false,
-                    danmakuEnabled: false,
+                    danmakuEnabled: settings.danmakuEnabled,
                     danmakuOpacity: settings.danmakuOpacity,
                     danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
                     danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
@@ -184,9 +232,9 @@ struct AnimePlayerView: View {
                     canBeginTemporarySpeedBoost: { false },
                     beginTemporarySpeedBoost: { false },
                     endTemporarySpeedBoost: {},
-                    canRestorePlaybackAfterPresentation: { presentationRouteActive },
+                    canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
                     onCreated: { controller in
-                        createdController = controller
+                        playerVCRef.vc = controller
                     },
                     onPresentationEvent: handlePresentationEvent
                 )
@@ -355,20 +403,72 @@ struct AnimePlayerView: View {
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
-        case .fullscreenChanged(let isFullscreen, _):
-            presentationRouteActive = isFullscreen
-            if isFullscreen {
-                Orientation.activatePlayerPresentationRoute(route.id)
-            } else {
-                Orientation.deactivatePlayerPresentationRoute(route.id)
+        case .fullscreenChanged(let isFullscreen, let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else {
+                AppLog.debug("anime", "忽略旧追番播放器 fullscreen 回调", metadata: [
+                    "eventSessionID": identity.sessionID.uuidString,
+                    "currentSessionID": route.id.uuidString,
+                ])
+                return
             }
-        case .suppressTransientPauseObservation:
-            break
-        case .pictureInPictureChanged(let isActive, _):
-            presentationRouteActive = isActive
+            AppLog.debug("anime", "处理追番 fullscreen 展示状态变化", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "isFullscreen": String(isFullscreen),
+                "isInlineHostVisible": String(isInlineHostVisible),
+                "sessionID": identity.sessionID.uuidString,
+            ])
+            self.isFullscreen = isFullscreen
+            if isFullscreen {
+                _ = presentationState.beginFullscreen(identity)
+            } else {
+                _ = presentationState.endFullscreen(identity)
+                if isInlineHostVisible {
+                    _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
+                }
+            }
+        case .suppressTransientPauseObservation(let identity, let context):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            vm.armTransientPauseSuppression(for: context)
+        case .pictureInPictureChanged(let isActive, let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else {
+                AppLog.debug("anime", "忽略旧追番播放器 PiP 回调", metadata: [
+                    "eventSessionID": identity.sessionID.uuidString,
+                    "currentSessionID": route.id.uuidString,
+                ])
+                return
+            }
+            if isActive {
+                Orientation.activatePlayerPresentationRoute(route.id)
+            }
         case .pictureInPictureRestoreRequested(_, let completion):
             completion(true)
         }
+    }
+
+    private func presentationIdentityMatchesCurrentRoute(_ identity: PlayerPresentationIdentity) -> Bool {
+        guard identity.sessionID == route.id else { return false }
+        if presentationState.accepts(identity) { return true }
+        guard let currentPlayerID = vm.player.map(ObjectIdentifier.init),
+              let incomingPlayerID = identity.playerID else { return true }
+        return currentPlayerID == incomingPlayerID
+    }
+
+    private var currentPresentationIdentity: PlayerPresentationIdentity {
+        PlayerPresentationIdentity(
+            sessionID: route.id,
+            playerID: vm.player.map(ObjectIdentifier.init)
+        )
+    }
+
+    private var isNativePlayerPresentationActive: Bool {
+        isFullscreen
+            || presentationState.isFullscreenPresentationActive
+            || presentationState.isAwaitingInlineFullscreenReturn
+    }
+
+    private var isPresentationRouteActive: Bool {
+        isInlineHostVisible || isNativePlayerPresentationActive
     }
 
     private func episodeStateLabel(_ value: Int64) -> String {

@@ -1,6 +1,8 @@
+use crate::dto::{DanmakuItem, DanmakuTrack};
 use crate::error::{CoreError, CoreResult};
 use crate::http::UA_WEB;
 use crate::Core;
+use base64::{engine::general_purpose, Engine as _};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use regex::Regex;
@@ -9,6 +11,7 @@ use scraper::{Html, Selector};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
@@ -23,6 +26,9 @@ pub const DEFAULT_MEDIA_SOURCE_SUBSCRIPTIONS: [&str; 2] = [
 const MEDIA_FETCH_REQUEST_TIMEOUT_SECS: u64 = 4;
 const MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY: usize = 3;
 const MEDIA_FETCH_MAX_EPISODE_PAGES_PER_QUERY: usize = 5;
+const BUILTIN_BILI_SOURCE_ID: &str = "builtin:bilibili";
+const BUILTIN_BILI_SOURCE_NAME: &str = "B站";
+const DANDANPLAY_API: &str = "https://api.dandanplay.net";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AnimeOAuthStart {
@@ -157,6 +163,22 @@ pub struct AnimeMediaCandidate {
     pub headers: HashMap<String, String>,
     pub match_video_url: String,
     pub match_nested_url: String,
+    #[serde(default)]
+    pub bili_kind: String,
+    #[serde(default)]
+    pub aid: i64,
+    #[serde(default)]
+    pub bvid: String,
+    #[serde(default)]
+    pub cid: i64,
+    #[serde(default)]
+    pub ep_id: i64,
+    #[serde(default)]
+    pub season_id: i64,
+    #[serde(default)]
+    pub match_score: f64,
+    #[serde(default)]
+    pub danmaku_cid: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -634,6 +656,119 @@ impl Core {
         self.anime_media_parse_single_source_page(source, page_url, html, &keywords, episode_sort, episode_name)
     }
 
+    pub fn anime_bili_source_fetch(
+        &self,
+        subject_names: Vec<String>,
+        episode_sort: f64,
+        episode_name: &str,
+    ) -> CoreResult<AnimeMediaFetchResult> {
+        let keywords = build_search_keywords(&subject_names);
+        let subject_names = if keywords.is_empty() { subject_names } else { keywords };
+        let mut result = AnimeMediaFetchResult::default();
+        result.diagnostics.enabled_sources = 1;
+        let mut report = bili_source_report("searching", "正在检索 B站");
+        report.is_working = true;
+        let mut seen = HashSet::new();
+
+        for keyword in subject_names.iter().take(3) {
+            result.diagnostics.attempted_queries += 1;
+            report.attempted_queries += 1;
+            match self.search_bili_pgc_candidate(keyword, &subject_names, episode_sort, episode_name) {
+                Ok(Some(candidate)) => {
+                    result.diagnostics.succeeded_queries += 1;
+                    report.succeeded_queries += 1;
+                    if seen.insert(candidate.id.clone()) {
+                        result.candidates.push(candidate);
+                    }
+                }
+                Ok(None) => {
+                    result.diagnostics.succeeded_queries += 1;
+                    report.succeeded_queries += 1;
+                }
+                Err(error) => {
+                    result.diagnostics.failed_queries += 1;
+                    report.failed_queries += 1;
+                    push_bili_message(&mut result.diagnostics.messages, keyword, &error);
+                }
+            }
+        }
+
+        for query in bili_ugc_queries(&subject_names, episode_sort, episode_name).into_iter().take(8) {
+            result.diagnostics.attempted_queries += 1;
+            report.attempted_queries += 1;
+            match self.search_bili_ugc_candidates(&query, &subject_names, episode_sort, episode_name) {
+                Ok(mut candidates) => {
+                    result.diagnostics.succeeded_queries += 1;
+                    report.succeeded_queries += 1;
+                    for candidate in candidates.drain(..) {
+                        if seen.insert(candidate.id.clone()) {
+                            result.candidates.push(candidate);
+                        }
+                    }
+                }
+                Err(error) => {
+                    result.diagnostics.failed_queries += 1;
+                    report.failed_queries += 1;
+                    push_bili_message(&mut result.diagnostics.messages, &query, &error);
+                }
+            }
+        }
+
+        result.candidates.sort_by(|a, b| {
+            bili_kind_priority(&a.kind).cmp(&bili_kind_priority(&b.kind))
+                .then_with(|| b.match_score.total_cmp(&a.match_score))
+        });
+        result.candidates.truncate(8);
+        report.is_working = false;
+        report.candidate_count = result.candidates.len() as i64;
+        report.supported_count = report.candidate_count;
+        report.status = if report.supported_count > 0 { "found".into() } else { "empty".into() };
+        report.state_id = report.status.clone();
+        report.message = if report.supported_count > 0 {
+            format!("找到 {} 个 B站资源", report.supported_count)
+        } else {
+            "没有匹配的 B站资源".into()
+        };
+        result.diagnostics.supported_candidates = report.supported_count;
+        result.diagnostics.unsupported_candidates = 0;
+        result.diagnostics.source_reports = vec![report];
+        Ok(result)
+    }
+
+    pub fn anime_danmaku_fetch(
+        &self,
+        app_id: &str,
+        app_secret: &str,
+        subject_primary_name: &str,
+        subject_names: Vec<String>,
+        subject_air_date: &str,
+        episode_sort: f64,
+        episode_ep: f64,
+        episode_name: &str,
+    ) -> CoreResult<DanmakuTrack> {
+        if !usable_secret(app_id) || !usable_secret(app_secret) {
+            return Err(CoreError::InvalidArgument("Dandanplay 凭证未配置".into()));
+        }
+        let names = normalize_name_list(subject_primary_name, subject_names);
+        let dandan_episode = self.match_dandanplay_episode(
+            app_id,
+            app_secret,
+            subject_primary_name,
+            &names,
+            subject_air_date,
+            episode_sort,
+            episode_ep,
+            episode_name,
+        )?;
+        let comments = self.dandan_get_comments(app_id, app_secret, dandan_episode)?;
+        Ok(DanmakuTrack {
+            items: comments
+                .into_iter()
+                .filter_map(dandan_comment_to_item)
+                .collect::<Vec<_>>(),
+        })
+    }
+
     pub fn anime_media_resolve(
         &self,
         candidate: AnimeMediaCandidate,
@@ -660,6 +795,197 @@ impl Core {
             headers,
             duration_ms: 0,
         })
+    }
+
+    fn search_bili_pgc_candidate(
+        &self,
+        keyword: &str,
+        subject_names: &[String],
+        episode_sort: f64,
+        episode_name: &str,
+    ) -> CoreResult<Option<AnimeMediaCandidate>> {
+        let page = self.search_pgc(keyword, 1, "media_bangumi")?;
+        let mut best: Option<(i32, crate::dto::SearchPgcItem)> = None;
+        for item in page.items {
+            let score = subject_names
+                .iter()
+                .map(|name| bili_title_score(&item.title, name))
+                .max()
+                .unwrap_or(0);
+            if score >= 62 && best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+                best = Some((score, item));
+            }
+        }
+        let Some((subject_score, season_hit)) = best else { return Ok(None) };
+        let season = self.pgc_season(season_hit.season_id, 0)?;
+        let episode = season.episodes.into_iter()
+            .map(|episode| {
+                let score = bili_episode_score(
+                    episode.title.as_str(),
+                    episode.long_title.as_str(),
+                    episode_sort,
+                    episode_name,
+                    Some(episode.duration_sec),
+                );
+                (score, episode)
+            })
+            .max_by_key(|(score, _)| *score);
+        let Some((episode_score, episode)) = episode else { return Ok(None) };
+        if episode_score < 45 {
+            return Ok(None);
+        }
+        let match_score = (subject_score as f64 * 0.65 + episode_score as f64 * 0.35).min(100.0);
+        if match_score < 62.0 {
+            return Ok(None);
+        }
+        Ok(Some(make_bili_candidate(
+            "bili_pgc",
+            format!("{} · {}", season_hit.title, bili_episode_display_title(&episode.title, &episode.long_title)),
+            format!("https://www.bilibili.com/bangumi/play/ep{}", episode.ep_id),
+            "pgc",
+            episode.aid,
+            episode.bvid,
+            episode.cid,
+            episode.ep_id,
+            season.season_id,
+            match_score,
+        )))
+    }
+
+    fn search_bili_ugc_candidates(
+        &self,
+        query: &str,
+        subject_names: &[String],
+        episode_sort: f64,
+        episode_name: &str,
+    ) -> CoreResult<Vec<AnimeMediaCandidate>> {
+        let page = self.search_video(query, 1, Some("totalrank"), None, None)?;
+        let mut scored = Vec::new();
+        for item in page.items {
+            let score = bili_ugc_score(&item, subject_names, episode_sort, episode_name);
+            if score < 55.0 {
+                continue;
+            }
+            let cid = if item.cid > 0 {
+                item.cid
+            } else {
+                self.video_view_cid(&item.bvid).unwrap_or_default()
+            };
+            if cid <= 0 {
+                continue;
+            }
+            scored.push((score, make_bili_candidate(
+                "bili_ugc",
+                item.title.clone(),
+                format!("https://www.bilibili.com/video/{}", item.bvid),
+                "ugc",
+                item.aid,
+                item.bvid,
+                cid,
+                0,
+                0,
+                score,
+            )));
+        }
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        Ok(scored.into_iter().take(4).map(|(_, item)| item).collect())
+    }
+
+    fn match_dandanplay_episode(
+        &self,
+        app_id: &str,
+        app_secret: &str,
+        subject_primary_name: &str,
+        subject_names: &[String],
+        subject_air_date: &str,
+        episode_sort: f64,
+        episode_ep: f64,
+        episode_name: &str,
+    ) -> CoreResult<i64> {
+        let mut episodes = Vec::new();
+        if let Some((year, month)) = dandan_season(subject_air_date) {
+            let season: DandanSeasonResponse = self.dandan_get_json(
+                app_id,
+                app_secret,
+                &format!("/api/v2/bangumi/season/anime/{year}/{month:02}"),
+                &[],
+            )?;
+            if let Some(anime) = exact_dandan_anime_match(&season.bangumi_list, subject_names) {
+                let details: DandanBangumiResponse = self.dandan_get_json(
+                    app_id,
+                    app_secret,
+                    &format!("/api/v2/bangumi/{}", anime.bangumi_id.unwrap_or(anime.anime_id)),
+                    &[],
+                )?;
+                episodes.extend(details.bangumi.episodes.into_iter().map(|ep| DandanEpisodeWithSubject {
+                    id: ep.episode_id,
+                    subject_name: anime.anime_title.clone().unwrap_or_else(|| subject_primary_name.to_string()),
+                    episode_title: ep.episode_title,
+                    episode_number: ep.episode_number,
+                }));
+            }
+        }
+        if episodes.is_empty() {
+            for name in subject_names.iter().take(3) {
+                let searched: DandanSearchEpisodeResponse = self.dandan_get_json(
+                    app_id,
+                    app_secret,
+                    "/api/v2/search/episodes",
+                    &[("anime", name.as_str()), ("episode", "")],
+                )?;
+                for anime in searched.animes {
+                    for ep in anime.episodes {
+                        episodes.push(DandanEpisodeWithSubject {
+                            id: ep.episode_id,
+                            subject_name: anime.anime_title.clone().unwrap_or_default(),
+                            episode_title: ep.episode_title.unwrap_or_default(),
+                            episode_number: ep.episode_number,
+                        });
+                    }
+                }
+                if !episodes.is_empty() {
+                    break;
+                }
+            }
+        }
+        pick_dandan_episode(&episodes, subject_primary_name, episode_sort, episode_ep, episode_name)
+            .ok_or(CoreError::NotFound)
+    }
+
+    fn dandan_get_comments(&self, app_id: &str, app_secret: &str, episode_id: i64) -> CoreResult<Vec<DandanComment>> {
+        let response: DandanCommentResponse = self.dandan_get_json(
+            app_id,
+            app_secret,
+            &format!("/api/v2/comment/{episode_id}"),
+            &[("chConvert", "0"), ("withRelated", "true")],
+        )?;
+        Ok(response.comments)
+    }
+
+    fn dandan_get_json<T: DeserializeOwned>(
+        &self,
+        app_id: &str,
+        app_secret: &str,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> CoreResult<T> {
+        let timestamp = now_secs();
+        let signature = dandan_signature(app_id, timestamp, path, app_secret);
+        let response = self.http.client
+            .get(format!("{DANDANPLAY_API}{path}"))
+            .header("User-Agent", APP_UA)
+            .header("Accept", "application/json")
+            .header("X-AppId", app_id)
+            .header("X-Timestamp", timestamp.to_string())
+            .header("X-Signature", signature)
+            .query(query)
+            .send()?;
+        let status = response.status().as_u16();
+        let text = response.text().map_err(|e| CoreError::Network(e.to_string()))?;
+        if !(200..300).contains(&status) {
+            return Err(CoreError::Api { code: status as i64, msg: text });
+        }
+        serde_json::from_str(&text).map_err(CoreError::from)
     }
 
     fn oauth_token_request(&self, body: Value) -> CoreResult<AnimeOAuthToken> {
@@ -1746,7 +2072,7 @@ fn finalize_single_source_fetch(
 }
 
 fn candidate_is_playable_or_sniffable(candidate: &AnimeMediaCandidate) -> bool {
-    candidate.is_supported || candidate.kind == "web"
+    candidate.is_supported || matches!(candidate.kind.as_str(), "web" | "bili_pgc" | "bili_ugc")
 }
 
 fn is_captcha_error(error: &CoreError) -> bool {
@@ -1964,6 +2290,14 @@ fn make_candidate(
         headers,
         match_video_url,
         match_nested_url,
+        bili_kind: String::new(),
+        aid: 0,
+        bvid: String::new(),
+        cid: 0,
+        ep_id: 0,
+        season_id: 0,
+        match_score: 0.0,
+        danmaku_cid: 0,
     }
 }
 
@@ -2242,6 +2576,427 @@ fn push_diagnostic_message(messages: &mut Vec<String>, source: &AnimeSource, key
         return;
     }
     messages.push(format!("{} · {} · {}", source.name, keyword, error));
+}
+
+fn push_bili_message(messages: &mut Vec<String>, keyword: &str, error: &CoreError) {
+    if messages.len() >= 8 {
+        return;
+    }
+    messages.push(format!("{BUILTIN_BILI_SOURCE_NAME} · {keyword} · {error}"));
+}
+
+fn bili_source_report(status: &str, message: &str) -> AnimeMediaSourceReport {
+    AnimeMediaSourceReport {
+        source_id: BUILTIN_BILI_SOURCE_ID.into(),
+        source_name: BUILTIN_BILI_SOURCE_NAME.into(),
+        factory_id: "builtin-bilibili".into(),
+        state_id: if status == "searching" { "working".into() } else { status.into() },
+        status: status.into(),
+        message: message.into(),
+        ..Default::default()
+    }
+}
+
+fn make_bili_candidate(
+    kind: &str,
+    title: String,
+    page_url: String,
+    bili_kind: &str,
+    aid: i64,
+    bvid: String,
+    cid: i64,
+    ep_id: i64,
+    season_id: i64,
+    match_score: f64,
+) -> AnimeMediaCandidate {
+    let url = match kind {
+        "bili_pgc" => format!("ibili://bilibili/pgc?season_id={season_id}&ep_id={ep_id}&aid={aid}&cid={cid}"),
+        _ => format!("ibili://bilibili/ugc?aid={aid}&bvid={bvid}&cid={cid}"),
+    };
+    AnimeMediaCandidate {
+        id: format!("{BUILTIN_BILI_SOURCE_ID}:{kind}:{}", stable_hash(&url)),
+        source_id: BUILTIN_BILI_SOURCE_ID.into(),
+        source_name: BUILTIN_BILI_SOURCE_NAME.into(),
+        title,
+        url,
+        page_url,
+        kind: kind.into(),
+        quality_label: format!("{:.0}分", match_score),
+        is_supported: true,
+        unsupported_reason: String::new(),
+        referer: "https://www.bilibili.com/".into(),
+        user_agent: UA_WEB.into(),
+        headers: HashMap::new(),
+        match_video_url: String::new(),
+        match_nested_url: String::new(),
+        bili_kind: bili_kind.into(),
+        aid,
+        bvid,
+        cid,
+        ep_id,
+        season_id,
+        match_score,
+        danmaku_cid: cid,
+    }
+}
+
+fn bili_kind_priority(kind: &str) -> i32 {
+    match kind {
+        "bili_pgc" => 0,
+        "bili_ugc" => 2,
+        _ => 5,
+    }
+}
+
+fn normalize_name_list(primary: &str, mut names: Vec<String>) -> Vec<String> {
+    if !primary.trim().is_empty() {
+        names.insert(0, primary.to_string());
+    }
+    build_search_keywords(&names)
+}
+
+fn bili_title_score(title: &str, expected: &str) -> i32 {
+    let title = normalize_bili_match_text(title);
+    let expected = normalize_bili_match_text(expected);
+    if title.is_empty() || expected.is_empty() {
+        return 0;
+    }
+    if title == expected {
+        return 100;
+    }
+    if title.contains(&expected) || expected.contains(&title) {
+        return 86;
+    }
+    let common = expected.chars().filter(|ch| title.contains(*ch)).count();
+    let denominator = expected.chars().count().max(title.chars().count()).max(1);
+    ((common * 100) / denominator) as i32
+}
+
+fn bili_episode_score(
+    title: &str,
+    long_title: &str,
+    episode_sort: f64,
+    episode_name: &str,
+    duration_sec: Option<i64>,
+) -> i32 {
+    let mut score = 0;
+    let combined = format!("{title} {long_title}");
+    if episode_marker_matches(&combined, episode_sort) {
+        score += 65;
+    }
+    let name = episode_name.trim();
+    if !name.is_empty() && normalize_bili_match_text(&combined).contains(&normalize_bili_match_text(name)) {
+        score += 35;
+    }
+    if let Some(duration) = duration_sec {
+        if (900..=2_400).contains(&duration) {
+            score += 8;
+        } else if duration > 0 && duration < 360 {
+            score -= 35;
+        }
+    }
+    score.clamp(0, 100)
+}
+
+fn bili_ugc_score(
+    item: &crate::dto::SearchVideoItem,
+    subject_names: &[String],
+    episode_sort: f64,
+    episode_name: &str,
+) -> f64 {
+    let mut score = subject_names
+        .iter()
+        .map(|name| bili_title_score(&item.title, name) as f64)
+        .max_by(|a, b| a.total_cmp(b))
+        .unwrap_or(0.0)
+        * 0.5;
+    if episode_marker_matches(&item.title, episode_sort) {
+        score += 25.0;
+    }
+    let ep_name = normalize_bili_match_text(episode_name);
+    if !ep_name.is_empty() && normalize_bili_match_text(&item.title).contains(&ep_name) {
+        score += 10.0;
+    }
+    if (900..=2_400).contains(&item.duration_sec) {
+        score += 8.0;
+    } else if item.duration_sec > 0 && item.duration_sec < 360 {
+        score -= 22.0;
+    }
+    score += ((item.play.max(0) as f64 + item.danmaku.max(0) as f64 * 8.0).log10().max(0.0) * 3.0).min(12.0);
+    let lower = item.title.to_lowercase();
+    for keyword in [
+        "解说", "reaction", "预告", "片段", "mad", "amv", "op", "ed", "pv", "合集", "剪辑",
+        "音乐", "盘点", "考察", "reaction", "ost", "主题曲",
+    ] {
+        if lower.contains(keyword) {
+            score -= 28.0;
+        }
+    }
+    score.clamp(0.0, 100.0)
+}
+
+fn bili_ugc_queries(subject_names: &[String], episode_sort: f64, episode_name: &str) -> Vec<String> {
+    let mut queries = Vec::new();
+    let mut seen = HashSet::new();
+    let sort = episode_sort.round() as i64;
+    for name in subject_names.iter().take(3) {
+        for suffix in [
+            format!("第{sort}话"),
+            format!("第{sort}集"),
+            format!("EP{:02}", sort),
+            format!("{:02}", sort),
+            episode_name.trim().to_string(),
+        ] {
+            let query = format!("{name} {suffix}").trim().to_string();
+            if !query.is_empty() && seen.insert(query.clone()) {
+                queries.push(query);
+            }
+        }
+    }
+    queries
+}
+
+fn episode_marker_matches(text: &str, episode_sort: f64) -> bool {
+    if episode_sort <= 0.0 {
+        return true;
+    }
+    let sort = episode_sort.round() as i64;
+    let lower = text.to_lowercase();
+    let padded = format!("{:02}", sort);
+    [
+        format!("第{sort}话"),
+        format!("第{sort}話"),
+        format!("第{sort}集"),
+        format!("第{padded}话"),
+        format!("第{padded}話"),
+        format!("第{padded}集"),
+        format!(" ep{sort}"),
+        format!(" ep{padded}"),
+        format!("ep{sort}"),
+        format!("ep{padded}"),
+        format!("[{sort}]"),
+        format!("[{padded}]"),
+        format!("【{sort}】"),
+        format!("【{padded}】"),
+    ]
+    .iter()
+    .any(|pattern| lower.contains(&pattern.to_lowercase()))
+}
+
+fn bili_episode_display_title(title: &str, long_title: &str) -> String {
+    let title = title.trim();
+    let long_title = long_title.trim();
+    if title.is_empty() {
+        long_title.to_string()
+    } else if long_title.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} {long_title}")
+    }
+}
+
+fn normalize_bili_match_text(text: &str) -> String {
+    text.chars()
+        .filter(|ch| ch.is_alphanumeric() || is_cjk(*ch))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn is_cjk(ch: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&ch)
+        || ('\u{3040}'..='\u{30ff}').contains(&ch)
+        || ('\u{3400}'..='\u{4dbf}').contains(&ch)
+}
+
+fn usable_secret(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && !trimmed.contains("$(")
+}
+
+fn dandan_signature(app_id: &str, timestamp: i64, path: &str, app_secret: &str) -> String {
+    let data = format!("{app_id}{timestamp}{path}{app_secret}");
+    let digest = Sha256::digest(data.as_bytes());
+    general_purpose::STANDARD.encode(digest)
+}
+
+fn dandan_season(date: &str) -> Option<(i32, i32)> {
+    let parts = date.split('-').collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    let year = parts[0].parse::<i32>().ok()?;
+    let month = parts[1].parse::<i32>().ok()?;
+    let season_month = match month {
+        1..=3 => 1,
+        4..=6 => 4,
+        7..=9 => 7,
+        10..=12 => 10,
+        _ => return None,
+    };
+    Some((year, season_month))
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+struct DandanSearchAnime {
+    #[serde(default, rename = "animeId")]
+    anime_id: i64,
+    #[serde(default, rename = "bangumiId")]
+    bangumi_id: Option<i64>,
+    #[serde(default, rename = "animeTitle")]
+    anime_title: Option<String>,
+    #[serde(default)]
+    episodes: Vec<DandanSearchEpisode>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+struct DandanSearchEpisode {
+    #[serde(default, rename = "episodeId")]
+    episode_id: i64,
+    #[serde(default, rename = "episodeTitle")]
+    episode_title: Option<String>,
+    #[serde(default, rename = "episodeNumber")]
+    episode_number: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DandanSeasonResponse {
+    #[serde(default, rename = "bangumiList")]
+    bangumi_list: Vec<DandanSearchAnime>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DandanSearchEpisodeResponse {
+    #[serde(default)]
+    animes: Vec<DandanSearchAnime>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DandanBangumiResponse {
+    #[serde(default)]
+    bangumi: DandanBangumiDetails,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DandanBangumiDetails {
+    #[serde(default)]
+    episodes: Vec<DandanBangumiEpisode>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DandanBangumiEpisode {
+    #[serde(default, rename = "episodeId")]
+    episode_id: i64,
+    #[serde(default, rename = "episodeTitle")]
+    episode_title: String,
+    #[serde(default, rename = "episodeNumber")]
+    episode_number: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DandanEpisodeWithSubject {
+    id: i64,
+    subject_name: String,
+    episode_title: String,
+    episode_number: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DandanCommentResponse {
+    #[serde(default)]
+    comments: Vec<DandanComment>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DandanComment {
+    #[allow(dead_code)]
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    p: String,
+    #[serde(default)]
+    m: String,
+}
+
+fn exact_dandan_anime_match(items: &[DandanSearchAnime], subject_names: &[String]) -> Option<DandanSearchAnime> {
+    items.iter().find(|item| {
+        item.anime_title.as_deref().map(|title| {
+            subject_names.iter().any(|name| normalize_bili_match_text(title) == normalize_bili_match_text(name))
+        }).unwrap_or(false)
+    }).cloned()
+}
+
+fn pick_dandan_episode(
+    episodes: &[DandanEpisodeWithSubject],
+    subject_primary_name: &str,
+    episode_sort: f64,
+    episode_ep: f64,
+    episode_name: &str,
+) -> Option<i64> {
+    let sort = episode_sort.round() as i64;
+    let ep = episode_ep.round() as i64;
+    for expected in [sort, ep] {
+        if expected <= 0 {
+            continue;
+        }
+        if let Some(item) = episodes.iter().find(|item| {
+            item.episode_number
+                .as_deref()
+                .and_then(parse_episode_number)
+                == Some(expected)
+        }) {
+            return Some(item.id);
+        }
+    }
+    let expected_name = normalize_bili_match_text(episode_name);
+    if !expected_name.is_empty() {
+        if let Some(item) = episodes.iter().find(|item| normalize_bili_match_text(&item.episode_title).contains(&expected_name)) {
+            return Some(item.id);
+        }
+    }
+    episodes.iter()
+        .max_by_key(|item| {
+            bili_title_score(&item.subject_name, subject_primary_name)
+                + bili_episode_score(&item.episode_title, "", episode_sort, episode_name, None)
+        })
+        .filter(|item| bili_episode_score(&item.episode_title, "", episode_sort, episode_name, None) >= 40)
+        .map(|item| item.id)
+}
+
+fn parse_episode_number(value: &str) -> Option<i64> {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .parse::<i64>()
+        .ok()
+}
+
+fn dandan_comment_to_item(raw: DandanComment) -> Option<DanmakuItem> {
+    let parts = raw.p.split(',').collect::<Vec<_>>();
+    if parts.len() < 4 {
+        return None;
+    }
+    let time_sec = parts[0].parse::<f32>().ok()?;
+    let mode = parts[1].parse::<i32>().ok()?;
+    let color = parts[2].parse::<u32>().ok()?;
+    let location_mode = match mode {
+        1 | 4 | 5 => mode,
+        _ => return None,
+    };
+    Some(DanmakuItem {
+        time_sec,
+        mode: location_mode,
+        color,
+        font_size: 25,
+        text: raw.m,
+        weight: 0,
+        has_weight: false,
+        mid_hash: parts.get(3).copied().unwrap_or_default().to_string(),
+        like_count: 0,
+        colorful: 0,
+        count: 0,
+        is_self: false,
+    })
 }
 
 fn simplify_keyword(text: &str) -> String {
@@ -2573,5 +3328,61 @@ mod anime_tests {
         ];
         let keywords = build_search_keywords(&names);
         assert_eq!(keywords, vec!["葬送的芙莉莲 特别篇", "Frieren", "Sousou no Frieren"]);
+    }
+
+    #[test]
+    fn builtin_bili_scoring_prefers_exact_episode_and_penalizes_clips() {
+        let names = vec!["上伊那牡丹，酒醉身姿似百合花般".to_string()];
+        let full = crate::dto::SearchVideoItem {
+            aid: 1,
+            bvid: "BVfull".into(),
+            cid: 10,
+            title: "上伊那牡丹，酒醉身姿似百合花般 第6话".into(),
+            cover: String::new(),
+            author: String::new(),
+            duration_sec: 1420,
+            play: 120_000,
+            danmaku: 3_000,
+            like: 0,
+            pubdate: 0,
+        };
+        let clip = crate::dto::SearchVideoItem {
+            aid: 2,
+            bvid: "BVclip".into(),
+            cid: 20,
+            title: "上伊那牡丹 第6话 解说片段".into(),
+            cover: String::new(),
+            author: String::new(),
+            duration_sec: 180,
+            play: 900_000,
+            danmaku: 20_000,
+            like: 0,
+            pubdate: 0,
+        };
+        assert!(bili_ugc_score(&full, &names, 6.0, "") > 78.0);
+        assert!(bili_ugc_score(&clip, &names, 6.0, "") < bili_ugc_score(&full, &names, 6.0, ""));
+    }
+
+    #[test]
+    fn dandan_comment_converts_to_existing_danmaku_item_shape() {
+        let raw = DandanComment {
+            cid: 42,
+            p: "12.34,1,16777215,user-a".into(),
+            m: "测试弹幕".into(),
+        };
+        let item = dandan_comment_to_item(raw).unwrap();
+        assert!((item.time_sec - 12.34).abs() < 0.01);
+        assert_eq!(item.mode, 1);
+        assert_eq!(item.color, 16_777_215);
+        assert_eq!(item.font_size, 25);
+        assert_eq!(item.text, "测试弹幕");
+        assert_eq!(item.mid_hash, "user-a");
+    }
+
+    #[test]
+    fn dandan_signature_uses_path_not_full_url() {
+        let signature = dandan_signature("app", 1_700_000_000, "/api/v2/comment/123", "secret");
+        let expected = general_purpose::STANDARD.encode(Sha256::digest(b"app1700000000/api/v2/comment/123secret"));
+        assert_eq!(signature, expected);
     }
 }

@@ -316,6 +316,36 @@ struct AnimeMediaResolveArgs {
     cover: String,
 }
 
+#[derive(Deserialize)]
+struct AnimeBiliSourceFetchArgs {
+    #[serde(default)]
+    subject_names: Vec<String>,
+    #[serde(default)]
+    episode_sort: f64,
+    #[serde(default)]
+    episode_name: String,
+}
+
+#[derive(Deserialize)]
+struct AnimeDanmakuFetchArgs {
+    #[serde(default)]
+    app_id: String,
+    #[serde(default)]
+    app_secret: String,
+    #[serde(default)]
+    subject_primary_name: String,
+    #[serde(default)]
+    subject_names: Vec<String>,
+    #[serde(default)]
+    subject_air_date: String,
+    #[serde(default)]
+    episode_sort: f64,
+    #[serde(default)]
+    episode_ep: f64,
+    #[serde(default)]
+    episode_name: String,
+}
+
 fn default_qn() -> i64 {
     0
 }
@@ -799,6 +829,27 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "anime.media.resolve" => {
             let a: AnimeMediaResolveArgs = serde_json::from_value(args)?;
             to_value(c.inner.anime_media_resolve(a.candidate, &a.title, &a.cover)?)
+        }
+        "anime.bili_source.fetch" => {
+            let a: AnimeBiliSourceFetchArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_bili_source_fetch(
+                a.subject_names,
+                a.episode_sort,
+                &a.episode_name,
+            )?)
+        }
+        "anime.danmaku.fetch" => {
+            let a: AnimeDanmakuFetchArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_danmaku_fetch(
+                &a.app_id,
+                &a.app_secret,
+                &a.subject_primary_name,
+                a.subject_names,
+                &a.subject_air_date,
+                a.episode_sort,
+                a.episode_ep,
+                &a.episode_name,
+            )?)
         }
         "auth.tv_qr.start" => to_value(c.inner.auth_tv_qr_start()?),
         "auth.tv_qr.poll" => {

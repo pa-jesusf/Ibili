@@ -8,6 +8,7 @@ final class AnimeMediaFetchSession {
     private let sources: [AnimeSourceDTO]
     private let subjectNames: [String]
     private let sourceJSONByID: [String: String]
+    private let biliSourceEnabled: Bool
     private var continuation: AsyncStream<AnimeMediaSessionSnapshotDTO>.Continuation?
     private var tasks: [String: Task<Void, Never>] = [:]
     private var reportsBySourceID: [String: AnimeMediaSourceReportDTO] = [:]
@@ -19,12 +20,14 @@ final class AnimeMediaFetchSession {
     init(
         route: DeepLinkRouter.AnimePlayerRoute,
         sources: [AnimeSourceDTO],
-        sourceJSONByID: [String: String]
+        sourceJSONByID: [String: String],
+        biliSourceEnabled: Bool
     ) {
         self.route = route
         self.sources = sources
         self.subjectNames = [route.subject.nameCn, route.subject.name] + route.subject.aliases
         self.sourceJSONByID = sourceJSONByID
+        self.biliSourceEnabled = biliSourceEnabled
         var captured: AsyncStream<AnimeMediaSessionSnapshotDTO>.Continuation?
         self.snapshots = AsyncStream { continuation in
             captured = continuation
@@ -33,6 +36,9 @@ final class AnimeMediaFetchSession {
         self.reportsBySourceID = Dictionary(uniqueKeysWithValues: sources.map { source in
             (source.id, Self.pendingReport(for: source))
         })
+        if biliSourceEnabled {
+            self.reportsBySourceID[Self.biliSource.id] = Self.pendingReport(for: Self.biliSource)
+        }
     }
 
     func start() async {
@@ -43,7 +49,11 @@ final class AnimeMediaFetchSession {
             "subjectID": String(route.subject.id),
             "episodeID": String(route.episode.id),
             "sources": String(sources.count),
+            "biliSourceEnabled": biliSourceEnabled ? "true" : "false",
         ])
+        if biliSourceEnabled {
+            startBiliSource()
+        }
         for (index, source) in orderedSources().enumerated() {
             startSource(source, delayMs: initialDelayMs(for: source, index: index))
         }
@@ -54,9 +64,15 @@ final class AnimeMediaFetchSession {
         reportsBySourceID = Dictionary(uniqueKeysWithValues: sources.map { source in
             (source.id, Self.pendingReport(for: source))
         })
+        if biliSourceEnabled {
+            reportsBySourceID[Self.biliSource.id] = Self.pendingReport(for: Self.biliSource)
+        }
         tasks.values.forEach { $0.cancel() }
         tasks.removeAll()
         emitSnapshot()
+        if biliSourceEnabled {
+            startBiliSource()
+        }
         for (index, source) in orderedSources().enumerated() {
             startSource(source, delayMs: initialDelayMs(for: source, index: index))
         }
@@ -104,6 +120,31 @@ final class AnimeMediaFetchSession {
 
     private var preferredSourceKey: String {
         "ibili.anime.preferredSource.\(route.subject.id)"
+    }
+
+    private func startBiliSource() {
+        let source = Self.biliSource
+        tasks[source.id]?.cancel()
+        reportsBySourceID[source.id] = Self.workingReport(
+            from: reportsBySourceID[source.id] ?? Self.pendingReport(for: source),
+            temporarilyEnabled: false
+        )
+        emitSnapshot()
+        tasks[source.id] = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await self.fetchBiliSource()
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.apply(result: result, for: source)
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.apply(error: error, for: source, captchaSession: nil)
+                }
+            }
+        }
     }
 
     private func startSource(
@@ -179,6 +220,18 @@ final class AnimeMediaFetchSession {
         }.value
     }
 
+    private func fetchBiliSource() async throws -> AnimeMediaFetchResultDTO {
+        let names = subjectNames
+        let route = route
+        return try await Task.detached(priority: .userInitiated) {
+            try CoreClient.shared.animeBiliSourceFetch(
+                subjectNames: names,
+                episodeSort: route.episode.sort,
+                episodeName: route.episode.displayTitle
+            )
+        }.value
+    }
+
     private func apply(result: AnimeMediaFetchResultDTO, for source: AnimeSourceDTO) {
         tasks[source.id] = nil
         for candidate in result.candidates {
@@ -221,9 +274,10 @@ final class AnimeMediaFetchSession {
 
     private func emitSnapshot() {
         let candidates = Self.sortedCandidates(Array(candidatesByID.values))
-        let reports = Self.sortedReports(Array(reportsBySourceID.values), sourceOrder: orderedSources().map(\.id))
+        let sourceOrder = (biliSourceEnabled ? [Self.biliSource.id] : []) + orderedSources().map(\.id)
+        let reports = Self.sortedReports(Array(reportsBySourceID.values), sourceOrder: sourceOrder)
         let diagnostics = AnimeMediaFetchDiagnosticsDTO(
-            enabledSources: Int64(sources.filter { $0.enabled || temporarilyEnabled.contains($0.id) }.count),
+            enabledSources: Int64(sources.filter { $0.enabled || temporarilyEnabled.contains($0.id) }.count + (biliSourceEnabled ? 1 : 0)),
             attemptedQueries: reports.reduce(Int64(0)) { $0 + $1.attemptedQueries },
             succeededQueries: reports.reduce(Int64(0)) { $0 + $1.succeededQueries },
             failedQueries: reports.reduce(Int64(0)) { $0 + $1.failedQueries },
@@ -322,9 +376,11 @@ final class AnimeMediaFetchSession {
 
     private static func kindPriority(_ kind: String) -> Int {
         switch kind {
-        case "hls": return 0
-        case "mp4", "m4v": return 1
-        case "web": return 2
+        case "bili_pgc": return 0
+        case "hls": return 1
+        case "mp4", "m4v": return 2
+        case "bili_ugc": return 3
+        case "web": return 4
         default: return 3
         }
     }
@@ -338,4 +394,16 @@ final class AnimeMediaFetchSession {
         if upper.contains("360") { return 360 }
         return 0
     }
+
+    private static let biliSource = AnimeSourceDTO(
+        id: "builtin:bilibili",
+        factoryID: "builtin-bilibili",
+        version: 1,
+        name: "B站",
+        description: "",
+        iconURL: "",
+        tier: "fast",
+        enabled: true,
+        arguments: .object([:])
+    )
 }

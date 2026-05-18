@@ -17,6 +17,8 @@ final class AnimePlayerViewModel: ObservableObject {
     let webResolveRequests = PassthroughSubject<AnimeWebVideoResolveRequest, Never>()
 
     let danmaku = DanmakuController()
+    private let engine: PlaybackEngine = HLSProxyEngine.shared
+    private var activePreparation: EnginePreparation?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var itemNotificationObservers: [NSObjectProtocol] = []
@@ -35,6 +37,16 @@ final class AnimePlayerViewModel: ObservableObject {
     private var isAutoSelecting = false
     private var fetchSession: AnimeMediaFetchSession?
     private var sessionSnapshotTask: Task<Void, Never>?
+    private var danmakuCache: [String: [DanmakuItemDTO]] = [:]
+    private var activeDanmakuKey: String?
+    private var activeDanmakuSource: AnimeDanmakuSource?
+    private var transientPauseSuppressionDeadline = Date.distantPast
+    private var transientPauseSuppressionContext: PlayerTransientPauseSuppressionContext?
+    private var fullscreenPlaybackRecoveryWork: DispatchWorkItem?
+
+    var canRestorePlaybackAfterPresentation: Bool {
+        player != nil
+    }
 
     func load(
         route: DeepLinkRouter.AnimePlayerRoute,
@@ -56,7 +68,7 @@ final class AnimePlayerViewModel: ObservableObject {
         stop(keepState: false)
 
         if let play = route.initialPlay {
-            await startPlayback(play: play, route: route, generation: generation)
+            await startPlayback(play: play, route: route, generation: generation, danmakuSource: .dandanplay)
             return
         }
         await refresh(
@@ -105,7 +117,8 @@ final class AnimePlayerViewModel: ObservableObject {
         let session = AnimeMediaFetchSession(
             route: route,
             sources: enabledSources,
-            sourceJSONByID: sourceJSONByID
+            sourceJSONByID: sourceJSONByID,
+            biliSourceEnabled: AppSettings.shared.animeBiliSourceEnabled
         )
         bind(session: session, route: route, generation: activeGeneration)
         fetchSession = session
@@ -117,14 +130,14 @@ final class AnimePlayerViewModel: ObservableObject {
         isResolving = true
         defer { isResolving = false }
         do {
-            let play = try await resolveCandidate(candidate, route: route)
+            let resolved = try await resolveCandidate(candidate, route: route)
             AppLog.info("anime", "追番手动选择候选资源", metadata: candidateMetadata(candidate, route: route, extra: [
-                "resolvedFormat": play.format,
-                "resolvedURL": Self.redactedURL(play.url),
-                "resolvedHeaders": Self.redactedHeaderSummary(play.headers),
+                "resolvedFormat": resolved.logFormat,
+                "resolvedURL": Self.redactedURL(resolved.logURL),
+                "resolvedHeaders": Self.redactedHeaderSummary(resolved.logHeaders),
             ]))
             loadGeneration = UUID()
-            await startPlayback(play: play, route: route, generation: loadGeneration, candidateID: candidate.id)
+            await startResolvedPlayback(resolved, route: route, generation: loadGeneration, candidateID: candidate.id)
         } catch {
             errorText = error.localizedDescription
             AppLog.error("anime", "追番手动选择候选资源失败", error: error, metadata: candidateMetadata(candidate, route: route))
@@ -153,6 +166,16 @@ final class AnimePlayerViewModel: ObservableObject {
 
     func stop() {
         stop(keepState: false)
+    }
+
+    func armTransientPauseSuppression(for context: PlayerTransientPauseSuppressionContext) {
+        transientPauseSuppressionContext = context
+        transientPauseSuppressionDeadline = Date().addingTimeInterval(context.window)
+        cancelFullscreenPlaybackRecovery()
+        AppLog.debug("anime", "启用追番 fullscreen 瞬时暂停抑制窗口", metadata: [
+            "context": context.rawValue,
+            "windowMs": String(Int(context.window * 1000)),
+        ])
     }
 
     private func bind(
@@ -189,7 +212,7 @@ final class AnimePlayerViewModel: ObservableObject {
             "supportedCandidates": String(snapshot.diagnostics.supportedCandidates),
             "sourceReports": Self.sourceReportSummary(snapshot.diagnostics.sourceReports),
         ])
-        let playable = candidates.filter(shouldAttemptCandidate(_:))
+        let playable = candidates.filter(shouldAutoAttemptCandidate(_:))
         if currentPlay == nil, !isAutoSelecting, !playable.isEmpty {
             isAutoSelecting = true
             Task { @MainActor in
@@ -223,6 +246,10 @@ final class AnimePlayerViewModel: ObservableObject {
         itemLikelyToKeepUpObservation?.invalidate()
         itemEmptyBufferObservation?.invalidate()
         playerTimeControlObservation?.invalidate()
+        cancelFullscreenPlaybackRecovery()
+        activePreparation?.release()
+        activePreparation = nil
+        danmaku.detach()
         if !keepState {
             sessionSnapshotTask?.cancel()
             sessionSnapshotTask = nil
@@ -237,12 +264,17 @@ final class AnimePlayerViewModel: ObservableObject {
         itemEmptyBufferObservation = nil
         playerTimeControlObservation = nil
         observedPlayer = nil
+        transientPauseSuppressionDeadline = .distantPast
+        transientPauseSuppressionContext = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
         if !keepState {
             currentPlay = nil
             currentCandidateID = nil
+            activeDanmakuKey = nil
+            activeDanmakuSource = nil
+            danmaku.clear()
             isAutoSelecting = false
             resolvePendingWebRequests(errorText: "播放器会话已停止")
         }
@@ -268,7 +300,8 @@ final class AnimePlayerViewModel: ObservableObject {
         play: AnimePlayUrlDTO,
         route: DeepLinkRouter.AnimePlayerRoute,
         generation: UUID,
-        candidateID: String? = nil
+        candidateID: String? = nil,
+        danmakuSource: AnimeDanmakuSource
     ) async {
         guard generation == loadGeneration else { return }
         stop(keepState: true)
@@ -315,7 +348,67 @@ final class AnimePlayerViewModel: ObservableObject {
         configureNowPlaying(play: play, route: route)
         observeProgress(player: nextPlayer, route: route)
         observePlaybackDiagnostics(player: nextPlayer, item: item, play: play, route: route)
+        configureDanmaku(source: danmakuSource, route: route, player: nextPlayer)
         nextPlayer.play()
+    }
+
+    private func startBiliPlayback(
+        source: PlayUrlDTO,
+        route: DeepLinkRouter.AnimePlayerRoute,
+        generation: UUID,
+        candidateID: String?,
+        title: String,
+        cover: String,
+        danmakuCid: Int64
+    ) async {
+        guard generation == loadGeneration else { return }
+        stop(keepState: true)
+        let play = animePlayURL(from: source, title: title, cover: cover)
+        currentPlay = play
+        currentCandidateID = candidateID
+        didReachReadyToPlay = false
+        do {
+            let prep = try await engine.makeItem(for: source)
+            guard generation == loadGeneration else {
+                prep.release()
+                return
+            }
+            prep.item.externalMetadata = [
+                metadata(.commonIdentifierTitle, value: title),
+            ].compactMap { $0 }
+            let nextPlayer = AVPlayer(playerItem: prep.item)
+            nextPlayer.allowsExternalPlayback = true
+            nextPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
+            nextPlayer.volume = AppSettings.shared.resolvedAudioVolumeLinear()
+            activePreparation = prep
+            PlayerAudioSessionCoordinator.shared.setSessionNeeded(true, by: self)
+            player = nextPlayer
+            configureNowPlaying(play: play, route: route)
+            observeProgress(player: nextPlayer, route: route)
+            observePlaybackDiagnostics(player: nextPlayer, item: prep.item, play: play, route: route)
+            configureDanmaku(
+                source: .bilibili(cid: danmakuCid, durationSec: max(0, source.durationMs / 1000)),
+                route: route,
+                player: nextPlayer
+            )
+            AppLog.info("anime", "追番 B站播放资源准备", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "streamType": source.streamType,
+                "quality": String(source.quality),
+                "durationMs": String(source.durationMs),
+                "danmakuCid": String(danmakuCid),
+            ].merging(prep.logSummary, uniquingKeysWith: { _, new in new }))
+            nextPlayer.play()
+        } catch {
+            errorText = error.localizedDescription
+            AppLog.error("anime", "追番 B站播放资源准备失败", error: error, metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "candidateID": candidateID ?? "",
+            ])
+            scheduleFailoverAfterPlaybackFailure(failedURL: play.url)
+        }
     }
 
     private func observeProgress(player: AVPlayer, route: DeepLinkRouter.AnimePlayerRoute) {
@@ -389,25 +482,25 @@ final class AnimePlayerViewModel: ObservableObject {
         route: DeepLinkRouter.AnimePlayerRoute,
         generation: UUID
     ) async -> Bool {
-        for candidate in candidates where shouldAttemptCandidate(candidate) {
+        for candidate in candidates where shouldAutoAttemptCandidate(candidate) {
             guard !triedCandidateIDs.contains(candidate.id) else { continue }
             triedCandidateIDs.insert(candidate.id)
             do {
                 AppLog.info("anime", "追番尝试候选资源", metadata: candidateMetadata(candidate, route: route))
-                let play = try await resolveCandidate(candidate, route: route)
-                guard !failedPlayURLs.contains(play.url) else {
+                let resolved = try await resolveCandidate(candidate, route: route)
+                guard !failedPlayURLs.contains(resolved.logURL) else {
                     AppLog.warning("anime", "追番候选资源跳过：播放地址已失败", metadata: candidateMetadata(candidate, route: route, extra: [
-                        "resolvedURL": Self.redactedURL(play.url),
+                        "resolvedURL": Self.redactedURL(resolved.logURL),
                     ]))
                     continue
                 }
                 guard generation == loadGeneration else { return true }
                 AppLog.info("anime", "追番候选资源解析成功", metadata: candidateMetadata(candidate, route: route, extra: [
-                    "resolvedFormat": play.format,
-                    "resolvedURL": Self.redactedURL(play.url),
-                    "resolvedHeaders": Self.redactedHeaderSummary(play.headers),
+                    "resolvedFormat": resolved.logFormat,
+                    "resolvedURL": Self.redactedURL(resolved.logURL),
+                    "resolvedHeaders": Self.redactedHeaderSummary(resolved.logHeaders),
                 ]))
-                await startPlayback(play: play, route: route, generation: generation, candidateID: candidate.id)
+                await startResolvedPlayback(resolved, route: route, generation: generation, candidateID: candidate.id)
                 errorText = nil
                 return true
             } catch {
@@ -422,15 +515,47 @@ final class AnimePlayerViewModel: ObservableObject {
     private func resolveCandidate(
         _ candidate: AnimeMediaCandidateDTO,
         route: DeepLinkRouter.AnimePlayerRoute
-    ) async throws -> AnimePlayUrlDTO {
+    ) async throws -> ResolvedAnimePlayback {
+        if candidate.kind == "bili_pgc" {
+            let title = "\(route.subject.displayTitle) · \(route.episode.displayTitle)"
+            let cdn = AppSettings.shared.cdnService.rawValue
+            let play = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.pgcPlayUrl(
+                    aid: candidate.aid,
+                    cid: candidate.cid,
+                    epID: candidate.epID,
+                    seasonID: candidate.seasonID,
+                    qn: 0,
+                    audioQn: 0,
+                    cdn: cdn
+                )
+            }.value
+            return .bili(play, title: title, cover: route.subject.coverURL, danmakuCid: candidate.danmakuCid)
+        }
+        if candidate.kind == "bili_ugc" {
+            let title = "\(route.subject.displayTitle) · \(route.episode.displayTitle)"
+            let cdn = AppSettings.shared.cdnService.rawValue
+            let play = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.playUrl(
+                    aid: candidate.aid,
+                    bvid: candidate.bvid,
+                    cid: candidate.cid,
+                    qn: 0,
+                    audioQn: 0,
+                    cdn: cdn
+                )
+            }.value
+            return .bili(play, title: title, cover: route.subject.coverURL, danmakuCid: candidate.danmakuCid)
+        }
         if candidate.isSupported {
-            return try await Task.detached(priority: .userInitiated) {
+            let play = try await Task.detached(priority: .userInitiated) {
                 try CoreClient.shared.animeMediaResolve(
                     candidate: candidate,
                     title: "\(route.subject.displayTitle) · \(route.episode.displayTitle)",
                     cover: route.subject.coverURL
                 )
             }.value
+            return .external(play, danmakuSource: .dandanplay)
         }
         guard canResolveByWebView(candidate) else {
             throw CoreError(category: "anime_web_resolver", message: candidate.unsupportedReason, code: nil)
@@ -456,9 +581,111 @@ final class AnimePlayerViewModel: ObservableObject {
                 "resolvedHeaders": Self.redactedHeaderSummary(play.headers),
                 "method": result.method,
             ]))
-            return play
+            return .external(play, danmakuSource: .dandanplay)
         }
         throw CoreError(category: "anime_web_resolver", message: result.errorText ?? "WebView 未嗅探到可播放资源", code: nil)
+    }
+
+    private func startResolvedPlayback(
+        _ resolved: ResolvedAnimePlayback,
+        route: DeepLinkRouter.AnimePlayerRoute,
+        generation: UUID,
+        candidateID: String?
+    ) async {
+        switch resolved {
+        case .external(let play, let danmakuSource):
+            await startPlayback(play: play, route: route, generation: generation, candidateID: candidateID, danmakuSource: danmakuSource)
+        case .bili(let source, let title, let cover, let danmakuCid):
+            await startBiliPlayback(
+                source: source,
+                route: route,
+                generation: generation,
+                candidateID: candidateID,
+                title: title,
+                cover: cover,
+                danmakuCid: danmakuCid
+            )
+        }
+    }
+
+    func loadDanmakuIfNeeded(route: DeepLinkRouter.AnimePlayerRoute) async {
+        guard AppSettings.shared.danmakuEnabled else {
+            danmaku.clear()
+            return
+        }
+        guard let activeDanmakuKey else { return }
+        if let cached = danmakuCache[activeDanmakuKey] {
+            danmaku.setItems(cached)
+            if let player {
+                danmaku.attach(player)
+            }
+            return
+        }
+        guard let source = activeDanmakuSource else { return }
+        do {
+            let items: [DanmakuItemDTO]
+            switch source {
+            case .bilibili(let cid, let durationSec):
+                guard cid > 0 else { return }
+                items = try await Task.detached(priority: .utility) {
+                    try CoreClient.shared.danmakuList(cid: cid, durationSec: durationSec).items
+                }.value
+            case .dandanplay:
+                guard !AnimeDanmakuConfig.dandanplayAppID.isEmpty,
+                      !AnimeDanmakuConfig.dandanplayAppSecret.isEmpty else {
+                    AppLog.info("anime", "追番外部弹幕跳过：Dandanplay 凭证未配置", metadata: [
+                        "subjectID": String(route.subject.id),
+                        "episodeID": String(route.episode.id),
+                    ])
+                    return
+                }
+                let names = [route.subject.nameCn, route.subject.name] + route.subject.aliases
+                items = try await Task.detached(priority: .utility) {
+                    try CoreClient.shared.animeDanmakuFetch(
+                        appID: AnimeDanmakuConfig.dandanplayAppID,
+                        appSecret: AnimeDanmakuConfig.dandanplayAppSecret,
+                        subjectPrimaryName: route.subject.displayTitle,
+                        subjectNames: names,
+                        subjectAirDate: route.subject.date,
+                        episodeSort: route.episode.sort,
+                        episodeEp: route.episode.ep,
+                        episodeName: route.episode.displayTitle
+                    ).items
+                }.value
+            }
+            let sorted = items.sorted { $0.timeSec < $1.timeSec }
+            danmakuCache[activeDanmakuKey] = sorted
+            danmaku.setItems(sorted)
+            if let player {
+                danmaku.attach(player)
+            }
+            AppLog.info("anime", "追番弹幕加载完成", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "provider": source.providerName,
+                "count": String(sorted.count),
+            ])
+        } catch {
+            AppLog.warning("anime", "追番弹幕加载失败", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "error": error.localizedDescription,
+            ])
+        }
+    }
+
+    private func configureDanmaku(source: AnimeDanmakuSource, route: DeepLinkRouter.AnimePlayerRoute, player: AVPlayer) {
+        let key = source.cacheKey(subjectID: route.subject.id, episodeID: route.episode.id)
+        activeDanmakuKey = key
+        activeDanmakuSource = source
+        if AppSettings.shared.danmakuEnabled {
+            danmaku.attach(player)
+            Task { @MainActor in
+                await loadDanmakuIfNeeded(route: route)
+            }
+        } else {
+            danmaku.clear()
+        }
     }
 
     private func resolvePendingWebRequests(errorText: String) {
@@ -475,7 +702,15 @@ final class AnimePlayerViewModel: ObservableObject {
     }
 
     private func shouldAttemptCandidate(_ candidate: AnimeMediaCandidateDTO) -> Bool {
-        candidate.isSupported || canResolveByWebView(candidate)
+        candidate.isBiliCandidate || candidate.isSupported || canResolveByWebView(candidate)
+    }
+
+    private func shouldAutoAttemptCandidate(_ candidate: AnimeMediaCandidateDTO) -> Bool {
+        guard shouldAttemptCandidate(candidate) else { return false }
+        if candidate.kind == "bili_ugc" {
+            return candidate.matchScore >= 78
+        }
+        return true
     }
 
     private func canResolveByWebView(_ candidate: AnimeMediaCandidateDTO) -> Bool {
@@ -504,6 +739,14 @@ final class AnimePlayerViewModel: ObservableObject {
         ]
         if !candidate.unsupportedReason.isEmpty {
             metadata["unsupportedReason"] = candidate.unsupportedReason
+        }
+        if candidate.isBiliCandidate {
+            metadata["aid"] = String(candidate.aid)
+            metadata["bvid"] = candidate.bvid
+            metadata["cid"] = String(candidate.cid)
+            metadata["epID"] = String(candidate.epID)
+            metadata["seasonID"] = String(candidate.seasonID)
+            metadata["matchScore"] = String(format: "%.1f", candidate.matchScore)
         }
         for (key, value) in extra {
             metadata[key] = value
@@ -538,14 +781,18 @@ final class AnimePlayerViewModel: ObservableObject {
                 "format": play.format,
             ])
         }
-        playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { player, _ in
-            AppLog.debug("anime", "追番 AVPlayer 播放状态变化", metadata: [
-                "subjectID": String(route.subject.id),
-                "episodeID": String(route.episode.id),
-                "timeControlStatus": Self.timeControlStatusText(player.timeControlStatus),
-                "waitingReason": player.reasonForWaitingToPlay?.rawValue ?? "",
-                "format": play.format,
-            ])
+        playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self, weak player] observedPlayer, _ in
+            Task { @MainActor in
+                guard let self,
+                      let player,
+                      self.player === player else { return }
+                self.handleObservedPlaybackStatus(
+                    observedPlayer.timeControlStatus,
+                    player: observedPlayer,
+                    play: play,
+                    route: route
+                )
+            }
         }
         itemNotificationObservers = [
             NotificationCenter.default.addObserver(
@@ -592,6 +839,66 @@ final class AnimePlayerViewModel: ObservableObject {
         @unknown default:
             AppLog.warning("anime", "追番 AVPlayerItem 未知状态", metadata: Self.itemLogMetadata(item, play: play, route: route))
         }
+    }
+
+    private func handleObservedPlaybackStatus(
+        _ status: AVPlayer.TimeControlStatus,
+        player: AVPlayer,
+        play: AnimePlayUrlDTO,
+        route: DeepLinkRouter.AnimePlayerRoute
+    ) {
+        let suppressionActive = Date() < transientPauseSuppressionDeadline
+        if status == .paused, suppressionActive {
+            AppLog.debug("anime", "忽略追番 fullscreen 过渡中的瞬时暂停回调", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "context": transientPauseSuppressionContext?.rawValue ?? "",
+                "format": play.format,
+            ])
+            if transientPauseSuppressionContext == .fullscreenExit {
+                scheduleFullscreenPlaybackRecovery(delay: 0.08)
+            }
+            return
+        }
+        if status == .playing || status == .waitingToPlayAtSpecifiedRate {
+            cancelFullscreenPlaybackRecovery()
+        }
+        AppLog.debug("anime", "追番 AVPlayer 播放状态变化", metadata: [
+            "subjectID": String(route.subject.id),
+            "episodeID": String(route.episode.id),
+            "timeControlStatus": Self.timeControlStatusText(status),
+            "waitingReason": player.reasonForWaitingToPlay?.rawValue ?? "",
+            "format": play.format,
+        ])
+    }
+
+    private func scheduleFullscreenPlaybackRecovery(delay: TimeInterval) {
+        cancelFullscreenPlaybackRecovery()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.recoverPlaybackAfterFullscreenTransitionIfNeeded()
+            }
+        }
+        fullscreenPlaybackRecoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelFullscreenPlaybackRecovery() {
+        fullscreenPlaybackRecoveryWork?.cancel()
+        fullscreenPlaybackRecoveryWork = nil
+    }
+
+    private func recoverPlaybackAfterFullscreenTransitionIfNeeded() {
+        fullscreenPlaybackRecoveryWork = nil
+        guard Date() < transientPauseSuppressionDeadline else { return }
+        guard let player,
+              player.timeControlStatus == .paused,
+              player.rate == 0 else { return }
+        AppLog.info("anime", "恢复追番 fullscreen 退出后的意外暂停", metadata: [
+            "format": currentPlay?.format ?? "",
+            "url": Self.redactedURL(currentPlay?.url ?? ""),
+        ])
+        player.playImmediately(atRate: 1.0)
     }
 
     private func scheduleFailoverAfterPlaybackFailure(failedURL: String) {
@@ -711,19 +1018,38 @@ final class AnimePlayerViewModel: ObservableObject {
     }
 
     private static func placeholderDiagnostics(for sources: [AnimeSourceDTO]) -> AnimeMediaFetchDiagnosticsDTO {
-        AnimeMediaFetchDiagnosticsDTO(
-            enabledSources: Int64(sources.count),
+        let sourceReports = sources.map {
+            AnimeMediaSourceReportDTO(
+                sourceID: $0.id,
+                sourceName: $0.name,
+                factoryID: $0.factoryID,
+                stateID: "pending",
+                isWorking: false,
+                isTemporarilyEnabled: false,
+                attemptedQueries: 0,
+                succeededQueries: 0,
+                failedQueries: 0,
+                candidateCount: 0,
+                supportedCount: 0,
+                status: "pending",
+                message: "等待检索",
+                captchaURL: "",
+                captchaKind: ""
+            )
+        }
+        return AnimeMediaFetchDiagnosticsDTO(
+            enabledSources: Int64(sources.count + (AppSettings.shared.animeBiliSourceEnabled ? 1 : 0)),
             attemptedQueries: 0,
             succeededQueries: 0,
             failedQueries: 0,
             unsupportedCandidates: 0,
             supportedCandidates: 0,
             messages: [],
-            sourceReports: sources.map {
+            sourceReports: (AppSettings.shared.animeBiliSourceEnabled ? [
                 AnimeMediaSourceReportDTO(
-                    sourceID: $0.id,
-                    sourceName: $0.name,
-                    factoryID: $0.factoryID,
+                    sourceID: "builtin:bilibili",
+                    sourceName: "B站",
+                    factoryID: "builtin-bilibili",
                     stateID: "pending",
                     isWorking: false,
                     isTemporarilyEnabled: false,
@@ -737,7 +1063,7 @@ final class AnimePlayerViewModel: ObservableObject {
                     captchaURL: "",
                     captchaKind: ""
                 )
-            }
+            ] : []) + sourceReports
         )
     }
 
@@ -754,5 +1080,78 @@ final class AnimePlayerViewModel: ObservableObject {
             }
         }
         return result
+    }
+}
+
+private enum ResolvedAnimePlayback {
+    case external(AnimePlayUrlDTO, danmakuSource: AnimeDanmakuSource)
+    case bili(PlayUrlDTO, title: String, cover: String, danmakuCid: Int64)
+
+    var logFormat: String {
+        switch self {
+        case .external(let play, _):
+            return play.format
+        case .bili(let play, _, _, _):
+            return play.streamType.isEmpty ? "bili" : "bili_\(play.streamType)"
+        }
+    }
+
+    var logURL: String {
+        switch self {
+        case .external(let play, _):
+            return play.url
+        case .bili(let play, _, _, _):
+            return play.url
+        }
+    }
+
+    var logHeaders: [String: String] {
+        switch self {
+        case .external(let play, _):
+            return play.headers
+        case .bili:
+            return BiliHTTP.headers
+        }
+    }
+}
+
+private enum AnimeDanmakuSource {
+    case bilibili(cid: Int64, durationSec: Int64)
+    case dandanplay
+
+    var providerName: String {
+        switch self {
+        case .bilibili: return "bilibili"
+        case .dandanplay: return "dandanplay"
+        }
+    }
+
+    func cacheKey(subjectID: Int64, episodeID: Int64) -> String {
+        switch self {
+        case .bilibili(let cid, _):
+            return "bilibili:\(subjectID):\(episodeID):\(cid)"
+        case .dandanplay:
+            return "dandanplay:\(subjectID):\(episodeID)"
+        }
+    }
+
+}
+
+private func animePlayURL(from source: PlayUrlDTO, title: String, cover: String) -> AnimePlayUrlDTO {
+    AnimePlayUrlDTO(
+        url: source.url,
+        format: source.streamType.isEmpty ? source.format : source.streamType,
+        title: title,
+        cover: cover,
+        referer: "https://www.bilibili.com/",
+        userAgent: BiliHTTP.headers["User-Agent"] ?? "",
+        headers: BiliHTTP.headers,
+        durationMs: source.durationMs
+    )
+}
+
+extension AnimeMediaCandidateDTO {
+    var isBiliCandidate: Bool {
+        kind == "bili_pgc" || kind == "bili_ugc"
     }
 }
