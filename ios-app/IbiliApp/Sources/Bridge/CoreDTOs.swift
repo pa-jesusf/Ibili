@@ -797,6 +797,8 @@ public struct AnimeMediaCandidateDTO: Codable, Hashable, Identifiable {
     public let referer: String
     public let userAgent: String
     public let headers: [String: String]
+    public let matchVideoURL: String
+    public let matchNestedURL: String
 
     enum CodingKeys: String, CodingKey {
         case id, title, url, kind, referer, headers
@@ -807,6 +809,8 @@ public struct AnimeMediaCandidateDTO: Codable, Hashable, Identifiable {
         case isSupported = "is_supported"
         case unsupportedReason = "unsupported_reason"
         case userAgent = "user_agent"
+        case matchVideoURL = "match_video_url"
+        case matchNestedURL = "match_nested_url"
     }
 }
 

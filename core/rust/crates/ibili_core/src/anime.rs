@@ -155,6 +155,8 @@ pub struct AnimeMediaCandidate {
     pub referer: String,
     pub user_agent: String,
     pub headers: HashMap<String, String>,
+    pub match_video_url: String,
+    pub match_nested_url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1033,49 +1035,17 @@ fn fetch_selector_candidates_with_client(
             episode_name,
             filter_by_episode,
         );
-        let mut subject_has_playable = false;
-        for episode in episodes.into_iter().take(MEDIA_FETCH_MAX_EPISODE_PAGES_PER_QUERY) {
-            let candidate_title = selector_candidate_title(&subject.title, &episode);
-            if is_supported_media_url(&episode.url) {
-                subject_has_playable = true;
-                candidates.push(make_candidate(
-                    source,
-                    candidate_title,
-                    episode.url,
-                    subject.url.clone(),
-                    selector_referer(source, &subject.url),
-                ));
-                continue;
-            }
-            let episode_html = match http_get_text(
-                client,
-                &episode.url,
-                ua,
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                source_cookie(source),
-            ) {
-                Ok(html) => html,
-                Err(_) => continue,
-            };
-            let mut urls = extract_selector_media_urls(&episode_html, &episode.url);
-            if urls.is_empty() {
-                urls = fetch_nested_selector_media_urls(client, source, &episode_html, &episode.url, ua);
-            }
-            for media_url in urls {
-                subject_has_playable = true;
-                candidates.push(make_candidate(
-                    source,
-                    candidate_title.clone(),
-                    media_url,
-                    episode.url.clone(),
-                    selector_referer(source, &episode.url),
-                ));
-            }
-            if subject_has_playable {
-                break;
-            }
+        let mut subject_has_candidate = false;
+        let episode_limit = if filter_by_episode {
+            usize::MAX
+        } else {
+            MEDIA_FETCH_MAX_EPISODE_PAGES_PER_QUERY
+        };
+        for episode in episodes.into_iter().take(episode_limit) {
+            subject_has_candidate = true;
+            candidates.push(make_selector_episode_candidate(source, &subject, &episode));
         }
-        if subject_has_playable {
+        if subject_has_candidate {
             break;
         }
     }
@@ -1529,67 +1499,6 @@ fn episode_sort_matches_raw(raw: &str, episode_sort: f64) -> bool {
         || normalized.contains(&format!("ep{}", padded))
 }
 
-fn extract_selector_media_urls(html: &str, page_url: &str) -> Vec<String> {
-    let document = Html::parse_document(html);
-    let selector = Selector::parse("video[src], source[src], a[href]").expect("valid media selector");
-    let mut urls = Vec::new();
-    for element in document.select(&selector) {
-        let href = element.value().attr("src").or_else(|| element.value().attr("href")).unwrap_or("");
-        if let Some(url) = resolve_url(page_url, href) {
-            if is_supported_media_url(&url) {
-                urls.push(url);
-            }
-        }
-    }
-    let quoted = Regex::new(r#"https?://[^"'\\\s<>]+(?:\.m3u8|\.mp4|\.m4v)(?:\?[^"'\\\s<>]*)?"#).expect("media url regex");
-    for hit in quoted.find_iter(html) {
-        if let Some(url) = resolve_url(page_url, hit.as_str()) {
-            urls.push(url);
-        }
-    }
-    dedupe_strings(urls)
-}
-
-fn fetch_nested_selector_media_urls(
-    client: &Client,
-    source: &AnimeSource,
-    html: &str,
-    page_url: &str,
-    ua: &str,
-) -> Vec<String> {
-    let nested_regex = source.arguments
-        .pointer("/searchConfig/matchVideo/matchNestedUrl")
-        .and_then(Value::as_str)
-        .and_then(|pattern| Regex::new(pattern).ok());
-    let Some(nested_regex) = nested_regex else {
-        return Vec::new();
-    };
-    let mut nested_pages = Vec::new();
-    let document = Html::parse_document(html);
-    let selector = Selector::parse("iframe[src], script[src], a[href]").expect("valid nested selector");
-    for element in document.select(&selector) {
-        let href = element.value().attr("src").or_else(|| element.value().attr("href")).unwrap_or("");
-        if let Some(url) = resolve_url(page_url, href) {
-            if nested_regex.is_match(&url) {
-                nested_pages.push(url);
-            }
-        }
-    }
-    let mut urls = Vec::new();
-    for nested_url in nested_pages.into_iter().take(2) {
-        if let Ok(nested_html) = http_get_text(
-            client,
-            &nested_url,
-            ua,
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            source_cookie(source),
-        ) {
-            urls.extend(extract_selector_media_urls(&nested_html, &nested_url));
-        }
-    }
-    dedupe_strings(urls)
-}
-
 fn dedupe_candidates(items: Vec<AnimeMediaCandidate>) -> CoreResult<Vec<AnimeMediaCandidate>> {
     let mut seen = HashSet::new();
     Ok(items.into_iter().filter(|item| seen.insert(item.url.clone())).collect())
@@ -1600,17 +1509,27 @@ fn dedupe_subject_hits(items: Vec<SelectorSubjectHit>) -> Vec<SelectorSubjectHit
     items.into_iter().filter(|item| seen.insert(item.url.clone())).collect()
 }
 
-fn dedupe_strings(items: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    items.into_iter().filter(|item| seen.insert(item.clone())).collect()
-}
-
 fn selector_candidate_title(subject_title: &str, episode: &SelectorEpisodeHit) -> String {
     if episode.channel.is_empty() {
         format!("{} · {}", subject_title, episode.title)
     } else {
         format!("{} · {} · {}", subject_title, episode.channel, episode.title)
     }
+}
+
+fn make_selector_episode_candidate(
+    source: &AnimeSource,
+    subject: &SelectorSubjectHit,
+    episode: &SelectorEpisodeHit,
+) -> AnimeMediaCandidate {
+    let candidate_title = selector_candidate_title(&subject.title, episode);
+    make_candidate(
+        source,
+        candidate_title,
+        episode.url.clone(),
+        episode.url.clone(),
+        selector_referer(source, &episode.url),
+    )
 }
 
 fn element_text_or_title(element: &scraper::ElementRef<'_>) -> String {
@@ -1702,6 +1621,7 @@ fn source_cookie(source: &AnimeSource) -> Option<&str> {
     source.arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/cookie")
         .and_then(Value::as_str)
+        .or_else(|| source.arguments.pointer("/searchConfig/matchVideo/cookies").and_then(Value::as_str))
         .filter(|s| !s.trim().is_empty())
 }
 
@@ -1810,7 +1730,8 @@ fn finalize_single_source_fetch(
 ) -> CoreResult<AnimeMediaFetchResult> {
     report.is_working = false;
     result.candidates.sort_by(|a, b| {
-        b.is_supported.cmp(&a.is_supported)
+        candidate_is_playable_or_sniffable(b).cmp(&candidate_is_playable_or_sniffable(a))
+            .then_with(|| b.is_supported.cmp(&a.is_supported))
             .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
             .then_with(|| a.source_name.cmp(&b.source_name))
     });
@@ -1822,6 +1743,10 @@ fn finalize_single_source_fetch(
     result.diagnostics.unsupported_candidates = result.candidates.len() as i64 - result.diagnostics.supported_candidates;
     result.diagnostics.source_reports = vec![report];
     Ok(result)
+}
+
+fn candidate_is_playable_or_sniffable(candidate: &AnimeMediaCandidate) -> bool {
+    candidate.is_supported || candidate.kind == "web"
 }
 
 fn is_captcha_error(error: &CoreError) -> bool {
@@ -1968,7 +1893,7 @@ fn parse_selector_candidates(
             || is_supported_media_url(&resolved) {
             let mut item = make_candidate(source, title, resolved, page_url.to_string(), referer.clone());
             if !is_supported_media_url(&item.url) && looks_like_episode_page(&item.url) {
-                item.unsupported_reason = "需要网页解析/验证码，第一版暂不支持".into();
+                item.unsupported_reason = "可尝试 WebView 嗅探".into();
             }
             if seen.insert(item.url.clone()) {
                 candidates.push(item);
@@ -2005,6 +1930,24 @@ fn make_candidate(
         .to_string();
     let referer = referer.unwrap_or_else(|| page_url.clone());
     let headers = source_video_headers(source, &referer, &user_agent);
+    let match_video_url = source.arguments
+        .pointer("/searchConfig/matchVideo/matchVideoUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let match_nested_url = if source.arguments
+        .pointer("/searchConfig/matchVideo/enableNestedUrl")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        source.arguments
+            .pointer("/searchConfig/matchVideo/matchNestedUrl")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        String::new()
+    };
     AnimeMediaCandidate {
         id: format!("{}:{}", source.id, stable_hash(&url)),
         source_id: source.id.clone(),
@@ -2019,6 +1962,8 @@ fn make_candidate(
         referer,
         user_agent,
         headers,
+        match_video_url,
+        match_nested_url,
     }
 }
 
@@ -2032,11 +1977,7 @@ fn source_video_headers(source: &AnimeSource, referer: &str, user_agent: &str) -
     headers.insert("Sec-Fetch-Dest".to_string(), "video".to_string());
     headers.insert("Sec-Fetch-Mode".to_string(), "no-cors".to_string());
     headers.insert("Sec-Fetch-Site".to_string(), "cross-site".to_string());
-    if let Some(value) = source.arguments
-        .pointer("/searchConfig/matchVideo/addHeadersToVideo/cookie")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-    {
+    if let Some(value) = source_cookie(source) {
         headers.insert("Cookie".to_string(), value.to_string());
     }
     if let Some(object) = source.arguments
@@ -2523,7 +2464,7 @@ mod anime_tests {
         assert!(mp4.is_supported);
         let web = items.iter().find(|item| item.kind == "web").unwrap();
         assert!(!web.is_supported);
-        assert_eq!(web.unsupported_reason, "需要网页解析/验证码，第一版暂不支持");
+        assert_eq!(web.unsupported_reason, "可尝试 WebView 嗅探");
     }
 
     #[test]
@@ -2561,6 +2502,43 @@ mod anime_tests {
         assert_eq!(hits[0].title, "第2集");
         assert_eq!(hits[0].channel, "");
         assert_eq!(hits[0].url, "https://example.test/play/2");
+    }
+
+    #[test]
+    fn selector_episode_page_becomes_web_candidate_for_sniffing() {
+        let source = AnimeSource {
+            arguments: json!({
+                "searchConfig": {
+                    "matchVideo": {
+                        "matchVideoUrl": "url=(?<v>https?:\\/\\/.+\\.m3u8)",
+                        "cookies": "quality=1080",
+                        "addHeadersToVideo": {
+                            "referer": "",
+                            "userAgent": "TestAgent/1.0"
+                        }
+                    }
+                }
+            }),
+            ..test_source("web-selector")
+        };
+        let subject = SelectorSubjectHit {
+            title: "测试番".into(),
+            url: "https://example.test/detail/season.html".into(),
+        };
+        let episode = SelectorEpisodeHit {
+            title: "第06集".into(),
+            url: "https://example.test/watch/season/1/6.html".into(),
+            channel: "新番主线①".into(),
+        };
+        let item = make_selector_episode_candidate(&source, &subject, &episode);
+        assert_eq!(item.kind, "web");
+        assert!(!item.is_supported);
+        assert_eq!(item.unsupported_reason, "可尝试 WebView 嗅探");
+        assert_eq!(item.page_url, episode.url);
+        assert_eq!(item.referer, episode.url);
+        assert_eq!(item.headers.get("Cookie").map(String::as_str), Some("quality=1080"));
+        assert!(item.match_video_url.contains("(?<v>"));
+        assert_eq!(item.title, "测试番 · 新番主线① · 第06集");
     }
 
     #[test]

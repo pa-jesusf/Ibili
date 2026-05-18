@@ -334,11 +334,12 @@ struct AnimeWebVideoResolverHost: UIViewRepresentable {
         }
 
         func inspect(urlString: String, method: String) {
-            guard !isCompleted, isMediaURL(urlString), seenURLs.insert(urlString).inserted else { return }
+            guard !isCompleted, let mediaURL = mediaURL(from: urlString), seenURLs.insert(mediaURL).inserted else { return }
             AppLog.info("anime", "追番 WebView 捕获媒体候选", metadata: logMetadata(extra: [
                 "method": method,
-                "url": AnimePlayerViewModel.redactedURL(urlString),
-                "format": mediaFormat(urlString),
+                "url": AnimePlayerViewModel.redactedURL(mediaURL),
+                "rawURL": AnimePlayerViewModel.redactedURL(urlString),
+                "format": mediaFormat(mediaURL),
             ]))
             collectCookies(from: webView) { [weak self] cookieHeader in
                 guard let self else { return }
@@ -354,8 +355,8 @@ struct AnimeWebVideoResolverHost: UIViewRepresentable {
                     headers["Cookie"] = cookieHeader
                 }
                 let play = AnimePlayUrlDTO(
-                    url: urlString,
-                    format: self.mediaFormat(urlString),
+                    url: mediaURL,
+                    format: self.mediaFormat(mediaURL),
                     title: self.request.title,
                     cover: self.request.cover,
                     referer: headers["Referer"] ?? "",
@@ -418,9 +419,32 @@ struct AnimeWebVideoResolverHost: UIViewRepresentable {
             return metadata
         }
 
-        func isMediaURL(_ value: String) -> Bool {
+        func mediaURL(from value: String) -> String? {
+            if let matched = matchVideoURL(value) {
+                return matched
+            }
             let lower = value.lowercased()
-            return lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".m4v")
+            guard lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".m4v") else {
+                return nil
+            }
+            return value
+        }
+
+        func matchVideoURL(_ value: String) -> String? {
+            let pattern = request.candidate.matchVideoURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !pattern.isEmpty,
+                  let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                return nil
+            }
+            let range = NSRange(value.startIndex..<value.endIndex, in: value)
+            guard let match = regex.firstMatch(in: value, options: [], range: range) else { return nil }
+            if pattern.contains("(?<v>") {
+                let videoRange = match.range(withName: "v")
+                if let namedRange = Range(videoRange, in: value), !namedRange.isEmpty {
+                    return String(value[namedRange]).removingPercentEncoding ?? String(value[namedRange])
+                }
+            }
+            return value
         }
 
         func mediaFormat(_ value: String) -> String {
@@ -432,7 +456,7 @@ struct AnimeWebVideoResolverHost: UIViewRepresentable {
     (() => {
       if (window.__ibiliMediaSnifferInstalled) return;
       window.__ibiliMediaSnifferInstalled = true;
-      const isMedia = (value) => typeof value === 'string' && /\\.m3u8(?:\\?|$)|\\.mp4(?:\\?|$)|\\.m4v(?:\\?|$)/i.test(value);
+      const isMedia = (value) => typeof value === 'string' && /m3u8|\\.mp4(?:\\?|$)|\\.m4v(?:\\?|$)/i.test(value);
       const post = (url, method) => {
         try {
           if (isMedia(url)) window.webkit.messageHandlers.ibiliMediaSniffer.postMessage({ url, method });
@@ -473,7 +497,7 @@ struct AnimeWebVideoResolverHost: UIViewRepresentable {
     (() => {
       const urls = new Set();
       const add = (value) => {
-        if (typeof value === 'string' && /\\.m3u8(?:\\?|$)|\\.mp4(?:\\?|$)|\\.m4v(?:\\?|$)/i.test(value)) urls.add(value);
+        if (typeof value === 'string' && /m3u8|\\.mp4(?:\\?|$)|\\.m4v(?:\\?|$)/i.test(value)) urls.add(value);
       };
       document.querySelectorAll('video, source, a').forEach((node) => {
         add(node.currentSrc);
