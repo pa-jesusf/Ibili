@@ -52,6 +52,18 @@ final class AnimePlayerViewModel: ObservableObject {
         route: DeepLinkRouter.AnimePlayerRoute,
         enabledSourcesProvider: () -> [AnimeSourceDTO]
     ) async {
+        if activeRoute?.id == route.id,
+           player != nil || currentPlay != nil || isLoading || isSearchingMore || fetchSession != nil {
+            AppLog.debug("anime", "跳过重复追番播放器加载", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "routeID": route.id.uuidString,
+                "hasPlayer": player == nil ? "false" : "true",
+                "hasCurrentPlay": currentPlay == nil ? "false" : "true",
+                "hasFetchSession": fetchSession == nil ? "false" : "true",
+            ])
+            return
+        }
         loadGeneration = UUID()
         let generation = loadGeneration
         errorText = nil
@@ -166,6 +178,14 @@ final class AnimePlayerViewModel: ObservableObject {
 
     func stop() {
         stop(keepState: false)
+    }
+
+    func prepareForDismissal() {
+        stop()
+    }
+
+    func teardown() {
+        stop()
     }
 
     func armTransientPauseSuppression(for context: PlayerTransientPauseSuppressionContext) {

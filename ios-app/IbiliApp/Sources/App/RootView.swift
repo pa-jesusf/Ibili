@@ -517,6 +517,7 @@ private struct DeepLinkPlayerHost: View {
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
         LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
+        AnimePlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.animePlayerRoute, stack: router.animePlayerPath)
     }
 
     private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
@@ -525,7 +526,9 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, .animePlayer, nil:
+        case .animePlayer(let animeRoute):
+            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
+        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
             break
         }
     }
@@ -536,7 +539,9 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, .animePlayer, nil:
+        case .animePlayer(let animeRoute):
+            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
+        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, nil:
             break
         }
     }
@@ -565,6 +570,7 @@ private struct DeepLinkPlayerHost: View {
         return router.path.isEmpty
             || router.path.last?.playerRoute != nil
             || router.path.last?.liveRoute != nil
+            || router.path.last?.animePlayerRoute != nil
     }
 
     private func handleAnyAreaSwipeBackChanged(_ translationX: CGFloat) {
@@ -644,7 +650,7 @@ private struct DeepLinkRouteContent {
         case .animeSubject(let animeRoute):
             AnimeSubjectView(subjectID: animeRoute.subjectID, initialSubject: animeRoute.initialSubject)
         case .animePlayer(let animeRoute):
-            AnimePlayerView(route: animeRoute)
+            animeDestination(for: animeRoute)
         }
     }
 
@@ -675,7 +681,7 @@ private struct DeepLinkRouteContent {
         case .animeSubject(let animeRoute):
             AnimeSubjectView(subjectID: animeRoute.subjectID, initialSubject: animeRoute.initialSubject)
         case .animePlayer(let animeRoute):
-            AnimePlayerView(route: animeRoute)
+            animeDestination(for: animeRoute)
         }
     }
 
@@ -704,6 +710,15 @@ private struct DeepLinkRouteContent {
         LiveRoomView(
             route: route,
             vm: LiveRuntimeCoordinator.shared.viewModel(for: route.id)
+        )
+        .tint(.white)
+    }
+
+    @MainActor
+    static func animeDestination(for route: DeepLinkRouter.AnimePlayerRoute) -> some View {
+        AnimePlayerView(
+            route: route,
+            viewModel: AnimePlayerRuntimeCoordinator.shared.viewModel(for: route.id)
         )
         .tint(.white)
     }
@@ -798,6 +813,7 @@ private struct DeepLinkSplitHost: View {
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
         LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
+        AnimePlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.animePlayerRoute, stack: router.animePlayerPath)
     }
 
     private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
@@ -806,7 +822,9 @@ private struct DeepLinkSplitHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, .animePlayer, nil:
+        case .animePlayer(let animeRoute):
+            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
+        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
             break
         }
     }
@@ -817,7 +835,9 @@ private struct DeepLinkSplitHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, .animePlayer, nil:
+        case .animePlayer(let animeRoute):
+            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
+        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, nil:
             break
         }
     }

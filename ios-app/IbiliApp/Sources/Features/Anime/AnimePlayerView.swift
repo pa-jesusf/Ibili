@@ -6,11 +6,10 @@ struct AnimePlayerView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.dismissPlayerHost) private var dismissPlayerHost
     @StateObject private var sourceStore = AnimeSourceStore.shared
-    @StateObject private var vm = AnimePlayerViewModel()
+    @StateObject private var vm: AnimePlayerViewModel
     @State private var isFullscreen = false
     @State private var presentationState = PlayerPresentationState()
     @State private var isInlineHostVisible = false
-    @State private var lifecycleID = UUID()
     @State private var playerVCRef = PlayerVCBox()
     @State private var showsCandidates = false
     @State private var showsSourceSettings = false
@@ -19,6 +18,11 @@ struct AnimePlayerView: View {
     @State private var webResolverRequest: AnimeWebVideoResolveRequest?
 
     let route: DeepLinkRouter.AnimePlayerRoute
+
+    init(route: DeepLinkRouter.AnimePlayerRoute, viewModel: AnimePlayerViewModel? = nil) {
+        self.route = route
+        _vm = StateObject(wrappedValue: viewModel ?? AnimePlayerViewModel())
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,7 +56,6 @@ struct AnimePlayerView: View {
             )
         }
         .onAppear {
-            lifecycleID = UUID()
             AppLog.debug("anime", "追番播放页 onAppear", metadata: [
                 "subjectID": String(route.subject.id),
                 "episodeID": String(route.episode.id),
@@ -67,7 +70,6 @@ struct AnimePlayerView: View {
             }
         }
         .onDisappear {
-            let id = lifecycleID
             AppLog.debug("anime", "追番播放页 onDisappear", metadata: [
                 "subjectID": String(route.subject.id),
                 "episodeID": String(route.episode.id),
@@ -78,13 +80,6 @@ struct AnimePlayerView: View {
             isInlineHostVisible = false
             if !isNativePlayerPresentationActive {
                 Orientation.deactivatePlayerPresentationRoute(route.id)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                guard id == lifecycleID else { return }
-                guard !isPresentationRouteActive else { return }
-                Orientation.deactivatePlayerPresentationRoute(route.id)
-                PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: vm)
-                vm.stop()
             }
         }
         .sheet(isPresented: $showsCandidates) {
@@ -124,6 +119,7 @@ struct AnimePlayerView: View {
                 AnimeSourceSettingsView(store: sourceStore, showsDoneButton: true)
             }
             .environmentObject(settings)
+            .tint(IbiliTheme.accent)
         }
         .sheet(item: $captchaRequest) { request in
             AnimeCaptchaWebViewSheet(request: request) { session in

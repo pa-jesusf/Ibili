@@ -186,6 +186,11 @@ final class DeepLinkRouter: ObservableObject {
             guard case .live(let route) = self else { return nil }
             return route
         }
+
+        var animePlayerRoute: AnimePlayerRoute? {
+            guard case .animePlayer(let route) = self else { return nil }
+            return route
+        }
     }
 
     enum RootRoute: Hashable, Identifiable {
@@ -226,6 +231,11 @@ final class DeepLinkRouter: ObservableObject {
 
         var liveRoute: LiveRoute? {
             guard case .live(let route) = self else { return nil }
+            return route
+        }
+
+        var animePlayerRoute: AnimePlayerRoute? {
+            guard case .animePlayer(let route) = self else { return nil }
             return route
         }
 
@@ -276,6 +286,10 @@ final class DeepLinkRouter: ObservableObject {
 
     var livePath: [LiveRoute] {
         path.compactMap(\.liveRoute)
+    }
+
+    var animePlayerPath: [AnimePlayerRoute] {
+        path.compactMap(\.animePlayerRoute)
     }
 
     var snapshot: SessionSnapshot {
@@ -772,7 +786,9 @@ final class DeepLinkRouter: ObservableObject {
                 PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
             case .live(let liveRoute):
                 LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-            case .userSpace, .dynamicDetail, .article, .search, .animeSubject, .animePlayer:
+            case .animePlayer(let animeRoute):
+                AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
+            case .userSpace, .dynamicDetail, .article, .search, .animeSubject:
                 break
             }
         }
@@ -781,7 +797,9 @@ final class DeepLinkRouter: ObservableObject {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, .animePlayer, nil:
+        case .animePlayer(let animeRoute):
+            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
+        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
             break
         }
     }
