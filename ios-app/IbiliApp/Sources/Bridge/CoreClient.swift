@@ -148,6 +148,9 @@ public final class CoreClient: @unchecked Sendable {
     }
 
     private static let concurrentSafeMethods: Set<String> = [
+        "anime.subject.relations",
+        "anime.subject.reviews",
+        "anime.episode.comments",
         "anime.media.source_fetch",
         "anime.media.source_parse_page",
         "anime.bili_source.fetch",
@@ -302,6 +305,37 @@ public final class CoreClient: @unchecked Sendable {
             "anime.subject.search",
             args: A(keyword: keyword, page: page, page_size: pageSize),
             decoding: AnimeSubjectSearchPageDTO.self
+        )
+    }
+
+    public func animeSubjectRelations(subjectID: Int64) throws -> AnimeSubjectRelationsDTO {
+        struct A: Encodable { let subject_id: Int64 }
+        return try call(
+            "anime.subject.relations",
+            args: A(subject_id: subjectID),
+            decoding: AnimeSubjectRelationsDTO.self
+        )
+    }
+
+    public func animeSubjectReviews(subjectID: Int64, offset: Int64 = 0, limit: Int64 = 20) throws -> AnimeSubjectReviewPageDTO {
+        struct A: Encodable {
+            let subject_id: Int64
+            let offset: Int64
+            let limit: Int64
+        }
+        return try call(
+            "anime.subject.reviews",
+            args: A(subject_id: subjectID, offset: offset, limit: limit),
+            decoding: AnimeSubjectReviewPageDTO.self
+        )
+    }
+
+    public func animeEpisodeComments(episodeID: Int64) throws -> [AnimeEpisodeCommentDTO] {
+        struct A: Encodable { let episode_id: Int64 }
+        return try call(
+            "anime.episode.comments",
+            args: A(episode_id: episodeID),
+            decoding: [AnimeEpisodeCommentDTO].self
         )
     }
 

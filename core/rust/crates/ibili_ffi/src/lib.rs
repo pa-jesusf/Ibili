@@ -265,6 +265,25 @@ struct AnimeSubjectDetailArgs {
 }
 
 #[derive(Deserialize)]
+struct AnimeSubjectRelationsArgs {
+    subject_id: i64,
+}
+
+#[derive(Deserialize)]
+struct AnimeSubjectReviewsArgs {
+    subject_id: i64,
+    #[serde(default)]
+    offset: i64,
+    #[serde(default = "default_ps")]
+    limit: i64,
+}
+
+#[derive(Deserialize)]
+struct AnimeEpisodeCommentsArgs {
+    episode_id: i64,
+}
+
+#[derive(Deserialize)]
 struct AnimeSubjectSearchArgs {
     keyword: String,
     #[serde(default = "default_one_i64")]
@@ -793,6 +812,18 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "anime.subject.detail" => {
             let a: AnimeSubjectDetailArgs = serde_json::from_value(args)?;
             to_value(c.inner.anime_subject_detail(&a.access_token, a.subject_id)?)
+        }
+        "anime.subject.relations" => {
+            let a: AnimeSubjectRelationsArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_subject_relations(a.subject_id)?)
+        }
+        "anime.subject.reviews" => {
+            let a: AnimeSubjectReviewsArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_subject_reviews(a.subject_id, a.offset, a.limit)?)
+        }
+        "anime.episode.comments" => {
+            let a: AnimeEpisodeCommentsArgs = serde_json::from_value(args)?;
+            to_value(c.inner.anime_episode_comments(a.episode_id)?)
         }
         "anime.subject.search" => {
             let a: AnimeSubjectSearchArgs = serde_json::from_value(args)?;

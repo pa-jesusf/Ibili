@@ -16,6 +16,11 @@ struct AnimePlayerView: View {
     @State private var showsDanmakuStyle = false
     @State private var captchaRequest: AnimeCaptchaRequest?
     @State private var webResolverRequest: AnimeWebVideoResolveRequest?
+    @State private var selectedContentTab: AnimePlayerContentTab = .details
+    @State private var episodeComments: [AnimeEpisodeCommentDTO] = []
+    @State private var commentsEpisodeID: Int64?
+    @State private var isLoadingComments = false
+    @State private var commentsErrorText: String?
 
     let route: DeepLinkRouter.AnimePlayerRoute
 
@@ -28,21 +33,7 @@ struct AnimePlayerView: View {
         VStack(spacing: 0) {
             playerSurface
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    titleSection
-                    sourceStatusSection
-                    if !route.subject.episodes.isEmpty {
-                        episodeSection
-                    }
-                    if !route.subject.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        VideoDescriptionView(desc: route.subject.summary, descV2: [])
-                            .padding(12)
-                            .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                }
-                .padding(16)
-            }
+            contentArea
         }
         .background(IbiliTheme.background)
         .navigationTitle(route.episode.displayTitle)
@@ -54,6 +45,10 @@ struct AnimePlayerView: View {
                 route: route,
                 enabledSourcesProvider: { sourceStore.sources.filter(\.enabled) }
             )
+        }
+        .task(id: "\(route.episode.id)-\(selectedContentTab.rawValue)") {
+            guard selectedContentTab == .comments else { return }
+            await loadEpisodeComments()
         }
         .onAppear {
             AppLog.debug("anime", "追番播放页 onAppear", metadata: [
@@ -200,7 +195,34 @@ struct AnimePlayerView: View {
                 }
             }
         }
-        .tint(.white)
+        .tint(IbiliTheme.accent)
+    }
+
+    private var contentArea: some View {
+        ZStack(alignment: .bottom) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    switch selectedContentTab {
+                    case .details:
+                        playerDetailContent
+                    case .comments:
+                        playerCommentContent
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
+                .padding(.bottom, 86)
+            }
+
+            IbiliSegmentedTabs(
+                tabs: AnimePlayerContentTab.allCases,
+                title: { $0.title },
+                selection: $selectedContentTab
+            )
+            .frame(maxWidth: 260)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 14)
+        }
     }
 
     @ViewBuilder
@@ -257,22 +279,20 @@ struct AnimePlayerView: View {
     private var titleSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(route.subject.displayTitle)
-                .font(.title3.weight(.semibold))
+                .font(.title.weight(.bold))
                 .foregroundStyle(IbiliTheme.textPrimary)
-                .lineLimit(2)
+                .lineLimit(3)
             HStack(spacing: 8) {
+                Text(String(format: "%02d", Int(route.episode.sort.rounded())))
+                    .font(.title3.weight(.medium).monospacedDigit())
+                    .foregroundStyle(IbiliTheme.textSecondary)
                 Text(route.episode.displayTitle)
-                    .font(.subheadline.weight(.medium))
+                    .font(.title3.weight(.medium))
                     .foregroundStyle(IbiliTheme.textSecondary)
                     .lineLimit(1)
                 if vm.isLoading {
                     ProgressView().controlSize(.small)
                 }
-            }
-            if let play = vm.currentPlay {
-                Text([play.format.uppercased(), activeSourceName].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.caption)
-                    .foregroundStyle(IbiliTheme.textSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -294,38 +314,30 @@ struct AnimePlayerView: View {
                         .foregroundStyle(IbiliTheme.textSecondary)
                 }
                 Spacer()
-                if vm.isLoading || vm.isSearchingMore {
-                    ProgressView().controlSize(.small)
+                Button {
+                    showsCandidates = true
+                } label: {
+                    Label("更换", systemImage: "arrow.left.arrow.right")
+                        .font(.subheadline.weight(.semibold))
                 }
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(IbiliTheme.textSecondary)
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .tint(IbiliTheme.accent)
             }
             if let activeCandidate {
                 AnimeActiveResourceRow(candidate: activeCandidate, format: vm.currentPlay?.format ?? "")
-            }
-            if vm.diagnostics?.sourceReports.isEmpty != false {
+            } else if vm.isLoading || vm.isSearchingMore {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("正在检索资源")
+                    Text("正在为当前集检索资源")
                         .font(.footnote)
                         .foregroundStyle(IbiliTheme.textSecondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                LazyVStack(spacing: 8) {
-                    ForEach(visibleSourceReports) { report in
-                        AnimeSourceReportRow(report: report, showsCaptchaButton: false) {}
-                    }
-                }
             }
         }
-        .padding(12)
-        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture {
-            showsCandidates = true
-        }
+        .padding(14)
+        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var activeCandidate: AnimeMediaCandidateDTO? {
@@ -348,8 +360,8 @@ struct AnimePlayerView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("选集")
-                        .font(.headline)
+                    Text("剧集列表")
+                        .font(.title3.weight(.bold))
                     Text("当前 \(route.episode.displayTitle)")
                         .font(.caption)
                         .foregroundStyle(IbiliTheme.textSecondary)
@@ -389,8 +401,170 @@ struct AnimePlayerView: View {
                 }
             }
         }
-        .padding(12)
-        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(14)
+        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var playerDetailContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            titleSection
+            playerActionRow
+            sourceStatusSection
+            if !route.subject.episodes.isEmpty {
+                episodeSection
+            }
+            danmakuSourceSection
+            if !route.subject.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("简介")
+                        .font(.title3.weight(.bold))
+                    VideoDescriptionView(desc: route.subject.summary, descV2: [])
+                }
+                .padding(14)
+                .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+        }
+    }
+
+    private var playerActionRow: some View {
+        HStack(spacing: 12) {
+            Spacer(minLength: 0)
+            Label(route.subject.collectionType > 0 ? route.subject.collectionLabel : "未收藏", systemImage: "heart.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(IbiliTheme.accent)
+            Button {
+                showsCandidates = true
+            } label: {
+                Label("选择数据源", systemImage: "server.rack")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .tint(IbiliTheme.accent)
+            Button {
+                Task {
+                    await vm.refresh(
+                        route: route,
+                        enabledSourcesProvider: { sourceStore.sources.filter(\.enabled) }
+                    )
+                }
+            } label: {
+                Label("刷新资源", systemImage: "arrow.clockwise")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .tint(IbiliTheme.accent)
+            .disabled(vm.isLoading)
+        }
+    }
+
+    private var danmakuSourceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("弹幕源")
+                    .font(.title3.weight(.bold))
+                Spacer()
+                Button {
+                    showsDanmakuStyle = true
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(IbiliTheme.accent)
+            }
+            HStack(spacing: 12) {
+                AnimeDanmakuSourceCard(
+                    title: activeCandidate?.isBiliCandidate == true ? "B站弹幕" : "Dandanplay",
+                    subtitle: settings.danmakuEnabled ? "自动匹配当前集" : "已关闭显示",
+                    symbol: "captions.bubble"
+                )
+                AnimeDanmakuSourceCard(
+                    title: activeCandidate?.sourceName ?? "Animeko",
+                    subtitle: activeCandidate == nil ? "等待资源命中" : "随当前线路播放",
+                    symbol: "rectangle.stack"
+                )
+            }
+        }
+        .padding(14)
+        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var playerCommentContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("评论")
+                        .font(.title3.weight(.bold))
+                    Text(route.episode.displayTitle)
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                }
+                Spacer()
+                Button {
+                    Task { await loadEpisodeComments(force: true) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(IbiliTheme.accent)
+                .disabled(isLoadingComments)
+            }
+
+            if isLoadingComments, episodeComments.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 36)
+            } else if let commentsErrorText, episodeComments.isEmpty {
+                emptyState(title: "评论加载失败", symbol: "bubble.left.and.bubble.right", message: commentsErrorText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+            } else if episodeComments.isEmpty {
+                emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right", message: "Bangumi 暂无当前单集讨论")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+            } else {
+                LazyVStack(spacing: 12) {
+                    ForEach(episodeComments) { comment in
+                        AnimeEpisodeCommentRow(comment: comment)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadEpisodeComments(force: Bool = false) async {
+        let episodeID = route.episode.id
+        if commentsEpisodeID != episodeID {
+            commentsEpisodeID = episodeID
+            episodeComments = []
+            commentsErrorText = nil
+        }
+        if force {
+            episodeComments = []
+            commentsErrorText = nil
+        }
+        guard force || episodeComments.isEmpty || commentsErrorText != nil else { return }
+        guard !isLoadingComments else { return }
+        isLoadingComments = true
+        defer { isLoadingComments = false }
+        do {
+            episodeComments = try await Task.detached(priority: .utility) {
+                try CoreClient.shared.animeEpisodeComments(episodeID: episodeID)
+            }.value
+            commentsErrorText = nil
+            AppLog.info("anime", "追番单集评论加载完成", metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+                "count": String(episodeComments.count),
+            ])
+        } catch {
+            commentsErrorText = error.localizedDescription
+            AppLog.error("anime", "追番单集评论加载失败", error: error, metadata: [
+                "subjectID": String(route.subject.id),
+                "episodeID": String(route.episode.id),
+            ])
+        }
     }
 
     private var visibleSourceReports: [AnimeMediaSourceReportDTO] {
@@ -475,6 +649,108 @@ struct AnimePlayerView: View {
         case 4: return "搁置"
         case 5: return "抛弃"
         default: return ""
+        }
+    }
+}
+
+private enum AnimePlayerContentTab: String, CaseIterable, Identifiable {
+    case details
+    case comments
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .details: return "详情"
+        case .comments: return "评论"
+        }
+    }
+}
+
+private struct AnimeDanmakuSourceCard: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(IbiliTheme.accent)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct AnimeEpisodeCommentRow: View {
+    let comment: AnimeEpisodeCommentDTO
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            AnimeEpisodeCommentHeader(comment: comment)
+            Text(comment.content)
+                .font(.body)
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if !comment.replies.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(comment.replies.prefix(3)) { reply in
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(reply.user.displayName)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(IbiliTheme.accent)
+                            Text(reply.content)
+                                .font(.footnote)
+                                .foregroundStyle(IbiliTheme.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if comment.replies.count > 3 {
+                        Text("共 \(comment.replies.count) 条回复")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(IbiliTheme.accent)
+                    }
+                }
+                .padding(10)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+        .padding(14)
+        .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct AnimeEpisodeCommentHeader: View {
+    let comment: AnimeEpisodeCommentDTO
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RemoteImage(url: comment.user.avatar, targetPointSize: CGSize(width: 80, height: 80), quality: 72)
+                .frame(width: 40, height: 40)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(comment.user.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(1)
+                Text(BiliFormat.relativeDate(comment.createdAt))
+                    .font(.caption)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+            }
+            Spacer(minLength: 0)
         }
     }
 }

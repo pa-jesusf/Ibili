@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 const BANGUMI_API: &str = "https://api.bgm.tv";
+const BANGUMI_NEXT: &str = "https://next.bgm.tv";
 const BANGUMI_WEB: &str = "https://bgm.tv";
 const APP_UA: &str = "pa-jesusf/Ibili/0.1.0 (iOS) (https://github.com/pa-jesusf/Ibili)";
 pub const DEFAULT_MEDIA_SOURCE_SUBSCRIPTIONS: [&str; 2] = [
@@ -125,6 +126,66 @@ pub struct AnimeSubjectSearchPage {
     pub page: i64,
     pub page_size: i64,
     pub items: Vec<AnimeSubject>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimePerson {
+    pub id: i64,
+    pub name: String,
+    pub name_cn: String,
+    pub image: String,
+    pub role: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeCharacter {
+    pub id: i64,
+    pub name: String,
+    pub name_cn: String,
+    pub image: String,
+    pub role: String,
+    pub actors: Vec<AnimePerson>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeSubjectRelations {
+    pub characters: Vec<AnimeCharacter>,
+    pub staff: Vec<AnimePerson>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeBangumiUserBrief {
+    pub id: i64,
+    pub username: String,
+    pub nickname: String,
+    pub avatar: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeSubjectReview {
+    pub id: i64,
+    pub content: String,
+    pub rating: i64,
+    pub updated_at: i64,
+    pub user: AnimeBangumiUserBrief,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeSubjectReviewPage {
+    pub total: i64,
+    pub offset: i64,
+    pub limit: i64,
+    pub items: Vec<AnimeSubjectReview>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AnimeEpisodeComment {
+    pub id: i64,
+    pub content: String,
+    pub created_at: i64,
+    pub user: AnimeBangumiUserBrief,
+    pub replies: Vec<AnimeEpisodeComment>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -390,6 +451,80 @@ struct BangumiEpisodeCollectionRaw {
 }
 
 #[derive(Deserialize, Default)]
+struct BangumiNextUserRaw {
+    #[serde(default)]
+    id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    username: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    nickname: String,
+    #[serde(default)]
+    avatar: Option<BangumiNextAvatarRaw>,
+}
+
+#[derive(Deserialize, Default)]
+struct BangumiNextAvatarRaw {
+    #[serde(default, deserialize_with = "null_as_default")]
+    large: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    medium: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    small: String,
+}
+
+#[derive(Deserialize, Default)]
+struct BangumiNextSubjectReviewPageRaw {
+    #[serde(default)]
+    total: i64,
+    #[serde(default)]
+    offset: i64,
+    #[serde(default)]
+    limit: i64,
+    #[serde(default)]
+    data: Vec<BangumiNextSubjectReviewRaw>,
+}
+
+#[derive(Deserialize, Default)]
+struct BangumiNextSubjectReviewRaw {
+    #[serde(default)]
+    id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    comment: String,
+    #[serde(default)]
+    rate: i64,
+    #[serde(default, rename = "updatedAt")]
+    updated_at: i64,
+    #[serde(default)]
+    user: BangumiNextUserRaw,
+}
+
+#[derive(Deserialize, Default)]
+struct BangumiNextEpisodeCommentRaw {
+    #[serde(default)]
+    id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    content: String,
+    #[serde(default, rename = "createdAt")]
+    created_at: i64,
+    #[serde(default)]
+    user: Option<BangumiNextUserRaw>,
+    #[serde(default)]
+    replies: Vec<BangumiNextEpisodeCommentReplyRaw>,
+}
+
+#[derive(Deserialize, Default)]
+struct BangumiNextEpisodeCommentReplyRaw {
+    #[serde(default)]
+    id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    content: String,
+    #[serde(default, rename = "createdAt")]
+    created_at: i64,
+    #[serde(default)]
+    user: Option<BangumiNextUserRaw>,
+}
+
+#[derive(Deserialize, Default)]
 struct ExportedMediaSourceDataList {
     #[serde(default, alias = "mediaSources", alias = "media_sources")]
     media_sources: Vec<ExportedMediaSourceData>,
@@ -607,6 +742,52 @@ impl Core {
             page_size: raw.limit.max(page_size),
             items: raw.data.into_iter().map(|subject| convert_subject(subject, 0, 0)).collect(),
         })
+    }
+
+    pub fn anime_subject_relations(&self, subject_id: i64) -> CoreResult<AnimeSubjectRelations> {
+        if subject_id <= 0 {
+            return Err(CoreError::InvalidArgument("invalid Bangumi subject id".into()));
+        }
+        let characters_path = format!("/v0/subjects/{subject_id}/characters");
+        let staff_path = format!("/v0/subjects/{subject_id}/persons");
+        let characters: Vec<Value> = self.bangumi_get(&characters_path, "", &[]).unwrap_or_default();
+        let staff: Vec<Value> = self.bangumi_get(&staff_path, "", &[]).unwrap_or_default();
+        Ok(AnimeSubjectRelations {
+            characters: characters.iter().map(convert_related_character).filter(|c| c.id > 0 || !c.name.is_empty()).collect(),
+            staff: staff.iter().map(convert_related_person).filter(|p| p.id > 0 || !p.name.is_empty()).collect(),
+        })
+    }
+
+    pub fn anime_subject_reviews(&self, subject_id: i64, offset: i64, limit: i64) -> CoreResult<AnimeSubjectReviewPage> {
+        if subject_id <= 0 {
+            return Err(CoreError::InvalidArgument("invalid Bangumi subject id".into()));
+        }
+        let offset = offset.max(0);
+        let limit = limit.clamp(1, 50);
+        let raw: BangumiNextSubjectReviewPageRaw = self.bangumi_next_get(
+            &format!("/p1/subjects/{subject_id}/comments"),
+            &[
+                ("offset".to_string(), offset.to_string()),
+                ("limit".to_string(), limit.to_string()),
+            ],
+        )?;
+        Ok(AnimeSubjectReviewPage {
+            total: raw.total,
+            offset: raw.offset,
+            limit: raw.limit.max(limit),
+            items: raw.data.into_iter().map(convert_subject_review).collect(),
+        })
+    }
+
+    pub fn anime_episode_comments(&self, episode_id: i64) -> CoreResult<Vec<AnimeEpisodeComment>> {
+        if episode_id <= 0 {
+            return Err(CoreError::InvalidArgument("invalid Bangumi episode id".into()));
+        }
+        let raw: Vec<BangumiNextEpisodeCommentRaw> = self.bangumi_next_get(
+            &format!("/p1/episodes/{episode_id}/comments"),
+            &[],
+        )?;
+        Ok(raw.into_iter().map(convert_episode_comment).collect())
     }
 
     pub fn anime_source_subscription_update(&self, url: &str) -> CoreResult<AnimeSourceUpdate> {
@@ -1038,6 +1219,27 @@ impl Core {
             request = request.bearer_auth(access_token.trim());
         }
         let response = request.send()?;
+        decode_bangumi_response(response)
+    }
+
+    fn bangumi_next_get<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+    ) -> CoreResult<T> {
+        let mut url = Url::parse(&format!("{BANGUMI_NEXT}{path}"))
+            .map_err(|e| CoreError::Internal(e.to_string()))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (key, value) in query {
+                pairs.append_pair(key, value);
+            }
+        }
+        let response = self.http.client
+            .get(url)
+            .header("User-Agent", APP_UA)
+            .header("Accept", "application/json")
+            .send()?;
         decode_bangumi_response(response)
     }
 
@@ -2440,6 +2642,107 @@ fn convert_episode(subject_id: i64, raw: BangumiEpisodeRaw) -> AnimeEpisode {
         airdate: raw.airdate,
         desc: raw.desc,
         collection_type: raw.collection.map(|c| c.r#type).unwrap_or(0),
+    }
+}
+
+fn convert_related_character(value: &Value) -> AnimeCharacter {
+    let actors = value.get("actors")
+        .and_then(Value::as_array)
+        .map(|items| items.iter()
+            .map(|actor| value_to_person(actor, value_string(value, &["relation", "staff", "role"])))
+            .filter(|p| p.id > 0 || !p.name.is_empty())
+            .collect())
+        .unwrap_or_default();
+    AnimeCharacter {
+        id: value_i64(value, &["id"]),
+        name: value_string(value, &["name"]),
+        name_cn: value_string(value, &["name_cn", "nameCn"]),
+        image: value_image(value),
+        role: value_string(value, &["relation", "role", "staff"]),
+        actors,
+    }
+}
+
+fn convert_related_person(value: &Value) -> AnimePerson {
+    value_to_person(value, value_string(value, &["relation", "staff", "role"]))
+}
+
+fn value_to_person(value: &Value, role: String) -> AnimePerson {
+    AnimePerson {
+        id: value_i64(value, &["id"]),
+        name: value_string(value, &["name"]),
+        name_cn: value_string(value, &["name_cn", "nameCn"]),
+        image: value_image(value),
+        role,
+        summary: value_string(value, &["short_summary", "summary", "shortSummary"]),
+    }
+}
+
+fn value_i64(value: &Value, keys: &[&str]) -> i64 {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(|v| v.as_i64().or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok())))
+        .unwrap_or_default()
+}
+
+fn value_string(value: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn value_image(value: &Value) -> String {
+    let images = value.get("images").or_else(|| value.get("image"));
+    ["large", "medium", "small", "grid", "common"]
+        .iter()
+        .find_map(|key| images.and_then(|images| images.get(*key)).and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn convert_next_user(raw: BangumiNextUserRaw) -> AnimeBangumiUserBrief {
+    let avatar = raw.avatar.unwrap_or_default();
+    AnimeBangumiUserBrief {
+        id: raw.id,
+        username: raw.username,
+        nickname: raw.nickname,
+        avatar: [avatar.large, avatar.medium, avatar.small]
+            .into_iter()
+            .find(|s| !s.trim().is_empty())
+            .unwrap_or_default(),
+    }
+}
+
+fn convert_subject_review(raw: BangumiNextSubjectReviewRaw) -> AnimeSubjectReview {
+    AnimeSubjectReview {
+        id: raw.id,
+        content: raw.comment,
+        rating: raw.rate,
+        updated_at: raw.updated_at,
+        user: convert_next_user(raw.user),
+    }
+}
+
+fn convert_episode_comment(raw: BangumiNextEpisodeCommentRaw) -> AnimeEpisodeComment {
+    AnimeEpisodeComment {
+        id: raw.id,
+        content: raw.content,
+        created_at: raw.created_at,
+        user: raw.user.map(convert_next_user).unwrap_or_default(),
+        replies: raw.replies.into_iter().map(convert_episode_comment_reply).collect(),
+    }
+}
+
+fn convert_episode_comment_reply(raw: BangumiNextEpisodeCommentReplyRaw) -> AnimeEpisodeComment {
+    AnimeEpisodeComment {
+        id: raw.id,
+        content: raw.content,
+        created_at: raw.created_at,
+        user: raw.user.map(convert_next_user).unwrap_or_default(),
+        replies: Vec::new(),
     }
 }
 

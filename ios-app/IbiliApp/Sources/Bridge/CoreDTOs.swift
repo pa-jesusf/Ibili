@@ -728,6 +728,91 @@ public struct AnimeSubjectSearchPageDTO: Codable {
     }
 }
 
+public struct AnimePersonDTO: Codable, Hashable, Identifiable {
+    public let id: Int64
+    public let name: String
+    public let nameCn: String
+    public let image: String
+    public let role: String
+    public let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, image, role, summary
+        case nameCn = "name_cn"
+    }
+
+    public var displayName: String {
+        nameCn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? name : nameCn
+    }
+}
+
+public struct AnimeCharacterDTO: Codable, Hashable, Identifiable {
+    public let id: Int64
+    public let name: String
+    public let nameCn: String
+    public let image: String
+    public let role: String
+    public let actors: [AnimePersonDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, image, role, actors
+        case nameCn = "name_cn"
+    }
+
+    public var displayName: String {
+        nameCn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? name : nameCn
+    }
+}
+
+public struct AnimeSubjectRelationsDTO: Codable, Hashable {
+    public let characters: [AnimeCharacterDTO]
+    public let staff: [AnimePersonDTO]
+}
+
+public struct AnimeBangumiUserBriefDTO: Codable, Hashable, Identifiable {
+    public let id: Int64
+    public let username: String
+    public let nickname: String
+    public let avatar: String
+
+    public var displayName: String {
+        nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? username : nickname
+    }
+}
+
+public struct AnimeSubjectReviewDTO: Codable, Hashable, Identifiable {
+    public let id: Int64
+    public let content: String
+    public let rating: Int64
+    public let updatedAt: Int64
+    public let user: AnimeBangumiUserBriefDTO
+
+    enum CodingKeys: String, CodingKey {
+        case id, content, rating, user
+        case updatedAt = "updated_at"
+    }
+}
+
+public struct AnimeSubjectReviewPageDTO: Codable, Hashable {
+    public let total: Int64
+    public let offset: Int64
+    public let limit: Int64
+    public let items: [AnimeSubjectReviewDTO]
+}
+
+public struct AnimeEpisodeCommentDTO: Codable, Hashable, Identifiable {
+    public let id: Int64
+    public let content: String
+    public let createdAt: Int64
+    public let user: AnimeBangumiUserBriefDTO
+    public let replies: [AnimeEpisodeCommentDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case id, content, user, replies
+        case createdAt = "created_at"
+    }
+}
+
 public struct AnimeSourceDTO: Codable, Hashable, Identifiable {
     public let id: String
     public let factoryID: String
