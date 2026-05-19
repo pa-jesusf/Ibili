@@ -15,6 +15,10 @@ enum AnimeDanmakuConfig {
         sanitizedBundleValue("DANDANPLAY_APP_SECRET")
     }
 
+    static var dandanplayCallbackURL: String {
+        sanitizedBundleValue("DANDANPLAY_CALLBACK_URL")
+    }
+
     private static func sanitizedBundleValue(_ key: String) -> String {
         let value = (Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)

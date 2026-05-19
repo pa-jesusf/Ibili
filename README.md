@@ -14,6 +14,25 @@ rustup target add aarch64-apple-ios
 
 Xcode 16+ recommended. iOS deployment target: 16.0.
 
+## Local secrets
+
+Some optional integrations are injected through build settings instead of being
+committed to the repository. Copy the example file and fill in your local values:
+
+```bash
+cp .env.example .env.local
+```
+
+`.env.local` is ignored by git. It is read by `tools/build_unsigned_ipa.sh`.
+
+Supported keys:
+
+```bash
+DANDANPLAY_APP_ID=
+DANDANPLAY_APP_SECRET=
+DANDANPLAY_CALLBACK_URL=
+```
+
 ## Build an unsigned IPA
 
 ```bash
@@ -29,6 +48,21 @@ The script runs:
 
 To sideload, sign with your own developer profile (e.g. `codesign --force --sign "<id>"`) or a tool such as AltStore.
 
+## GitHub Actions build
+
+The repository includes a manual workflow: **Build unsigned IPA**.
+
+Before running it, configure repository secrets in GitHub:
+
+1. Open `Settings` → `Secrets and variables` → `Actions`
+2. Add:
+   - `DANDANPLAY_APP_ID`
+   - `DANDANPLAY_APP_SECRET`
+   - `DANDANPLAY_CALLBACK_URL`
+3. Open `Actions` → `Build unsigned IPA`
+4. Click `Run workflow`
+5. Download the `Ibili-unsigned-ipa` artifact after the run finishes
+
 ## Just rebuild the Rust core
 
 ```bash
@@ -42,17 +76,22 @@ To sideload, sign with your own developer profile (e.g. `codesign --force --sign
 cd ios-app && xcodegen generate && open Ibili.xcodeproj
 ```
 
-## MVP feature scope
+## Feature snapshot
 
 | Feature | Status |
 | --- | --- |
 | TV QR login (扫码登录) | ✅ |
 | Logout | ✅ |
-| Home recommendation feed | ✅ (app endpoint, AppSign) |
-| Native AVPlayer playback | ✅ (`fnval=0` MP4 durl) |
-| 4K / DASH playback | ⏳ future (needs DASH muxer) |
+| Home recommendation feed | ✅ |
+| Search / history / comments | ✅ |
+| Native AVPlayer playback | ✅ |
+| DASH / HLS proxy playback | ✅ |
+| Danmaku / CC subtitles / timeline | ✅ |
+| Bangumi anime tracking | ✅ |
+| Anime source rules and WebView sniffing | ✅ |
+| Dandanplay anime danmaku | ✅ when credentials are configured |
+| Built-in Bilibili anime source | ✅ |
 | WBI signing | ✅ implemented (not yet used; reserved for web endpoints) |
-| Danmaku, search, dynamic | ⏳ future |
 
 ## Source layout
 
@@ -70,10 +109,12 @@ ios-app/
     App/                           (entry, RootView, AppSession)
     Bridge/                        (CoreClient, CoreDTOs, SessionStore)
     DesignSystem/                  (Theme, GlassSurface, RemoteImage, QR)
+    Features/Anime/                (Bangumi tracking, source rules, anime player)
     Features/Auth/                 (LoginView + ViewModel)
     Features/Home/                 (HomeView + ViewModel + VideoCardView)
     Features/Player/               (PlayerView + ViewModel)
-  IbiliApp/Resources/Info.plist
+    Features/Settings/             (settings and source management)
+  IbiliApp/Info.plist
   Frameworks/IbiliCore.xcframework (generated)
 
 tools/

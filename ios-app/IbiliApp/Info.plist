@@ -31,6 +31,8 @@
 	<string>$(DANDANPLAY_APP_ID)</string>
 	<key>DANDANPLAY_APP_SECRET</key>
 	<string>$(DANDANPLAY_APP_SECRET)</string>
+	<key>DANDANPLAY_CALLBACK_URL</key>
+	<string>$(DANDANPLAY_CALLBACK_URL)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
