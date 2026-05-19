@@ -413,12 +413,14 @@ final class AnimePlayerViewModel: ObservableObject {
 
     private func observeProgress(player: AVPlayer, route: DeepLinkRouter.AnimePlayerRoute) {
         observedPlayer = player
+        let subjectID = route.subject.id
+        let episodeID = route.episode.id
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 1, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
             Task { @MainActor in
-                self?.handleProgress(time.seconds, player: player, route: route)
+                self?.handleProgress(time.seconds, player: player, subjectID: subjectID, episodeID: episodeID)
             }
         }
         endObserver = NotificationCenter.default.addObserver(
@@ -427,28 +429,29 @@ final class AnimePlayerViewModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.markWatched(route: route)
+                self?.markWatched(subjectID: subjectID, episodeID: episodeID)
             }
         }
     }
 
-    private func handleProgress(_ seconds: Double, player: AVPlayer, route: DeepLinkRouter.AnimePlayerRoute) {
+    private func handleProgress(_ seconds: Double, player: AVPlayer, subjectID: Int64, episodeID: Int64) {
         guard !markedWatched else { return }
         let duration = player.currentItem?.duration.seconds ?? 0
         guard duration.isFinite, duration > 60, seconds / duration >= 0.9 else { return }
-        markWatched(route: route)
+        markWatched(subjectID: subjectID, episodeID: episodeID)
     }
 
-    private func markWatched(route: DeepLinkRouter.AnimePlayerRoute) {
+    private func markWatched(subjectID: Int64, episodeID: Int64) {
         guard !markedWatched,
               let session = BangumiSessionStore.load(),
               !session.accessToken.isEmpty else { return }
         markedWatched = true
+        let accessToken = session.accessToken
         Task.detached(priority: .utility) {
             try? CoreClient.shared.animeEpisodeUpdate(
-                accessToken: session.accessToken,
-                subjectID: route.subject.id,
-                episodeID: route.episode.id,
+                accessToken: accessToken,
+                subjectID: subjectID,
+                episodeID: episodeID,
                 collectionType: 2
             )
         }
@@ -760,37 +763,41 @@ final class AnimePlayerViewModel: ObservableObject {
         play: AnimePlayUrlDTO,
         route: DeepLinkRouter.AnimePlayerRoute
     ) {
+        let context = AnimePlaybackDiagnosticsContext(
+            subjectID: route.subject.id,
+            episodeID: route.episode.id,
+            format: play.format,
+            url: play.url
+        )
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor in
-                self?.logItemStatus(item, play: play, route: route)
+                self?.logItemStatus(item, context: context)
             }
         }
-        itemLikelyToKeepUpObservation = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { _, _ in
+        itemLikelyToKeepUpObservation = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { observedItem, _ in
             AppLog.debug("anime", "追番 AVPlayer 缓冲状态变化", metadata: [
-                "subjectID": String(route.subject.id),
-                "episodeID": String(route.episode.id),
-                "likelyToKeepUp": item.isPlaybackLikelyToKeepUp ? "true" : "false",
-                "format": play.format,
+                "subjectID": String(context.subjectID),
+                "episodeID": String(context.episodeID),
+                "likelyToKeepUp": observedItem.isPlaybackLikelyToKeepUp ? "true" : "false",
+                "format": context.format,
             ])
         }
-        itemEmptyBufferObservation = item.observe(\.isPlaybackBufferEmpty, options: [.new]) { _, _ in
+        itemEmptyBufferObservation = item.observe(\.isPlaybackBufferEmpty, options: [.new]) { observedItem, _ in
             AppLog.debug("anime", "追番 AVPlayer 空缓冲状态变化", metadata: [
-                "subjectID": String(route.subject.id),
-                "episodeID": String(route.episode.id),
-                "bufferEmpty": item.isPlaybackBufferEmpty ? "true" : "false",
-                "format": play.format,
+                "subjectID": String(context.subjectID),
+                "episodeID": String(context.episodeID),
+                "bufferEmpty": observedItem.isPlaybackBufferEmpty ? "true" : "false",
+                "format": context.format,
             ])
         }
-        playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self, weak player] observedPlayer, _ in
+        playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] observedPlayer, _ in
             Task { @MainActor in
                 guard let self,
-                      let player,
-                      self.player === player else { return }
+                      self.player === observedPlayer else { return }
                 self.handleObservedPlaybackStatus(
                     observedPlayer.timeControlStatus,
                     player: observedPlayer,
-                    play: play,
-                    route: route
+                    context: context
                 )
             }
         }
@@ -799,61 +806,62 @@ final class AnimePlayerViewModel: ObservableObject {
                 forName: .AVPlayerItemPlaybackStalled,
                 object: item,
                 queue: .main
-            ) { _ in
-                AppLog.warning("anime", "追番 AVPlayer 播放卡顿", metadata: Self.itemLogMetadata(item, play: play, route: route))
+            ) { notification in
+                guard let item = notification.object as? AVPlayerItem else { return }
+                AppLog.warning("anime", "追番 AVPlayer 播放卡顿", metadata: Self.itemLogMetadata(item, context: context))
             },
             NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemNewErrorLogEntry,
                 object: item,
                 queue: .main
-            ) { _ in
-                AppLog.warning("anime", "追番 AVPlayer 新错误日志", metadata: Self.itemLogMetadata(item, play: play, route: route))
+            ) { notification in
+                guard let item = notification.object as? AVPlayerItem else { return }
+                AppLog.warning("anime", "追番 AVPlayer 新错误日志", metadata: Self.itemLogMetadata(item, context: context))
             },
             NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemNewAccessLogEntry,
                 object: item,
                 queue: .main
-            ) { _ in
-                AppLog.debug("anime", "追番 AVPlayer 新访问日志", metadata: Self.itemLogMetadata(item, play: play, route: route))
+            ) { notification in
+                guard let item = notification.object as? AVPlayerItem else { return }
+                AppLog.debug("anime", "追番 AVPlayer 新访问日志", metadata: Self.itemLogMetadata(item, context: context))
             },
         ]
     }
 
     private func logItemStatus(
         _ item: AVPlayerItem,
-        play: AnimePlayUrlDTO,
-        route: DeepLinkRouter.AnimePlayerRoute
+        context: AnimePlaybackDiagnosticsContext
     ) {
         switch item.status {
         case .unknown:
-            AppLog.debug("anime", "追番 AVPlayerItem 状态未知", metadata: Self.itemLogMetadata(item, play: play, route: route))
+            AppLog.debug("anime", "追番 AVPlayerItem 状态未知", metadata: Self.itemLogMetadata(item, context: context))
         case .readyToPlay:
             didReachReadyToPlay = true
             errorText = nil
-            AppLog.info("anime", "追番 AVPlayerItem 已就绪", metadata: Self.itemLogMetadata(item, play: play, route: route))
+            AppLog.info("anime", "追番 AVPlayerItem 已就绪", metadata: Self.itemLogMetadata(item, context: context))
         case .failed:
-            failedPlayURLs.insert(play.url)
+            failedPlayURLs.insert(context.url)
             errorText = item.error?.localizedDescription ?? "播放失败"
-            AppLog.error("anime", "追番 AVPlayerItem 播放失败", error: item.error, metadata: Self.itemLogMetadata(item, play: play, route: route))
-            scheduleFailoverAfterPlaybackFailure(failedURL: play.url)
+            AppLog.error("anime", "追番 AVPlayerItem 播放失败", error: item.error, metadata: Self.itemLogMetadata(item, context: context))
+            scheduleFailoverAfterPlaybackFailure(failedURL: context.url)
         @unknown default:
-            AppLog.warning("anime", "追番 AVPlayerItem 未知状态", metadata: Self.itemLogMetadata(item, play: play, route: route))
+            AppLog.warning("anime", "追番 AVPlayerItem 未知状态", metadata: Self.itemLogMetadata(item, context: context))
         }
     }
 
     private func handleObservedPlaybackStatus(
         _ status: AVPlayer.TimeControlStatus,
         player: AVPlayer,
-        play: AnimePlayUrlDTO,
-        route: DeepLinkRouter.AnimePlayerRoute
+        context: AnimePlaybackDiagnosticsContext
     ) {
         let suppressionActive = Date() < transientPauseSuppressionDeadline
         if status == .paused, suppressionActive {
             AppLog.debug("anime", "忽略追番 fullscreen 过渡中的瞬时暂停回调", metadata: [
-                "subjectID": String(route.subject.id),
-                "episodeID": String(route.episode.id),
+                "subjectID": String(context.subjectID),
+                "episodeID": String(context.episodeID),
                 "context": transientPauseSuppressionContext?.rawValue ?? "",
-                "format": play.format,
+                "format": context.format,
             ])
             if transientPauseSuppressionContext == .fullscreenExit {
                 scheduleFullscreenPlaybackRecovery(delay: 0.08)
@@ -864,11 +872,11 @@ final class AnimePlayerViewModel: ObservableObject {
             cancelFullscreenPlaybackRecovery()
         }
         AppLog.debug("anime", "追番 AVPlayer 播放状态变化", metadata: [
-            "subjectID": String(route.subject.id),
-            "episodeID": String(route.episode.id),
+            "subjectID": String(context.subjectID),
+            "episodeID": String(context.episodeID),
             "timeControlStatus": Self.timeControlStatusText(status),
             "waitingReason": player.reasonForWaitingToPlay?.rawValue ?? "",
-            "format": play.format,
+            "format": context.format,
         ])
     }
 
@@ -931,14 +939,13 @@ final class AnimePlayerViewModel: ObservableObject {
 
     private static func itemLogMetadata(
         _ item: AVPlayerItem,
-        play: AnimePlayUrlDTO,
-        route: DeepLinkRouter.AnimePlayerRoute
+        context: AnimePlaybackDiagnosticsContext
     ) -> [String: String] {
         var metadata: [String: String] = [
-            "subjectID": String(route.subject.id),
-            "episodeID": String(route.episode.id),
-            "format": play.format,
-            "url": redactedURL(play.url),
+            "subjectID": String(context.subjectID),
+            "episodeID": String(context.episodeID),
+            "format": context.format,
+            "url": redactedURL(context.url),
             "status": itemStatusText(item.status),
             "duration": durationText(item.duration.seconds),
             "likelyToKeepUp": item.isPlaybackLikelyToKeepUp ? "true" : "false",
@@ -1113,6 +1120,13 @@ private enum ResolvedAnimePlayback {
             return BiliHTTP.headers
         }
     }
+}
+
+private struct AnimePlaybackDiagnosticsContext: Sendable {
+    let subjectID: Int64
+    let episodeID: Int64
+    let format: String
+    let url: String
 }
 
 private enum AnimeDanmakuSource {

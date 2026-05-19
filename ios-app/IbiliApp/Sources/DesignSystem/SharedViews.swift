@@ -105,12 +105,13 @@ private final class RemoteImageLoader: ObservableObject {
         // subsequent reads stay cheap.
         if let diskData = ImageDiskCache.shared.read(url),
            let raw = UIImage(data: diskData) {
-            let display = downsample(raw, to: url)
+            let display = downsample(raw, maxPixelDimension: Self.maxDisplayPixelDimension())
             ImageCache.shared.store(display, for: url, cost: diskData.count)
             image = display
             failed = false
             return
         }
+        let maxDisplayPixelDimension = Self.maxDisplayPixelDimension()
         task?.cancel()
         failed = false
         task = Task { [url] in
@@ -125,7 +126,7 @@ private final class RemoteImageLoader: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     if let img = UIImage(data: data) {
-                        let display = downsample(img, to: url)
+                        let display = downsample(img, maxPixelDimension: maxDisplayPixelDimension)
                         ImageCache.shared.store(display, for: url, cost: data.count)
                         ImageDiskCache.shared.write(url, data: data)
                         await MainActor.run {
@@ -161,8 +162,12 @@ private final class RemoteImageLoader: ObservableObject {
         return true
     }
 
-    private nonisolated func downsample(_ image: UIImage, to url: URL) -> UIImage {
-        let maxDim: CGFloat = UIScreen.main.bounds.width * UIScreen.main.scale
+    @MainActor
+    private static func maxDisplayPixelDimension() -> CGFloat {
+        UIScreen.main.bounds.width * UIScreen.main.scale
+    }
+
+    private nonisolated func downsample(_ image: UIImage, maxPixelDimension maxDim: CGFloat) -> UIImage {
         let size = image.size
         let scale = min(maxDim / max(size.width, 1), maxDim / max(size.height, 1))
         guard scale < 0.9 else { return image }

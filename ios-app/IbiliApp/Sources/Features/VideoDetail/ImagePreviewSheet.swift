@@ -539,6 +539,7 @@ private final class CachedRemoteImageLoader: ObservableObject {
             return
         }
 
+        let maxDisplayPixelDimension = Self.maxDisplayPixelDimension()
         task = Task { [url] in
             do {
                 let (data, response) = try await URLSession.shared.data(from: url)
@@ -547,7 +548,7 @@ private final class CachedRemoteImageLoader: ObservableObject {
                     throw URLError(.badServerResponse)
                 }
                 guard let raw = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
-                let display = self.downsample(raw)
+                let display = self.downsample(raw, maxPixelDimension: maxDisplayPixelDimension)
                 ImageCache.shared.store(display, for: url, cost: data.count)
                 ImageDiskCache.shared.write(url, data: data)
                 await MainActor.run {
@@ -580,13 +581,17 @@ private final class CachedRemoteImageLoader: ObservableObject {
               let raw = UIImage(data: data) else {
             return nil
         }
-        let display = downsample(raw)
+        let display = downsample(raw, maxPixelDimension: Self.maxDisplayPixelDimension())
         ImageCache.shared.store(display, for: url, cost: data.count)
         return display
     }
 
-    private nonisolated func downsample(_ image: UIImage) -> UIImage {
-        let maxDim = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale * 1.5
+    @MainActor
+    private static func maxDisplayPixelDimension() -> CGFloat {
+        max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale * 1.5
+    }
+
+    private nonisolated func downsample(_ image: UIImage, maxPixelDimension maxDim: CGFloat) -> UIImage {
         let size = image.size
         let scale = min(maxDim / max(size.width, 1), maxDim / max(size.height, 1))
         guard scale < 0.9 else { return image }
