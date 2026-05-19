@@ -1935,7 +1935,6 @@ struct PlayerView: View {
                 return
             }
             vm.armTransientPauseSuppression(for: context)
-            vm.handle(.suppressNextObservedIntent(.pause))
         case .pictureInPictureChanged(let isActive, let identity):
             guard presentationIdentityMatchesCurrentRoute(identity) else {
                 AppLog.debug("player", "忽略旧播放器 PiP 回调", metadata: [
@@ -1982,6 +1981,29 @@ struct PlayerView: View {
             || isFullscreen
             || presentationState.isFullscreenPresentationActive
             || presentationState.isAwaitingInlineFullscreenReturn
+    }
+
+    private func collapseInterruptedFullscreenIfNeeded(reason: String) {
+        let hasManagedFullscreen = isFullscreen
+            || presentationState.isFullscreenPresentationActive
+            || presentationState.isAwaitingInlineFullscreenReturn
+            || Orientation.isPhoneFullscreenLandscapeLocked(for: vm.currentSessionID)
+            || Orientation.isAVKitFullscreenVisible()
+        guard hasManagedFullscreen else { return }
+        let dismissedFullscreen = Orientation.dismissAVKitFullscreen(animated: false)
+        AppLog.info("player", "收敛被系统中断的全屏状态", metadata: [
+            "aid": String(vm.currentAid),
+            "cid": String(vm.currentCid),
+            "reason": reason,
+            "dismissedFullscreen": String(dismissedFullscreen),
+            "wasFullscreen": String(isFullscreen),
+            "wasPresentationActive": String(presentationState.isFullscreenPresentationActive),
+            "wasAwaitingInlineReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
+        ])
+        isFullscreen = false
+        presentationState = PlayerPresentationState()
+        Orientation.endPhoneFullscreenLandscapeLock(for: vm.currentSessionID)
+        Orientation.request(.portrait)
     }
 
     private var canCollapsePlayerForDetailScroll: Bool {
@@ -2358,6 +2380,9 @@ struct PlayerView: View {
             vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
         }
         .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                collapseInterruptedFullscreenIfNeeded(reason: "scene-background")
+            }
             PlayerViewLifecycleController.handleScenePhaseChange(
                 phase,
                 didBootstrap: didBootstrap,
@@ -2365,6 +2390,11 @@ struct PlayerView: View {
                 playerBox: playerVCRef,
                 reloadPlayer: { await vm.recoverFromInactiveEngineIfNeeded(trigger: "foreground-active") }
             )
+            if phase == .active,
+               Orientation.isPhoneFullscreenLandscapeLocked(for: vm.currentSessionID),
+               !Orientation.isAVKitFullscreenVisible() {
+                collapseInterruptedFullscreenIfNeeded(reason: "scene-active-stale-landscape-lock")
+            }
         }
         .onAppear {
             AppLog.debug("player", "播放器页面 onAppear", metadata: [

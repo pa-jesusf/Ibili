@@ -752,9 +752,21 @@ impl Core {
         let staff_path = format!("/v0/subjects/{subject_id}/persons");
         let characters: Vec<Value> = self.bangumi_get(&characters_path, "", &[]).unwrap_or_default();
         let staff: Vec<Value> = self.bangumi_get(&staff_path, "", &[]).unwrap_or_default();
+        let mut characters: Vec<AnimeCharacter> = characters
+            .iter()
+            .map(convert_related_character)
+            .filter(|c| c.id > 0 || !c.name.is_empty())
+            .collect();
+        let mut staff: Vec<AnimePerson> = staff
+            .iter()
+            .map(convert_related_person)
+            .filter(|p| p.id > 0 || !p.name.is_empty())
+            .collect();
+        sort_related_characters(&mut characters);
+        sort_related_staff(&mut staff);
         Ok(AnimeSubjectRelations {
-            characters: characters.iter().map(convert_related_character).filter(|c| c.id > 0 || !c.name.is_empty()).collect(),
-            staff: staff.iter().map(convert_related_person).filter(|p| p.id > 0 || !p.name.is_empty()).collect(),
+            characters,
+            staff,
         })
     }
 
@@ -2667,6 +2679,75 @@ fn convert_related_person(value: &Value) -> AnimePerson {
     value_to_person(value, value_string(value, &["relation", "staff", "role"]))
 }
 
+fn sort_related_characters(characters: &mut [AnimeCharacter]) {
+    let mut indexed: Vec<(usize, AnimeCharacter)> = characters.iter().cloned().enumerate().collect();
+    indexed.sort_by_key(|(index, character)| (character_role_priority(&character.role), *index));
+    for (slot, (_, character)) in characters.iter_mut().zip(indexed.into_iter()) {
+        *slot = character;
+    }
+}
+
+fn sort_related_staff(staff: &mut [AnimePerson]) {
+    let mut indexed: Vec<(usize, AnimePerson)> = staff.iter().cloned().enumerate().collect();
+    indexed.sort_by_key(|(index, person)| (staff_role_priority(&person.role), *index));
+    for (slot, (_, person)) in staff.iter_mut().zip(indexed.into_iter()) {
+        *slot = person;
+    }
+}
+
+fn character_role_priority(role: &str) -> usize {
+    let role = role.trim();
+    if role_contains(role, &["主角", "主役", "主演", "main"]) {
+        return 0;
+    }
+    if role_contains(role, &["配角", "助演", "support"]) {
+        return 1;
+    }
+    if role_contains(role, &["客串", "guest"]) {
+        return 2;
+    }
+    9
+}
+
+fn staff_role_priority(role: &str) -> usize {
+    let role = role.trim();
+    // Animeko's preview role set is AnimationWork -> Director -> Script -> Music.
+    // Bangumi v0 only exposes free-form relation strings here, so keep the same
+    // semantic priority while preserving deterministic ordering inside each group.
+    if role_contains(role, &["动画制作"]) || role_is_any(role, &["制作", "製作"]) {
+        return 0;
+    }
+    if role_contains(role, &["导演", "监督", "导播"]) {
+        return 1;
+    }
+    if role_contains(role, &["脚本", "剧本", "系列构成"]) {
+        return 2;
+    }
+    if role_contains(role, &["音乐"]) {
+        return 3;
+    }
+    if role_contains(role, &["原作", "企画"]) {
+        return 4;
+    }
+    if role_contains(role, &["人物设定", "角色设计", "人物设计"]) {
+        return 5;
+    }
+    if role_contains(role, &["作画监督", "美术", "色彩", "摄影", "音响"]) {
+        return 6;
+    }
+    9
+}
+
+fn role_contains(role: &str, needles: &[&str]) -> bool {
+    let lower = role.to_lowercase();
+    needles.iter().any(|needle| lower.contains(&needle.to_lowercase()))
+}
+
+fn role_is_any(role: &str, candidates: &[&str]) -> bool {
+    let trimmed = role.trim();
+    candidates.iter().any(|candidate| trimmed == *candidate)
+}
+
 fn value_to_person(value: &Value, role: String) -> AnimePerson {
     AnimePerson {
         id: value_i64(value, &["id"]),
@@ -3466,6 +3547,29 @@ mod anime_tests {
         let subject = convert_subject(raw, 0, 9999);
         assert_eq!(subject.total_episodes, 12);
         assert_eq!(subject.ep_status, 9999);
+    }
+
+    #[test]
+    fn related_people_sort_like_animeko_preview_roles() {
+        let mut staff = vec![
+            AnimePerson { name: "角色设计".into(), role: "角色设计".into(), ..Default::default() },
+            AnimePerson { name: "音乐".into(), role: "音乐".into(), ..Default::default() },
+            AnimePerson { name: "制作".into(), role: "动画制作".into(), ..Default::default() },
+            AnimePerson { name: "导演".into(), role: "导演".into(), ..Default::default() },
+            AnimePerson { name: "脚本".into(), role: "脚本".into(), ..Default::default() },
+        ];
+        sort_related_staff(&mut staff);
+        let ordered_roles = staff.iter().map(|person| person.role.as_str()).collect::<Vec<_>>();
+        assert_eq!(ordered_roles, ["动画制作", "导演", "脚本", "音乐", "角色设计"]);
+
+        let mut characters = vec![
+            AnimeCharacter { name: "B".into(), role: "配角".into(), ..Default::default() },
+            AnimeCharacter { name: "A".into(), role: "主角".into(), ..Default::default() },
+            AnimeCharacter { name: "C".into(), role: "客串".into(), ..Default::default() },
+        ];
+        sort_related_characters(&mut characters);
+        let ordered_roles = characters.iter().map(|character| character.role.as_str()).collect::<Vec<_>>();
+        assert_eq!(ordered_roles, ["主角", "配角", "客串"]);
     }
 
     #[test]

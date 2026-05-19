@@ -5,6 +5,7 @@ struct AnimePlayerView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.dismissPlayerHost) private var dismissPlayerHost
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var sourceStore = AnimeSourceStore.shared
     @StateObject private var vm: AnimePlayerViewModel
     @State private var isFullscreen = false
@@ -49,6 +50,15 @@ struct AnimePlayerView: View {
         .task(id: "\(route.episode.id)-\(selectedContentTab.rawValue)") {
             guard selectedContentTab == .comments else { return }
             await loadEpisodeComments()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                collapseInterruptedFullscreenIfNeeded(reason: "scene-background")
+            } else if phase == .active,
+                      Orientation.isPhoneFullscreenLandscapeLocked(for: route.id),
+                      !Orientation.isAVKitFullscreenVisible() {
+                collapseInterruptedFullscreenIfNeeded(reason: "scene-active-stale-landscape-lock")
+            }
         }
         .onAppear {
             AppLog.debug("anime", "追番播放页 onAppear", metadata: [
@@ -639,6 +649,27 @@ struct AnimePlayerView: View {
 
     private var isPresentationRouteActive: Bool {
         isInlineHostVisible || isNativePlayerPresentationActive
+    }
+
+    private func collapseInterruptedFullscreenIfNeeded(reason: String) {
+        let hasManagedFullscreen = isNativePlayerPresentationActive
+            || Orientation.isPhoneFullscreenLandscapeLocked(for: route.id)
+            || Orientation.isAVKitFullscreenVisible()
+        guard hasManagedFullscreen else { return }
+        let dismissedFullscreen = Orientation.dismissAVKitFullscreen(animated: false)
+        AppLog.info("anime", "收敛被系统中断的追番全屏状态", metadata: [
+            "subjectID": String(route.subject.id),
+            "episodeID": String(route.episode.id),
+            "reason": reason,
+            "dismissedFullscreen": String(dismissedFullscreen),
+            "wasFullscreen": String(isFullscreen),
+            "wasPresentationActive": String(presentationState.isFullscreenPresentationActive),
+            "wasAwaitingInlineReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
+        ])
+        isFullscreen = false
+        presentationState = PlayerPresentationState()
+        Orientation.endPhoneFullscreenLandscapeLock(for: route.id)
+        Orientation.request(.portrait)
     }
 
     private func episodeStateLabel(_ value: Int64) -> String {

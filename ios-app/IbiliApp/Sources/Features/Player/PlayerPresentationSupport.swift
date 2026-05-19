@@ -447,6 +447,8 @@ enum PlayerViewLifecycleController {
             // the OS-driven pause that races with our detach.
             if let continuationRate {
                 player.playImmediately(atRate: continuationRate)
+            } else {
+                player.pause()
             }
             viewModel.refreshSystemMediaSession()
         }

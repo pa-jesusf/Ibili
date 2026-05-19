@@ -29,6 +29,7 @@ struct PlayerSessionBehaviorState: Equatable {
     private(set) var interfaceIsActive = false
     private(set) var pictureInPictureIsActive = false
     private var suppressedObservedIntent: PlayerIntent?
+    private var suppressedObservedIntentExpiresAt: Date?
 
     var isInterfacePresentingPlayer: Bool {
         interfaceIsActive || pictureInPictureIsActive
@@ -45,6 +46,7 @@ struct PlayerSessionBehaviorState: Equatable {
             "interfaceIsActive": String(interfaceIsActive),
             "pictureInPictureIsActive": String(pictureInPictureIsActive),
             "suppressedObservedIntent": suppressedObservedIntent?.rawValue ?? "nil",
+            "suppressedObservedIntentExpired": String(isSuppressedObservedIntentExpired),
             "shouldHoldAudioSession": String(shouldHoldAudioSession),
         ]
     }
@@ -78,6 +80,7 @@ struct PlayerSessionBehaviorState: Equatable {
     mutating func markMediaReplacementAutoplayIntent() {
         intent = .play
         suppressedObservedIntent = nil
+        suppressedObservedIntentExpiresAt = nil
     }
 
     mutating func activateInterface() {
@@ -104,17 +107,26 @@ struct PlayerSessionBehaviorState: Equatable {
     mutating func setIntent(_ intent: PlayerIntent) {
         self.intent = intent
         suppressedObservedIntent = nil
+        suppressedObservedIntentExpiresAt = nil
     }
 
     mutating func suppressNextObservedIntent(_ intent: PlayerIntent) {
         suppressedObservedIntent = intent
+        suppressedObservedIntentExpiresAt = Date().addingTimeInterval(1.25)
     }
 
     mutating func applyObservedTimeControlStatus(_ status: AVPlayer.TimeControlStatus) -> Bool {
         guard let observedIntent = PlayerIntent(status) else { return false }
-        if let suppressedObservedIntent, suppressedObservedIntent == observedIntent {
+        if isSuppressedObservedIntentExpired {
+            suppressedObservedIntent = nil
+            suppressedObservedIntentExpiresAt = nil
+        }
+        if let suppressedObservedIntent {
             self.suppressedObservedIntent = nil
-            return false
+            suppressedObservedIntentExpiresAt = nil
+            if suppressedObservedIntent == observedIntent {
+                return false
+            }
         }
         guard hasPlaybackFocus, interfaceIsActive || pictureInPictureIsActive else { return false }
         intent = observedIntent
@@ -132,6 +144,11 @@ struct PlayerSessionBehaviorState: Equatable {
         guard shouldHoldAudioSession else { return nil }
         let activeRate = currentRate > 0 ? currentRate : desiredRate
         return activeRate > 0 ? activeRate : 1.0
+    }
+
+    private var isSuppressedObservedIntentExpired: Bool {
+        guard let suppressedObservedIntentExpiresAt else { return false }
+        return Date() >= suppressedObservedIntentExpiresAt
     }
 }
 
