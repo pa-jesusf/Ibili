@@ -48,21 +48,6 @@ The script runs:
 
 To sideload, sign with your own developer profile (e.g. `codesign --force --sign "<id>"`) or a tool such as AltStore.
 
-## GitHub Actions build
-
-The repository includes a manual workflow: **Build unsigned IPA**.
-
-Before running it, configure repository secrets in GitHub:
-
-1. Open `Settings` → `Secrets and variables` → `Actions`
-2. Add:
-   - `DANDANPLAY_APP_ID`
-   - `DANDANPLAY_APP_SECRET`
-   - `DANDANPLAY_CALLBACK_URL`
-3. Open `Actions` → `Build unsigned IPA`
-4. Click `Run workflow`
-5. Download the `Ibili-unsigned-ipa` artifact after the run finishes
-
 ## Just rebuild the Rust core
 
 ```bash
