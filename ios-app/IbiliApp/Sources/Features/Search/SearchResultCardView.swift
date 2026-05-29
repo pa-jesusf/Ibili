@@ -32,7 +32,8 @@ struct SearchResultCardView: View {
                 stats: FeedCardStats(danmaku: item.danmaku, like: item.like),
                 config: meta,
                 titleFont: .system(size: 15, weight: .medium),
-                showAuthorIcon: true
+                showAuthorIcon: true,
+                bottomTrailingInset: 26
             )
             .padding(.horizontal, 8)
             .padding(.top, 8)

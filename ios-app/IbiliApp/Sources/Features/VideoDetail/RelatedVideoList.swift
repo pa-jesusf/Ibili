@@ -60,7 +60,8 @@ struct RelatedVideoList: View {
             author: r.author,
             durationSec: r.durationSec,
             play: r.play,
-            danmaku: r.danmaku
+            danmaku: r.danmaku,
+            ownerMID: r.mid
         )
     }
 }

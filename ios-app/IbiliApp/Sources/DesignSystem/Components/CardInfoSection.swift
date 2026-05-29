@@ -25,6 +25,7 @@ struct CardInfoSection: View {
     var titleFont: Font = .subheadline.weight(.medium)
     var showAuthorIcon: Bool = false
     var isAuthorFollowed: Bool = false
+    var bottomTrailingInset: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -46,12 +47,15 @@ struct CardInfoSection: View {
                             .foregroundStyle(authorColor)
                     }
                     .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, bottomTrailingInset)
                 } else {
                     Text(author)
                         .font(.caption)
                         .lineLimit(1)
                         .foregroundStyle(authorColor)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, bottomTrailingInset)
                 }
             }
 
@@ -86,6 +90,7 @@ struct CardInfoSection: View {
             .font(.caption2)
             .foregroundStyle(IbiliTheme.textSecondary)
             .lineLimit(1)
+            .padding(.trailing, bottomTrailingInset)
         }
     }
 

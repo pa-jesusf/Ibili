@@ -703,7 +703,8 @@ final class DeepLinkRouter: ObservableObject {
             danmaku: season.stat.danmaku,
             epID: episode.epID,
             seasonID: season.seasonID,
-            isPGC: true
+            isPGC: true,
+            ownerMID: season.upMID
         )
     }
 

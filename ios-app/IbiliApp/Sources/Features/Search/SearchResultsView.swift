@@ -15,6 +15,8 @@ struct SearchResultsView: View {
     @State private var scrollID: UUID = UUID()
     @State private var userSpaceMID: Int64?
     @State private var resolvingPgcSeasonID: Int64?
+    @State private var toast: String?
+    @State private var toastWork: DispatchWorkItem?
     @StateObject private var scrollContext = InterruptibleScrollContext()
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
@@ -37,6 +39,19 @@ struct SearchResultsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(IbiliTheme.background)
+        .overlay(alignment: .bottom) {
+            if let toast {
+                Text(toast)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(.black.opacity(0.72)))
+                    .padding(.bottom, 18)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: toast)
         .background {
             if !isInPlayerHostNavigation {
                 NavigationLink(
@@ -184,22 +199,38 @@ struct SearchResultsView: View {
     private func resultButton(for item: SearchResultItem, cardWidth: CGFloat) -> some View {
         switch item {
         case .video(let video):
-            Button {
-                let item = feedItem(from: video)
-                if prefersSplitRootSelection {
-                    router.select(item)
-                } else {
-                    router.open(item)
+            ZStack(alignment: .bottomTrailing) {
+                Button {
+                    let item = feedItem(from: video)
+                    if prefersSplitRootSelection {
+                        router.select(item)
+                    } else {
+                        router.open(item)
+                    }
+                } label: {
+                    SearchResultCardView(
+                        item: video,
+                        cardWidth: cardWidth,
+                        imageQuality: settings.resolvedImageQuality(),
+                        meta: settings.searchCardMeta
+                    )
                 }
-            } label: {
-                SearchResultCardView(
-                    item: video,
-                    cardWidth: cardWidth,
-                    imageQuality: settings.resolvedImageQuality(),
-                    meta: settings.searchCardMeta
+                .buttonStyle(.plain)
+
+                VideoCardOverflowMenu(
+                    bvid: video.bvid,
+                    author: video.author,
+                    ownerMID: video.ownerMID,
+                    onCopyBVID: { copyBVID(video.bvid) },
+                    onWatchLater: { addWatchLater(aid: video.aid) },
+                    onVisitOwner: { openUserSpace(mid: video.ownerMID) },
+                    onNotInterested: { markNotInterested(aid: video.aid) },
+                    onBlockOwner: { blockOwner(mid: video.ownerMID, author: video.author) }
                 )
+                .padding(.trailing, 4)
+                .padding(.bottom, 4)
             }
-            .buttonStyle(.plain)
+            .frame(width: cardWidth, alignment: .topLeading)
         case .live(let live):
             Button {
                 if prefersSplitRootSelection {
@@ -311,8 +342,82 @@ struct SearchResultsView: View {
             durationSec: result.durationSec,
             play: result.play,
             danmaku: result.danmaku,
-            pubdate: result.pubdate
+            pubdate: result.pubdate,
+            ownerMID: result.ownerMID
         )
+    }
+
+    private func copyBVID(_ bvid: String) {
+        let value = bvid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            showToast("此视频暂无 BV 号")
+            return
+        }
+        UIPasteboard.general.string = value
+        showToast("已复制 BV 号")
+    }
+
+    private func addWatchLater(aid: Int64) {
+        guard aid > 0 else { return }
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.watchLaterAdd(aid: aid)
+                }.value
+                showToast("已添加稍后再看")
+            } catch {
+                showToast("稍后再看失败")
+                AppLog.error("search", "卡片菜单添加稍后再看失败", error: error, metadata: [
+                    "aid": String(aid),
+                ])
+            }
+        }
+    }
+
+    private func markNotInterested(aid: Int64) {
+        guard aid > 0 else { return }
+        vm.hideVideo(aid: aid)
+        showToast("已减少此类结果")
+        Task.detached(priority: .utility) {
+            do {
+                try CoreClient.shared.archiveDislike(aid: aid)
+            } catch {
+                AppLog.error("search", "卡片菜单不感兴趣同步失败", error: error, metadata: [
+                    "aid": String(aid),
+                ])
+            }
+        }
+    }
+
+    private func blockOwner(mid: Int64, author: String) {
+        guard mid > 0 else {
+            showToast("无法识别 UP 主")
+            return
+        }
+        let owner = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        vm.hideVideos(fromOwner: mid)
+        showToast("已从当前结果隐藏")
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.relationModify(fid: mid, act: 5)
+                }.value
+                showToast(owner.isEmpty ? "已拉黑 UP 主" : "已拉黑 \(owner)")
+            } catch {
+                showToast("拉黑失败")
+                AppLog.error("search", "卡片菜单拉黑失败", error: error, metadata: [
+                    "mid": String(mid),
+                ])
+            }
+        }
+    }
+
+    private func showToast(_ message: String) {
+        toast = message
+        toastWork?.cancel()
+        let work = DispatchWorkItem { toast = nil }
+        toastWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
     }
 
     private func openPgc(_ item: SearchPgcItemDTO) {
@@ -339,7 +444,8 @@ struct SearchResultsView: View {
                     danmaku: season.stat.danmaku,
                     epID: episode.epID,
                     seasonID: season.seasonID,
-                    isPGC: true
+                    isPGC: true,
+                    ownerMID: season.upMID
                 )
                 await MainActor.run {
                     resolvingPgcSeasonID = nil

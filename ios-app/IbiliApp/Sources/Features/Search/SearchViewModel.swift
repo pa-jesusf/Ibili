@@ -113,6 +113,26 @@ final class SearchViewModel: ObservableObject {
         hasSubmittedQuery = false
     }
 
+    func hideVideo(aid: Int64) {
+        guard aid > 0 else { return }
+        results.removeAll {
+            if case .video(let video) = $0 {
+                return video.aid == aid
+            }
+            return false
+        }
+    }
+
+    func hideVideos(fromOwner mid: Int64) {
+        guard mid > 0 else { return }
+        results.removeAll {
+            if case .video(let video) = $0 {
+                return video.ownerMID == mid
+            }
+            return false
+        }
+    }
+
     // MARK: - Private
 
     private func fetchPage(_ targetPage: Int64) async {

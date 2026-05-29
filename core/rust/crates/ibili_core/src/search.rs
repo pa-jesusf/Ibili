@@ -215,6 +215,7 @@ impl Core {
                 aid: r.aid,
                 bvid: r.bvid,
                 cid: r.cid,
+                owner_mid: r.uid,
                 title: strip_em_tags(&r.title),
                 cover: ensure_https(r.pic),
                 author: r.author,

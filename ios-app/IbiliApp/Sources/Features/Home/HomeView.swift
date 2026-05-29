@@ -71,12 +71,47 @@ private struct HomeFeedPage: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
+    @State private var userSpaceMID: Int64?
+    @State private var toast: String?
+    @State private var toastWork: DispatchWorkItem?
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
         feedGrid
+        .background {
+            if !isInPlayerHostNavigation {
+                NavigationLink(
+                    isActive: Binding(
+                        get: { userSpaceMID != nil },
+                        set: { if !$0 { userSpaceMID = nil } }
+                    ),
+                    destination: {
+                        if let mid = userSpaceMID {
+                            UserSpaceView(mid: mid)
+                        }
+                    },
+                    label: { EmptyView() }
+                )
+                .opacity(0)
+                .allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let toast {
+                Text(toast)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(.black.opacity(0.72)))
+                    .padding(.bottom, 18)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: toast)
         .task(id: vm.section) {
             await vm.loadInitial(recommendSource: recommendSource)
         }
@@ -133,24 +168,40 @@ private struct HomeFeedPage: View {
                 } else {
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
                         ForEach(vm.items) { item in
-                            Button {
-                                if prefersSplitRootSelection {
-                                    router.select(item)
-                                } else {
-                                    router.open(item)
+                            ZStack(alignment: .bottomTrailing) {
+                                Button {
+                                    if prefersSplitRootSelection {
+                                        router.select(item)
+                                    } else {
+                                        router.open(item)
+                                    }
+                                } label: {
+                                    VideoCardView(
+                                        item: item,
+                                        cardWidth: cardW,
+                                        imageQuality: settings.resolvedImageQuality(),
+                                        showsDurationAtTopTrailing: usesTopTrailingDuration,
+                                        meta: settings.homeCardMeta
+                                    )
                                 }
-                            } label: {
-                                VideoCardView(
-                                    item: item,
-                                    cardWidth: cardW,
-                                    imageQuality: settings.resolvedImageQuality(),
-                                    showsDurationAtTopTrailing: usesTopTrailingDuration,
-                                    meta: settings.homeCardMeta
+                                .buttonStyle(TouchDownReportingButtonStyle {
+                                    prefetch.touchDown(item)
+                                })
+
+                                VideoCardOverflowMenu(
+                                    bvid: item.bvid,
+                                    author: item.author,
+                                    ownerMID: item.ownerMID,
+                                    onCopyBVID: { copyBVID(item.bvid) },
+                                    onWatchLater: { addWatchLater(aid: item.aid) },
+                                    onVisitOwner: { openOwner(mid: item.ownerMID) },
+                                    onNotInterested: { markNotInterested(aid: item.aid) },
+                                    onBlockOwner: { blockOwner(mid: item.ownerMID, author: item.author) }
                                 )
+                                .padding(.trailing, 4)
+                                .padding(.bottom, 4)
                             }
-                            .buttonStyle(TouchDownReportingButtonStyle {
-                                prefetch.touchDown(item)
-                            })
+                            .frame(width: cardW, alignment: .topLeading)
                             .onAppear {
                                 prefetch.cardAppeared(item, allItems: vm.items)
                                 prefetchCovers(around: item, cardWidth: cardW)
@@ -199,6 +250,94 @@ private struct HomeFeedPage: View {
                 PlayUrlPrefetcher.shared.clear()
             }
         }
+    }
+
+    private func openOwner(mid: Int64) {
+        guard mid > 0 else {
+            showToast("无法识别 UP 主")
+            return
+        }
+        if isInPlayerHostNavigation {
+            router.openUserSpace(mid: mid)
+        } else if prefersSplitRootSelection {
+            router.selectUserSpace(mid: mid)
+        } else {
+            userSpaceMID = mid
+        }
+    }
+
+    private func copyBVID(_ bvid: String) {
+        let value = bvid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            showToast("此视频暂无 BV 号")
+            return
+        }
+        UIPasteboard.general.string = value
+        showToast("已复制 BV 号")
+    }
+
+    private func addWatchLater(aid: Int64) {
+        guard aid > 0 else { return }
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.watchLaterAdd(aid: aid)
+                }.value
+                showToast("已添加稍后再看")
+            } catch {
+                showToast("稍后再看失败")
+                AppLog.error("home", "卡片菜单添加稍后再看失败", error: error, metadata: [
+                    "aid": String(aid),
+                ])
+            }
+        }
+    }
+
+    private func markNotInterested(aid: Int64) {
+        guard aid > 0 else { return }
+        vm.hideItem(aid: aid)
+        showToast("已减少此类推荐")
+        Task.detached(priority: .utility) {
+            do {
+                try CoreClient.shared.archiveDislike(aid: aid)
+            } catch {
+                AppLog.error("home", "卡片菜单不感兴趣同步失败", error: error, metadata: [
+                    "aid": String(aid),
+                ])
+            }
+        }
+    }
+
+    private func blockOwner(mid: Int64, author: String) {
+        guard mid > 0 else {
+            showToast("无法识别 UP 主")
+            return
+        }
+        let owner = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        vm.hideItems(fromOwner: mid)
+        showToast("已从当前列表隐藏")
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    // Bilibili relation API: act 5 = 拉黑.
+                    try CoreClient.shared.relationModify(fid: mid, act: 5)
+                }.value
+                showToast(owner.isEmpty ? "已拉黑 UP 主" : "已拉黑 \(owner)")
+            } catch {
+                showToast("拉黑失败")
+                AppLog.error("home", "卡片菜单拉黑失败", error: error, metadata: [
+                    "mid": String(mid),
+                ])
+            }
+        }
+    }
+
+    private func showToast(_ message: String) {
+        toast = message
+        toastWork?.cancel()
+        let work = DispatchWorkItem { toast = nil }
+        toastWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
     }
 
     private func updatePrefetchSettings() {

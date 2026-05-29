@@ -50,6 +50,16 @@ final class HomeViewModel: ObservableObject {
         await load(reset: false, recommendSource: recommendSource)
     }
 
+    func hideItem(aid: Int64) {
+        guard aid > 0 else { return }
+        items.removeAll { $0.aid == aid }
+    }
+
+    func hideItems(fromOwner mid: Int64) {
+        guard mid > 0 else { return }
+        items.removeAll { $0.ownerMID == mid }
+    }
+
     private func load(reset: Bool, recommendSource: HomeRecommendSource) async {
         isLoading = true
         errorText = nil

@@ -48,7 +48,6 @@ pub struct FeedItem {
     pub season_id: i64,
     #[serde(default)]
     pub is_pgc: bool,
-    #[serde(skip_serializing)]
     pub owner_mid: i64,
     pub title: String,
     pub cover: String,
@@ -297,6 +296,7 @@ pub struct SearchVideoItem {
     pub aid: i64,
     pub bvid: String,
     pub cid: i64,
+    pub owner_mid: i64,
     pub title: String,
     pub cover: String,
     pub author: String,
