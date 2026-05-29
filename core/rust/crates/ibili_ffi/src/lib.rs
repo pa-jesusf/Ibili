@@ -433,6 +433,27 @@ fn default_page() -> i64 {
 #[derive(Deserialize)]
 struct AidArgs {
     aid: i64,
+    #[serde(default = "default_true")]
+    dislike: bool,
+}
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+struct FeedDislikeArgs {
+    goto: String,
+    id: i64,
+    #[serde(default)]
+    reason_id: Option<i64>,
+    #[serde(default)]
+    feedback_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct FeedDislikeCancelArgs {
+    goto: String,
+    id: i64,
 }
 
 #[derive(Deserialize)]
@@ -811,7 +832,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "anime.subject.detail" => {
             let a: AnimeSubjectDetailArgs = serde_json::from_value(args)?;
-            to_value(c.inner.anime_subject_detail(&a.access_token, a.subject_id)?)
+            to_value(
+                c.inner
+                    .anime_subject_detail(&a.access_token, a.subject_id)?,
+            )
         }
         "anime.subject.relations" => {
             let a: AnimeSubjectRelationsArgs = serde_json::from_value(args)?;
@@ -819,7 +843,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "anime.subject.reviews" => {
             let a: AnimeSubjectReviewsArgs = serde_json::from_value(args)?;
-            to_value(c.inner.anime_subject_reviews(a.subject_id, a.offset, a.limit)?)
+            to_value(
+                c.inner
+                    .anime_subject_reviews(a.subject_id, a.offset, a.limit)?,
+            )
         }
         "anime.episode.comments" => {
             let a: AnimeEpisodeCommentsArgs = serde_json::from_value(args)?;
@@ -827,7 +854,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "anime.subject.search" => {
             let a: AnimeSubjectSearchArgs = serde_json::from_value(args)?;
-            to_value(c.inner.anime_subject_search(&a.keyword, a.page, a.page_size)?)
+            to_value(
+                c.inner
+                    .anime_subject_search(&a.keyword, a.page, a.page_size)?,
+            )
         }
         "anime.source.subscription.update" => {
             let a: AnimeSourceURLArgs = serde_json::from_value(args)?;
@@ -859,7 +889,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "anime.media.resolve" => {
             let a: AnimeMediaResolveArgs = serde_json::from_value(args)?;
-            to_value(c.inner.anime_media_resolve(a.candidate, &a.title, &a.cover)?)
+            to_value(
+                c.inner
+                    .anime_media_resolve(a.candidate, &a.title, &a.cover)?,
+            )
         }
         "anime.bili_source.fetch" => {
             let a: AnimeBiliSourceFetchArgs = serde_json::from_value(args)?;
@@ -931,29 +964,23 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "video.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
-            to_value(
-                c.inner
-                    .video_playurl_with_audio_playback_options_bvid(
-                        a.aid,
-                        &a.bvid,
-                        a.cid,
-                        a.qn,
-                        a.audio_qn,
-                        &a.cdn,
-                        &a.codec_preference,
-                    )?,
-            )
-        }
-        "video.offline_playurl" => {
-            let a: PlayurlArgs = serde_json::from_value(args)?;
-            to_value(c.inner.video_offline_playurl_with_bvid(
+            to_value(c.inner.video_playurl_with_audio_playback_options_bvid(
                 a.aid,
                 &a.bvid,
                 a.cid,
                 a.qn,
                 a.audio_qn,
                 &a.cdn,
+                &a.codec_preference,
             )?)
+        }
+        "video.offline_playurl" => {
+            let a: PlayurlArgs = serde_json::from_value(args)?;
+            to_value(
+                c.inner.video_offline_playurl_with_bvid(
+                    a.aid, &a.bvid, a.cid, a.qn, a.audio_qn, &a.cdn,
+                )?,
+            )
         }
         "pgc.playurl" => {
             let a: PlayurlArgs = serde_json::from_value(args)?;
@@ -1023,7 +1050,18 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "interaction.dislike" => {
             let a: AidArgs = serde_json::from_value(args)?;
-            c.inner.archive_dislike(a.aid)?;
+            c.inner.archive_dislike(a.aid, a.dislike)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "interaction.feed_dislike" => {
+            let a: FeedDislikeArgs = serde_json::from_value(args)?;
+            c.inner
+                .feed_dislike(&a.goto, a.id, a.reason_id, a.feedback_id)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "interaction.feed_dislike_cancel" => {
+            let a: FeedDislikeCancelArgs = serde_json::from_value(args)?;
+            c.inner.feed_dislike_cancel(&a.goto, a.id)?;
             Ok(Value::Object(Default::default()))
         }
         "interaction.coin" => {
@@ -1178,15 +1216,24 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "user.fav_resources" => {
             let a: FavListArgs = serde_json::from_value(args)?;
-            to_value(c.inner.fav_resource_list(a.media_id, a.pn, &a.keyword, a.all_folders)?)
+            to_value(
+                c.inner
+                    .fav_resource_list(a.media_id, a.pn, &a.keyword, a.all_folders)?,
+            )
         }
         "user.subscriptions" => {
             let a: SubscriptionListArgs = serde_json::from_value(args)?;
-            to_value(c.inner.subscription_folder_list(a.mid, a.page, a.page_size)?)
+            to_value(
+                c.inner
+                    .subscription_folder_list(a.mid, a.page, a.page_size)?,
+            )
         }
         "user.subscription_resources" => {
             let a: SubscriptionResourcesArgs = serde_json::from_value(args)?;
-            to_value(c.inner.subscription_resource_list(a.id, a.page, a.page_size)?)
+            to_value(
+                c.inner
+                    .subscription_resource_list(a.id, a.page, a.page_size)?,
+            )
         }
         "user.subscription_cancel" => {
             let a: SubscriptionCancelArgs = serde_json::from_value(args)?;
@@ -1201,10 +1248,11 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             )
         }
         "user.watchlater_list" => {
-            let a: WatchLaterListArgs = serde_json::from_value(args).unwrap_or(WatchLaterListArgs {
-                pn: 1,
-                keyword: String::new(),
-            });
+            let a: WatchLaterListArgs =
+                serde_json::from_value(args).unwrap_or(WatchLaterListArgs {
+                    pn: 1,
+                    keyword: String::new(),
+                });
             to_value(c.inner.watchlater_list(a.pn, &a.keyword)?)
         }
         "user.followings" => {

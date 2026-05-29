@@ -1,4 +1,3 @@
-use crate::Core;
 use crate::cdn::rank_urls_for_selection;
 use crate::dto::{OfflinePlayUrl, PlayUrl, VideoSubtitle, VideoViewPoint};
 use crate::dto::{
@@ -7,9 +6,10 @@ use crate::dto::{
 };
 use crate::error::{CoreError, CoreResult};
 use crate::signer::{WbiKey, WbiSigner};
+use crate::Core;
+use serde::{Deserialize, Deserializer};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Deserialize, Deserializer};
 
 const URL_PLAYURL_WEB: &str = "https://api.bilibili.com/x/player/wbi/playurl";
 const URL_PLAYER_INFO: &str = "https://api.bilibili.com/x/player/wbi/v2";
@@ -21,110 +21,162 @@ static DM_PARAM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Deserialize)]
 struct PlayUrlRoot {
-    #[serde(default)] quality: i64,
-    #[serde(default)] format: String,
-    #[serde(default)] timelength: i64,
-    #[serde(default, deserialize_with = "null_as_default")] durl: Vec<Durl>,
-    #[serde(default, deserialize_with = "null_as_default")] accept_quality: Vec<i64>,
-    #[serde(default, deserialize_with = "null_as_default")] accept_description: Vec<String>,
-    #[serde(default)] dash: Option<Dash>,
+    #[serde(default)]
+    quality: i64,
+    #[serde(default)]
+    format: String,
+    #[serde(default)]
+    timelength: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    durl: Vec<Durl>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    accept_quality: Vec<i64>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    accept_description: Vec<String>,
+    #[serde(default)]
+    dash: Option<Dash>,
     /// Bilibili-recorded resume position in milliseconds. Present
     /// for logged-in playback when the user previously watched this
     /// cid; absent / 0 otherwise.
-    #[serde(default)] last_play_time: i64,
-    #[serde(default)] last_play_cid: i64,
-    #[serde(default)] subtitle: Option<SubtitleInfoWire>,
-    #[serde(default, deserialize_with = "null_as_default")] view_points: Vec<ViewPointWire>,
+    #[serde(default)]
+    last_play_time: i64,
+    #[serde(default)]
+    last_play_cid: i64,
+    #[serde(default)]
+    subtitle: Option<SubtitleInfoWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    view_points: Vec<ViewPointWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct PlayerInfoWire {
-    #[serde(default, deserialize_with = "lenient_i64_value")] last_play_cid: i64,
-    #[serde(default)] subtitle: Option<SubtitleInfoWire>,
-    #[serde(default, deserialize_with = "null_as_default")] view_points: Vec<ViewPointWire>,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    last_play_cid: i64,
+    #[serde(default)]
+    subtitle: Option<SubtitleInfoWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    view_points: Vec<ViewPointWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct SubtitleInfoWire {
-    #[serde(default, deserialize_with = "null_as_default")] subtitles: Vec<SubtitleWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    subtitles: Vec<SubtitleWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct SubtitleWire {
-    #[serde(default, deserialize_with = "null_as_default")] lan: String,
-    #[serde(default, deserialize_with = "null_as_default")] lan_doc: String,
-    #[serde(default, deserialize_with = "null_as_default")] subtitle_url: String,
-    #[serde(default, deserialize_with = "null_as_default")] subtitle_url_v2: String,
-    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")] kind: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    lan: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    lan_doc: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    subtitle_url: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    subtitle_url_v2: String,
+    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")]
+    kind: i64,
 }
 
 #[derive(Default, Deserialize)]
 struct ViewPointWire {
-    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")] kind: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] from: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] to: i64,
-    #[serde(default, deserialize_with = "null_as_default")] content: String,
-    #[serde(default, alias = "imgUrl", deserialize_with = "null_as_default")] img_url: String,
+    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")]
+    kind: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    from: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    to: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    content: String,
+    #[serde(default, alias = "imgUrl", deserialize_with = "null_as_default")]
+    img_url: String,
 }
 
 #[derive(Deserialize)]
 struct PgcPlayUrlEnvelope {
-    #[serde(default)] code: i64,
-    #[serde(default)] message: String,
-    #[serde(default)] result: Option<PgcPlayUrlResult>,
+    #[serde(default)]
+    code: i64,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    result: Option<PgcPlayUrlResult>,
 }
 
 #[derive(Deserialize)]
 struct PgcPlayUrlResult {
     video_info: PlayUrlRoot,
-    #[serde(default)] play_view_business_info: Option<PgcPlayViewBusinessInfo>,
+    #[serde(default)]
+    play_view_business_info: Option<PgcPlayViewBusinessInfo>,
 }
 
 #[derive(Default, Deserialize)]
 struct PgcPlayViewBusinessInfo {
-    #[serde(default)] user_status: Option<PgcPlayUserStatus>,
+    #[serde(default)]
+    user_status: Option<PgcPlayUserStatus>,
 }
 
 #[derive(Default, Deserialize)]
 struct PgcPlayUserStatus {
-    #[serde(default, deserialize_with = "lenient_i64_value")] current_watch_progress: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    current_watch_progress: i64,
 }
 
 #[derive(Deserialize)]
 struct PgcSeasonEnvelope {
-    #[serde(default)] code: i64,
-    #[serde(default)] message: String,
-    #[serde(default)] result: Option<PgcSeasonWire>,
+    #[serde(default)]
+    code: i64,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    result: Option<PgcSeasonWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct PgcSeasonWire {
-    #[serde(default, deserialize_with = "lenient_i64_value")] season_id: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] media_id: i64,
-    #[serde(default, deserialize_with = "null_as_default")] title: String,
-    #[serde(default, deserialize_with = "null_as_default")] season_title: String,
-    #[serde(default, deserialize_with = "null_as_default")] cover: String,
-    #[serde(default, deserialize_with = "null_as_default")] evaluate: String,
-    #[serde(default, deserialize_with = "null_as_default")] subtitle: String,
-    #[serde(default, deserialize_with = "null_as_default")] areas: Vec<PgcAreaWire>,
-    #[serde(default, deserialize_with = "null_as_default")] actors: String,
-    #[serde(default)] rating: Option<PgcRatingWire>,
-    #[serde(default)] new_ep: Option<PgcNewEpWire>,
-    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")] season_type: i64,
-    #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<PgcEpisodeWire>,
-    #[serde(default, deserialize_with = "null_as_default")] section: Vec<PgcSectionWire>,
-    #[serde(default)] stat: Option<PgcStatWire>,
-    #[serde(default)] up_info: Option<PgcUpInfoWire>,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    season_id: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    media_id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    title: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    season_title: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    cover: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    evaluate: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    subtitle: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    areas: Vec<PgcAreaWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    actors: String,
+    #[serde(default)]
+    rating: Option<PgcRatingWire>,
+    #[serde(default)]
+    new_ep: Option<PgcNewEpWire>,
+    #[serde(default, rename = "type", deserialize_with = "lenient_i64_value")]
+    season_type: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    episodes: Vec<PgcEpisodeWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    section: Vec<PgcSectionWire>,
+    #[serde(default)]
+    stat: Option<PgcStatWire>,
+    #[serde(default)]
+    up_info: Option<PgcUpInfoWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct PgcSectionWire {
-    #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<PgcEpisodeWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    episodes: Vec<PgcEpisodeWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct PgcAreaWire {
-    #[serde(default, deserialize_with = "null_as_default")] name: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    name: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -135,65 +187,100 @@ struct PgcRatingWire {
 
 #[derive(Default, Deserialize)]
 struct PgcNewEpWire {
-    #[serde(default, deserialize_with = "null_as_default")] desc: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    desc: String,
 }
 
 #[derive(Clone, Default, Deserialize)]
 struct PgcEpisodeWire {
-    #[serde(default, deserialize_with = "lenient_i64_value")] aid: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] cid: i64,
-    #[serde(default, deserialize_with = "null_as_default")] bvid: String,
-    #[serde(default, deserialize_with = "null_as_default")] cover: String,
-    #[serde(default, deserialize_with = "lenient_i64_value")] ep_id: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] id: i64,
-    #[serde(default, deserialize_with = "null_as_default")] title: String,
-    #[serde(default, deserialize_with = "null_as_default")] long_title: String,
-    #[serde(default, deserialize_with = "null_as_default")] show_title: String,
-    #[serde(default, deserialize_with = "lenient_i64_value")] duration: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] pub_time: i64,
-    #[serde(default, alias = "release_date", deserialize_with = "lenient_i64_value")] release_date: i64,
-    #[serde(default, deserialize_with = "null_as_default")] badge: String,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    aid: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    cid: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    bvid: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    cover: String,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    ep_id: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    title: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    long_title: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    show_title: String,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    duration: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    pub_time: i64,
+    #[serde(
+        default,
+        alias = "release_date",
+        deserialize_with = "lenient_i64_value"
+    )]
+    release_date: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    badge: String,
 }
 
 #[derive(Default, Deserialize)]
 struct PgcStatWire {
-    #[serde(default, alias = "views", deserialize_with = "lenient_i64_value")] view: i64,
-    #[serde(default, alias = "danmakus", deserialize_with = "lenient_i64_value")] danmaku: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] reply: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] favorite: i64,
-    #[serde(default, alias = "coins", deserialize_with = "lenient_i64_value")] coin: i64,
-    #[serde(default, deserialize_with = "lenient_i64_value")] share: i64,
-    #[serde(default, alias = "likes", deserialize_with = "lenient_i64_value")] like: i64,
+    #[serde(default, alias = "views", deserialize_with = "lenient_i64_value")]
+    view: i64,
+    #[serde(default, alias = "danmakus", deserialize_with = "lenient_i64_value")]
+    danmaku: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    reply: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    favorite: i64,
+    #[serde(default, alias = "coins", deserialize_with = "lenient_i64_value")]
+    coin: i64,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    share: i64,
+    #[serde(default, alias = "likes", deserialize_with = "lenient_i64_value")]
+    like: i64,
 }
 
 #[derive(Default, Deserialize)]
 struct PgcUpInfoWire {
-    #[serde(default, deserialize_with = "lenient_i64_value")] mid: i64,
-    #[serde(default, alias = "uname", deserialize_with = "null_as_default")] name: String,
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    mid: i64,
+    #[serde(default, alias = "uname", deserialize_with = "null_as_default")]
+    name: String,
 }
 
 #[derive(Clone, Deserialize)]
 struct Durl {
-    #[serde(default)] url: String,
-    #[serde(default, deserialize_with = "null_as_default")] backup_url: Vec<String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    backup_url: Vec<String>,
 }
 
 #[derive(Deserialize)]
 struct Dash {
-    #[serde(default, deserialize_with = "null_as_default")] video: Vec<DashVideo>,
-    #[serde(default, deserialize_with = "null_as_default")] audio: Vec<DashAudio>,
-    #[serde(default)] flac: Option<FlacAudio>,
-    #[serde(default)] dolby: Option<DolbyAudio>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    video: Vec<DashVideo>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    audio: Vec<DashAudio>,
+    #[serde(default)]
+    flac: Option<FlacAudio>,
+    #[serde(default)]
+    dolby: Option<DolbyAudio>,
 }
 
 #[derive(Default, Deserialize)]
 struct FlacAudio {
-    #[serde(default)] audio: Option<DashAudio>,
+    #[serde(default)]
+    audio: Option<DashAudio>,
 }
 
 #[derive(Default, Deserialize)]
 struct DolbyAudio {
-    #[serde(default, deserialize_with = "null_as_default")] audio: Vec<DashAudio>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    audio: Vec<DashAudio>,
 }
 
 #[derive(Clone)]
@@ -219,30 +306,50 @@ struct DashAudio {
 
 #[derive(Default, Deserialize)]
 struct DashVideoWire {
-    #[serde(default)] id: i64,
-    #[serde(default)] base_url: String,
-    #[serde(default, rename = "baseUrl")] base_url_camel: String,
-    #[serde(default, deserialize_with = "null_as_default")] backup_url: Vec<String>,
-    #[serde(default, rename = "backupUrl", deserialize_with = "null_as_default")] backup_url_camel: Vec<String>,
-    #[serde(default)] codecs: String,
-    #[serde(default)] bandwidth: i64,
-    #[serde(default, rename = "bandWidth")] bandwidth_camel: i64,
-    #[serde(default)] width: i64,
-    #[serde(default)] height: i64,
-    #[serde(default)] frame_rate: String,
-    #[serde(default, rename = "frameRate")] frame_rate_camel: String,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default, rename = "baseUrl")]
+    base_url_camel: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    backup_url: Vec<String>,
+    #[serde(default, rename = "backupUrl", deserialize_with = "null_as_default")]
+    backup_url_camel: Vec<String>,
+    #[serde(default)]
+    codecs: String,
+    #[serde(default)]
+    bandwidth: i64,
+    #[serde(default, rename = "bandWidth")]
+    bandwidth_camel: i64,
+    #[serde(default)]
+    width: i64,
+    #[serde(default)]
+    height: i64,
+    #[serde(default)]
+    frame_rate: String,
+    #[serde(default, rename = "frameRate")]
+    frame_rate_camel: String,
 }
 
 #[derive(Default, Deserialize)]
 struct DashAudioWire {
-    #[serde(default)] id: i64,
-    #[serde(default)] base_url: String,
-    #[serde(default, rename = "baseUrl")] base_url_camel: String,
-    #[serde(default, deserialize_with = "null_as_default")] backup_url: Vec<String>,
-    #[serde(default, rename = "backupUrl", deserialize_with = "null_as_default")] backup_url_camel: Vec<String>,
-    #[serde(default)] codecs: String,
-    #[serde(default)] bandwidth: i64,
-    #[serde(default, rename = "bandWidth")] bandwidth_camel: i64,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default, rename = "baseUrl")]
+    base_url_camel: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    backup_url: Vec<String>,
+    #[serde(default, rename = "backupUrl", deserialize_with = "null_as_default")]
+    backup_url_camel: Vec<String>,
+    #[serde(default)]
+    codecs: String,
+    #[serde(default)]
+    bandwidth: i64,
+    #[serde(default, rename = "bandWidth")]
+    bandwidth_camel: i64,
 }
 
 #[derive(Deserialize)]
@@ -287,7 +394,11 @@ where
     Ok(match v {
         Some(Value::Number(n)) => {
             if let Some(i) = n.as_i64() {
-                if i > 0 { i.to_string() } else { String::new() }
+                if i > 0 {
+                    i.to_string()
+                } else {
+                    String::new()
+                }
             } else if let Some(f) = n.as_f64() {
                 if f > 0.0 {
                     let mut s = format!("{:.1}", f);
@@ -315,15 +426,27 @@ where
 }
 
 fn prefer_non_empty(primary: String, secondary: String) -> String {
-    if !primary.is_empty() { primary } else { secondary }
+    if !primary.is_empty() {
+        primary
+    } else {
+        secondary
+    }
 }
 
 fn prefer_non_empty_vec<T>(primary: Vec<T>, secondary: Vec<T>) -> Vec<T> {
-    if !primary.is_empty() { primary } else { secondary }
+    if !primary.is_empty() {
+        primary
+    } else {
+        secondary
+    }
 }
 
 fn prefer_non_zero(primary: i64, secondary: i64) -> i64 {
-    if primary != 0 { primary } else { secondary }
+    if primary != 0 {
+        primary
+    } else {
+        secondary
+    }
 }
 
 fn map_subtitles(info: Option<SubtitleInfoWire>) -> Vec<VideoSubtitle> {
@@ -444,7 +567,11 @@ impl PgcSeasonWire {
         let mut episodes = self
             .episodes
             .into_iter()
-            .chain(self.section.into_iter().flat_map(|section| section.episodes))
+            .chain(
+                self.section
+                    .into_iter()
+                    .flat_map(|section| section.episodes),
+            )
             .map(PgcEpisodeWire::into_pgc_episode)
             .filter(|ep| ep.ep_id > 0 && ep.cid > 0)
             .collect::<Vec<_>>();
@@ -505,7 +632,11 @@ impl PgcEpisodeWire {
             long_title: self.long_title,
             cover: self.cover,
             duration_sec: normalize_pgc_duration_sec(self.duration),
-            pub_time: if self.pub_time > 0 { self.pub_time } else { self.release_date },
+            pub_time: if self.pub_time > 0 {
+                self.pub_time
+            } else {
+                self.release_date
+            },
             badge: self.badge,
         }
     }
@@ -530,20 +661,27 @@ impl Core {
 
         #[derive(Deserialize)]
         struct ViewData {
-            #[serde(default)] cid: i64,
-            #[serde(default)] pages: Vec<ViewPage>,
+            #[serde(default)]
+            cid: i64,
+            #[serde(default)]
+            pages: Vec<ViewPage>,
         }
         #[derive(Deserialize)]
         struct ViewPage {
-            #[serde(default)] cid: i64,
+            #[serde(default)]
+            cid: i64,
         }
 
         let data: ViewData = self
             .http
             .get_web(URL_VIEW, &[("bvid".to_string(), bvid.to_string())])?;
-        if data.cid > 0 { return Ok(data.cid); }
+        if data.cid > 0 {
+            return Ok(data.cid);
+        }
         if let Some(p) = data.pages.first() {
-            if p.cid > 0 { return Ok(p.cid); }
+            if p.cid > 0 {
+                return Ok(p.cid);
+            }
         }
         Err(CoreError::Internal(format!(
             "view returned no cid for bvid={bvid}"
@@ -554,7 +692,13 @@ impl Core {
         self.video_playurl_with_audio(aid, cid, qn, 0)
     }
 
-    pub fn video_playurl_with_audio(&self, aid: i64, cid: i64, qn: i64, audio_qn: i64) -> CoreResult<PlayUrl> {
+    pub fn video_playurl_with_audio(
+        &self,
+        aid: i64,
+        cid: i64,
+        qn: i64,
+        audio_qn: i64,
+    ) -> CoreResult<PlayUrl> {
         self.video_playurl_with_audio_options(aid, cid, qn, audio_qn, "auto")
     }
 
@@ -566,7 +710,14 @@ impl Core {
         audio_qn: i64,
         cdn_selection: &str,
     ) -> CoreResult<PlayUrl> {
-        self.video_playurl_with_audio_playback_options(aid, cid, qn, audio_qn, cdn_selection, "auto")
+        self.video_playurl_with_audio_playback_options(
+            aid,
+            cid,
+            qn,
+            audio_qn,
+            cdn_selection,
+            "auto",
+        )
     }
 
     pub fn video_playurl_with_audio_playback_options(
@@ -599,7 +750,15 @@ impl Core {
         cdn_selection: &str,
         codec_preference: &str,
     ) -> CoreResult<PlayUrl> {
-        match self.video_playurl_web_with_audio(aid, bvid, cid, qn, audio_qn, cdn_selection, codec_preference) {
+        match self.video_playurl_web_with_audio(
+            aid,
+            bvid,
+            cid,
+            qn,
+            audio_qn,
+            cdn_selection,
+            codec_preference,
+        ) {
             Ok(play) => Ok(play),
             Err(web_err) => {
                 let web_msg = format!("wbi/playurl failed → fell back to tv_durl: {web_err}");
@@ -663,7 +822,16 @@ impl Core {
         audio_qn: i64,
         cdn_selection: &str,
     ) -> CoreResult<PlayUrl> {
-        self.pgc_playurl_with_audio_playback_options(aid, cid, ep_id, season_id, qn, audio_qn, cdn_selection, "auto")
+        self.pgc_playurl_with_audio_playback_options(
+            aid,
+            cid,
+            ep_id,
+            season_id,
+            qn,
+            audio_qn,
+            cdn_selection,
+            "auto",
+        )
     }
 
     pub fn pgc_playurl_with_audio_playback_options(
@@ -677,10 +845,20 @@ impl Core {
         cdn_selection: &str,
         codec_preference: &str,
     ) -> CoreResult<PlayUrl> {
-        match self.pgc_playurl_web_with_audio(aid, cid, ep_id, season_id, qn, audio_qn, cdn_selection, codec_preference) {
+        match self.pgc_playurl_web_with_audio(
+            aid,
+            cid,
+            ep_id,
+            season_id,
+            qn,
+            audio_qn,
+            cdn_selection,
+            codec_preference,
+        ) {
             Ok(play) => Ok(play),
             Err(web_err) => {
-                let web_msg = format!("pgc/player/web/v2/playurl failed → fell back to tv_durl: {web_err}");
+                let web_msg =
+                    format!("pgc/player/web/v2/playurl failed → fell back to tv_durl: {web_err}");
                 eprintln!("[ibili_core] {web_msg}");
                 if ep_id <= 0 {
                     return Err(CoreError::Internal(web_msg));
@@ -726,7 +904,9 @@ impl Core {
 
     pub fn pgc_season(&self, season_id: i64, ep_id: i64) -> CoreResult<PgcSeason> {
         if season_id <= 0 && ep_id <= 0 {
-            return Err(CoreError::InvalidArgument("season_id or ep_id required".into()));
+            return Err(CoreError::InvalidArgument(
+                "season_id or ep_id required".into(),
+            ));
         }
         let mut params: Vec<(String, String)> = Vec::new();
         if season_id > 0 {
@@ -745,12 +925,22 @@ impl Core {
             .map_err(|e| CoreError::Network(e.to_string()))?
             .text()
             .map_err(|e| CoreError::Network(e.to_string()))?;
-        let env: PgcSeasonEnvelope = serde_json::from_str(&body)
-            .map_err(|e| CoreError::Decode(format!("{}: {}", e, body.chars().take(500).collect::<String>())))?;
+        let env: PgcSeasonEnvelope = serde_json::from_str(&body).map_err(|e| {
+            CoreError::Decode(format!(
+                "{}: {}",
+                e,
+                body.chars().take(500).collect::<String>()
+            ))
+        })?;
         if env.code != 0 {
-            return Err(CoreError::Api { code: env.code, msg: env.message });
+            return Err(CoreError::Api {
+                code: env.code,
+                msg: env.message,
+            });
         }
-        let wire = env.result.ok_or_else(|| CoreError::Decode("missing pgc result".into()))?;
+        let wire = env
+            .result
+            .ok_or_else(|| CoreError::Decode("missing pgc result".into()))?;
         Ok(wire.into_pgc_season())
     }
 
@@ -788,8 +978,16 @@ impl Core {
             "avid"
         };
         append_playurl_dm_params(&mut params);
-        let response: PlayUrlRoot = self.http.get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
-        let mut play = build_playurl_from_web_response(response, qn, audio_qn, cdn_selection, codec_preference)?;
+        let response: PlayUrlRoot = self
+            .http
+            .get_signed_web(URL_PLAYURL_WEB, params, &wbi_key)?;
+        let mut play = build_playurl_from_web_response(
+            response,
+            qn,
+            audio_qn,
+            cdn_selection,
+            codec_preference,
+        )?;
         if let Ok(info) = self.fetch_player_info(aid, bvid, cid, 0, 0, &wbi_key) {
             merge_player_info(&mut play, info);
         }
@@ -845,18 +1043,34 @@ impl Core {
             .map_err(|e| CoreError::Network(e.to_string()))?
             .text()
             .map_err(|e| CoreError::Network(e.to_string()))?;
-        let env: PgcPlayUrlEnvelope = serde_json::from_str(&body)
-            .map_err(|e| CoreError::Decode(format!("{}: {}", e, body.chars().take(500).collect::<String>())))?;
+        let env: PgcPlayUrlEnvelope = serde_json::from_str(&body).map_err(|e| {
+            CoreError::Decode(format!(
+                "{}: {}",
+                e,
+                body.chars().take(500).collect::<String>()
+            ))
+        })?;
         if env.code != 0 {
-            return Err(CoreError::Api { code: env.code, msg: env.message });
+            return Err(CoreError::Api {
+                code: env.code,
+                msg: env.message,
+            });
         }
-        let result = env.result.ok_or_else(|| CoreError::Decode("missing pgc playurl result".into()))?;
+        let result = env
+            .result
+            .ok_or_else(|| CoreError::Decode("missing pgc playurl result".into()))?;
         let resume_ms = result
             .play_view_business_info
             .and_then(|info| info.user_status)
             .map(|status| status.current_watch_progress)
             .unwrap_or(0);
-        let mut play = build_playurl_from_web_response(result.video_info, qn, audio_qn, cdn_selection, codec_preference)?;
+        let mut play = build_playurl_from_web_response(
+            result.video_info,
+            qn,
+            audio_qn,
+            cdn_selection,
+            codec_preference,
+        )?;
         if let Ok(info) = self.fetch_player_info(aid, "", cid, season_id, ep_id, &wbi_key) {
             merge_player_info(&mut play, info);
         }
@@ -878,7 +1092,10 @@ impl Core {
         qn: i64,
         cdn_selection: &str,
     ) -> CoreResult<PlayUrl> {
-        let access_key = self.session.read().access_key()
+        let access_key = self
+            .session
+            .read()
+            .access_key()
             .ok_or(CoreError::AuthRequired)?;
         let qn = if qn <= 0 { 80 } else { qn };
         let params = vec![
@@ -898,7 +1115,10 @@ impl Core {
         let r: PlayUrlRoot = self.http.get_signed_app(URL_PLAYURL_TV, params)?;
         let accept_quality = r.accept_quality.clone();
         let accept_description = r.accept_description.clone();
-        let first = r.durl.into_iter().next()
+        let first = r
+            .durl
+            .into_iter()
+            .next()
             .ok_or_else(|| CoreError::Decode("empty durl".into()))?;
         let ranked = rank_urls_for_selection(
             &collect_candidates(&first.url, &first.backup_url),
@@ -942,7 +1162,10 @@ impl Core {
         qn: i64,
         cdn_selection: &str,
     ) -> CoreResult<PlayUrl> {
-        let access_key = self.session.read().access_key()
+        let access_key = self
+            .session
+            .read()
+            .access_key()
             .ok_or(CoreError::AuthRequired)?;
         let qn = if qn <= 0 { 80 } else { qn };
         let params = vec![
@@ -962,7 +1185,10 @@ impl Core {
         let r: PlayUrlRoot = self.http.get_signed_app(URL_PLAYURL_TV, params)?;
         let accept_quality = r.accept_quality.clone();
         let accept_description = r.accept_description.clone();
-        let first = r.durl.into_iter().next()
+        let first = r
+            .durl
+            .into_iter()
+            .next()
             .ok_or_else(|| CoreError::Decode("empty pgc tv durl".into()))?;
         let ranked = rank_urls_for_selection(
             &collect_candidates(&first.url, &first.backup_url),
@@ -1001,7 +1227,10 @@ impl Core {
 
     fn fetch_wbi_key(&self) -> CoreResult<WbiKey> {
         let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+        Ok(WbiKey::from_urls(
+            &nav.wbi_img.img_url,
+            &nav.wbi_img.sub_url,
+        ))
     }
 
     fn fetch_player_info(
@@ -1059,7 +1288,12 @@ fn append_playurl_debug_message(
         .accept_audio_quality
         .iter()
         .any(|id| matches!(*id, 100010 | 100009 | 100008 | 30251 | 30250 | 30255));
-    let max_video_qn = play.accept_quality.iter().copied().max().unwrap_or(play.quality);
+    let max_video_qn = play
+        .accept_quality
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(play.quality);
     let server_video_degraded = max_video_qn > play.quality && play.quality > 0;
     let should_attach = activation.attempted_now
         || !activation.succeeded
@@ -1130,7 +1364,10 @@ fn append_playurl_dm_params(params: &mut Vec<(String, String)>) {
     params.push(("dm_img_list".into(), "[]".into()));
     params.push(("dm_img_str".into(), dm_param_random_base64(16, 64)));
     params.push(("dm_cover_img_str".into(), dm_param_random_base64(32, 128)));
-    params.push(("dm_img_inter".into(), r#"{"ds":[],"wh":[0,0,0],"of":[0,0,0]}"#.into()));
+    params.push((
+        "dm_img_inter".into(),
+        r#"{"ds":[],"wh":[0,0,0],"of":[0,0,0]}"#.into(),
+    ));
 }
 
 fn dm_param_random_base64(min_len: usize, max_len: usize) -> String {
@@ -1170,7 +1407,10 @@ fn dm_param_seed() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
-    nanos ^ DM_PARAM_COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(17)
+    nanos
+        ^ DM_PARAM_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .rotate_left(17)
 }
 
 impl Dash {
@@ -1219,7 +1459,9 @@ fn build_playurl_from_web_response(
     let subtitles = map_subtitles(response.subtitle);
     let view_points = map_view_points(response.view_points);
     let accept_quality = if response.accept_quality.is_empty() {
-        response.dash.as_ref()
+        response
+            .dash
+            .as_ref()
             .map(|dash| collect_dash_qualities(&dash.video))
             .unwrap_or_default()
     } else {
@@ -1235,7 +1477,8 @@ fn build_playurl_from_web_response(
         let target_qn = pick_target_quality(requested_qn, &accept_quality, &dash.video);
         if let Some(video) = pick_video_stream(&dash.video, target_qn, codec_preference) {
             let all_audio = dash.all_audio();
-            let (accept_audio_quality, accept_audio_description) = collect_audio_qualities(&all_audio);
+            let (accept_audio_quality, accept_audio_description) =
+                collect_audio_qualities(&all_audio);
             let audio = pick_audio_stream_by_quality(&all_audio, audio_qn);
             let video_candidates = collect_candidates(&video.base_url, &video.backup_url);
             let video_ranked = rank_urls_for_selection(&video_candidates, cdn_selection);
@@ -1287,7 +1530,10 @@ fn build_playurl_from_web_response(
         }
     }
 
-    let first = response.durl.into_iter().next()
+    let first = response
+        .durl
+        .into_iter()
+        .next()
         .ok_or_else(|| CoreError::Decode("missing playable stream".into()))?;
     let ranked = rank_urls_for_selection(
         &collect_candidates(&first.url, &first.backup_url),
@@ -1330,7 +1576,9 @@ fn collect_candidates(primary: &str, backups: &[String]) -> Vec<String> {
         out.push(primary.to_string());
     }
     for u in backups {
-        if u.is_empty() { continue; }
+        if u.is_empty() {
+            continue;
+        }
         if !out.iter().any(|x| x == u) {
             out.push(u.clone());
         }
@@ -1390,19 +1638,26 @@ fn pick_target_quality(requested_qn: i64, accept_quality: &[i64], videos: &[Dash
     };
     candidates.sort_unstable_by(|a, b| b.cmp(a));
     candidates.dedup();
-    let highest = candidates.first().copied()
+    let highest = candidates
+        .first()
+        .copied()
         .or_else(|| videos.iter().map(|item| item.id).max())
         .unwrap_or(64);
     if requested_qn <= 0 {
         return highest;
     }
-    candidates.into_iter().find(|item| *item <= requested_qn).unwrap_or(highest)
+    candidates
+        .into_iter()
+        .find(|item| *item <= requested_qn)
+        .unwrap_or(highest)
 }
 
-fn pick_video_stream(videos: &[DashVideo], target_qn: i64, codec_preference: &str) -> Option<DashVideo> {
-    let mut qns = videos.iter()
-        .map(|item| item.id)
-        .collect::<Vec<_>>();
+fn pick_video_stream(
+    videos: &[DashVideo],
+    target_qn: i64,
+    codec_preference: &str,
+) -> Option<DashVideo> {
+    let mut qns = videos.iter().map(|item| item.id).collect::<Vec<_>>();
     qns.sort_unstable_by(|a, b| b.cmp(a));
     qns.dedup();
     let resolved_qns = qns
@@ -1416,7 +1671,9 @@ fn pick_video_stream(videos: &[DashVideo], target_qn: i64, codec_preference: &st
         for qn in resolved_qns.iter().copied() {
             if let Some(video) = videos
                 .iter()
-                .filter(|item| item.id == qn && item.codecs.to_ascii_lowercase().starts_with("avc1"))
+                .filter(|item| {
+                    item.id == qn && item.codecs.to_ascii_lowercase().starts_with("avc1")
+                })
                 .max_by_key(|item| item.bandwidth)
             {
                 return Some(video.clone());
@@ -1425,7 +1682,8 @@ fn pick_video_stream(videos: &[DashVideo], target_qn: i64, codec_preference: &st
     }
 
     let resolved_qn = resolved_qns.first().copied()?;
-    videos.iter()
+    videos
+        .iter()
         .filter(|item| item.id == resolved_qn)
         .max_by_key(|item| (video_codec_score(&item.codecs), item.bandwidth))
         .cloned()
@@ -1449,18 +1707,25 @@ fn audio_quality_rank(id: i64) -> i32 {
         100010 => 800,
         100009 => 700,
         100008 => 600,
-        30251 => 500,          // Hi-Res无损
-        30250 | 30255 => 400,  // 杜比全景声
-        30280 => 300,          // 192K
-        30232 => 200,          // 132K
-        30216 => 100,          // 64K
+        30251 => 500,         // Hi-Res无损
+        30250 | 30255 => 400, // 杜比全景声
+        30280 => 300,         // 192K
+        30232 => 200,         // 132K
+        30216 => 100,         // 64K
         _ => 0,
     }
 }
 
 fn pick_audio_stream(audio: &[DashAudio]) -> Option<DashAudio> {
-    audio.iter()
-        .max_by_key(|item| (audio_quality_rank(item.id), audio_codec_score(&item.codecs), item.bandwidth))
+    audio
+        .iter()
+        .max_by_key(|item| {
+            (
+                audio_quality_rank(item.id),
+                audio_codec_score(&item.codecs),
+                item.bandwidth,
+            )
+        })
         .cloned()
 }
 
@@ -1474,7 +1739,8 @@ fn pick_audio_stream_by_quality(audio: &[DashAudio], preferred_id: i64) -> Optio
     let preferred_rank = audio_quality_rank(preferred_id);
     let mut sorted: Vec<&DashAudio> = audio.iter().collect();
     sorted.sort_by(|a, b| audio_quality_rank(b.id).cmp(&audio_quality_rank(a.id)));
-    sorted.into_iter()
+    sorted
+        .into_iter()
         .find(|a| audio_quality_rank(a.id) <= preferred_rank)
         .or_else(|| audio.iter().min_by_key(|a| audio_quality_rank(a.id)))
         .cloned()
@@ -1516,8 +1782,11 @@ fn audio_quality_label(id: i64) -> String {
 /// path has exhibited intermittent failures with AV1 content; HEVC is
 /// the safer default.
 fn video_codec_score(codecs: &str) -> i32 {
-    if codecs.starts_with("hev1") || codecs.starts_with("hvc1")
-        || codecs.starts_with("dvh1") || codecs.starts_with("dvhe") {
+    if codecs.starts_with("hev1")
+        || codecs.starts_with("hvc1")
+        || codecs.starts_with("dvh1")
+        || codecs.starts_with("dvhe")
+    {
         400
     } else if codecs.starts_with("av01") {
         300
@@ -1529,9 +1798,13 @@ fn video_codec_score(codecs: &str) -> i32 {
 }
 
 fn audio_codec_score(codecs: &str) -> i32 {
-    if codecs.starts_with("mp4a") { 200 }
-    else if codecs.starts_with("ec-3") || codecs.starts_with("ac-3") { 100 }
-    else { 0 }
+    if codecs.starts_with("mp4a") {
+        200
+    } else if codecs.starts_with("ec-3") || codecs.starts_with("ac-3") {
+        100
+    } else {
+        0
+    }
 }
 
 fn quality_label(qn: i64) -> String {
@@ -1571,115 +1844,180 @@ fn video_lookup_params(aid: i64, bvid: &str) -> CoreResult<Vec<(String, String)>
 
 #[derive(Deserialize)]
 struct ViewFullRoot {
-    #[serde(default)] aid: i64,
-    #[serde(default)] bvid: String,
-    #[serde(default)] cid: i64,
-    #[serde(default)] title: String,
-    #[serde(default, alias = "pic")] cover: String,
-    #[serde(default)] desc: String,
-    #[serde(default, deserialize_with = "null_as_default")] desc_v2: Vec<DescV2Wire>,
-    #[serde(default)] duration: i64,
-    #[serde(default)] pubdate: i64,
-    #[serde(default)] ctime: i64,
-    #[serde(default)] videos: i32,
-    #[serde(default)] stat: ViewStatWire,
-    #[serde(default)] owner: ViewOwnerWire,
-    #[serde(default, deserialize_with = "null_as_default")] pages: Vec<ViewPageWire>,
-    #[serde(default, deserialize_with = "null_as_default")] honor_reply: HonorReplyWire,
-    #[serde(default)] ugc_season: Option<UgcSeasonWire>,
-    #[serde(default)] redirect_url: String,
+    #[serde(default)]
+    aid: i64,
+    #[serde(default)]
+    bvid: String,
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default, alias = "pic")]
+    cover: String,
+    #[serde(default)]
+    desc: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    desc_v2: Vec<DescV2Wire>,
+    #[serde(default)]
+    duration: i64,
+    #[serde(default)]
+    pubdate: i64,
+    #[serde(default)]
+    ctime: i64,
+    #[serde(default)]
+    videos: i32,
+    #[serde(default)]
+    stat: ViewStatWire,
+    #[serde(default)]
+    owner: ViewOwnerWire,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pages: Vec<ViewPageWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    honor_reply: HonorReplyWire,
+    #[serde(default)]
+    ugc_season: Option<UgcSeasonWire>,
+    #[serde(default)]
+    redirect_url: String,
 }
 
 #[derive(Default, Deserialize)]
 struct ViewStatWire {
-    #[serde(default)] view: i64,
-    #[serde(default)] danmaku: i64,
-    #[serde(default)] reply: i64,
-    #[serde(default)] favorite: i64,
-    #[serde(default)] coin: i64,
-    #[serde(default)] share: i64,
-    #[serde(default)] like: i64,
+    #[serde(default)]
+    view: i64,
+    #[serde(default)]
+    danmaku: i64,
+    #[serde(default)]
+    reply: i64,
+    #[serde(default)]
+    favorite: i64,
+    #[serde(default)]
+    coin: i64,
+    #[serde(default)]
+    share: i64,
+    #[serde(default)]
+    like: i64,
 }
 
 #[derive(Default, Deserialize)]
 struct ViewOwnerWire {
-    #[serde(default)] mid: i64,
-    #[serde(default)] name: String,
-    #[serde(default)] face: String,
+    #[serde(default)]
+    mid: i64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    face: String,
 }
 
 #[derive(Deserialize)]
 struct ViewPageWire {
-    #[serde(default)] cid: i64,
-    #[serde(default)] page: i32,
-    #[serde(default)] part: String,
-    #[serde(default)] duration: i64,
-    #[serde(default)] first_frame: String,
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    page: i32,
+    #[serde(default)]
+    part: String,
+    #[serde(default)]
+    duration: i64,
+    #[serde(default)]
+    first_frame: String,
 }
 
 #[derive(Deserialize)]
 struct DescV2Wire {
-    #[serde(default, alias = "type")] kind: i32,
-    #[serde(default)] raw_text: String,
-    #[serde(default)] biz_id: i64,
+    #[serde(default, alias = "type")]
+    kind: i32,
+    #[serde(default)]
+    raw_text: String,
+    #[serde(default)]
+    biz_id: i64,
 }
 
 #[derive(Default, Deserialize)]
 struct HonorReplyWire {
-    #[serde(default, deserialize_with = "null_as_default")] honor: Vec<HonorEntryWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    honor: Vec<HonorEntryWire>,
 }
 
 #[derive(Deserialize)]
 struct HonorEntryWire {
-    #[serde(default, alias = "type")] kind: i32,
-    #[serde(default)] desc: String,
+    #[serde(default, alias = "type")]
+    kind: i32,
+    #[serde(default)]
+    desc: String,
 }
 
 #[derive(Deserialize)]
 struct UgcSeasonWire {
-    #[serde(default)] id: i64,
-    #[serde(default)] title: String,
-    #[serde(default)] cover: String,
-    #[serde(default)] mid: i64,
-    #[serde(default)] intro: String,
-    #[serde(default)] ep_count: i32,
-    #[serde(default, deserialize_with = "null_as_default")] sections: Vec<UgcSectionWire>,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    cover: String,
+    #[serde(default)]
+    mid: i64,
+    #[serde(default)]
+    intro: String,
+    #[serde(default)]
+    ep_count: i32,
+    #[serde(default, deserialize_with = "null_as_default")]
+    sections: Vec<UgcSectionWire>,
 }
 
 #[derive(Deserialize)]
 struct UgcSectionWire {
-    #[serde(default)] id: i64,
-    #[serde(default)] title: String,
-    #[serde(default, deserialize_with = "null_as_default")] episodes: Vec<UgcEpisodeWire>,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    episodes: Vec<UgcEpisodeWire>,
 }
 
 #[derive(Deserialize)]
 struct UgcEpisodeWire {
-    #[serde(default)] id: i64,
-    #[serde(default)] aid: i64,
-    #[serde(default)] bvid: String,
-    #[serde(default)] cid: i64,
-    #[serde(default)] title: String,
-    #[serde(default)] arc: UgcEpisodeArcWire,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    aid: i64,
+    #[serde(default)]
+    bvid: String,
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    arc: UgcEpisodeArcWire,
 }
 
 #[derive(Default, Deserialize)]
 struct UgcEpisodeArcWire {
-    #[serde(default)] pic: String,
-    #[serde(default)] duration: i64,
+    #[serde(default)]
+    pic: String,
+    #[serde(default)]
+    duration: i64,
 }
 
 #[derive(Deserialize)]
 struct RelatedItemWire {
-    #[serde(default)] aid: i64,
-    #[serde(default)] bvid: String,
-    #[serde(default)] cid: i64,
-    #[serde(default)] title: String,
-    #[serde(default)] pic: String,
-    #[serde(default)] duration: i64,
-    #[serde(default)] pubdate: i64,
-    #[serde(default)] owner: ViewOwnerWire,
-    #[serde(default)] stat: ViewStatWire,
+    #[serde(default)]
+    aid: i64,
+    #[serde(default)]
+    bvid: String,
+    #[serde(default)]
+    cid: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    pic: String,
+    #[serde(default)]
+    duration: i64,
+    #[serde(default)]
+    pubdate: i64,
+    #[serde(default)]
+    owner: ViewOwnerWire,
+    #[serde(default)]
+    stat: ViewStatWire,
 }
 
 impl Core {
@@ -1697,21 +2035,29 @@ impl Core {
     /// fetch it lazily and tolerate failures (returning an empty list).
     fn video_tags(&self, aid: i64) -> CoreResult<Vec<String>> {
         const URL_TAG: &str = "https://api.bilibili.com/x/tag/archive/tags";
-        if aid <= 0 { return Ok(Vec::new()); }
+        if aid <= 0 {
+            return Ok(Vec::new());
+        }
         #[derive(Deserialize)]
-        struct TagItem { #[serde(default)] tag_name: String }
-        let items: Vec<TagItem> = self.http.get_web(URL_TAG, &[("aid".to_string(), aid.to_string())])?;
-        Ok(items.into_iter().map(|t| t.tag_name).filter(|s| !s.is_empty()).collect())
+        struct TagItem {
+            #[serde(default)]
+            tag_name: String,
+        }
+        let items: Vec<TagItem> = self
+            .http
+            .get_web(URL_TAG, &[("aid".to_string(), aid.to_string())])?;
+        Ok(items
+            .into_iter()
+            .map(|t| t.tag_name)
+            .filter(|s| !s.is_empty())
+            .collect())
     }
 
     /// Mirrors `Api.relatedList` — list of related videos shown on the
     /// detail page "相关视频" tab.
     pub fn video_related(&self, aid: i64, bvid: &str) -> CoreResult<Vec<RelatedVideoItem>> {
         let params = video_lookup_params(aid, bvid)?;
-        let raw: Vec<RelatedItemWire> = self.http.get_web(
-            URL_RELATED,
-            &params,
-        )?;
+        let raw: Vec<RelatedItemWire> = self.http.get_web(URL_RELATED, &params)?;
         Ok(raw.into_iter().map(map_related_item).collect())
     }
 }
@@ -1724,11 +2070,15 @@ fn map_view_full(r: ViewFullRoot, tags: Vec<String>) -> VideoView {
         title: r.title,
         cover: r.cover,
         desc: r.desc,
-        desc_v2: r.desc_v2.into_iter().map(|n| VideoDescNode {
-            kind: n.kind,
-            raw_text: n.raw_text,
-            biz_id: n.biz_id,
-        }).collect(),
+        desc_v2: r
+            .desc_v2
+            .into_iter()
+            .map(|n| VideoDescNode {
+                kind: n.kind,
+                raw_text: n.raw_text,
+                biz_id: n.biz_id,
+            })
+            .collect(),
         duration_sec: r.duration,
         pubdate: r.pubdate,
         ctime: r.ctime,
@@ -1747,16 +2097,26 @@ fn map_view_full(r: ViewFullRoot, tags: Vec<String>) -> VideoView {
             name: r.owner.name,
             face: r.owner.face,
         },
-        pages: r.pages.into_iter().map(|p| VideoPage {
-            cid: p.cid,
-            page: p.page,
-            part: p.part,
-            duration_sec: p.duration,
-            first_frame: p.first_frame,
-        }).collect(),
+        pages: r
+            .pages
+            .into_iter()
+            .map(|p| VideoPage {
+                cid: p.cid,
+                page: p.page,
+                part: p.part,
+                duration_sec: p.duration,
+                first_frame: p.first_frame,
+            })
+            .collect(),
         tags,
-        honor: r.honor_reply.honor.into_iter()
-            .map(|h| VideoHonor { kind: h.kind, desc: h.desc })
+        honor: r
+            .honor_reply
+            .honor
+            .into_iter()
+            .map(|h| VideoHonor {
+                kind: h.kind,
+                desc: h.desc,
+            })
             .collect(),
         ugc_season: r.ugc_season.map(|s| UgcSeason {
             id: s.id,
@@ -1765,19 +2125,27 @@ fn map_view_full(r: ViewFullRoot, tags: Vec<String>) -> VideoView {
             mid: s.mid,
             intro: s.intro,
             ep_count: s.ep_count,
-            sections: s.sections.into_iter().map(|sec| UgcSeasonSection {
-                id: sec.id,
-                title: sec.title,
-                episodes: sec.episodes.into_iter().map(|ep| UgcSeasonEpisode {
-                    id: ep.id,
-                    aid: ep.aid,
-                    bvid: ep.bvid,
-                    cid: ep.cid,
-                    title: ep.title,
-                    cover: ep.arc.pic,
-                    duration_sec: ep.arc.duration,
-                }).collect(),
-            }).collect(),
+            sections: s
+                .sections
+                .into_iter()
+                .map(|sec| UgcSeasonSection {
+                    id: sec.id,
+                    title: sec.title,
+                    episodes: sec
+                        .episodes
+                        .into_iter()
+                        .map(|ep| UgcSeasonEpisode {
+                            id: ep.id,
+                            aid: ep.aid,
+                            bvid: ep.bvid,
+                            cid: ep.cid,
+                            title: ep.title,
+                            cover: ep.arc.pic,
+                            duration_sec: ep.arc.duration,
+                        })
+                        .collect(),
+                })
+                .collect(),
         }),
         redirect_url: r.redirect_url,
     }
@@ -1806,7 +2174,8 @@ mod tests {
 
     #[test]
     fn dash_video_accepts_snake_and_camel_fields_together() {
-        let video: DashVideo = serde_json::from_str(r#"{
+        let video: DashVideo = serde_json::from_str(
+            r#"{
             "id": 112,
             "baseUrl": "https://example.com/camel.mp4",
             "base_url": "https://example.com/snake.mp4",
@@ -1815,27 +2184,38 @@ mod tests {
             "codecs": "avc1.640032",
             "bandWidth": 1000,
             "bandwidth": 2000
-        }"#).expect("dash video should deserialize");
+        }"#,
+        )
+        .expect("dash video should deserialize");
 
         assert_eq!(video.id, 112);
         assert_eq!(video.base_url, "https://example.com/snake.mp4");
-        assert_eq!(video.backup_url, vec!["https://example.com/snake-backup.mp4"]);
+        assert_eq!(
+            video.backup_url,
+            vec!["https://example.com/snake-backup.mp4"]
+        );
         assert_eq!(video.bandwidth, 2000);
     }
 
     #[test]
     fn dash_audio_accepts_camel_only_fields() {
-        let audio: DashAudio = serde_json::from_str(r#"{
+        let audio: DashAudio = serde_json::from_str(
+            r#"{
             "id": 30280,
             "baseUrl": "https://example.com/audio.m4s",
             "backupUrl": ["https://example.com/audio-backup.m4s"],
             "codecs": "mp4a.40.2",
             "bandWidth": 192000
-        }"#).expect("dash audio should deserialize");
+        }"#,
+        )
+        .expect("dash audio should deserialize");
 
         assert_eq!(audio.id, 30280);
         assert_eq!(audio.base_url, "https://example.com/audio.m4s");
-        assert_eq!(audio.backup_url, vec!["https://example.com/audio-backup.m4s"]);
+        assert_eq!(
+            audio.backup_url,
+            vec!["https://example.com/audio-backup.m4s"]
+        );
         assert_eq!(audio.bandwidth, 192000);
     }
 }

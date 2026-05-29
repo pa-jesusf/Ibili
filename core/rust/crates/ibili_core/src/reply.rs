@@ -10,9 +10,9 @@
 //! - `reply.detail` (`/x/v2/reply/reply`): replies to a single root
 //!   comment, page-based.
 
-use crate::Core;
 use crate::dto::{ReplyEmote, ReplyItem, ReplyJumpUrl, ReplyPage};
 use crate::error::{CoreError, CoreResult};
+use crate::Core;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -21,72 +21,113 @@ const URL_REPLY_DETAIL: &str = "https://api.bilibili.com/x/v2/reply/reply";
 
 #[derive(Deserialize)]
 struct ReplyMainRoot {
-    #[serde(default)] cursor: Option<CursorWire>,
-    #[serde(default, deserialize_with = "null_as_default")] replies: Vec<ReplyWire>,
-    #[serde(default, deserialize_with = "null_as_default")] top_replies: Vec<ReplyWire>,
-    #[serde(default)] upper: Option<UpperWire>,
+    #[serde(default)]
+    cursor: Option<CursorWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    replies: Vec<ReplyWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    top_replies: Vec<ReplyWire>,
+    #[serde(default)]
+    upper: Option<UpperWire>,
 }
 
 #[derive(Deserialize)]
 struct ReplyDetailRoot {
-    #[serde(default)] page: Option<DetailPageWire>,
-    #[serde(default, deserialize_with = "null_as_default")] replies: Vec<ReplyWire>,
-    #[serde(default)] root: Option<ReplyWire>,
-    #[serde(default)] upper: Option<UpperWire>,
+    #[serde(default)]
+    page: Option<DetailPageWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    replies: Vec<ReplyWire>,
+    #[serde(default)]
+    root: Option<ReplyWire>,
+    #[serde(default)]
+    upper: Option<UpperWire>,
 }
 
 #[derive(Deserialize)]
 struct DetailPageWire {
-    #[serde(default)] num: i32,
-    #[serde(default)] size: i32,
-    #[serde(default)] count: i64,
+    #[serde(default)]
+    num: i32,
+    #[serde(default)]
+    size: i32,
+    #[serde(default)]
+    count: i64,
 }
 
 #[derive(Deserialize)]
 struct CursorWire {
-    #[serde(default)] is_end: bool,
-    #[serde(default)] all_count: i64,
-    #[serde(default)] pagination_reply: Option<PaginationReplyWire>,
+    #[serde(default)]
+    is_end: bool,
+    #[serde(default)]
+    all_count: i64,
+    #[serde(default)]
+    pagination_reply: Option<PaginationReplyWire>,
 }
 
 #[derive(Deserialize)]
 struct PaginationReplyWire {
-    #[serde(default)] next_offset: String,
+    #[serde(default)]
+    next_offset: String,
 }
 
 #[derive(Default, Deserialize)]
-struct UpperWire { #[serde(default)] mid: i64 }
+struct UpperWire {
+    #[serde(default)]
+    mid: i64,
+}
 
 #[derive(Deserialize)]
 struct ReplyWire {
-    #[serde(default)] rpid: i64,
-    #[serde(default)] oid: i64,
-    #[serde(default)] root: i64,
-    #[serde(default)] parent: i64,
-    #[serde(default)] mid: i64,
-    #[serde(default)] member: MemberWire,
-    #[serde(default)] content: ContentWire,
-    #[serde(default)] ctime: i64,
-    #[serde(default)] like: i64,
-    #[serde(default)] action: i32,
-    #[serde(default)] reply_control: ReplyControlWire,
-    #[serde(default)] rcount: i32,
-    #[serde(default, deserialize_with = "null_as_default")] replies: Vec<ReplyWire>,
+    #[serde(default)]
+    rpid: i64,
+    #[serde(default)]
+    oid: i64,
+    #[serde(default)]
+    root: i64,
+    #[serde(default)]
+    parent: i64,
+    #[serde(default)]
+    mid: i64,
+    #[serde(default)]
+    member: MemberWire,
+    #[serde(default)]
+    content: ContentWire,
+    #[serde(default)]
+    ctime: i64,
+    #[serde(default)]
+    like: i64,
+    #[serde(default)]
+    action: i32,
+    #[serde(default)]
+    reply_control: ReplyControlWire,
+    #[serde(default)]
+    rcount: i32,
+    #[serde(default, deserialize_with = "null_as_default")]
+    replies: Vec<ReplyWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct MemberWire {
-    #[serde(default)] uname: String,
-    #[serde(default)] avatar: String,
-    #[serde(default, deserialize_with = "string_or_int")] level_info: LevelWire,
-    #[serde(default)] vip: VipWire,
+    #[serde(default)]
+    uname: String,
+    #[serde(default)]
+    avatar: String,
+    #[serde(default, deserialize_with = "string_or_int")]
+    level_info: LevelWire,
+    #[serde(default)]
+    vip: VipWire,
 }
 
 #[derive(Default, Deserialize)]
-struct VipWire { #[serde(default)] vip_status: i32 }
+struct VipWire {
+    #[serde(default)]
+    vip_status: i32,
+}
 
 #[derive(Default, Deserialize)]
-struct LevelWire { #[serde(default)] current_level: i32 }
+struct LevelWire {
+    #[serde(default)]
+    current_level: i32,
+}
 
 fn string_or_int<'de, D: serde::Deserializer<'de>>(de: D) -> Result<LevelWire, D::Error> {
     LevelWire::deserialize(de).or(Ok(LevelWire::default()))
@@ -94,7 +135,8 @@ fn string_or_int<'de, D: serde::Deserializer<'de>>(de: D) -> Result<LevelWire, D
 
 #[derive(Default, Deserialize)]
 struct ContentWire {
-    #[serde(default)] message: String,
+    #[serde(default)]
+    message: String,
     /// Bilibili ships emote metadata as `{ "[doge]": { url, meta:{size} } }`.
     /// We deserialise into a map so the iOS layer doesn’t need a JSON parser.
     #[serde(default, deserialize_with = "emote_map_or_empty")]
@@ -109,43 +151,66 @@ struct ContentWire {
 
 #[derive(Default, Deserialize)]
 struct EmoteWire {
-    #[serde(default)] url: String,
-    #[serde(default)] meta: EmoteMetaWire,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    meta: EmoteMetaWire,
 }
 
 #[derive(Default, Deserialize)]
-struct EmoteMetaWire { #[serde(default)] size: i32 }
+struct EmoteMetaWire {
+    #[serde(default)]
+    size: i32,
+}
 
 #[derive(Default, Deserialize)]
 struct PictureWire {
-    #[serde(default)] img_src: String,
+    #[serde(default)]
+    img_src: String,
 }
 
 #[derive(Default, Deserialize)]
 struct JumpUrlWire {
-    #[serde(default)] title: String,
-    #[serde(default)] pc_url: String,
-    #[serde(default)] prefix_icon: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    pc_url: String,
+    #[serde(default)]
+    prefix_icon: String,
 }
 
-fn emote_map_or_empty<'de, D: serde::Deserializer<'de>>(de: D) -> Result<HashMap<String, EmoteWire>, D::Error> {
-    Ok(Option::<HashMap<String, EmoteWire>>::deserialize(de).ok().flatten().unwrap_or_default())
+fn emote_map_or_empty<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<HashMap<String, EmoteWire>, D::Error> {
+    Ok(Option::<HashMap<String, EmoteWire>>::deserialize(de)
+        .ok()
+        .flatten()
+        .unwrap_or_default())
 }
 
-fn jump_map_or_empty<'de, D: serde::Deserializer<'de>>(de: D) -> Result<HashMap<String, JumpUrlWire>, D::Error> {
-    Ok(Option::<HashMap<String, JumpUrlWire>>::deserialize(de).ok().flatten().unwrap_or_default())
+fn jump_map_or_empty<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<HashMap<String, JumpUrlWire>, D::Error> {
+    Ok(Option::<HashMap<String, JumpUrlWire>>::deserialize(de)
+        .ok()
+        .flatten()
+        .unwrap_or_default())
 }
 
 #[derive(Default, Deserialize)]
 struct ReplyControlWire {
-    #[serde(default)] up_action: UpActionWire,
-    #[serde(default)] location: String,
+    #[serde(default)]
+    up_action: UpActionWire,
+    #[serde(default)]
+    location: String,
 }
 
 #[derive(Default, Deserialize)]
 struct UpActionWire {
-    #[serde(default)] like: bool,
-    #[serde(default)] reply: bool,
+    #[serde(default)]
+    like: bool,
+    #[serde(default)]
+    reply: bool,
 }
 
 fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
@@ -159,7 +224,13 @@ where
 impl Core {
     /// Fetch top-level comments. `sort` is 1 (热门) or 2 (时间).
     /// `next_offset` is the cursor returned by the previous call (`""` for first page).
-    pub fn reply_main(&self, oid: i64, kind: i32, sort: i32, next_offset: &str) -> CoreResult<ReplyPage> {
+    pub fn reply_main(
+        &self,
+        oid: i64,
+        kind: i32,
+        sort: i32,
+        next_offset: &str,
+    ) -> CoreResult<ReplyPage> {
         if oid <= 0 {
             return Err(CoreError::InvalidArgument("oid invalid".into()));
         }
@@ -224,14 +295,27 @@ impl Core {
 }
 
 fn map_reply(r: ReplyWire) -> ReplyItem {
-    let emotes: Vec<ReplyEmote> = r.content.emote.into_iter()
-        .map(|(name, w)| ReplyEmote { name, url: w.url, size: w.meta.size.max(1) })
+    let emotes: Vec<ReplyEmote> = r
+        .content
+        .emote
+        .into_iter()
+        .map(|(name, w)| ReplyEmote {
+            name,
+            url: w.url,
+            size: w.meta.size.max(1),
+        })
         .collect();
-    let pictures: Vec<String> = r.content.pictures.into_iter()
+    let pictures: Vec<String> = r
+        .content
+        .pictures
+        .into_iter()
         .map(|p| p.img_src)
         .filter(|s| !s.is_empty())
         .collect();
-    let jump_urls: Vec<ReplyJumpUrl> = r.content.jump_url.into_iter()
+    let jump_urls: Vec<ReplyJumpUrl> = r
+        .content
+        .jump_url
+        .into_iter()
         .map(|(keyword, j)| ReplyJumpUrl {
             keyword,
             title: j.title,

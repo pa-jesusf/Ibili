@@ -1,14 +1,17 @@
-use crate::Core;
-use crate::dto::{TvQrStart, TvQrPoll};
+use crate::dto::{TvQrPoll, TvQrStart};
 use crate::error::{CoreError, CoreResult};
 use crate::session::PersistedSession;
+use crate::Core;
 use serde::Deserialize;
 
 const URL_AUTH_CODE: &str = "https://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code";
 const URL_POLL: &str = "https://passport.bilibili.com/x/passport-tv-login/qrcode/poll";
 
 #[derive(Deserialize)]
-struct AuthCodeData { auth_code: String, url: String }
+struct AuthCodeData {
+    auth_code: String,
+    url: String,
+}
 
 #[derive(Deserialize)]
 struct PollData {
@@ -45,7 +48,10 @@ impl Core {
             ("mobi_app".into(), "android_hd".into()),
         ];
         let d: AuthCodeData = self.http.post_signed_app(URL_AUTH_CODE, params)?;
-        Ok(TvQrStart { auth_code: d.auth_code, url: d.url })
+        Ok(TvQrStart {
+            auth_code: d.auth_code,
+            url: d.url,
+        })
     }
 
     pub fn auth_tv_qr_poll(&self, auth_code: &str) -> CoreResult<TvQrPoll> {
@@ -56,8 +62,11 @@ impl Core {
         match self.http.post_signed_app::<PollData>(URL_POLL, params) {
             Ok(d) => {
                 let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-                let web_cookies: Vec<(String, String)> = d.cookie_info
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                let web_cookies: Vec<(String, String)> = d
+                    .cookie_info
                     .map(|ci| ci.cookies.into_iter().map(|c| (c.name, c.value)).collect())
                     .unwrap_or_default();
                 // Push cookies into the live http jar so the very next
@@ -82,8 +91,12 @@ impl Core {
                 86038 => Ok(TvQrPoll::Expired),
                 86090 => Ok(TvQrPoll::Scanned),
                 86039 => Ok(TvQrPoll::Pending),
-                _ if msg.contains("未扫描") || msg.contains("unscanned") => Ok(TvQrPoll::Pending),
-                _ if msg.contains("未确认") || msg.contains("unconfirmed") => Ok(TvQrPoll::Scanned),
+                _ if msg.contains("未扫描") || msg.contains("unscanned") => {
+                    Ok(TvQrPoll::Pending)
+                }
+                _ if msg.contains("未确认") || msg.contains("unconfirmed") => {
+                    Ok(TvQrPoll::Scanned)
+                }
                 _ => Err(CoreError::Api { code, msg }),
             },
             Err(e) => Err(e),

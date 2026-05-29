@@ -99,69 +99,96 @@ struct NavWbiImage {
 
 #[derive(Default, Deserialize)]
 struct OpusRoot {
-    #[serde(default)] item: Option<OpusItemWire>,
-    #[serde(default)] fallback: Option<OpusFallbackWire>,
+    #[serde(default)]
+    item: Option<OpusItemWire>,
+    #[serde(default)]
+    fallback: Option<OpusFallbackWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct OpusFallbackWire {
-    #[serde(default, deserialize_with = "lenient_string")] id: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    id: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct OpusItemWire {
-    #[serde(default, deserialize_with = "lenient_string")] id_str: Option<String>,
-    #[serde(default)] basic: Option<OpusBasicWire>,
-    #[serde(default)] modules: Option<Vec<Value>>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    id_str: Option<String>,
+    #[serde(default)]
+    basic: Option<OpusBasicWire>,
+    #[serde(default)]
+    modules: Option<Vec<Value>>,
 }
 
 #[derive(Default, Deserialize)]
 struct OpusBasicWire {
-    #[serde(default, deserialize_with = "lenient_string")] comment_id_str: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i32")] comment_type: Option<i32>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    comment_id_str: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i32")]
+    comment_type: Option<i32>,
 }
 
 #[derive(Default, Deserialize)]
 struct ArticleViewWire {
-    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
-    #[serde(default)] author: Option<ArticleAuthorWire>,
-    #[serde(default, deserialize_with = "lenient_i64")] publish_time: Option<i64>,
-    #[serde(default, deserialize_with = "string_vec")] origin_image_urls: Vec<String>,
-    #[serde(default, deserialize_with = "lenient_string")] dyn_id_str: Option<String>,
-    #[serde(default)] opus: Option<ArticleViewOpusWire>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    title: Option<String>,
+    #[serde(default)]
+    author: Option<ArticleAuthorWire>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    publish_time: Option<i64>,
+    #[serde(default, deserialize_with = "string_vec")]
+    origin_image_urls: Vec<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    dyn_id_str: Option<String>,
+    #[serde(default)]
+    opus: Option<ArticleViewOpusWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct ArticleViewOpusWire {
-    #[serde(default)] content: Option<ArticleContentWire>,
+    #[serde(default)]
+    content: Option<ArticleContentWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct ArticleContentWire {
-    #[serde(default)] paragraphs: Vec<Value>,
+    #[serde(default)]
+    paragraphs: Vec<Value>,
 }
 
 #[derive(Default, Deserialize)]
 struct ArticleInfoWire {
-    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
-    #[serde(default, deserialize_with = "string_vec")] origin_image_urls: Vec<String>,
-    #[serde(default)] stats: Option<ArticleInfoStatsWire>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "string_vec")]
+    origin_image_urls: Vec<String>,
+    #[serde(default)]
+    stats: Option<ArticleInfoStatsWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct ArticleInfoStatsWire {
-    #[serde(default, deserialize_with = "lenient_i64")] view: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] like: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] reply: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] favorite: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] share: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    view: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    like: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    reply: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    favorite: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    share: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct ArticleAuthorWire {
-    #[serde(default, deserialize_with = "lenient_i64")] mid: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_string")] name: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] face: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    mid: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    face: Option<String>,
 }
 
 impl Core {
@@ -184,7 +211,9 @@ impl Core {
                 return self.article_read_detail(id.parse().unwrap_or(0));
             }
         }
-        let item = raw.item.ok_or_else(|| CoreError::Decode("missing opus item".into()))?;
+        let item = raw
+            .item
+            .ok_or_else(|| CoreError::Decode("missing opus item".into()))?;
         Ok(map_opus_item(item, opus_id))
     }
 
@@ -234,11 +263,17 @@ impl Core {
 
 fn map_opus_item(item: OpusItemWire, fallback_id: &str) -> ArticleDetail {
     let mut detail = ArticleDetail {
-        id: item.id_str.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| fallback_id.to_string()),
+        id: item
+            .id_str
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| fallback_id.to_string()),
         kind: "opus".into(),
         url: format!(
             "https://www.bilibili.com/opus/{}",
-            item.id_str.clone().unwrap_or_else(|| fallback_id.to_string())
+            item.id_str
+                .clone()
+                .unwrap_or_else(|| fallback_id.to_string())
         ),
         comment_type: 17,
         ..Default::default()
@@ -264,7 +299,9 @@ fn map_opus_item(item: OpusItemWire, fallback_id: &str) -> ArticleDetail {
                     detail.author = ArticleAuthor {
                         mid: int_at(&module, &["module_author", "mid"]),
                         name: string_at(&module, &["module_author", "name"]).unwrap_or_default(),
-                        face: ensure_https(string_at(&module, &["module_author", "face"]).unwrap_or_default()),
+                        face: ensure_https(
+                            string_at(&module, &["module_author", "face"]).unwrap_or_default(),
+                        ),
                     };
                     detail.pub_ts = int_at(&module, &["module_author", "pub_ts"]);
                 }
@@ -289,7 +326,11 @@ fn map_opus_item(item: OpusItemWire, fallback_id: &str) -> ArticleDetail {
     finish_article_detail(detail)
 }
 
-fn map_read_article(raw: ArticleViewWire, info: Option<ArticleInfoWire>, cvid: i64) -> ArticleDetail {
+fn map_read_article(
+    raw: ArticleViewWire,
+    info: Option<ArticleInfoWire>,
+    cvid: i64,
+) -> ArticleDetail {
     let mut detail = ArticleDetail {
         id: cvid.to_string(),
         kind: "read".into(),
@@ -394,7 +435,12 @@ fn parse_article_block(v: &Value) -> ArticleBlock {
                 block.kind = "text".into();
                 let lines: Vec<String> = items
                     .iter()
-                    .map(|item| parse_nodes(array_at(item, &["nodes"])).iter().map(|n| n.text.clone()).collect::<String>())
+                    .map(|item| {
+                        parse_nodes(array_at(item, &["nodes"]))
+                            .iter()
+                            .map(|n| n.text.clone())
+                            .collect::<String>()
+                    })
                     .collect();
                 block.text = lines.join("\n");
             } else {
@@ -412,7 +458,10 @@ fn parse_article_block(v: &Value) -> ArticleBlock {
             block.kind = "link_card".into();
         }
     }
-    block.images.iter_mut().for_each(|img| img.url = ensure_https(std::mem::take(&mut img.url)));
+    block
+        .images
+        .iter_mut()
+        .for_each(|img| img.url = ensure_https(std::mem::take(&mut img.url)));
     if let Some(card) = block.link_card.as_mut() {
         card.cover = ensure_https(std::mem::take(&mut card.cover));
     }
@@ -433,9 +482,13 @@ fn parse_node(v: &Value) -> ArticleRichNode {
         let kind = string_at(rich, &["type"]).unwrap_or_default();
         let emoji_url = string_at(rich, &["emoji", "url"]).unwrap_or_default();
         let text = if kind == "RICH_TEXT_NODE_TYPE_EMOJI" && !emoji_url.is_empty() {
-            string_at(rich, &["text"]).or_else(|| string_at(rich, &["orig_text"])).unwrap_or_default()
+            string_at(rich, &["text"])
+                .or_else(|| string_at(rich, &["orig_text"]))
+                .unwrap_or_default()
         } else {
-            string_at(rich, &["text"]).or_else(|| string_at(rich, &["orig_text"])).unwrap_or_default()
+            string_at(rich, &["text"])
+                .or_else(|| string_at(rich, &["orig_text"]))
+                .unwrap_or_default()
         };
         return ArticleRichNode {
             text,
@@ -544,11 +597,16 @@ fn string_at(v: &Value, path: &[&str]) -> Option<String> {
 fn int_at(v: &Value, path: &[&str]) -> i64 {
     let mut current = v;
     for key in path {
-        let Some(next) = current.get(*key) else { return 0 };
+        let Some(next) = current.get(*key) else {
+            return 0;
+        };
         current = next;
     }
     match current {
-        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.round() as i64)).unwrap_or(0),
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f.round() as i64))
+            .unwrap_or(0),
         Value::String(s) => s.parse().unwrap_or(0),
         _ => 0,
     }
@@ -557,7 +615,9 @@ fn int_at(v: &Value, path: &[&str]) -> i64 {
 fn bool_at(v: &Value, path: &[&str]) -> bool {
     let mut current = v;
     for key in path {
-        let Some(next) = current.get(*key) else { return false };
+        let Some(next) = current.get(*key) else {
+            return false;
+        };
         current = next;
     }
     match current {

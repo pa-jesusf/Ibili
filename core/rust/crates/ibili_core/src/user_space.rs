@@ -13,9 +13,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::Core;
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
+use crate::Core;
 
 const URL_USER_CARD: &str = "https://api.bilibili.com/x/web-interface/card";
 const URL_SPACE_APP: &str = "https://app.bilibili.com/x/v2/space";
@@ -23,7 +23,8 @@ const URL_HISTORY_CURSOR: &str = "https://api.bilibili.com/x/web-interface/histo
 const URL_HISTORY_SEARCH: &str = "https://api.bilibili.com/x/web-interface/history/search";
 const URL_FAV_RESOURCE_LIST: &str = "https://api.bilibili.com/x/v3/fav/resource/list";
 const URL_FAV_PGC_LIST: &str = "https://api.bilibili.com/x/space/bangumi/follow/list";
-const URL_SUBSCRIPTION_FOLDER_LIST: &str = "https://api.bilibili.com/x/v3/fav/folder/collected/list";
+const URL_SUBSCRIPTION_FOLDER_LIST: &str =
+    "https://api.bilibili.com/x/v3/fav/folder/collected/list";
 const URL_SUBSCRIPTION_RESOURCE_LIST: &str = "https://api.bilibili.com/x/space/fav/season/list";
 const URL_UNFAV_FOLDER: &str = "https://api.bilibili.com/x/v3/fav/folder/unfav";
 const URL_UNFAV_SEASON: &str = "https://api.bilibili.com/x/v3/fav/season/unfav";
@@ -250,7 +251,11 @@ impl Core {
         ];
         let raw: UserCardWire = self.http.get_web(URL_USER_CARD, &params)?;
         let card = raw.card.unwrap_or_default();
-        let parsed_mid = card.mid.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(mid);
+        let parsed_mid = card
+            .mid
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(mid);
         let following = card.attention.unwrap_or(0);
         let vip = card.vip.unwrap_or_default();
         Ok(UserCard {
@@ -279,7 +284,10 @@ impl Core {
             ("mobi_app".into(), "android".into()),
             ("platform".into(), "android".into()),
             ("s_locale".into(), "zh_CN".into()),
-            ("statistics".into(), r#"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#.into()),
+            (
+                "statistics".into(),
+                r#"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#.into(),
+            ),
             ("vmid".into(), mid.to_string()),
         ];
         let raw: SpaceLiveWire = self.http.get_android_app(URL_SPACE_APP, &params)?;
@@ -299,14 +307,22 @@ impl Core {
     /// page; pass `0` for both on the first call.
     pub fn history_cursor(&self, max: i64, view_at: i64) -> CoreResult<HistoryPage> {
         if self.session.read().access_key().is_none() {
-            return Ok(HistoryPage { items: vec![], next_max: 0, next_view_at: 0 });
+            return Ok(HistoryPage {
+                items: vec![],
+                next_max: 0,
+                next_view_at: 0,
+            });
         }
         let mut params: Vec<(String, String)> = vec![
             ("ps".into(), "20".into()),
             ("business".into(), "archive".into()),
         ];
-        if max > 0 { params.push(("max".into(), max.to_string())); }
-        if view_at > 0 { params.push(("view_at".into(), view_at.to_string())); }
+        if max > 0 {
+            params.push(("max".into(), max.to_string()));
+        }
+        if view_at > 0 {
+            params.push(("view_at".into(), view_at.to_string()));
+        }
         let raw: HistoryWire = self.http.get_web(URL_HISTORY_CURSOR, &params)?;
         let cursor = raw.cursor.unwrap_or_default();
         let items = history_items_from_wire(raw.list);
@@ -322,7 +338,11 @@ impl Core {
     /// so the iOS layer can share row rendering and pagination logic.
     pub fn history_search(&self, keyword: &str, pn: i64) -> CoreResult<HistoryPage> {
         if self.session.read().access_key().is_none() {
-            return Ok(HistoryPage { items: vec![], next_max: 0, next_view_at: 0 });
+            return Ok(HistoryPage {
+                items: vec![],
+                next_max: 0,
+                next_view_at: 0,
+            });
         }
         let params: Vec<(String, String)> = vec![
             ("pn".into(), pn.max(1).to_string()),
@@ -351,7 +371,10 @@ impl Core {
         all_folders: bool,
     ) -> CoreResult<FavResourcePage> {
         if self.session.read().access_key().is_none() {
-            return Ok(FavResourcePage { items: vec![], has_more: false });
+            return Ok(FavResourcePage {
+                items: vec![],
+                has_more: false,
+            });
         }
         let params: Vec<(String, String)> = vec![
             ("media_id".into(), media_id.to_string()),
@@ -364,7 +387,9 @@ impl Core {
             ("platform".into(), "web".into()),
         ];
         let raw: FavListWire = self.http.get_web(URL_FAV_RESOURCE_LIST, &params)?;
-        let items: Vec<FavResourceItem> = raw.medias.into_iter()
+        let items: Vec<FavResourceItem> = raw
+            .medias
+            .into_iter()
             .filter(|m| m.kind.unwrap_or(0) == 2 || m.kind.is_none()) // 2 = video; ignore audio etc.
             .map(|m| {
                 let upper = m.upper.unwrap_or_default();
@@ -383,14 +408,25 @@ impl Core {
                 }
             })
             .collect();
-        Ok(FavResourcePage { items, has_more: raw.has_more.unwrap_or(false) })
+        Ok(FavResourcePage {
+            items,
+            has_more: raw.has_more.unwrap_or(false),
+        })
     }
 
     /// `/x/v3/fav/folder/collected/list`. Lists collection folders /
     /// seasons the current account has subscribed to.
-    pub fn subscription_folder_list(&self, mid: i64, pn: i64, ps: i64) -> CoreResult<SubscriptionFolderPage> {
+    pub fn subscription_folder_list(
+        &self,
+        mid: i64,
+        pn: i64,
+        ps: i64,
+    ) -> CoreResult<SubscriptionFolderPage> {
         if mid <= 0 || self.session.read().access_key().is_none() {
-            return Ok(SubscriptionFolderPage { items: vec![], has_more: false });
+            return Ok(SubscriptionFolderPage {
+                items: vec![],
+                has_more: false,
+            });
         }
         let params: Vec<(String, String)> = vec![
             ("up_mid".into(), mid.to_string()),
@@ -398,18 +434,32 @@ impl Core {
             ("ps".into(), ps.clamp(1, 50).to_string()),
             ("platform".into(), "web".into()),
         ];
-        let raw: SubscriptionFolderListWire = self.http.get_web(URL_SUBSCRIPTION_FOLDER_LIST, &params)?;
+        let raw: SubscriptionFolderListWire =
+            self.http.get_web(URL_SUBSCRIPTION_FOLDER_LIST, &params)?;
         Ok(SubscriptionFolderPage {
-            items: raw.list.into_iter().map(subscription_folder_from_wire).collect(),
+            items: raw
+                .list
+                .into_iter()
+                .map(subscription_folder_from_wire)
+                .collect(),
             has_more: raw.has_more.unwrap_or(false),
         })
     }
 
     /// `/x/space/fav/season/list`. Lists videos/resources inside a
     /// subscribed favourite season/folder.
-    pub fn subscription_resource_list(&self, id: i64, pn: i64, ps: i64) -> CoreResult<SubscriptionResourcePage> {
+    pub fn subscription_resource_list(
+        &self,
+        id: i64,
+        pn: i64,
+        ps: i64,
+    ) -> CoreResult<SubscriptionResourcePage> {
         if id <= 0 || self.session.read().access_key().is_none() {
-            return Ok(SubscriptionResourcePage { info: None, items: vec![], has_more: false });
+            return Ok(SubscriptionResourcePage {
+                info: None,
+                items: vec![],
+                has_more: false,
+            });
         }
         let page_size = ps.clamp(1, 50);
         let params: Vec<(String, String)> = vec![
@@ -417,21 +467,26 @@ impl Core {
             ("pn".into(), pn.max(1).to_string()),
             ("ps".into(), page_size.to_string()),
         ];
-        let raw: SubscriptionResourceListWire = self.http.get_web(URL_SUBSCRIPTION_RESOURCE_LIST, &params)?;
-        let items: Vec<SubscriptionResource> = raw.medias.into_iter().map(|m| {
-            let cnt = m.cnt_info.unwrap_or_default();
-            SubscriptionResource {
-                aid: m.id.unwrap_or(0),
-                bvid: m.bvid.unwrap_or_default(),
-                cid: 0,
-                title: m.title.unwrap_or_default(),
-                cover: m.cover.unwrap_or_default(),
-                duration_sec: m.duration.unwrap_or(0),
-                play: cnt.play.unwrap_or(0),
-                danmaku: cnt.danmaku.unwrap_or(0),
-                pubdate: m.pubtime.unwrap_or(0),
-            }
-        }).collect();
+        let raw: SubscriptionResourceListWire =
+            self.http.get_web(URL_SUBSCRIPTION_RESOURCE_LIST, &params)?;
+        let items: Vec<SubscriptionResource> = raw
+            .medias
+            .into_iter()
+            .map(|m| {
+                let cnt = m.cnt_info.unwrap_or_default();
+                SubscriptionResource {
+                    aid: m.id.unwrap_or(0),
+                    bvid: m.bvid.unwrap_or_default(),
+                    cid: 0,
+                    title: m.title.unwrap_or_default(),
+                    cover: m.cover.unwrap_or_default(),
+                    duration_sec: m.duration.unwrap_or(0),
+                    play: cnt.play.unwrap_or(0),
+                    danmaku: cnt.danmaku.unwrap_or(0),
+                    pubdate: m.pubtime.unwrap_or(0),
+                }
+            })
+            .collect();
         let has_more = items.len() >= page_size as usize;
         Ok(SubscriptionResourcePage {
             info: raw.info.map(subscription_folder_from_wire),
@@ -445,7 +500,9 @@ impl Core {
     /// every other value uses the season unfav endpoint.
     pub fn subscription_cancel(&self, id: i64, kind: i64) -> CoreResult<()> {
         if id <= 0 {
-            return Err(CoreError::InvalidArgument("subscription id required".into()));
+            return Err(CoreError::InvalidArgument(
+                "subscription id required".into(),
+            ));
         }
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
         let form = if kind == 11 {
@@ -460,15 +517,28 @@ impl Core {
                 ("csrf".to_string(), csrf),
             ]
         };
-        let url = if kind == 11 { URL_UNFAV_FOLDER } else { URL_UNFAV_SEASON };
+        let url = if kind == 11 {
+            URL_UNFAV_FOLDER
+        } else {
+            URL_UNFAV_SEASON
+        };
         self.http.post_form_web_empty(url, &form)
     }
 
     /// `/x/space/bangumi/follow/list`. `kind` 1 = bangumi, 2 = cinema.
     /// `status` 0 = all, 1 = watching, 2 = finished, 3 = planned.
-    pub fn bangumi_follow_list(&self, vmid: i64, kind: i32, status: i32, pn: i64) -> CoreResult<BangumiFollowPage> {
+    pub fn bangumi_follow_list(
+        &self,
+        vmid: i64,
+        kind: i32,
+        status: i32,
+        pn: i64,
+    ) -> CoreResult<BangumiFollowPage> {
         if vmid <= 0 || self.session.read().access_key().is_none() {
-            return Ok(BangumiFollowPage { items: vec![], has_more: false });
+            return Ok(BangumiFollowPage {
+                items: vec![],
+                has_more: false,
+            });
         }
         let params: Vec<(String, String)> = vec![
             ("vmid".into(), vmid.to_string()),
@@ -478,19 +548,23 @@ impl Core {
             ("ps".into(), "20".into()),
         ];
         let raw: BangumiListWire = self.http.get_web(URL_FAV_PGC_LIST, &params)?;
-        let items: Vec<BangumiFollowItem> = raw.list.into_iter().map(|b| BangumiFollowItem {
-            season_id: b.season_id.unwrap_or(0),
-            media_id: b.media_id.unwrap_or(0),
-            title: b.title.unwrap_or_default(),
-            cover: b.cover.unwrap_or_default(),
-            badge: b.badge.unwrap_or_default(),
-            renewal_time: b.renewal_time.unwrap_or_default(),
-            progress: b.progress.unwrap_or_default(),
-            evaluate: b.evaluate.unwrap_or_default(),
-            total_count: b.total_count.unwrap_or(0),
-            is_finish: b.is_finish.unwrap_or(0),
-            new_ep_index_show: b.new_ep.and_then(|ep| ep.index_show).unwrap_or_default(),
-        }).collect();
+        let items: Vec<BangumiFollowItem> = raw
+            .list
+            .into_iter()
+            .map(|b| BangumiFollowItem {
+                season_id: b.season_id.unwrap_or(0),
+                media_id: b.media_id.unwrap_or(0),
+                title: b.title.unwrap_or_default(),
+                cover: b.cover.unwrap_or_default(),
+                badge: b.badge.unwrap_or_default(),
+                renewal_time: b.renewal_time.unwrap_or_default(),
+                progress: b.progress.unwrap_or_default(),
+                evaluate: b.evaluate.unwrap_or_default(),
+                total_count: b.total_count.unwrap_or(0),
+                is_finish: b.is_finish.unwrap_or(0),
+                new_ep_index_show: b.new_ep.and_then(|ep| ep.index_show).unwrap_or_default(),
+            })
+            .collect();
         // The endpoint's `total` is total entries across all pages;
         // `has_more` isn't returned, so we infer.
         let total = raw.total.unwrap_or(0);
@@ -513,20 +587,26 @@ impl Core {
             ("need_split".into(), "true".into()),
             ("web_location".into(), "333.881".into()),
         ];
-        let raw: WatchLaterFullWire = self.http.get_signed_web(URL_WATCHLATER_LIST, params, &key)?;
-        Ok(raw.list.into_iter().map(|w| {
-            let owner = w.owner.unwrap_or_default();
-            WatchLaterItem {
-                aid: w.aid.unwrap_or(0),
-                bvid: w.bvid.unwrap_or_default(),
-                cid: w.cid.unwrap_or(0),
-                title: w.title.unwrap_or_default(),
-                cover: w.pic.unwrap_or_default(),
-                author: owner.name.unwrap_or_default(),
-                duration_sec: w.duration.unwrap_or(0),
-                progress_sec: w.progress.unwrap_or(0),
-            }
-        }).collect())
+        let raw: WatchLaterFullWire =
+            self.http
+                .get_signed_web(URL_WATCHLATER_LIST, params, &key)?;
+        Ok(raw
+            .list
+            .into_iter()
+            .map(|w| {
+                let owner = w.owner.unwrap_or_default();
+                WatchLaterItem {
+                    aid: w.aid.unwrap_or(0),
+                    bvid: w.bvid.unwrap_or_default(),
+                    cid: w.cid.unwrap_or(0),
+                    title: w.title.unwrap_or_default(),
+                    cover: w.pic.unwrap_or_default(),
+                    author: owner.name.unwrap_or_default(),
+                    duration_sec: w.duration.unwrap_or(0),
+                    progress_sec: w.progress.unwrap_or(0),
+                }
+            })
+            .collect())
     }
 
     /// `/x/relation/followings?vmid=&pn=&ps=20`. The list is only
@@ -558,15 +638,25 @@ impl Core {
         // catch and downgrade to an empty page.
         match self.http.get_web::<RelationWire>(url, &params) {
             Ok(raw) => {
-                let items = raw.list.into_iter().map(|u| RelationUser {
-                    mid: u.mid.unwrap_or(0),
-                    name: u.uname.unwrap_or_default(),
-                    face: u.face.unwrap_or_default(),
-                    sign: u.sign.unwrap_or_default(),
-                }).collect();
-                Ok(RelationPage { items, total: raw.total.unwrap_or(0) })
+                let items = raw
+                    .list
+                    .into_iter()
+                    .map(|u| RelationUser {
+                        mid: u.mid.unwrap_or(0),
+                        name: u.uname.unwrap_or_default(),
+                        face: u.face.unwrap_or_default(),
+                        sign: u.sign.unwrap_or_default(),
+                    })
+                    .collect();
+                Ok(RelationPage {
+                    items,
+                    total: raw.total.unwrap_or(0),
+                })
             }
-            Err(_) => Ok(RelationPage { items: vec![], total: 0 }),
+            Err(_) => Ok(RelationPage {
+                items: vec![],
+                total: 0,
+            }),
         }
     }
 
@@ -601,20 +691,25 @@ impl Core {
             ("web_location".into(), "1550101".into()),
             ("order_avoided".into(), "true".into()),
         ];
-        let raw: SpaceArcSearchRoot = self.http.get_signed_web(URL_SPACE_ARC_SEARCH, params, &key)?;
+        let raw: SpaceArcSearchRoot =
+            self.http
+                .get_signed_web(URL_SPACE_ARC_SEARCH, params, &key)?;
         let vlist = raw.list.and_then(|l| l.vlist).unwrap_or_default();
-        let items = vlist.into_iter().map(|v| SpaceArcItem {
-            aid: v.aid.unwrap_or(0),
-            bvid: v.bvid.unwrap_or_default(),
-            title: v.title.unwrap_or_default(),
-            cover: v.pic.unwrap_or_default(),
-            author: v.author.unwrap_or_default(),
-            duration_label: v.length.unwrap_or_default(),
-            play: v.play.unwrap_or(0),
-            danmaku: v.video_review.unwrap_or(0),
-            comment: v.comment.unwrap_or(0),
-            created: v.created.unwrap_or(0),
-        }).collect();
+        let items = vlist
+            .into_iter()
+            .map(|v| SpaceArcItem {
+                aid: v.aid.unwrap_or(0),
+                bvid: v.bvid.unwrap_or_default(),
+                title: v.title.unwrap_or_default(),
+                cover: v.pic.unwrap_or_default(),
+                author: v.author.unwrap_or_default(),
+                duration_label: v.length.unwrap_or_default(),
+                play: v.play.unwrap_or(0),
+                danmaku: v.video_review.unwrap_or(0),
+                comment: v.comment.unwrap_or(0),
+                created: v.created.unwrap_or(0),
+            })
+            .collect();
         let page_info = raw.page.unwrap_or_default();
         Ok(SpaceArcSearchPage {
             items,
@@ -626,7 +721,10 @@ impl Core {
 
     fn fetch_wbi_key_for_space(&self) -> CoreResult<WbiKey> {
         let nav: NavWire = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(&nav.wbi_img.img_url, &nav.wbi_img.sub_url))
+        Ok(WbiKey::from_urls(
+            &nav.wbi_img.img_url,
+            &nav.wbi_img.sub_url,
+        ))
     }
 }
 
@@ -634,219 +732,323 @@ impl Core {
 
 #[derive(Default, Deserialize)]
 struct UserCardWire {
-    #[serde(default)] card: Option<UserCardInner>,
-    #[serde(default)] follower: Option<i64>,
-    #[serde(default)] archive_count: Option<i64>,
+    #[serde(default)]
+    card: Option<UserCardInner>,
+    #[serde(default)]
+    follower: Option<i64>,
+    #[serde(default)]
+    archive_count: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct UserCardInner {
-    #[serde(default)] mid: Option<String>,
-    #[serde(default)] name: Option<String>,
-    #[serde(default)] face: Option<String>,
+    #[serde(default)]
+    mid: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    face: Option<String>,
     /// Bio. Sometimes returned as `sign`, sometimes nested elsewhere;
     /// the card endpoint emits it inline.
-    #[serde(default)] sign: Option<String>,
+    #[serde(default)]
+    sign: Option<String>,
     /// Some response variants put fans inside `card.fans` instead of
     /// the top-level `follower` field.
-    #[serde(default)] fans: Option<i64>,
+    #[serde(default)]
+    fans: Option<i64>,
     /// 关注数 (following).
-    #[serde(default)] attention: Option<i64>,
-    #[serde(default)] vip: Option<UserCardVip>,
+    #[serde(default)]
+    attention: Option<i64>,
+    #[serde(default)]
+    vip: Option<UserCardVip>,
 }
 
 #[derive(Default, Deserialize)]
 struct UserCardVip {
-    #[serde(default, rename = "type")] kind: Option<i64>,
-    #[serde(default)] status: Option<i64>,
-    #[serde(default)] label: Option<UserCardVipLabel>,
+    #[serde(default, rename = "type")]
+    kind: Option<i64>,
+    #[serde(default)]
+    status: Option<i64>,
+    #[serde(default)]
+    label: Option<UserCardVipLabel>,
 }
 
 #[derive(Default, Deserialize)]
 struct UserCardVipLabel {
-    #[serde(default)] text: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct SpaceLiveWire {
-    #[serde(default)] live: Option<UserLiveRoomWire>,
+    #[serde(default)]
+    live: Option<UserLiveRoomWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct UserLiveRoomWire {
-    #[serde(default, rename = "liveStatus")] live_status: Option<i64>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] online: Option<i64>,
-    #[serde(default)] roomid: Option<i64>,
-    #[serde(default)] url: Option<String>,
+    #[serde(default, rename = "liveStatus")]
+    live_status: Option<i64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    online: Option<i64>,
+    #[serde(default)]
+    roomid: Option<i64>,
+    #[serde(default)]
+    url: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct HistoryWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")] list: Vec<HistoryItemWire>,
-    #[serde(default)] cursor: Option<HistoryCursorWire>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    list: Vec<HistoryItemWire>,
+    #[serde(default)]
+    cursor: Option<HistoryCursorWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct HistoryCursorWire {
-    #[serde(default)] max: Option<i64>,
-    #[serde(default)] view_at: Option<i64>,
+    #[serde(default)]
+    max: Option<i64>,
+    #[serde(default)]
+    view_at: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct HistoryItemWire {
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] author_name: Option<String>,
-    #[serde(default)] duration: Option<i64>,
-    #[serde(default)] progress: Option<i64>,
-    #[serde(default)] view_at: Option<i64>,
-    #[serde(default)] history: Option<HistoryRefWire>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    author_name: Option<String>,
+    #[serde(default)]
+    duration: Option<i64>,
+    #[serde(default)]
+    progress: Option<i64>,
+    #[serde(default)]
+    view_at: Option<i64>,
+    #[serde(default)]
+    history: Option<HistoryRefWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct HistoryRefWire {
-    #[serde(default)] oid: Option<i64>,
-    #[serde(default)] cid: Option<i64>,
-    #[serde(default)] bvid: Option<String>,
-    #[serde(default)] business: Option<String>,
+    #[serde(default)]
+    oid: Option<i64>,
+    #[serde(default)]
+    cid: Option<i64>,
+    #[serde(default)]
+    bvid: Option<String>,
+    #[serde(default)]
+    business: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct FavListWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")] medias: Vec<FavMediaWire>,
-    #[serde(default)] has_more: Option<bool>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    medias: Vec<FavMediaWire>,
+    #[serde(default)]
+    has_more: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
 struct FavMediaWire {
-    #[serde(default)] id: Option<i64>,           // aid
-    #[serde(default)] bvid: Option<String>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] duration: Option<i64>,
-    #[serde(default)] pubtime: Option<i64>,
-    #[serde(default, rename = "type")] kind: Option<i64>,
-    #[serde(default)] upper: Option<FavUpperWire>,
-    #[serde(default)] cnt_info: Option<FavCntWire>,
+    #[serde(default)]
+    id: Option<i64>, // aid
+    #[serde(default)]
+    bvid: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    duration: Option<i64>,
+    #[serde(default)]
+    pubtime: Option<i64>,
+    #[serde(default, rename = "type")]
+    kind: Option<i64>,
+    #[serde(default)]
+    upper: Option<FavUpperWire>,
+    #[serde(default)]
+    cnt_info: Option<FavCntWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct FavUpperWire {
-    #[serde(default)] name: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct FavCntWire {
-    #[serde(default)] play: Option<i64>,
-    #[serde(default)] danmaku: Option<i64>,
+    #[serde(default)]
+    play: Option<i64>,
+    #[serde(default)]
+    danmaku: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct SubscriptionFolderListWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")] list: Vec<SubscriptionFolderWire>,
-    #[serde(default)] has_more: Option<bool>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    list: Vec<SubscriptionFolderWire>,
+    #[serde(default)]
+    has_more: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
 struct SubscriptionResourceListWire {
-    #[serde(default)] info: Option<SubscriptionFolderWire>,
-    #[serde(default, deserialize_with = "null_as_empty_vec")] medias: Vec<SubscriptionResourceWire>,
+    #[serde(default)]
+    info: Option<SubscriptionFolderWire>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    medias: Vec<SubscriptionResourceWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct SubscriptionFolderWire {
-    #[serde(default)] id: Option<i64>,
-    #[serde(default)] fid: Option<i64>,
-    #[serde(default)] mid: Option<i64>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] intro: Option<String>,
-    #[serde(default)] upper: Option<SubscriptionUpperWire>,
-    #[serde(default)] media_count: Option<i64>,
-    #[serde(default)] view_count: Option<i64>,
-    #[serde(default)] fav_state: Option<i64>,
-    #[serde(default, rename = "type")] kind: Option<i64>,
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    fid: Option<i64>,
+    #[serde(default)]
+    mid: Option<i64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    intro: Option<String>,
+    #[serde(default)]
+    upper: Option<SubscriptionUpperWire>,
+    #[serde(default)]
+    media_count: Option<i64>,
+    #[serde(default)]
+    view_count: Option<i64>,
+    #[serde(default)]
+    fav_state: Option<i64>,
+    #[serde(default, rename = "type")]
+    kind: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct SubscriptionUpperWire {
-    #[serde(default)] mid: Option<i64>,
-    #[serde(default)] name: Option<String>,
+    #[serde(default)]
+    mid: Option<i64>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct SubscriptionResourceWire {
-    #[serde(default)] id: Option<i64>,
-    #[serde(default)] bvid: Option<String>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] duration: Option<i64>,
-    #[serde(default)] pubtime: Option<i64>,
-    #[serde(default)] cnt_info: Option<FavCntWire>,
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    bvid: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    duration: Option<i64>,
+    #[serde(default)]
+    pubtime: Option<i64>,
+    #[serde(default)]
+    cnt_info: Option<FavCntWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct BangumiListWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")] list: Vec<BangumiItemWire>,
-    #[serde(default)] total: Option<i64>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    list: Vec<BangumiItemWire>,
+    #[serde(default)]
+    total: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct BangumiItemWire {
-    #[serde(default)] season_id: Option<i64>,
-    #[serde(default)] media_id: Option<i64>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] cover: Option<String>,
-    #[serde(default)] badge: Option<String>,
-    #[serde(default)] renewal_time: Option<String>,
-    #[serde(default)] progress: Option<String>,
-    #[serde(default)] evaluate: Option<String>,
-    #[serde(default)] total_count: Option<i64>,
-    #[serde(default)] is_finish: Option<i64>,
-    #[serde(default)] new_ep: Option<BangumiNewEpWire>,
+    #[serde(default)]
+    season_id: Option<i64>,
+    #[serde(default)]
+    media_id: Option<i64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    badge: Option<String>,
+    #[serde(default)]
+    renewal_time: Option<String>,
+    #[serde(default)]
+    progress: Option<String>,
+    #[serde(default)]
+    evaluate: Option<String>,
+    #[serde(default)]
+    total_count: Option<i64>,
+    #[serde(default)]
+    is_finish: Option<i64>,
+    #[serde(default)]
+    new_ep: Option<BangumiNewEpWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct BangumiNewEpWire {
-    #[serde(default)] index_show: Option<String>,
+    #[serde(default)]
+    index_show: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct WatchLaterFullWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")] list: Vec<WatchLaterFullItemWire>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    list: Vec<WatchLaterFullItemWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct WatchLaterFullItemWire {
-    #[serde(default)] aid: Option<i64>,
-    #[serde(default)] bvid: Option<String>,
-    #[serde(default)] cid: Option<i64>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] pic: Option<String>,
-    #[serde(default)] duration: Option<i64>,
-    #[serde(default)] progress: Option<i64>,
-    #[serde(default)] owner: Option<WatchLaterOwnerWire>,
+    #[serde(default)]
+    aid: Option<i64>,
+    #[serde(default)]
+    bvid: Option<String>,
+    #[serde(default)]
+    cid: Option<i64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    pic: Option<String>,
+    #[serde(default)]
+    duration: Option<i64>,
+    #[serde(default)]
+    progress: Option<i64>,
+    #[serde(default)]
+    owner: Option<WatchLaterOwnerWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct WatchLaterOwnerWire {
-    #[serde(default)] name: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct RelationWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")] list: Vec<RelationUserWire>,
-    #[serde(default)] total: Option<i64>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    list: Vec<RelationUserWire>,
+    #[serde(default)]
+    total: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct RelationUserWire {
-    #[serde(default)] mid: Option<i64>,
-    #[serde(default)] uname: Option<String>,
-    #[serde(default)] face: Option<String>,
-    #[serde(default)] sign: Option<String>,
+    #[serde(default)]
+    mid: Option<i64>,
+    #[serde(default)]
+    uname: Option<String>,
+    #[serde(default)]
+    face: Option<String>,
+    #[serde(default)]
+    sign: Option<String>,
 }
 
 fn null_as_empty_vec<'de, D, T>(de: D) -> Result<Vec<T>, D::Error>
@@ -861,11 +1063,18 @@ fn history_items_from_wire(list: Vec<HistoryItemWire>) -> Vec<HistoryItem> {
     list.into_iter()
         // Drop non-video rows (live, articles, etc.) so the screen
         // doesn't try to push the player for unsupported types.
-        .filter(|r| r.history.as_ref().map(|h| h.business.as_deref() == Some("archive")).unwrap_or(false))
+        .filter(|r| {
+            r.history
+                .as_ref()
+                .map(|h| h.business.as_deref() == Some("archive"))
+                .unwrap_or(false)
+        })
         .filter_map(|r| {
             let h = r.history.as_ref()?;
             let aid = h.oid.unwrap_or(0);
-            if aid <= 0 { return None; }
+            if aid <= 0 {
+                return None;
+            }
             Some(HistoryItem {
                 aid,
                 bvid: h.bvid.clone().unwrap_or_default(),
@@ -903,61 +1112,84 @@ fn subscription_folder_from_wire(raw: SubscriptionFolderWire) -> SubscriptionFol
 // new endpoints are added in the future and need to fall back on
 // untyped JSON shapes.
 #[allow(dead_code)]
-fn _value_unused() -> Value { Value::Null }
+fn _value_unused() -> Value {
+    Value::Null
+}
 
 #[derive(Default, Deserialize)]
 struct NavWire {
-    #[serde(default)] wbi_img: NavWbiImageWire,
+    #[serde(default)]
+    wbi_img: NavWbiImageWire,
 }
 #[derive(Default, Deserialize)]
 struct NavWbiImageWire {
-    #[serde(default)] img_url: String,
-    #[serde(default)] sub_url: String,
+    #[serde(default)]
+    img_url: String,
+    #[serde(default)]
+    sub_url: String,
 }
 
 #[derive(Default, Deserialize)]
 struct SpaceArcSearchRoot {
-    #[serde(default)] list: Option<SpaceArcListWire>,
-    #[serde(default)] page: Option<SpaceArcPageWire>,
+    #[serde(default)]
+    list: Option<SpaceArcListWire>,
+    #[serde(default)]
+    page: Option<SpaceArcPageWire>,
 }
 #[derive(Default, Deserialize)]
 struct SpaceArcListWire {
-    #[serde(default)] vlist: Option<Vec<SpaceArcItemWire>>,
+    #[serde(default)]
+    vlist: Option<Vec<SpaceArcItemWire>>,
 }
 #[derive(Default, Deserialize)]
 struct SpaceArcItemWire {
-    #[serde(default)] aid: Option<i64>,
-    #[serde(default)] bvid: Option<String>,
-    #[serde(default)] title: Option<String>,
-    #[serde(default)] pic: Option<String>,
-    #[serde(default)] author: Option<String>,
-    #[serde(default)] length: Option<String>,
-    #[serde(default, deserialize_with = "lenient_count_opt")] play: Option<i64>,
-    #[serde(default)] video_review: Option<i64>,
-    #[serde(default)] comment: Option<i64>,
-    #[serde(default)] created: Option<i64>,
+    #[serde(default)]
+    aid: Option<i64>,
+    #[serde(default)]
+    bvid: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    pic: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    length: Option<String>,
+    #[serde(default, deserialize_with = "lenient_count_opt")]
+    play: Option<i64>,
+    #[serde(default)]
+    video_review: Option<i64>,
+    #[serde(default)]
+    comment: Option<i64>,
+    #[serde(default)]
+    created: Option<i64>,
 }
 #[derive(Default, Deserialize)]
 struct SpaceArcPageWire {
-    #[serde(default)] count: Option<i64>,
-    #[serde(default)] pn: Option<i64>,
-    #[serde(default)] ps: Option<i64>,
+    #[serde(default)]
+    count: Option<i64>,
+    #[serde(default)]
+    pn: Option<i64>,
+    #[serde(default)]
+    ps: Option<i64>,
 }
 
 /// Bilibili recently started returning `play` as either a bare number
 /// (legacy) or an object `{view, vt}` on newer responses. Coerce both
 /// shapes to `i64`.
 fn lenient_count_opt<'de, D>(de: D) -> Result<Option<i64>, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde_json::Value;
     let v = Option::<Value>::deserialize(de)?;
     Ok(match v {
         Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Some(Value::String(s)) => s.parse().ok(),
-        Some(Value::Object(map)) => {
-            map.get("view").or_else(|| map.get("vt"))
-                .and_then(|x| x.as_i64())
-        }
+        Some(Value::Object(map)) => map
+            .get("view")
+            .or_else(|| map.get("vt"))
+            .and_then(|x| x.as_i64()),
         _ => None,
     })
 }

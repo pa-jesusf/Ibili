@@ -215,7 +215,7 @@ impl Core {
                 aid: r.aid,
                 bvid: r.bvid,
                 cid: r.cid,
-                owner_mid: r.uid,
+                owner_mid: if r.mid > 0 { r.mid } else { r.uid },
                 title: strip_em_tags(&r.title),
                 cover: ensure_https(r.pic),
                 author: r.author,
@@ -294,7 +294,12 @@ impl Core {
         })
     }
 
-    pub fn search_pgc(&self, keyword: &str, page: i64, search_type: &str) -> CoreResult<SearchPgcPage> {
+    pub fn search_pgc(
+        &self,
+        keyword: &str,
+        page: i64,
+        search_type: &str,
+    ) -> CoreResult<SearchPgcPage> {
         let search_type = match search_type {
             "media_ft" => "media_ft",
             _ => "media_bangumi",

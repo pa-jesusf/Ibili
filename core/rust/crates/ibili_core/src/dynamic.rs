@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Core;
 use crate::error::{CoreError, CoreResult};
+use crate::Core;
 
 const URL_DYNAMIC_FEED: &str = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all";
 const URL_SPACE_DYN_FEED: &str = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space";
@@ -151,7 +151,12 @@ impl Core {
     /// `feed_type` mirrors PiliPlus: "all" | "video" | "pgc" | "article".
     /// `offset` is empty on the first call; subsequent calls pass the
     /// `offset` returned in the previous page.
-    pub fn dynamic_feed(&self, feed_type: &str, page: i64, offset: &str) -> CoreResult<DynamicFeedPage> {
+    pub fn dynamic_feed(
+        &self,
+        feed_type: &str,
+        page: i64,
+        offset: &str,
+    ) -> CoreResult<DynamicFeedPage> {
         if self.session.read().access_key().is_none() {
             return Ok(DynamicFeedPage {
                 items: vec![],
@@ -174,7 +179,9 @@ impl Core {
             ("web_location".into(), "333.1365".into()),
         ];
         let raw: DynamicFeedWire = self.http.get_web(URL_DYNAMIC_FEED, &params)?;
-        let items = raw.items.into_iter()
+        let items = raw
+            .items
+            .into_iter()
             .filter_map(|w| flatten_dynamic_item(w))
             .collect();
         Ok(DynamicFeedPage {
@@ -195,11 +202,16 @@ impl Core {
             ("timezone_offset".into(), "-480".into()),
             ("host_mid".into(), host_mid.to_string()),
             ("offset".into(), offset.into()),
-            ("features".into(), "itemOpusStyle,opusBigCover,onlyfansVote,onlyfansAssetsV2,decorationCard".into()),
+            (
+                "features".into(),
+                "itemOpusStyle,opusBigCover,onlyfansVote,onlyfansAssetsV2,decorationCard".into(),
+            ),
             ("web_location".into(), "333.999".into()),
         ];
         let raw: DynamicFeedWire = self.http.get_web(URL_SPACE_DYN_FEED, &params)?;
-        let items = raw.items.into_iter()
+        let items = raw
+            .items
+            .into_iter()
             .filter_map(|w| flatten_dynamic_item(w))
             .collect();
         Ok(DynamicFeedPage {
@@ -252,7 +264,9 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         mid: author_mod.mid.unwrap_or(0),
         name: author_mod.name.unwrap_or_default(),
         face: author_mod.face.unwrap_or_default(),
-        pub_label: author_mod.pub_action.clone()
+        pub_label: author_mod
+            .pub_action
+            .clone()
             .or(author_mod.pub_time)
             .unwrap_or_default(),
         pub_ts: author_mod.pub_ts.unwrap_or(0),
@@ -265,7 +279,11 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
     };
 
     let major = dynamic_mod.major.unwrap_or_default();
-    let mut text = dynamic_mod.desc.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
+    let mut text = dynamic_mod
+        .desc
+        .as_ref()
+        .and_then(|d| d.text.clone())
+        .unwrap_or_default();
     let mut video: Option<DynamicVideo> = None;
     let mut live_item: Option<DynamicLive> = None;
     let mut article: Option<DynamicArticle> = None;
@@ -273,9 +291,15 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
 
     // Order matters: opus → archive → draw → article fallbacks.
     if let Some(opus) = major.opus {
-        let summary_text = opus.summary.as_ref().and_then(|s| s.text.clone()).unwrap_or_default();
+        let summary_text = opus
+            .summary
+            .as_ref()
+            .and_then(|s| s.text.clone())
+            .unwrap_or_default();
         if let Some(s) = opus.summary.and_then(|s| s.text) {
-            if text.is_empty() { text = s; }
+            if text.is_empty() {
+                text = s;
+            }
         }
         if let Some(pics) = opus.pics {
             for p in pics {
@@ -292,7 +316,11 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
             title: text.clone(),
             summary: summary_text,
             cover: images.first().map(|p| p.url.clone()).unwrap_or_default(),
-            jump_url: w.id_str.as_deref().map(|id| format!("https://www.bilibili.com/opus/{id}")).unwrap_or_default(),
+            jump_url: w
+                .id_str
+                .as_deref()
+                .map(|id| format!("https://www.bilibili.com/opus/{id}"))
+                .unwrap_or_default(),
             comment_id: 0,
             comment_type: 17,
         });
@@ -325,11 +353,22 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
     }
     if let Some(art) = major.article {
         let title = art.title.unwrap_or_default();
-        if text.is_empty() { text = title.clone(); }
-        let first_cover = art.covers.as_ref().and_then(|c| c.first()).cloned().unwrap_or_default();
+        if text.is_empty() {
+            text = title.clone();
+        }
+        let first_cover = art
+            .covers
+            .as_ref()
+            .and_then(|c| c.first())
+            .cloned()
+            .unwrap_or_default();
         if let Some(covers) = art.covers {
             for url in covers {
-                images.push(DynamicImage { url, width: 0, height: 0 });
+                images.push(DynamicImage {
+                    url,
+                    width: 0,
+                    height: 0,
+                });
             }
         }
         article = Some(DynamicArticle {
@@ -408,135 +447,209 @@ fn extract_article_id(dynamic_id: Option<&str>, fallback: &str) -> String {
 
 #[derive(Default, Deserialize)]
 struct DynamicFeedWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")] items: Vec<DynItemWire>,
-    #[serde(default, deserialize_with = "lenient_string")] offset: Option<String>,
-    #[serde(default)] has_more: Option<bool>,
-    #[serde(default, deserialize_with = "lenient_string")] update_baseline: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i64")] update_num: Option<i64>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    items: Vec<DynItemWire>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    offset: Option<String>,
+    #[serde(default)]
+    has_more: Option<bool>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    update_baseline: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    update_num: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynItemWire {
-    #[serde(default, deserialize_with = "lenient_string")] id_str: Option<String>,
-    #[serde(default, rename = "type", deserialize_with = "lenient_string")] kind: Option<String>,
-    #[serde(default)] modules: Option<DynModulesWire>,
-    #[serde(default)] basic: Option<DynBasicWire>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    id_str: Option<String>,
+    #[serde(default, rename = "type", deserialize_with = "lenient_string")]
+    kind: Option<String>,
+    #[serde(default)]
+    modules: Option<DynModulesWire>,
+    #[serde(default)]
+    basic: Option<DynBasicWire>,
     /// Forwarded original item (1-level recursion). Use `Box` so
     /// the recursive type is sized.
-    #[serde(default)] orig: Option<Box<DynItemWire>>,
+    #[serde(default)]
+    orig: Option<Box<DynItemWire>>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynBasicWire {
-    #[serde(default, deserialize_with = "lenient_string")] comment_id_str: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i32")] comment_type: Option<i32>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    comment_id_str: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i32")]
+    comment_type: Option<i32>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynModulesWire {
-    #[serde(default)] module_author: Option<DynAuthorWire>,
-    #[serde(default)] module_dynamic: Option<DynDynamicWire>,
-    #[serde(default)] module_stat: Option<DynStatWire>,
+    #[serde(default)]
+    module_author: Option<DynAuthorWire>,
+    #[serde(default)]
+    module_dynamic: Option<DynDynamicWire>,
+    #[serde(default)]
+    module_stat: Option<DynStatWire>,
 }
 
 #[derive(Default, Deserialize, Clone)]
 struct DynAuthorWire {
-    #[serde(default, deserialize_with = "lenient_i64")] mid: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_string")] name: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] face: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    mid: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    face: Option<String>,
     /// Localized "投稿了视频", "发布了动态" etc.
-    #[serde(default, deserialize_with = "lenient_string")] pub_action: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub_action: Option<String>,
     /// "5 分钟前", "12-25" etc.
-    #[serde(default, deserialize_with = "lenient_string")] pub_time: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i64")] pub_ts: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub_time: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    pub_ts: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynDynamicWire {
-    #[serde(default)] desc: Option<DynDescWire>,
-    #[serde(default)] major: Option<DynMajorWire>,
+    #[serde(default)]
+    desc: Option<DynDescWire>,
+    #[serde(default)]
+    major: Option<DynMajorWire>,
 }
 
 #[derive(Default, Deserialize)]
-struct DynDescWire { #[serde(default, deserialize_with = "lenient_string")] text: Option<String> }
+struct DynDescWire {
+    #[serde(default, deserialize_with = "lenient_string")]
+    text: Option<String>,
+}
 
 #[derive(Default, Deserialize)]
 struct DynMajorWire {
-    #[serde(default)] archive: Option<DynArchiveWire>,
-    #[serde(default)] draw: Option<DynDrawWire>,
-    #[serde(default)] opus: Option<DynOpusWire>,
-    #[serde(default)] article: Option<DynArticleWire>,
-    #[serde(default)] pgc: Option<DynPgcWire>,
-    #[serde(default)] live_rcmd: Option<DynLiveWire>,
-    #[serde(default)] live: Option<DynLiveWire>,
+    #[serde(default)]
+    archive: Option<DynArchiveWire>,
+    #[serde(default)]
+    draw: Option<DynDrawWire>,
+    #[serde(default)]
+    opus: Option<DynOpusWire>,
+    #[serde(default)]
+    article: Option<DynArticleWire>,
+    #[serde(default)]
+    pgc: Option<DynPgcWire>,
+    #[serde(default)]
+    live_rcmd: Option<DynLiveWire>,
+    #[serde(default)]
+    live: Option<DynLiveWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynArchiveWire {
-    #[serde(default, deserialize_with = "lenient_string")] aid: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] bvid: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] cover: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] duration_text: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    aid: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    bvid: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    cover: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    duration_text: Option<String>,
     /// e.g. "3.2 万 观看 · 12 弹幕"
-    #[serde(default, deserialize_with = "lenient_string")] stat: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    stat: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
-struct DynDrawWire { #[serde(default)] items: Option<Vec<DynDrawItemWire>> }
+struct DynDrawWire {
+    #[serde(default)]
+    items: Option<Vec<DynDrawItemWire>>,
+}
 
 #[derive(Default, Deserialize)]
 struct DynDrawItemWire {
-    #[serde(default, deserialize_with = "lenient_string")] src: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i64")] width: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] height: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    src: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    width: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    height: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynOpusWire {
-    #[serde(default)] summary: Option<DynOpusSummaryWire>,
-    #[serde(default)] pics: Option<Vec<DynOpusPicWire>>,
+    #[serde(default)]
+    summary: Option<DynOpusSummaryWire>,
+    #[serde(default)]
+    pics: Option<Vec<DynOpusPicWire>>,
 }
 #[derive(Default, Deserialize)]
-struct DynOpusSummaryWire { #[serde(default, deserialize_with = "lenient_string")] text: Option<String> }
+struct DynOpusSummaryWire {
+    #[serde(default, deserialize_with = "lenient_string")]
+    text: Option<String>,
+}
 #[derive(Default, Deserialize)]
 struct DynOpusPicWire {
-    #[serde(default, deserialize_with = "lenient_string")] url: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i64")] width: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] height: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    url: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    width: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    height: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynArticleWire {
-    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
-    #[serde(default)] covers: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    title: Option<String>,
+    #[serde(default)]
+    covers: Option<Vec<String>>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynPgcWire {
-    #[serde(default, deserialize_with = "lenient_i64")] aid: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_string")] bvid: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i64")] epid: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] season_id: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] cover: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] sub_type: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] stat: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    aid: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    bvid: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    epid: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    season_id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    cover: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    sub_type: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    stat: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynLiveWire {
-    #[serde(default, deserialize_with = "lenient_i64")] id: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] live_state: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] cover: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] desc_first: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] content: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] area: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] area_name: Option<String>,
-    #[serde(default, deserialize_with = "lenient_i64")] room_id: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] live_status: Option<i64>,
-    #[serde(default)] watched_show: Option<DynWatchedShowWire>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    live_state: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    cover: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    desc_first: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    content: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    area: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    area_name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    room_id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    live_status: Option<i64>,
+    #[serde(default)]
+    watched_show: Option<DynWatchedShowWire>,
 }
 
 impl DynLiveWire {
@@ -551,7 +664,10 @@ impl DynLiveWire {
                             title: info.title.unwrap_or_default(),
                             cover: info.cover.unwrap_or_default(),
                             area_name: info.area_name.unwrap_or_default(),
-                            watched_label: info.watched_show.and_then(|w| w.text_large).unwrap_or_default(),
+                            watched_label: info
+                                .watched_show
+                                .and_then(|w| w.text_large)
+                                .unwrap_or_default(),
                             live_status: info.live_status.unwrap_or(0),
                         });
                     }
@@ -566,8 +682,15 @@ impl DynLiveWire {
             room_id,
             title: self.title.unwrap_or_default(),
             cover: self.cover.unwrap_or_default(),
-            area_name: self.area_name.or(self.area).or(self.desc_first).unwrap_or_default(),
-            watched_label: self.watched_show.and_then(|w| w.text_large).unwrap_or_default(),
+            area_name: self
+                .area_name
+                .or(self.area)
+                .or(self.desc_first)
+                .unwrap_or_default(),
+            watched_label: self
+                .watched_show
+                .and_then(|w| w.text_large)
+                .unwrap_or_default(),
             live_status: self.live_status.or(self.live_state).unwrap_or(0),
         })
     }
@@ -575,33 +698,47 @@ impl DynLiveWire {
 
 #[derive(Default, Deserialize)]
 struct DynLiveContentWire {
-    #[serde(default)] live_play_info: Option<DynLivePlayInfoWire>,
+    #[serde(default)]
+    live_play_info: Option<DynLivePlayInfoWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynLivePlayInfoWire {
-    #[serde(default, deserialize_with = "lenient_i64")] room_id: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_i64")] live_status: Option<i64>,
-    #[serde(default, deserialize_with = "lenient_string")] title: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] cover: Option<String>,
-    #[serde(default, deserialize_with = "lenient_string")] area_name: Option<String>,
-    #[serde(default)] watched_show: Option<DynWatchedShowWire>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    room_id: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    live_status: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    cover: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    area_name: Option<String>,
+    #[serde(default)]
+    watched_show: Option<DynWatchedShowWire>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynWatchedShowWire {
-    #[serde(default, deserialize_with = "lenient_string")] text_large: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    text_large: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct DynStatWire {
-    #[serde(default)] like: Option<DynCountWire>,
-    #[serde(default)] comment: Option<DynCountWire>,
-    #[serde(default)] forward: Option<DynCountWire>,
+    #[serde(default)]
+    like: Option<DynCountWire>,
+    #[serde(default)]
+    comment: Option<DynCountWire>,
+    #[serde(default)]
+    forward: Option<DynCountWire>,
 }
 
 #[derive(Default, Deserialize)]
-struct DynCountWire { #[serde(default, deserialize_with = "lenient_i64")] count: Option<i64> }
+struct DynCountWire {
+    #[serde(default, deserialize_with = "lenient_i64")]
+    count: Option<i64>,
+}
 
 fn null_as_empty_vec<'de, D, T>(de: D) -> Result<Vec<T>, D::Error>
 where

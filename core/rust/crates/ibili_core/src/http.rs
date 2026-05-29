@@ -1,15 +1,15 @@
-use crate::error::{CoreError, CoreResult};
 use crate::dto::ApiEnvelope;
+use crate::error::{CoreError, CoreResult};
 use parking_lot::Mutex;
-use reqwest::Url;
 use reqwest::blocking::Client;
 use reqwest::blocking::RequestBuilder;
 use reqwest::cookie::{CookieStore, Jar};
 use reqwest::redirect::Policy;
+use reqwest::Url;
 use serde::de::DeserializeOwned;
 use serde_json::json;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Matches PiliPlus `Constants.userAgent` (android_hd/TV User-Agent).
@@ -29,14 +29,20 @@ fn app_headers() -> reqwest::header::HeaderMap {
         ("User-Agent", UA_TV),
         ("env", "prod"),
         ("app-key", "android_hd"),
-        ("x-bili-trace-id", "11111111111111111111111111111111:1111111111111111:0:0"),
+        (
+            "x-bili-trace-id",
+            "11111111111111111111111111111111:1111111111111111:0:0",
+        ),
         ("x-bili-aurora-eid", ""),
         ("x-bili-aurora-zone", ""),
         ("bili-http-engine", "cronet"),
         ("buvid", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFFinfoc"),
     ];
     for (k, v) in pairs {
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
             h.insert(name, val);
         }
     }
@@ -51,17 +57,29 @@ fn android_app_headers() -> reqwest::header::HeaderMap {
         ("User-Agent", UA_ANDROID_APP),
         ("env", "prod"),
         ("app-key", "android"),
-        ("x-bili-trace-id", "11111111111111111111111111111111:1111111111111111:0:0"),
+        (
+            "x-bili-trace-id",
+            "11111111111111111111111111111111:1111111111111111:0:0",
+        ),
         ("x-bili-aurora-eid", ""),
         ("x-bili-aurora-zone", ""),
         ("bili-http-engine", "cronet"),
         ("buvid", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFFinfoc"),
-        ("fp_local", "1111111111111111111111111111111111111111111111111111111111111111"),
-        ("fp_remote", "1111111111111111111111111111111111111111111111111111111111111111"),
+        (
+            "fp_local",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        (
+            "fp_remote",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        ),
         ("session_id", "11111111"),
     ];
     for (k, v) in pairs {
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
             h.insert(name, val);
         }
     }
@@ -128,12 +146,11 @@ impl HttpClient {
     pub fn install_web_cookies(&self, pairs: &[(String, String)]) {
         let url: Url = "https://api.bilibili.com/".parse().expect("valid url");
         ensure_default_web_identity(&self.jar);
-        if pairs.is_empty() { return; }
+        if pairs.is_empty() {
+            return;
+        }
         for (name, value) in pairs {
-            let cookie = format!(
-                "{}={}; Domain=.bilibili.com; Path=/; Secure",
-                name, value
-            );
+            let cookie = format!("{}={}; Domain=.bilibili.com; Path=/; Secure", name, value);
             self.jar.add_cookie_str(&cookie, &url);
         }
     }
@@ -197,7 +214,9 @@ impl HttpClient {
     /// snapshotting at login time.
     pub fn snapshot_cookies(&self) -> Vec<(String, String)> {
         let url: Url = "https://api.bilibili.com/".parse().expect("valid url");
-        let Some(value) = self.jar.cookies(&url) else { return Vec::new(); };
+        let Some(value) = self.jar.cookies(&url) else {
+            return Vec::new();
+        };
         let raw = value.to_str().unwrap_or("").to_string();
         raw.split(';')
             .filter_map(|p| {
@@ -215,9 +234,16 @@ impl HttpClient {
             .and_then(|(_, v)| v.parse::<i64>().ok())
     }
 
-    pub fn web_session_identity_snapshot(&self, has_access_token: bool) -> WebSessionIdentitySnapshot {
+    pub fn web_session_identity_snapshot(
+        &self,
+        has_access_token: bool,
+    ) -> WebSessionIdentitySnapshot {
         let cookies = self.snapshot_cookies();
-        let has_cookie = |name: &str| cookies.iter().any(|(key, value)| key == name && !value.is_empty());
+        let has_cookie = |name: &str| {
+            cookies
+                .iter()
+                .any(|(key, value)| key == name && !value.is_empty())
+        };
         let mid = cookies
             .iter()
             .find(|(key, _)| key == "DedeUserID")
@@ -251,10 +277,18 @@ impl HttpClient {
         let status = resp.status();
         let body = resp.text().map_err(|e| net_msg(&e))?;
         if !status.is_success() {
-            return Err(format!("http {}: {}", status.as_u16(), body.chars().take(200).collect::<String>()));
+            return Err(format!(
+                "http {}: {}",
+                status.as_u16(),
+                body.chars().take(200).collect::<String>()
+            ));
         }
-        let env: ApiEnvelope<serde_json::Value> = serde_json::from_str(&body)
-            .map_err(|e| format!("decode: {e}: {}", body.chars().take(200).collect::<String>()))?;
+        let env: ApiEnvelope<serde_json::Value> = serde_json::from_str(&body).map_err(|e| {
+            format!(
+                "decode: {e}: {}",
+                body.chars().take(200).collect::<String>()
+            )
+        })?;
         if env.code != 0 {
             return Err(format!("code={} msg={}", env.code, env.message));
         }
@@ -262,10 +296,14 @@ impl HttpClient {
     }
 
     pub fn get_signed_app<T: DeserializeOwned>(
-        &self, url: &str, mut params: Vec<(String, String)>,
+        &self,
+        url: &str,
+        mut params: Vec<(String, String)>,
     ) -> CoreResult<T> {
         crate::signer::AppSigner::sign(&mut params);
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .headers(app_headers())
             .query(&params)
             .send()
@@ -275,10 +313,14 @@ impl HttpClient {
     }
 
     pub fn get_signed_android_app<T: DeserializeOwned>(
-        &self, url: &str, mut params: Vec<(String, String)>,
+        &self,
+        url: &str,
+        mut params: Vec<(String, String)>,
     ) -> CoreResult<T> {
         crate::signer::AppSigner::sign(&mut params);
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .headers(android_app_headers())
             .query(&params)
             .send()
@@ -288,9 +330,13 @@ impl HttpClient {
     }
 
     pub fn get_android_app<T: DeserializeOwned>(
-        &self, url: &str, params: &[(String, String)],
+        &self,
+        url: &str,
+        params: &[(String, String)],
     ) -> CoreResult<T> {
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .headers(android_app_headers())
             .query(params)
             .send()
@@ -300,11 +346,15 @@ impl HttpClient {
     }
 
     pub fn post_signed_app<T: DeserializeOwned>(
-        &self, url: &str, mut params: Vec<(String, String)>,
+        &self,
+        url: &str,
+        mut params: Vec<(String, String)>,
     ) -> CoreResult<T> {
         crate::signer::AppSigner::sign(&mut params);
         // PiliPlus posts with queryParameters (URL-encoded query, empty body).
-        let resp = self.client.post(url)
+        let resp = self
+            .client
+            .post(url)
             .headers(app_headers())
             .query(&params)
             .send()
@@ -314,7 +364,10 @@ impl HttpClient {
     }
 
     pub fn get_signed_web<T: DeserializeOwned>(
-        &self, url: &str, mut params: Vec<(String, String)>, key: &crate::signer::WbiKey,
+        &self,
+        url: &str,
+        mut params: Vec<(String, String)>,
+        key: &crate::signer::WbiKey,
     ) -> CoreResult<T> {
         crate::signer::WbiSigner::sign(&mut params, key);
         let resp = apply_default_web_headers(self.client.get(url), self)
@@ -334,8 +387,7 @@ impl HttpClient {
     ) -> CoreResult<T> {
         use reqwest::header::{HeaderName, HeaderValue};
         crate::signer::WbiSigner::sign(&mut params, key);
-        let mut req = apply_default_web_headers(self.client.get(url), self)
-            .query(&params);
+        let mut req = apply_default_web_headers(self.client.get(url), self).query(&params);
         for (name, value) in extra_headers {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(name.as_bytes()),
@@ -344,15 +396,15 @@ impl HttpClient {
                 req = req.header(name, value);
             }
         }
-        let resp = req
-            .send()
-            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let resp = req.send().map_err(|e| CoreError::Network(net_msg(&e)))?;
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
         unwrap_envelope(body)
     }
 
     pub fn get_web<T: DeserializeOwned>(
-        &self, url: &str, params: &[(String, String)],
+        &self,
+        url: &str,
+        params: &[(String, String)],
     ) -> CoreResult<T> {
         let resp = apply_default_web_headers(self.client.get(url), self)
             .query(params)
@@ -369,8 +421,7 @@ impl HttpClient {
         extra_headers: &[(&str, String)],
     ) -> CoreResult<T> {
         use reqwest::header::{HeaderName, HeaderValue};
-        let mut req = apply_default_web_headers(self.client.get(url), self)
-            .query(params);
+        let mut req = apply_default_web_headers(self.client.get(url), self).query(params);
         for (name, value) in extra_headers {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(name.as_bytes()),
@@ -379,9 +430,7 @@ impl HttpClient {
                 req = req.header(name, value);
             }
         }
-        let resp = req
-            .send()
-            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let resp = req.send().map_err(|e| CoreError::Network(net_msg(&e)))?;
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
         unwrap_envelope(body)
     }
@@ -392,7 +441,9 @@ impl HttpClient {
     /// token (like / coin / triple / favorite / relation / watchlater /
     /// reply.add). Caller must include `csrf` in `form` when needed.
     pub fn post_form_web<T: DeserializeOwned>(
-        &self, url: &str, form: &[(String, String)],
+        &self,
+        url: &str,
+        form: &[(String, String)],
     ) -> CoreResult<T> {
         let resp = apply_default_web_headers(self.client.post(url), self)
             .form(form)
@@ -405,18 +456,24 @@ impl HttpClient {
     /// Same as `post_form_web`, but accepts `data:null` / missing data.
     /// Mutating Bilibili endpoints often signal success purely through
     /// `{code:0}`.
-    pub fn post_form_web_empty(
-        &self, url: &str, form: &[(String, String)],
-    ) -> CoreResult<()> {
+    pub fn post_form_web_empty(&self, url: &str, form: &[(String, String)]) -> CoreResult<()> {
         let resp = apply_default_web_headers(self.client.post(url), self)
             .form(form)
             .send()
             .map_err(|e| CoreError::Network(net_msg(&e)))?;
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
-        let env: ApiEnvelope<serde_json::Value> = serde_json::from_str(&body)
-            .map_err(|e| CoreError::Decode(format!("{}: {}", e, body.chars().take(500).collect::<String>())))?;
+        let env: ApiEnvelope<serde_json::Value> = serde_json::from_str(&body).map_err(|e| {
+            CoreError::Decode(format!(
+                "{}: {}",
+                e,
+                body.chars().take(500).collect::<String>()
+            ))
+        })?;
         if env.code != 0 {
-            return Err(CoreError::Api { code: env.code, msg: env.message });
+            return Err(CoreError::Api {
+                code: env.code,
+                msg: env.message,
+            });
         }
         Ok(())
     }
@@ -443,9 +500,7 @@ impl HttpClient {
                 req = req.header(name, value);
             }
         }
-        let resp = req
-            .send()
-            .map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let resp = req.send().map_err(|e| CoreError::Network(net_msg(&e)))?;
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
         unwrap_envelope(body)
     }
@@ -491,9 +546,7 @@ impl HttpClient {
 
     /// Fetch raw bytes — used for endpoints that return non-JSON payloads
     /// (e.g. the deflated-XML danmaku list).
-    pub fn get_bytes_web(
-        &self, url: &str, params: &[(String, String)],
-    ) -> CoreResult<Vec<u8>> {
+    pub fn get_bytes_web(&self, url: &str, params: &[(String, String)]) -> CoreResult<Vec<u8>> {
         let resp = apply_default_web_headers(self.client.get(url), self)
             .query(params)
             .send()
@@ -564,10 +617,7 @@ fn ensure_default_web_identity(jar: &Jar) -> String {
     }
     let buvid3 = gen_buvid3();
     {
-        let cookie = format!(
-            "buvid3={}; Domain=.bilibili.com; Path=/; Secure",
-            buvid3
-        );
+        let cookie = format!("buvid3={}; Domain=.bilibili.com; Path=/; Secure", buvid3);
         jar.add_cookie_str(&cookie, &url);
     }
     buvid3
@@ -660,7 +710,10 @@ fn web_identity_seed() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
-    nanos ^ WEB_IDENTITY_COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(11)
+    nanos
+        ^ WEB_IDENTITY_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .rotate_left(11)
 }
 
 fn buvid_activation_random_bytes() -> Vec<u8> {
@@ -674,30 +727,43 @@ fn buvid_activation_random_bytes() -> Vec<u8> {
     }
     bytes.extend([0, 0, 0, 0, 73, 69, 78, 68]);
     for _ in 0..4 {
-        state = state
-            .wrapping_mul(3202034522624059733)
-            .wrapping_add(1);
+        state = state.wrapping_mul(3202034522624059733).wrapping_add(1);
         bytes.push((state >> 32) as u8);
     }
     bytes
 }
 
 fn unwrap_envelope<T: DeserializeOwned>(body: String) -> CoreResult<T> {
-    let env: ApiEnvelope<T> = serde_json::from_str(&body)
-        .map_err(|e| CoreError::Decode(format!("{}: {}", e, body.chars().take(500).collect::<String>())))?;
+    let env: ApiEnvelope<T> = serde_json::from_str(&body).map_err(|e| {
+        CoreError::Decode(format!(
+            "{}: {}",
+            e,
+            body.chars().take(500).collect::<String>()
+        ))
+    })?;
     if env.code != 0 {
-        return Err(CoreError::Api { code: env.code, msg: env.message });
+        return Err(CoreError::Api {
+            code: env.code,
+            msg: env.message,
+        });
     }
-    env.data.ok_or_else(|| CoreError::Decode("missing data".into()))
+    env.data
+        .ok_or_else(|| CoreError::Decode("missing data".into()))
 }
-
 
 fn mime_for_filename(name: &str) -> &'static str {
     let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".png") { "image/png" }
-    else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { "image/jpeg" }
-    else if lower.ends_with(".gif") { "image/gif" }
-    else if lower.ends_with(".webp") { "image/webp" }
-    else if lower.ends_with(".heic") { "image/heic" }
-    else { "application/octet-stream" }
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".heic") {
+        "image/heic"
+    } else {
+        "application/octet-stream"
+    }
 }

@@ -8,8 +8,8 @@ use quick_xml::reader::Reader;
 use regex::Regex;
 use reqwest::blocking::Client;
 use scraper::{Html, Selector};
-use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -541,11 +541,17 @@ struct ExportedMediaSourceData {
 }
 
 impl Core {
-    pub fn anime_oauth_start(&self, client_id: &str, redirect_uri: &str) -> CoreResult<AnimeOAuthStart> {
+    pub fn anime_oauth_start(
+        &self,
+        client_id: &str,
+        redirect_uri: &str,
+    ) -> CoreResult<AnimeOAuthStart> {
         let client_id = client_id.trim();
         let redirect_uri = redirect_uri.trim();
         if client_id.is_empty() || redirect_uri.is_empty() {
-            return Err(CoreError::InvalidArgument("missing Bangumi OAuth client id or redirect uri".into()));
+            return Err(CoreError::InvalidArgument(
+                "missing Bangumi OAuth client id or redirect uri".into(),
+            ));
         }
         let mut url = Url::parse(&format!("{BANGUMI_WEB}/oauth/authorize"))
             .map_err(|e| CoreError::Internal(e.to_string()))?;
@@ -553,7 +559,9 @@ impl Core {
             .append_pair("client_id", client_id)
             .append_pair("response_type", "code")
             .append_pair("redirect_uri", redirect_uri);
-        Ok(AnimeOAuthStart { authorize_url: url.to_string() })
+        Ok(AnimeOAuthStart {
+            authorize_url: url.to_string(),
+        })
     }
 
     pub fn anime_oauth_exchange(
@@ -608,7 +616,9 @@ impl Core {
     ) -> CoreResult<AnimeCollectionPage> {
         let username = username.trim();
         if username.is_empty() {
-            return Err(CoreError::InvalidArgument("missing Bangumi username".into()));
+            return Err(CoreError::InvalidArgument(
+                "missing Bangumi username".into(),
+            ));
         }
         let page = page.max(1);
         let page_size = page_size.clamp(1, 50);
@@ -622,29 +632,41 @@ impl Core {
             query.push(("type".to_string(), collection_type.to_string()));
         }
         let path = format!("/v0/users/{}/collections", url_path(username));
-        let raw: BangumiPaged<BangumiCollectionRaw> = self.bangumi_get(&path, access_token, &query)?;
+        let raw: BangumiPaged<BangumiCollectionRaw> =
+            self.bangumi_get(&path, access_token, &query)?;
         Ok(AnimeCollectionPage {
             total: raw.total,
             page,
             page_size: raw.limit.max(page_size),
-            items: raw.data.into_iter().map(|item| {
-                let mut subject = convert_subject(item.subject, item.r#type, item.ep_status);
-                subject.collection_type = item.r#type;
-                subject.collection_label = subject_collection_label(item.r#type).to_string();
-                AnimeCollectionItem {
-                    subject,
-                    collection_type: item.r#type,
-                    collection_label: subject_collection_label(item.r#type).to_string(),
-                    updated_at: item.updated_at,
-                    ep_status: item.ep_status,
-                }
-            }).collect(),
+            items: raw
+                .data
+                .into_iter()
+                .map(|item| {
+                    let mut subject = convert_subject(item.subject, item.r#type, item.ep_status);
+                    subject.collection_type = item.r#type;
+                    subject.collection_label = subject_collection_label(item.r#type).to_string();
+                    AnimeCollectionItem {
+                        subject,
+                        collection_type: item.r#type,
+                        collection_label: subject_collection_label(item.r#type).to_string(),
+                        updated_at: item.updated_at,
+                        ep_status: item.ep_status,
+                    }
+                })
+                .collect(),
         })
     }
 
-    pub fn anime_collection_update(&self, access_token: &str, subject_id: i64, collection_type: i64) -> CoreResult<()> {
+    pub fn anime_collection_update(
+        &self,
+        access_token: &str,
+        subject_id: i64,
+        collection_type: i64,
+    ) -> CoreResult<()> {
         if subject_id <= 0 || !(1..=5).contains(&collection_type) {
-            return Err(CoreError::InvalidArgument("invalid Bangumi collection update".into()));
+            return Err(CoreError::InvalidArgument(
+                "invalid Bangumi collection update".into(),
+            ));
         }
         let path = format!("/v0/users/-/collections/{subject_id}");
         self.bangumi_no_content(
@@ -663,7 +685,9 @@ impl Core {
         collection_type: i64,
     ) -> CoreResult<()> {
         if episode_id <= 0 || !(0..=3).contains(&collection_type) {
-            return Err(CoreError::InvalidArgument("invalid Bangumi episode update".into()));
+            return Err(CoreError::InvalidArgument(
+                "invalid Bangumi episode update".into(),
+            ));
         }
         if subject_id > 0 {
             let path = format!("/v0/users/-/collections/{subject_id}/episodes");
@@ -686,9 +710,15 @@ impl Core {
         )
     }
 
-    pub fn anime_subject_detail(&self, access_token: &str, subject_id: i64) -> CoreResult<AnimeSubject> {
+    pub fn anime_subject_detail(
+        &self,
+        access_token: &str,
+        subject_id: i64,
+    ) -> CoreResult<AnimeSubject> {
         if subject_id <= 0 {
-            return Err(CoreError::InvalidArgument("invalid Bangumi subject id".into()));
+            return Err(CoreError::InvalidArgument(
+                "invalid Bangumi subject id".into(),
+            ));
         }
         let subject_path = format!("/v0/subjects/{subject_id}");
         let episode_path = "/v0/episodes".to_string();
@@ -703,15 +733,23 @@ impl Core {
                 ("offset".to_string(), "0".to_string()),
             ],
         )?;
-        let (collection_type, ep_status) = self.bangumi_subject_collection_state(access_token, subject_id);
+        let (collection_type, ep_status) =
+            self.bangumi_subject_collection_state(access_token, subject_id);
         let mut converted = convert_subject(subject, collection_type, ep_status);
-        converted.episodes = episodes.data.into_iter()
+        converted.episodes = episodes
+            .data
+            .into_iter()
             .map(|episode| convert_episode(subject_id, episode))
             .collect();
         Ok(converted)
     }
 
-    pub fn anime_subject_search(&self, keyword: &str, page: i64, page_size: i64) -> CoreResult<AnimeSubjectSearchPage> {
+    pub fn anime_subject_search(
+        &self,
+        keyword: &str,
+        page: i64,
+        page_size: i64,
+    ) -> CoreResult<AnimeSubjectSearchPage> {
         let keyword = keyword.trim();
         if keyword.is_empty() {
             return Ok(AnimeSubjectSearchPage::default());
@@ -720,7 +758,9 @@ impl Core {
         let page_size = page_size.clamp(1, 30);
         let offset = (page - 1) * page_size;
         let url = format!("{BANGUMI_API}/v0/search/subjects?limit={page_size}&offset={offset}");
-        let response = self.http.client
+        let response = self
+            .http
+            .client
             .post(&url)
             .header("User-Agent", APP_UA)
             .header("Accept", "application/json")
@@ -731,26 +771,39 @@ impl Core {
             }))
             .send()?;
         let status = response.status().as_u16();
-        let text = response.text().map_err(|e| CoreError::Network(e.to_string()))?;
+        let text = response
+            .text()
+            .map_err(|e| CoreError::Network(e.to_string()))?;
         if !(200..300).contains(&status) {
-            return Err(CoreError::Api { code: status as i64, msg: bangumi_error_message(&text) });
+            return Err(CoreError::Api {
+                code: status as i64,
+                msg: bangumi_error_message(&text),
+            });
         }
         let raw: BangumiPaged<BangumiSubjectRaw> = serde_json::from_str(&text)?;
         Ok(AnimeSubjectSearchPage {
             total: raw.total,
             page,
             page_size: raw.limit.max(page_size),
-            items: raw.data.into_iter().map(|subject| convert_subject(subject, 0, 0)).collect(),
+            items: raw
+                .data
+                .into_iter()
+                .map(|subject| convert_subject(subject, 0, 0))
+                .collect(),
         })
     }
 
     pub fn anime_subject_relations(&self, subject_id: i64) -> CoreResult<AnimeSubjectRelations> {
         if subject_id <= 0 {
-            return Err(CoreError::InvalidArgument("invalid Bangumi subject id".into()));
+            return Err(CoreError::InvalidArgument(
+                "invalid Bangumi subject id".into(),
+            ));
         }
         let characters_path = format!("/v0/subjects/{subject_id}/characters");
         let staff_path = format!("/v0/subjects/{subject_id}/persons");
-        let characters: Vec<Value> = self.bangumi_get(&characters_path, "", &[]).unwrap_or_default();
+        let characters: Vec<Value> = self
+            .bangumi_get(&characters_path, "", &[])
+            .unwrap_or_default();
         let staff: Vec<Value> = self.bangumi_get(&staff_path, "", &[]).unwrap_or_default();
         let mut characters: Vec<AnimeCharacter> = characters
             .iter()
@@ -764,15 +817,19 @@ impl Core {
             .collect();
         sort_related_characters(&mut characters);
         sort_related_staff(&mut staff);
-        Ok(AnimeSubjectRelations {
-            characters,
-            staff,
-        })
+        Ok(AnimeSubjectRelations { characters, staff })
     }
 
-    pub fn anime_subject_reviews(&self, subject_id: i64, offset: i64, limit: i64) -> CoreResult<AnimeSubjectReviewPage> {
+    pub fn anime_subject_reviews(
+        &self,
+        subject_id: i64,
+        offset: i64,
+        limit: i64,
+    ) -> CoreResult<AnimeSubjectReviewPage> {
         if subject_id <= 0 {
-            return Err(CoreError::InvalidArgument("invalid Bangumi subject id".into()));
+            return Err(CoreError::InvalidArgument(
+                "invalid Bangumi subject id".into(),
+            ));
         }
         let offset = offset.max(0);
         let limit = limit.clamp(1, 50);
@@ -793,21 +850,25 @@ impl Core {
 
     pub fn anime_episode_comments(&self, episode_id: i64) -> CoreResult<Vec<AnimeEpisodeComment>> {
         if episode_id <= 0 {
-            return Err(CoreError::InvalidArgument("invalid Bangumi episode id".into()));
+            return Err(CoreError::InvalidArgument(
+                "invalid Bangumi episode id".into(),
+            ));
         }
-        let raw: Vec<BangumiNextEpisodeCommentRaw> = self.bangumi_next_get(
-            &format!("/p1/episodes/{episode_id}/comments"),
-            &[],
-        )?;
+        let raw: Vec<BangumiNextEpisodeCommentRaw> =
+            self.bangumi_next_get(&format!("/p1/episodes/{episode_id}/comments"), &[])?;
         Ok(raw.into_iter().map(convert_episode_comment).collect())
     }
 
     pub fn anime_source_subscription_update(&self, url: &str) -> CoreResult<AnimeSourceUpdate> {
         let url = url.trim();
         if url.is_empty() {
-            return Err(CoreError::InvalidArgument("missing media source subscription url".into()));
+            return Err(CoreError::InvalidArgument(
+                "missing media source subscription url".into(),
+            ));
         }
-        let text = self.http.client
+        let text = self
+            .http
+            .client
             .get(url)
             .header("User-Agent", UA_WEB)
             .header("Accept", "application/json, text/plain, */*")
@@ -846,7 +907,14 @@ impl Core {
     ) -> CoreResult<AnimeMediaFetchResult> {
         let source = parse_single_source(source_json)?;
         let keywords = build_search_keywords(&subject_names);
-        self.anime_media_parse_single_source_page(source, page_url, html, &keywords, episode_sort, episode_name)
+        self.anime_media_parse_single_source_page(
+            source,
+            page_url,
+            html,
+            &keywords,
+            episode_sort,
+            episode_name,
+        )
     }
 
     pub fn anime_bili_source_fetch(
@@ -856,7 +924,11 @@ impl Core {
         episode_name: &str,
     ) -> CoreResult<AnimeMediaFetchResult> {
         let keywords = build_search_keywords(&subject_names);
-        let subject_names = if keywords.is_empty() { subject_names } else { keywords };
+        let subject_names = if keywords.is_empty() {
+            subject_names
+        } else {
+            keywords
+        };
         let mut result = AnimeMediaFetchResult::default();
         result.diagnostics.enabled_sources = 1;
         let mut report = bili_source_report("searching", "正在检索 B站");
@@ -866,7 +938,12 @@ impl Core {
         for keyword in subject_names.iter().take(3) {
             result.diagnostics.attempted_queries += 1;
             report.attempted_queries += 1;
-            match self.search_bili_pgc_candidate(keyword, &subject_names, episode_sort, episode_name) {
+            match self.search_bili_pgc_candidate(
+                keyword,
+                &subject_names,
+                episode_sort,
+                episode_name,
+            ) {
                 Ok(Some(candidate)) => {
                     result.diagnostics.succeeded_queries += 1;
                     report.succeeded_queries += 1;
@@ -886,10 +963,18 @@ impl Core {
             }
         }
 
-        for query in bili_ugc_queries(&subject_names, episode_sort, episode_name).into_iter().take(8) {
+        for query in bili_ugc_queries(&subject_names, episode_sort, episode_name)
+            .into_iter()
+            .take(8)
+        {
             result.diagnostics.attempted_queries += 1;
             report.attempted_queries += 1;
-            match self.search_bili_ugc_candidates(&query, &subject_names, episode_sort, episode_name) {
+            match self.search_bili_ugc_candidates(
+                &query,
+                &subject_names,
+                episode_sort,
+                episode_name,
+            ) {
                 Ok(mut candidates) => {
                     result.diagnostics.succeeded_queries += 1;
                     report.succeeded_queries += 1;
@@ -908,14 +993,19 @@ impl Core {
         }
 
         result.candidates.sort_by(|a, b| {
-            bili_kind_priority(&a.kind).cmp(&bili_kind_priority(&b.kind))
+            bili_kind_priority(&a.kind)
+                .cmp(&bili_kind_priority(&b.kind))
                 .then_with(|| b.match_score.total_cmp(&a.match_score))
         });
         result.candidates.truncate(8);
         report.is_working = false;
         report.candidate_count = result.candidates.len() as i64;
         report.supported_count = report.candidate_count;
-        report.status = if report.supported_count > 0 { "found".into() } else { "empty".into() };
+        report.status = if report.supported_count > 0 {
+            "found".into()
+        } else {
+            "empty".into()
+        };
         report.state_id = report.status.clone();
         report.message = if report.supported_count > 0 {
             format!("找到 {} 个 B站资源", report.supported_count)
@@ -975,8 +1065,16 @@ impl Core {
         if format != "hls" && format != "mp4" {
             return Err(CoreError::InvalidArgument("暂不支持该资源格式".into()));
         }
-        let referer = if candidate.referer.is_empty() { candidate.page_url.clone() } else { candidate.referer.clone() };
-        let user_agent = if candidate.user_agent.is_empty() { UA_WEB.to_string() } else { candidate.user_agent.clone() };
+        let referer = if candidate.referer.is_empty() {
+            candidate.page_url.clone()
+        } else {
+            candidate.referer.clone()
+        };
+        let user_agent = if candidate.user_agent.is_empty() {
+            UA_WEB.to_string()
+        } else {
+            candidate.user_agent.clone()
+        };
         let headers = candidate_headers(&candidate);
         Ok(AnimePlayUrl {
             url: candidate.url,
@@ -1009,9 +1107,13 @@ impl Core {
                 best = Some((score, item));
             }
         }
-        let Some((subject_score, season_hit)) = best else { return Ok(None) };
+        let Some((subject_score, season_hit)) = best else {
+            return Ok(None);
+        };
         let season = self.pgc_season(season_hit.season_id, 0)?;
-        let episode = season.episodes.into_iter()
+        let episode = season
+            .episodes
+            .into_iter()
             .map(|episode| {
                 let score = bili_episode_score(
                     episode.title.as_str(),
@@ -1023,7 +1125,9 @@ impl Core {
                 (score, episode)
             })
             .max_by_key(|(score, _)| *score);
-        let Some((episode_score, episode)) = episode else { return Ok(None) };
+        let Some((episode_score, episode)) = episode else {
+            return Ok(None);
+        };
         if episode_score < 45 {
             return Ok(None);
         }
@@ -1033,7 +1137,11 @@ impl Core {
         }
         Ok(Some(make_bili_candidate(
             "bili_pgc",
-            format!("{} · {}", season_hit.title, bili_episode_display_title(&episode.title, &episode.long_title)),
+            format!(
+                "{} · {}",
+                season_hit.title,
+                bili_episode_display_title(&episode.title, &episode.long_title)
+            ),
             format!("https://www.bilibili.com/bangumi/play/ep{}", episode.ep_id),
             "pgc",
             episode.aid,
@@ -1067,18 +1175,21 @@ impl Core {
             if cid <= 0 {
                 continue;
             }
-            scored.push((score, make_bili_candidate(
-                "bili_ugc",
-                item.title.clone(),
-                format!("https://www.bilibili.com/video/{}", item.bvid),
-                "ugc",
-                item.aid,
-                item.bvid,
-                cid,
-                0,
-                0,
+            scored.push((
                 score,
-            )));
+                make_bili_candidate(
+                    "bili_ugc",
+                    item.title.clone(),
+                    format!("https://www.bilibili.com/video/{}", item.bvid),
+                    "ugc",
+                    item.aid,
+                    item.bvid,
+                    cid,
+                    0,
+                    0,
+                    score,
+                ),
+            ));
         }
         scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         Ok(scored.into_iter().take(4).map(|(_, item)| item).collect())
@@ -1107,14 +1218,22 @@ impl Core {
                 let details: DandanBangumiResponse = self.dandan_get_json(
                     app_id,
                     app_secret,
-                    &format!("/api/v2/bangumi/{}", anime.bangumi_id.unwrap_or(anime.anime_id)),
+                    &format!(
+                        "/api/v2/bangumi/{}",
+                        anime.bangumi_id.unwrap_or(anime.anime_id)
+                    ),
                     &[],
                 )?;
-                episodes.extend(details.bangumi.episodes.into_iter().map(|ep| DandanEpisodeWithSubject {
-                    id: ep.episode_id,
-                    subject_name: anime.anime_title.clone().unwrap_or_else(|| subject_primary_name.to_string()),
-                    episode_title: ep.episode_title,
-                    episode_number: ep.episode_number,
+                episodes.extend(details.bangumi.episodes.into_iter().map(|ep| {
+                    DandanEpisodeWithSubject {
+                        id: ep.episode_id,
+                        subject_name: anime
+                            .anime_title
+                            .clone()
+                            .unwrap_or_else(|| subject_primary_name.to_string()),
+                        episode_title: ep.episode_title,
+                        episode_number: ep.episode_number,
+                    }
                 }));
             }
         }
@@ -1141,11 +1260,22 @@ impl Core {
                 }
             }
         }
-        pick_dandan_episode(&episodes, subject_primary_name, episode_sort, episode_ep, episode_name)
-            .ok_or(CoreError::NotFound)
+        pick_dandan_episode(
+            &episodes,
+            subject_primary_name,
+            episode_sort,
+            episode_ep,
+            episode_name,
+        )
+        .ok_or(CoreError::NotFound)
     }
 
-    fn dandan_get_comments(&self, app_id: &str, app_secret: &str, episode_id: i64) -> CoreResult<Vec<DandanComment>> {
+    fn dandan_get_comments(
+        &self,
+        app_id: &str,
+        app_secret: &str,
+        episode_id: i64,
+    ) -> CoreResult<Vec<DandanComment>> {
         let response: DandanCommentResponse = self.dandan_get_json(
             app_id,
             app_secret,
@@ -1164,7 +1294,9 @@ impl Core {
     ) -> CoreResult<T> {
         let timestamp = now_secs();
         let signature = dandan_signature(app_id, timestamp, path, app_secret);
-        let response = self.http.client
+        let response = self
+            .http
+            .client
             .get(format!("{DANDANPLAY_API}{path}"))
             .header("User-Agent", APP_UA)
             .header("Accept", "application/json")
@@ -1174,36 +1306,56 @@ impl Core {
             .query(query)
             .send()?;
         let status = response.status().as_u16();
-        let text = response.text().map_err(|e| CoreError::Network(e.to_string()))?;
+        let text = response
+            .text()
+            .map_err(|e| CoreError::Network(e.to_string()))?;
         if !(200..300).contains(&status) {
-            return Err(CoreError::Api { code: status as i64, msg: text });
+            return Err(CoreError::Api {
+                code: status as i64,
+                msg: text,
+            });
         }
         serde_json::from_str(&text).map_err(CoreError::from)
     }
 
     fn oauth_token_request(&self, body: Value) -> CoreResult<AnimeOAuthToken> {
-        let form = body.as_object()
-            .map(|object| object.iter()
-                .filter_map(|(key, value)| value.as_str().map(|s| (key.as_str(), s)))
-                .collect::<Vec<_>>())
+        let form = body
+            .as_object()
+            .map(|object| {
+                object
+                    .iter()
+                    .filter_map(|(key, value)| value.as_str().map(|s| (key.as_str(), s)))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
-        let response = self.http.client
+        let response = self
+            .http
+            .client
             .post(format!("{BANGUMI_WEB}/oauth/access_token"))
             .header("User-Agent", APP_UA)
             .header("Accept", "application/json")
             .form(&form)
             .send()?;
         let status = response.status().as_u16();
-        let text = response.text().map_err(|e| CoreError::Network(e.to_string()))?;
+        let text = response
+            .text()
+            .map_err(|e| CoreError::Network(e.to_string()))?;
         if !(200..300).contains(&status) {
-            return Err(CoreError::Api { code: status as i64, msg: bangumi_error_message(&text) });
+            return Err(CoreError::Api {
+                code: status as i64,
+                msg: bangumi_error_message(&text),
+            });
         }
         let raw: OAuthTokenRaw = serde_json::from_str(&text)?;
         let now = now_secs();
         Ok(AnimeOAuthToken {
             access_token: raw.access_token,
             refresh_token: raw.refresh_token,
-            token_type: if raw.token_type.is_empty() { "Bearer".into() } else { raw.token_type },
+            token_type: if raw.token_type.is_empty() {
+                "Bearer".into()
+            } else {
+                raw.token_type
+            },
             expires_in: raw.expires_in,
             expires_at: now + raw.expires_in.max(0),
         })
@@ -1223,7 +1375,9 @@ impl Core {
                 pairs.append_pair(key, value);
             }
         }
-        let mut request = self.http.client
+        let mut request = self
+            .http
+            .client
             .get(url)
             .header("User-Agent", APP_UA)
             .header("Accept", "application/json");
@@ -1247,7 +1401,9 @@ impl Core {
                 pairs.append_pair(key, value);
             }
         }
-        let response = self.http.client
+        let response = self
+            .http
+            .client
             .get(url)
             .header("User-Agent", APP_UA)
             .header("Accept", "application/json")
@@ -1266,7 +1422,9 @@ impl Core {
             return Err(CoreError::AuthRequired);
         }
         let url = format!("{BANGUMI_API}{path}");
-        let mut request = self.http.client
+        let mut request = self
+            .http
+            .client
             .request(method, url)
             .header("User-Agent", APP_UA)
             .header("Accept", "application/json")
@@ -1280,7 +1438,10 @@ impl Core {
             return Ok(());
         }
         let text = response.text().unwrap_or_default();
-        Err(CoreError::Api { code: status as i64, msg: bangumi_error_message(&text) })
+        Err(CoreError::Api {
+            code: status as i64,
+            msg: bangumi_error_message(&text),
+        })
     }
 
     fn bangumi_subject_collection_state(&self, access_token: &str, subject_id: i64) -> (i64, i64) {
@@ -1288,7 +1449,9 @@ impl Core {
             return (0, 0);
         }
         let url = format!("{BANGUMI_API}/v0/users/-/collections/{subject_id}");
-        let Ok(response) = self.http.client
+        let Ok(response) = self
+            .http
+            .client
             .get(url)
             .header("User-Agent", APP_UA)
             .header("Accept", "application/json")
@@ -1311,10 +1474,7 @@ impl Core {
             .and_then(Value::as_i64)
             .or_else(|| value.get("collection_type").and_then(Value::as_i64))
             .unwrap_or(0);
-        let ep_status = value
-            .get("ep_status")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
+        let ep_status = value.get("ep_status").and_then(Value::as_i64).unwrap_or(0);
         (collection_type, ep_status)
     }
 
@@ -1335,7 +1495,9 @@ impl Core {
             result.diagnostics.source_reports = vec![report];
             return Ok(result);
         }
-        if !matches!(source.factory_id.as_str(), "rss" | "web-selector") || !source_supports_avkit(&source) {
+        if !matches!(source.factory_id.as_str(), "rss" | "web-selector")
+            || !source_supports_avkit(&source)
+        {
             result.diagnostics.source_reports = vec![report];
             return Ok(result);
         }
@@ -1409,21 +1571,35 @@ impl Core {
             update_report_failure(
                 &mut report,
                 &job,
-                &CoreError::Api { code: 468, msg: format!("需要处理{kind}") },
+                &CoreError::Api {
+                    code: 468,
+                    msg: format!("需要处理{kind}"),
+                },
             );
             result.diagnostics.attempted_queries = 1;
             result.diagnostics.failed_queries = 1;
-            result.diagnostics.messages.push(format!("{} · 仍需处理{kind}", source.name));
+            result
+                .diagnostics
+                .messages
+                .push(format!("{} · 仍需处理{kind}", source.name));
             return finalize_single_source_fetch(result, report);
         }
 
-        let filter_by_episode = source.arguments
+        let filter_by_episode = source
+            .arguments
             .pointer("/searchConfig/filterByEpisodeSort")
             .and_then(Value::as_bool)
             .unwrap_or(true);
         update_report_attempt(&mut report);
         result.diagnostics.attempted_queries = 1;
-        let mut candidates = parse_selector_candidates(&source, html, page_url, episode_sort, episode_name, filter_by_episode);
+        let mut candidates = parse_selector_candidates(
+            &source,
+            html,
+            page_url,
+            episode_sort,
+            episode_name,
+            filter_by_episode,
+        );
         let subjects = keywords
             .iter()
             .flat_map(|keyword| parse_selector_subjects(&source, html, page_url, keyword))
@@ -1434,7 +1610,10 @@ impl Core {
             return finalize_single_source_fetch(result, report);
         }
         if !subjects.is_empty() {
-            for subject in subjects.into_iter().take(MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY) {
+            for subject in subjects
+                .into_iter()
+                .take(MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY)
+            {
                 candidates.push(make_candidate(
                     &source,
                     subject.title,
@@ -1450,14 +1629,20 @@ impl Core {
         result.candidates = candidates;
         finalize_single_source_fetch(result, report)
     }
-
 }
 
-fn decode_bangumi_response<T: for<'de> Deserialize<'de>>(response: reqwest::blocking::Response) -> CoreResult<T> {
+fn decode_bangumi_response<T: for<'de> Deserialize<'de>>(
+    response: reqwest::blocking::Response,
+) -> CoreResult<T> {
     let status = response.status().as_u16();
-    let text = response.text().map_err(|e| CoreError::Network(e.to_string()))?;
+    let text = response
+        .text()
+        .map_err(|e| CoreError::Network(e.to_string()))?;
     if !(200..300).contains(&status) {
-        return Err(CoreError::Api { code: status as i64, msg: bangumi_error_message(&text) });
+        return Err(CoreError::Api {
+            code: status as i64,
+            msg: bangumi_error_message(&text),
+        });
     }
     serde_json::from_str(&text).map_err(CoreError::from)
 }
@@ -1470,7 +1655,10 @@ struct MediaFetchJob {
 
 fn parse_single_source(json_text: &str) -> CoreResult<AnimeSource> {
     let update = parse_sources(json_text)?;
-    update.sources.into_iter().next()
+    update
+        .sources
+        .into_iter()
+        .next()
         .ok_or_else(|| CoreError::InvalidArgument("missing anime media source".into()))
 }
 
@@ -1494,8 +1682,20 @@ fn fetch_media_job(
     episode_name: &str,
 ) -> CoreResult<Vec<AnimeMediaCandidate>> {
     match job.source.factory_id.as_str() {
-        "rss" => fetch_rss_candidates_with_client(client, &job.source, &job.keyword, episode_sort, episode_name),
-        "web-selector" => fetch_selector_candidates_with_client(client, &job.source, &job.keyword, episode_sort, episode_name),
+        "rss" => fetch_rss_candidates_with_client(
+            client,
+            &job.source,
+            &job.keyword,
+            episode_sort,
+            episode_name,
+        ),
+        "web-selector" => fetch_selector_candidates_with_client(
+            client,
+            &job.source,
+            &job.keyword,
+            episode_sort,
+            episode_name,
+        ),
         _ => Ok(Vec::new()),
     }
 }
@@ -1507,7 +1707,11 @@ fn fetch_rss_candidates_with_client(
     episode_sort: f64,
     episode_name: &str,
 ) -> CoreResult<Vec<AnimeMediaCandidate>> {
-    let Some(search_url) = source.arguments.pointer("/searchConfig/searchUrl").and_then(Value::as_str) else {
+    let Some(search_url) = source
+        .arguments
+        .pointer("/searchConfig/searchUrl")
+        .and_then(Value::as_str)
+    else {
         return Ok(Vec::new());
     };
     let url = fill_search_url(search_url, keyword, 1);
@@ -1521,11 +1725,19 @@ fn fetch_rss_candidates_with_client(
         "application/rss+xml, application/xml, text/xml, */*",
         source_cookie(source),
     )?;
-    let filter_by_episode = source.arguments
+    let filter_by_episode = source
+        .arguments
         .pointer("/searchConfig/filterByEpisodeSort")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    Ok(parse_rss_candidates(source, &text, &url, episode_sort, episode_name, filter_by_episode))
+    Ok(parse_rss_candidates(
+        source,
+        &text,
+        &url,
+        episode_sort,
+        episode_name,
+        filter_by_episode,
+    ))
 }
 
 fn fetch_selector_candidates_with_client(
@@ -1535,7 +1747,11 @@ fn fetch_selector_candidates_with_client(
     episode_sort: f64,
     episode_name: &str,
 ) -> CoreResult<Vec<AnimeMediaCandidate>> {
-    let Some(search_url) = source.arguments.pointer("/searchConfig/searchUrl").and_then(Value::as_str) else {
+    let Some(search_url) = source
+        .arguments
+        .pointer("/searchConfig/searchUrl")
+        .and_then(Value::as_str)
+    else {
         return Ok(Vec::new());
     };
     let url = fill_search_url(search_url, keyword, 1);
@@ -1550,13 +1766,24 @@ fn fetch_selector_candidates_with_client(
         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         source_cookie(source),
     )?;
-    let filter_by_episode = source.arguments
+    let filter_by_episode = source
+        .arguments
         .pointer("/searchConfig/filterByEpisodeSort")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    let mut candidates = parse_selector_candidates(source, &text, &url, episode_sort, episode_name, filter_by_episode);
+    let mut candidates = parse_selector_candidates(
+        source,
+        &text,
+        &url,
+        episode_sort,
+        episode_name,
+        filter_by_episode,
+    );
     let subjects = parse_selector_subjects(source, &text, &url, keyword);
-    for subject in subjects.into_iter().take(MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY) {
+    for subject in subjects
+        .into_iter()
+        .take(MEDIA_FETCH_MAX_SUBJECTS_PER_QUERY)
+    {
         let subject_html = match http_get_text(
             client,
             &subject.url,
@@ -1614,13 +1841,19 @@ fn http_get_text(
         .map_err(|e| CoreError::Network(e.to_string()))?;
     if (200..300).contains(&status) {
         if let Some(kind) = detect_web_captcha(url, &text) {
-            return Err(CoreError::Api { code: 468, msg: format!("需要处理{kind}") });
+            return Err(CoreError::Api {
+                code: 468,
+                msg: format!("需要处理{kind}"),
+            });
         }
         return Ok(text);
     }
     if matches!(status, 403 | 429 | 468) {
         let kind = detect_web_captcha(url, &text).unwrap_or("验证码");
-        return Err(CoreError::Api { code: 468, msg: format!("需要处理{kind}") });
+        return Err(CoreError::Api {
+            code: 468,
+            msg: format!("需要处理{kind}"),
+        });
     }
     Err(CoreError::Network(format!("HTTP {status}: {url}")))
 }
@@ -1651,7 +1884,8 @@ fn detect_web_captcha(page_url: &str, html: &str) -> Option<&'static str> {
     if has_challenge_url_marker
         || has_blocking_text
         || has_challenge_script
-        || (has_blocking_title && (lower_html.contains("challenge-platform") || lower_html.contains("cf-ray")))
+        || (has_blocking_title
+            && (lower_html.contains("challenge-platform") || lower_html.contains("cf-ray")))
     {
         return Some("Cloudflare 验证");
     }
@@ -1681,7 +1915,9 @@ fn detect_web_captcha(page_url: &str, html: &str) -> Option<&'static str> {
         return Some("图片验证码");
     }
     if lower_html.contains("captcha")
-        && (lower_html.contains("<img") || lower_html.contains("verification code") || lower_html.contains("verify"))
+        && (lower_html.contains("<img")
+            || lower_html.contains("verification code")
+            || lower_html.contains("verify"))
     {
         return Some("图片验证码");
     }
@@ -1695,7 +1931,8 @@ fn parse_selector_subjects(
     keyword: &str,
 ) -> Vec<SelectorSubjectHit> {
     let document = Html::parse_document(html);
-    let format_id = source.arguments
+    let format_id = source
+        .arguments
         .pointer("/searchConfig/subjectFormatId")
         .and_then(Value::as_str)
         .unwrap_or("a");
@@ -1708,14 +1945,20 @@ fn parse_selector_subjects(
     items.sort_by(|a, b| {
         let a_score = subject_title_score(&a.title, &normalized_keyword);
         let b_score = subject_title_score(&b.title, &normalized_keyword);
-        b_score.cmp(&a_score)
+        b_score
+            .cmp(&a_score)
             .then_with(|| a.title.len().cmp(&b.title.len()))
     });
     dedupe_subject_hits(items)
 }
 
-fn parse_anchor_subject_hits(source: &AnimeSource, document: &Html, page_url: &str) -> Vec<SelectorSubjectHit> {
-    let selector_text = source.arguments
+fn parse_anchor_subject_hits(
+    source: &AnimeSource,
+    document: &Html,
+    page_url: &str,
+) -> Vec<SelectorSubjectHit> {
+    let selector_text = source
+        .arguments
         .pointer("/searchConfig/selectorSubjectFormatA/selectLists")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
@@ -1738,15 +1981,21 @@ fn parse_anchor_subject_hits(source: &AnimeSource, document: &Html, page_url: &s
         .collect()
 }
 
-fn parse_json_path_subject_hits(source: &AnimeSource, html: &str, page_url: &str) -> Vec<SelectorSubjectHit> {
+fn parse_json_path_subject_hits(
+    source: &AnimeSource,
+    html: &str,
+    page_url: &str,
+) -> Vec<SelectorSubjectHit> {
     let Ok(value) = serde_json::from_str::<Value>(html) else {
         return Vec::new();
     };
-    let names_path = source.arguments
+    let names_path = source
+        .arguments
         .pointer("/searchConfig/selectorSubjectFormatJsonPathIndexed/selectNames")
         .and_then(Value::as_str)
         .unwrap_or("$[*]['title','name']");
-    let links_path = source.arguments
+    let links_path = source
+        .arguments
         .pointer("/searchConfig/selectorSubjectFormatJsonPathIndexed/selectLinks")
         .and_then(Value::as_str)
         .unwrap_or("$[*]['url','link']");
@@ -1766,15 +2015,23 @@ fn parse_json_path_subject_hits(source: &AnimeSource, html: &str, page_url: &str
         .collect()
 }
 
-fn parse_indexed_subject_hits(source: &AnimeSource, document: &Html, page_url: &str) -> Vec<SelectorSubjectHit> {
-    let Some(names_selector_text) = source.arguments
+fn parse_indexed_subject_hits(
+    source: &AnimeSource,
+    document: &Html,
+    page_url: &str,
+) -> Vec<SelectorSubjectHit> {
+    let Some(names_selector_text) = source
+        .arguments
         .pointer("/searchConfig/selectorSubjectFormatIndexed/selectNames")
-        .and_then(Value::as_str) else {
+        .and_then(Value::as_str)
+    else {
         return Vec::new();
     };
-    let Some(links_selector_text) = source.arguments
+    let Some(links_selector_text) = source
+        .arguments
         .pointer("/searchConfig/selectorSubjectFormatIndexed/selectLinks")
-        .and_then(Value::as_str) else {
+        .and_then(Value::as_str)
+    else {
         return Vec::new();
     };
     let (Ok(names_selector), Ok(links_selector)) = (
@@ -1789,12 +2046,23 @@ fn parse_indexed_subject_hits(source: &AnimeSource, document: &Html, page_url: &
         .collect::<Vec<_>>();
     let links = document
         .select(&links_selector)
-        .filter_map(|element| element.value().attr("href").and_then(|href| resolve_url(page_url, href)))
+        .filter_map(|element| {
+            element
+                .value()
+                .attr("href")
+                .and_then(|href| resolve_url(page_url, href))
+        })
         .collect::<Vec<_>>();
     names
         .into_iter()
         .zip(links)
-        .filter_map(|(title, url)| if title.is_empty() { None } else { Some(SelectorSubjectHit { title, url }) })
+        .filter_map(|(title, url)| {
+            if title.is_empty() {
+                None
+            } else {
+                Some(SelectorSubjectHit { title, url })
+            }
+        })
         .collect()
 }
 
@@ -1807,22 +2075,26 @@ fn parse_selector_episode_hits(
     filter_by_episode: bool,
 ) -> Vec<SelectorEpisodeHit> {
     let document = Html::parse_document(html);
-    let channel_format = source.arguments
+    let channel_format = source
+        .arguments
         .pointer("/searchConfig/channelFormatId")
         .and_then(Value::as_str)
         .unwrap_or("index-grouped");
     let base_url = selector_base_url(subject_url);
     match channel_format {
         "no-channel" => {
-            let episodes_selector = source.arguments
+            let episodes_selector = source
+                .arguments
                 .pointer("/searchConfig/selectorChannelFormatNoChannel/selectEpisodes")
                 .and_then(Value::as_str)
                 .unwrap_or("a");
-            let links_selector = source.arguments
+            let links_selector = source
+                .arguments
                 .pointer("/searchConfig/selectorChannelFormatNoChannel/selectEpisodeLinks")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let match_regex = source.arguments
+            let match_regex = source
+                .arguments
                 .pointer("/searchConfig/selectorChannelFormatNoChannel/matchEpisodeSortFromName")
                 .and_then(Value::as_str);
             parse_episode_hits_from_parent(
@@ -1837,19 +2109,23 @@ fn parse_selector_episode_hits(
             )
         }
         _ => {
-            let lists_selector_text = source.arguments
+            let lists_selector_text = source
+                .arguments
                 .pointer("/searchConfig/selectorChannelFormatFlattened/selectEpisodeLists")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let episodes_selector = source.arguments
+            let episodes_selector = source
+                .arguments
                 .pointer("/searchConfig/selectorChannelFormatFlattened/selectEpisodesFromList")
                 .and_then(Value::as_str)
                 .unwrap_or("a");
-            let links_selector = source.arguments
+            let links_selector = source
+                .arguments
                 .pointer("/searchConfig/selectorChannelFormatFlattened/selectEpisodeLinksFromList")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let match_regex = source.arguments
+            let match_regex = source
+                .arguments
                 .pointer("/searchConfig/selectorChannelFormatFlattened/matchEpisodeSortFromName")
                 .and_then(Value::as_str);
             let Ok(lists_selector) = Selector::parse(lists_selector_text) else {
@@ -1884,11 +2160,13 @@ fn parse_selector_episode_hits(
 }
 
 fn parse_channel_names(source: &AnimeSource, document: &Html) -> Vec<String> {
-    let selector_text = source.arguments
+    let selector_text = source
+        .arguments
         .pointer("/searchConfig/selectorChannelFormatFlattened/selectChannelNames")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let match_text = source.arguments
+    let match_text = source
+        .arguments
         .pointer("/searchConfig/selectorChannelFormatFlattened/matchChannelName")
         .and_then(Value::as_str)
         .unwrap_or("");
@@ -1946,14 +2224,18 @@ fn parse_episode_hits_from_parent(
     episode_sort: f64,
     episode_name: &str,
     filter_by_episode: bool,
-) -> Vec<SelectorEpisodeHit>
-{
+) -> Vec<SelectorEpisodeHit> {
     let Ok(episodes_selector) = Selector::parse(episodes_selector_text) else {
         return Vec::new();
     };
     let links = select_links_from_parent(parent, links_selector_text, base_url);
-    let match_regex = match_regex
-        .and_then(|pattern| if pattern.trim().is_empty() { None } else { Regex::new(pattern).ok() });
+    let match_regex = match_regex.and_then(|pattern| {
+        if pattern.trim().is_empty() {
+            None
+        } else {
+            Regex::new(pattern).ok()
+        }
+    });
     parent
         .select_node(&episodes_selector)
         .into_iter()
@@ -1963,7 +2245,13 @@ fn parse_episode_hits_from_parent(
             if title.is_empty() {
                 return None;
             }
-            if !episode_hit_matches(&title, episode_sort, episode_name, filter_by_episode, match_regex.as_ref()) {
+            if !episode_hit_matches(
+                &title,
+                episode_sort,
+                episode_name,
+                filter_by_episode,
+                match_regex.as_ref(),
+            ) {
                 return None;
             }
             let raw_href = links
@@ -1972,12 +2260,20 @@ fn parse_episode_hits_from_parent(
                 .or_else(|| element.value().attr("href").map(str::to_string))
                 .or_else(|| element.value().attr("src").map(str::to_string))?;
             let url = resolve_url(base_url, &raw_href)?;
-            Some(SelectorEpisodeHit { title, url, channel: String::new() })
+            Some(SelectorEpisodeHit {
+                title,
+                url,
+                channel: String::new(),
+            })
         })
         .collect()
 }
 
-fn select_links_from_parent(parent: &dyn SelectableNode, selector_text: &str, base_url: &str) -> Option<Vec<String>> {
+fn select_links_from_parent(
+    parent: &dyn SelectableNode,
+    selector_text: &str,
+    base_url: &str,
+) -> Option<Vec<String>> {
     let selector_text = selector_text.trim();
     if selector_text.is_empty() {
         return None;
@@ -1988,7 +2284,8 @@ fn select_links_from_parent(parent: &dyn SelectableNode, selector_text: &str, ba
             .select_node(&selector)
             .into_iter()
             .filter_map(|element| {
-                element.value()
+                element
+                    .value()
                     .attr("href")
                     .or_else(|| element.value().attr("src"))
                     .and_then(|href| resolve_url(base_url, href))
@@ -2027,7 +2324,10 @@ fn episode_sort_matches_raw(raw: &str, episode_sort: f64) -> bool {
         return true;
     }
     let sort = episode_sort.round() as i64;
-    let cleaned = raw.trim().trim_start_matches('第').trim_end_matches(['话', '集']);
+    let cleaned = raw
+        .trim()
+        .trim_start_matches('第')
+        .trim_end_matches(['话', '集']);
     if let Ok(value) = cleaned.parse::<i64>() {
         return value == sort;
     }
@@ -2041,19 +2341,28 @@ fn episode_sort_matches_raw(raw: &str, episode_sort: f64) -> bool {
 
 fn dedupe_candidates(items: Vec<AnimeMediaCandidate>) -> CoreResult<Vec<AnimeMediaCandidate>> {
     let mut seen = HashSet::new();
-    Ok(items.into_iter().filter(|item| seen.insert(item.url.clone())).collect())
+    Ok(items
+        .into_iter()
+        .filter(|item| seen.insert(item.url.clone()))
+        .collect())
 }
 
 fn dedupe_subject_hits(items: Vec<SelectorSubjectHit>) -> Vec<SelectorSubjectHit> {
     let mut seen = HashSet::new();
-    items.into_iter().filter(|item| seen.insert(item.url.clone())).collect()
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.url.clone()))
+        .collect()
 }
 
 fn selector_candidate_title(subject_title: &str, episode: &SelectorEpisodeHit) -> String {
     if episode.channel.is_empty() {
         format!("{} · {}", subject_title, episode.title)
     } else {
-        format!("{} · {} · {}", subject_title, episode.channel, episode.title)
+        format!(
+            "{} · {} · {}",
+            subject_title, episode.channel, episode.title
+        )
     }
 }
 
@@ -2073,18 +2382,29 @@ fn make_selector_episode_candidate(
 }
 
 fn element_text_or_title(element: &scraper::ElementRef<'_>) -> String {
-    element.value()
+    element
+        .value()
         .attr("title")
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| element.text().collect::<Vec<_>>().join("").trim().to_string())
+        .unwrap_or_else(|| {
+            element
+                .text()
+                .collect::<Vec<_>>()
+                .join("")
+                .trim()
+                .to_string()
+        })
 }
 
 fn selector_base_url(subject_url: &str) -> &str {
     if subject_url.ends_with('/') {
         subject_url.trim_end_matches('/')
     } else {
-        subject_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(subject_url)
+        subject_url
+            .rsplit_once('/')
+            .map(|(base, _)| base)
+            .unwrap_or(subject_url)
     }
 }
 
@@ -2132,25 +2452,32 @@ fn json_path_field_names(path: &str) -> Option<Vec<String>> {
 
 fn selector_search_keyword(source: &AnimeSource, keyword: &str) -> String {
     let mut value = keyword.trim().to_string();
-    let remove_special = source.arguments
+    let remove_special = source
+        .arguments
         .pointer("/searchConfig/searchRemoveSpecial")
         .and_then(Value::as_bool)
         .unwrap_or(true);
     if remove_special {
         value = simplify_keyword(&value);
     }
-    let use_first_word = source.arguments
+    let use_first_word = source
+        .arguments
         .pointer("/searchConfig/searchUseOnlyFirstWord")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if use_first_word {
-        value = value.split_whitespace().next().unwrap_or(&value).to_string();
+        value = value
+            .split_whitespace()
+            .next()
+            .unwrap_or(&value)
+            .to_string();
     }
     value
 }
 
 fn selector_user_agent(source: &AnimeSource) -> &str {
-    source.arguments
+    source
+        .arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/userAgent")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
@@ -2158,15 +2485,22 @@ fn selector_user_agent(source: &AnimeSource) -> &str {
 }
 
 fn source_cookie(source: &AnimeSource) -> Option<&str> {
-    source.arguments
+    source
+        .arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/cookie")
         .and_then(Value::as_str)
-        .or_else(|| source.arguments.pointer("/searchConfig/matchVideo/cookies").and_then(Value::as_str))
+        .or_else(|| {
+            source
+                .arguments
+                .pointer("/searchConfig/matchVideo/cookies")
+                .and_then(Value::as_str)
+        })
         .filter(|s| !s.trim().is_empty())
 }
 
 fn selector_referer(source: &AnimeSource, fallback: &str) -> Option<String> {
-    let referer = source.arguments
+    let referer = source
+        .arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/referer")
         .and_then(Value::as_str)
         .unwrap_or("");
@@ -2178,7 +2512,8 @@ fn selector_referer(source: &AnimeSource, fallback: &str) -> Option<String> {
 }
 
 fn source_supports_avkit(source: &AnimeSource) -> bool {
-    let players = source.arguments
+    let players = source
+        .arguments
         .pointer("/searchConfig/onlySupportsPlayers")
         .and_then(Value::as_array);
     let Some(players) = players else { return true };
@@ -2200,7 +2535,8 @@ fn subject_title_score(title: &str, normalized_keyword: &str) -> i32 {
 }
 
 fn report_for_source(source: &AnimeSource) -> AnimeMediaSourceReport {
-    let supported = matches!(source.factory_id.as_str(), "rss" | "web-selector") && source_supports_avkit(source);
+    let supported = matches!(source.factory_id.as_str(), "rss" | "web-selector")
+        && source_supports_avkit(source);
     let status = if supported { "pending" } else { "unsupported" };
     AnimeMediaSourceReport {
         source_id: source.id.clone(),
@@ -2210,7 +2546,11 @@ fn report_for_source(source: &AnimeSource) -> AnimeMediaSourceReport {
         is_working: false,
         is_temporarily_enabled: false,
         status: status.into(),
-        message: if supported { String::new() } else { "暂不支持该规则源类型".into() },
+        message: if supported {
+            String::new()
+        } else {
+            "暂不支持该规则源类型".into()
+        },
         ..Default::default()
     }
 }
@@ -2228,7 +2568,10 @@ fn update_report_success(report: &mut AnimeMediaSourceReport, items: &[AnimeMedi
     report.succeeded_queries += 1;
     report.is_working = false;
     report.candidate_count += items.len() as i64;
-    report.supported_count += items.iter().filter(|item| item.is_supported || item.kind == "web").count() as i64;
+    report.supported_count += items
+        .iter()
+        .filter(|item| item.is_supported || item.kind == "web")
+        .count() as i64;
     report.status = if report.supported_count > 0 {
         "found".into()
     } else if report.candidate_count > 0 {
@@ -2246,16 +2589,26 @@ fn update_report_success(report: &mut AnimeMediaSourceReport, items: &[AnimeMedi
     };
 }
 
-fn update_report_failure(report: &mut AnimeMediaSourceReport, job: &MediaFetchJob, error: &CoreError) {
+fn update_report_failure(
+    report: &mut AnimeMediaSourceReport,
+    job: &MediaFetchJob,
+    error: &CoreError,
+) {
     report.failed_queries += 1;
     report.is_working = false;
     if report.supported_count == 0 && report.candidate_count == 0 {
-        report.status = if is_captcha_error(error) { "captcha".into() } else { "failed".into() };
+        report.status = if is_captcha_error(error) {
+            "captcha".into()
+        } else {
+            "failed".into()
+        };
         report.state_id = report.status.clone();
         report.message = error.to_string();
         if is_captcha_error(error) {
             report.captcha_kind = captcha_kind_from_error(error).to_string();
-            report.captcha_url = job.source.arguments
+            report.captcha_url = job
+                .source
+                .arguments
                 .pointer("/searchConfig/searchUrl")
                 .and_then(Value::as_str)
                 .map(|url| fill_search_url(url, &job.keyword, 1))
@@ -2270,7 +2623,8 @@ fn finalize_single_source_fetch(
 ) -> CoreResult<AnimeMediaFetchResult> {
     report.is_working = false;
     result.candidates.sort_by(|a, b| {
-        candidate_is_playable_or_sniffable(b).cmp(&candidate_is_playable_or_sniffable(a))
+        candidate_is_playable_or_sniffable(b)
+            .cmp(&candidate_is_playable_or_sniffable(a))
             .then_with(|| b.is_supported.cmp(&a.is_supported))
             .then_with(|| score_quality(&b.quality_label).cmp(&score_quality(&a.quality_label)))
             .then_with(|| a.source_name.cmp(&b.source_name))
@@ -2280,7 +2634,8 @@ fn finalize_single_source_fetch(
         .iter()
         .filter(|candidate| candidate.is_supported || candidate.kind == "web")
         .count() as i64;
-    result.diagnostics.unsupported_candidates = result.candidates.len() as i64 - result.diagnostics.supported_candidates;
+    result.diagnostics.unsupported_candidates =
+        result.candidates.len() as i64 - result.diagnostics.supported_candidates;
     result.diagnostics.source_reports = vec![report];
     Ok(result)
 }
@@ -2290,13 +2645,14 @@ fn candidate_is_playable_or_sniffable(candidate: &AnimeMediaCandidate) -> bool {
 }
 
 fn is_captcha_error(error: &CoreError) -> bool {
-    matches!(error, CoreError::Api { code: 468, .. })
-        || error.to_string().contains("需要处理")
+    matches!(error, CoreError::Api { code: 468, .. }) || error.to_string().contains("需要处理")
 }
 
 fn captcha_kind_from_error(error: &CoreError) -> &str {
     match error {
-        CoreError::Api { msg, .. } if msg.contains("Cloudflare Turnstile") => "Cloudflare Turnstile 验证",
+        CoreError::Api { msg, .. } if msg.contains("Cloudflare Turnstile") => {
+            "Cloudflare Turnstile 验证"
+        }
         CoreError::Api { msg, .. } if msg.contains("Cloudflare") => "Cloudflare 验证",
         CoreError::Api { msg, .. } if msg.contains("图片") => "图片验证码",
         _ => "验证码",
@@ -2305,27 +2661,57 @@ fn captcha_kind_from_error(error: &CoreError) -> &str {
 
 fn parse_sources(json_text: &str) -> CoreResult<AnimeSourceUpdate> {
     let value: Value = serde_json::from_str(json_text)?;
-    let list_value = value.get("exportedMediaSourceDataList")
+    let list_value = value
+        .get("exportedMediaSourceDataList")
         .or_else(|| value.get("data"))
         .cloned()
         .unwrap_or(value);
     let decoded: ExportedMediaSourceDataList = serde_json::from_value(list_value)?;
-    let sources = decoded.media_sources.into_iter().enumerate().map(|(index, data)| {
-        let name = data.arguments.get("name").and_then(Value::as_str).unwrap_or("未命名规则源").to_string();
-        let id = stable_source_id(&data.factory_id, &name, index);
-        AnimeSource {
-            id,
-            factory_id: data.factory_id,
-            version: data.version,
-            name,
-            description: data.arguments.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
-            icon_url: data.arguments.get("iconUrl").or_else(|| data.arguments.get("icon_url")).and_then(Value::as_str).unwrap_or("").to_string(),
-            tier: data.arguments.get("tier").and_then(Value::as_str).unwrap_or("Fallback").to_string(),
-            enabled: true,
-            arguments: data.arguments,
-        }
-    }).collect();
-    Ok(AnimeSourceUpdate { sources, updated_at: now_secs() })
+    let sources = decoded
+        .media_sources
+        .into_iter()
+        .enumerate()
+        .map(|(index, data)| {
+            let name = data
+                .arguments
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("未命名规则源")
+                .to_string();
+            let id = stable_source_id(&data.factory_id, &name, index);
+            AnimeSource {
+                id,
+                factory_id: data.factory_id,
+                version: data.version,
+                name,
+                description: data
+                    .arguments
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                icon_url: data
+                    .arguments
+                    .get("iconUrl")
+                    .or_else(|| data.arguments.get("icon_url"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                tier: data
+                    .arguments
+                    .get("tier")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Fallback")
+                    .to_string(),
+                enabled: true,
+                arguments: data.arguments,
+            }
+        })
+        .collect();
+    Ok(AnimeSourceUpdate {
+        sources,
+        updated_at: now_secs(),
+    })
 }
 
 fn parse_rss_candidates(
@@ -2365,7 +2751,10 @@ fn parse_rss_candidates(
                 current_tag = tag;
             }
             Ok(Event::Empty(e)) => {
-                if in_item && (e.name().as_ref() == b"enclosure" || e.name().as_ref().ends_with(b":content")) {
+                if in_item
+                    && (e.name().as_ref() == b"enclosure"
+                        || e.name().as_ref().ends_with(b":content"))
+                {
                     for attr in e.attributes().filter_map(|a| a.ok()) {
                         if attr.key.as_ref() == b"url" {
                             enclosure = attr.unescape_value().unwrap_or_default().into_owned();
@@ -2386,7 +2775,13 @@ fn parse_rss_candidates(
                 if tag == "item" || tag == "entry" {
                     let media_url = first_non_empty(&[enclosure.clone(), link.clone()]);
                     if should_include_title(&title, episode_sort, episode_name, filter_by_episode) {
-                        items.push(make_candidate(source, title.clone(), media_url, page_url.to_string(), None));
+                        items.push(make_candidate(
+                            source,
+                            title.clone(),
+                            media_url,
+                            page_url.to_string(),
+                            None,
+                        ));
                     }
                     in_item = false;
                     current_tag.clear();
@@ -2411,7 +2806,8 @@ fn parse_selector_candidates(
 ) -> Vec<AnimeMediaCandidate> {
     let document = Html::parse_document(html);
     let selector = Selector::parse("a[href], video[src], source[src]").expect("valid selector");
-    let referer = source.arguments
+    let referer = source
+        .arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/referer")
         .and_then(Value::as_str)
         .map(str::to_string);
@@ -2419,7 +2815,11 @@ fn parse_selector_candidates(
     let mut seen = HashSet::new();
     for element in document.select(&selector) {
         let value = element.value();
-        let href = value.attr("href").or_else(|| value.attr("src")).unwrap_or("").trim();
+        let href = value
+            .attr("href")
+            .or_else(|| value.attr("src"))
+            .unwrap_or("")
+            .trim();
         if href.is_empty() {
             continue;
         }
@@ -2427,11 +2827,27 @@ fn parse_selector_candidates(
         if !is_media_like(&resolved) && !looks_like_episode_page(&resolved) {
             continue;
         }
-        let title = element.text().collect::<Vec<_>>().join("").trim().to_string();
-        let title = if title.is_empty() { resolved.clone() } else { title };
+        let title = element
+            .text()
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string();
+        let title = if title.is_empty() {
+            resolved.clone()
+        } else {
+            title
+        };
         if should_include_title(&title, episode_sort, episode_name, filter_by_episode)
-            || is_supported_media_url(&resolved) {
-            let mut item = make_candidate(source, title, resolved, page_url.to_string(), referer.clone());
+            || is_supported_media_url(&resolved)
+        {
+            let mut item = make_candidate(
+                source,
+                title,
+                resolved,
+                page_url.to_string(),
+                referer.clone(),
+            );
             if !is_supported_media_url(&item.url) && looks_like_episode_page(&item.url) {
                 item.unsupported_reason = "可尝试 WebView 嗅探".into();
             }
@@ -2462,7 +2878,8 @@ fn make_candidate(
         "暂不支持该资源格式".into()
     };
     let quality_label = infer_quality(&title, &url);
-    let user_agent = source.arguments
+    let user_agent = source
+        .arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/userAgent")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
@@ -2470,17 +2887,20 @@ fn make_candidate(
         .to_string();
     let referer = referer.unwrap_or_else(|| page_url.clone());
     let headers = source_video_headers(source, &referer, &user_agent);
-    let match_video_url = source.arguments
+    let match_video_url = source
+        .arguments
         .pointer("/searchConfig/matchVideo/matchVideoUrl")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let match_nested_url = if source.arguments
+    let match_nested_url = if source
+        .arguments
         .pointer("/searchConfig/matchVideo/enableNestedUrl")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        source.arguments
+        source
+            .arguments
             .pointer("/searchConfig/matchVideo/matchNestedUrl")
             .and_then(Value::as_str)
             .unwrap_or("")
@@ -2515,7 +2935,11 @@ fn make_candidate(
     }
 }
 
-fn source_video_headers(source: &AnimeSource, referer: &str, user_agent: &str) -> HashMap<String, String> {
+fn source_video_headers(
+    source: &AnimeSource,
+    referer: &str,
+    user_agent: &str,
+) -> HashMap<String, String> {
     let mut headers = HashMap::new();
     headers.insert("User-Agent".to_string(), user_agent.to_string());
     if !referer.trim().is_empty() {
@@ -2528,7 +2952,8 @@ fn source_video_headers(source: &AnimeSource, referer: &str, user_agent: &str) -
     if let Some(value) = source_cookie(source) {
         headers.insert("Cookie".to_string(), value.to_string());
     }
-    if let Some(object) = source.arguments
+    if let Some(object) = source
+        .arguments
         .pointer("/searchConfig/matchVideo/addHeadersToVideo/headers")
         .and_then(Value::as_object)
     {
@@ -2543,14 +2968,26 @@ fn source_video_headers(source: &AnimeSource, referer: &str, user_agent: &str) -
 
 fn candidate_headers(candidate: &AnimeMediaCandidate) -> HashMap<String, String> {
     let mut headers = candidate.headers.clone();
-    let user_agent = if candidate.user_agent.is_empty() { UA_WEB } else { &candidate.user_agent };
-    headers.entry("User-Agent".into()).or_insert_with(|| user_agent.to_string());
+    let user_agent = if candidate.user_agent.is_empty() {
+        UA_WEB
+    } else {
+        &candidate.user_agent
+    };
+    headers
+        .entry("User-Agent".into())
+        .or_insert_with(|| user_agent.to_string());
     if !candidate.referer.is_empty() {
-        headers.entry("Referer".into()).or_insert_with(|| candidate.referer.clone());
+        headers
+            .entry("Referer".into())
+            .or_insert_with(|| candidate.referer.clone());
     } else if !candidate.page_url.is_empty() {
-        headers.entry("Referer".into()).or_insert_with(|| candidate.page_url.clone());
+        headers
+            .entry("Referer".into())
+            .or_insert_with(|| candidate.page_url.clone());
     }
-    headers.entry("Accept".into()).or_insert_with(|| "*/*".to_string());
+    headers
+        .entry("Accept".into())
+        .or_insert_with(|| "*/*".to_string());
     headers
 }
 
@@ -2592,7 +3029,12 @@ fn convert_subject(raw: BangumiSubjectRaw, collection_type: i64, ep_status: i64)
         collection_label: subject_collection_label(collection_type).to_string(),
         ep_status,
         total_episodes: raw.total_episodes.max(raw.eps),
-        tags: raw.tags.into_iter().map(|tag| tag.name).filter(|s| !s.is_empty()).collect(),
+        tags: raw
+            .tags
+            .into_iter()
+            .map(|tag| tag.name)
+            .filter(|s| !s.is_empty())
+            .collect(),
         aliases,
         info_items,
         episodes: Vec::new(),
@@ -2602,10 +3044,13 @@ fn convert_subject(raw: BangumiSubjectRaw, collection_type: i64, ep_status: i64)
 fn info_alias_values(value: &Value) -> Vec<String> {
     match value {
         Value::String(s) => vec![s.trim().to_string()],
-        Value::Array(values) => values.iter()
-            .filter_map(|v| v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.get("v").and_then(Value::as_str).map(str::to_string)))
+        Value::Array(values) => values
+            .iter()
+            .filter_map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .or_else(|| v.get("v").and_then(Value::as_str).map(str::to_string))
+            })
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
@@ -2619,7 +3064,8 @@ fn info_value_to_string(value: &Value) -> String {
         Value::Bool(v) => v.to_string(),
         Value::Number(v) => v.to_string(),
         Value::String(v) => v.trim().to_string(),
-        Value::Array(values) => values.iter()
+        Value::Array(values) => values
+            .iter()
             .map(info_value_to_string)
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -2633,7 +3079,8 @@ fn info_value_to_string(value: &Value) -> String {
                     }
                 }
             }
-            object.values()
+            object
+                .values()
                 .map(info_value_to_string)
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
@@ -2658,12 +3105,18 @@ fn convert_episode(subject_id: i64, raw: BangumiEpisodeRaw) -> AnimeEpisode {
 }
 
 fn convert_related_character(value: &Value) -> AnimeCharacter {
-    let actors = value.get("actors")
+    let actors = value
+        .get("actors")
         .and_then(Value::as_array)
-        .map(|items| items.iter()
-            .map(|actor| value_to_person(actor, value_string(value, &["relation", "staff", "role"])))
-            .filter(|p| p.id > 0 || !p.name.is_empty())
-            .collect())
+        .map(|items| {
+            items
+                .iter()
+                .map(|actor| {
+                    value_to_person(actor, value_string(value, &["relation", "staff", "role"]))
+                })
+                .filter(|p| p.id > 0 || !p.name.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     AnimeCharacter {
         id: value_i64(value, &["id"]),
@@ -2680,7 +3133,8 @@ fn convert_related_person(value: &Value) -> AnimePerson {
 }
 
 fn sort_related_characters(characters: &mut [AnimeCharacter]) {
-    let mut indexed: Vec<(usize, AnimeCharacter)> = characters.iter().cloned().enumerate().collect();
+    let mut indexed: Vec<(usize, AnimeCharacter)> =
+        characters.iter().cloned().enumerate().collect();
     indexed.sort_by_key(|(index, character)| (character_role_priority(&character.role), *index));
     for (slot, (_, character)) in characters.iter_mut().zip(indexed.into_iter()) {
         *slot = character;
@@ -2740,7 +3194,9 @@ fn staff_role_priority(role: &str) -> usize {
 
 fn role_contains(role: &str, needles: &[&str]) -> bool {
     let lower = role.to_lowercase();
-    needles.iter().any(|needle| lower.contains(&needle.to_lowercase()))
+    needles
+        .iter()
+        .any(|needle| lower.contains(&needle.to_lowercase()))
 }
 
 fn role_is_any(role: &str, candidates: &[&str]) -> bool {
@@ -2762,7 +3218,10 @@ fn value_to_person(value: &Value, role: String) -> AnimePerson {
 fn value_i64(value: &Value, keys: &[&str]) -> i64 {
     keys.iter()
         .find_map(|key| value.get(*key))
-        .and_then(|v| v.as_i64().or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok())))
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok()))
+        })
         .unwrap_or_default()
 }
 
@@ -2779,7 +3238,11 @@ fn value_image(value: &Value) -> String {
     let images = value.get("images").or_else(|| value.get("image"));
     ["large", "medium", "small", "grid", "common"]
         .iter()
-        .find_map(|key| images.and_then(|images| images.get(*key)).and_then(Value::as_str))
+        .find_map(|key| {
+            images
+                .and_then(|images| images.get(*key))
+                .and_then(Value::as_str)
+        })
         .unwrap_or_default()
         .to_string()
 }
@@ -2813,7 +3276,11 @@ fn convert_episode_comment(raw: BangumiNextEpisodeCommentRaw) -> AnimeEpisodeCom
         content: raw.content,
         created_at: raw.created_at,
         user: raw.user.map(convert_next_user).unwrap_or_default(),
-        replies: raw.replies.into_iter().map(convert_episode_comment_reply).collect(),
+        replies: raw
+            .replies
+            .into_iter()
+            .map(convert_episode_comment_reply)
+            .collect(),
     }
 }
 
@@ -2840,7 +3307,8 @@ fn subject_collection_label(value: i64) -> &'static str {
 
 fn build_search_keywords(subject_names: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
-    subject_names.iter()
+    subject_names
+        .iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .filter_map(|s| {
@@ -2862,7 +3330,12 @@ fn fill_search_url(template: &str, keyword: &str, page: i64) -> String {
         .replace("{page}", &page.to_string())
 }
 
-fn should_include_title(title: &str, episode_sort: f64, episode_name: &str, filter_by_episode: bool) -> bool {
+fn should_include_title(
+    title: &str,
+    episode_sort: f64,
+    episode_name: &str,
+    filter_by_episode: bool,
+) -> bool {
     if !filter_by_episode || episode_sort <= 0.0 {
         return true;
     }
@@ -2877,7 +3350,10 @@ fn should_include_title(title: &str, episode_sort: f64, episode_name: &str, filt
         format!("[{}]", sort),
         format!("[{:02}]", sort),
     ];
-    if patterns.iter().any(|p| normalized.contains(&p.to_lowercase())) {
+    if patterns
+        .iter()
+        .any(|p| normalized.contains(&p.to_lowercase()))
+    {
         return true;
     }
     let ep_name = episode_name.trim().to_lowercase();
@@ -2929,11 +3405,17 @@ fn infer_quality(title: &str, url: &str) -> String {
 
 fn score_quality(label: &str) -> i32 {
     let lower = label.to_lowercase();
-    if lower.contains("2160") || lower.contains("4k") { 4000 }
-    else if lower.contains("1080") { 1080 }
-    else if lower.contains("720") { 720 }
-    else if lower.contains("480") { 480 }
-    else { 0 }
+    if lower.contains("2160") || lower.contains("4k") {
+        4000
+    } else if lower.contains("1080") {
+        1080
+    } else if lower.contains("720") {
+        720
+    } else if lower.contains("480") {
+        480
+    } else {
+        0
+    }
 }
 
 fn resolve_url(base: &str, href: &str) -> Option<String> {
@@ -2944,10 +3426,18 @@ fn resolve_url(base: &str, href: &str) -> Option<String> {
     if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("magnet:") {
         return Some(href.to_string());
     }
-    Url::parse(base).ok()?.join(href).ok().map(|u| u.to_string())
+    Url::parse(base)
+        .ok()?
+        .join(href)
+        .ok()
+        .map(|u| u.to_string())
 }
 
-fn push_unique(target: &mut Vec<AnimeMediaCandidate>, seen: &mut HashSet<String>, items: &mut Vec<AnimeMediaCandidate>) {
+fn push_unique(
+    target: &mut Vec<AnimeMediaCandidate>,
+    seen: &mut HashSet<String>,
+    items: &mut Vec<AnimeMediaCandidate>,
+) {
     for item in items.drain(..) {
         if seen.insert(item.url.clone()) {
             target.push(item);
@@ -2955,7 +3445,12 @@ fn push_unique(target: &mut Vec<AnimeMediaCandidate>, seen: &mut HashSet<String>
     }
 }
 
-fn push_diagnostic_message(messages: &mut Vec<String>, source: &AnimeSource, keyword: &str, error: &CoreError) {
+fn push_diagnostic_message(
+    messages: &mut Vec<String>,
+    source: &AnimeSource,
+    keyword: &str,
+    error: &CoreError,
+) {
     if messages.len() >= 8 {
         return;
     }
@@ -2974,7 +3469,11 @@ fn bili_source_report(status: &str, message: &str) -> AnimeMediaSourceReport {
         source_id: BUILTIN_BILI_SOURCE_ID.into(),
         source_name: BUILTIN_BILI_SOURCE_NAME.into(),
         factory_id: "builtin-bilibili".into(),
-        state_id: if status == "searching" { "working".into() } else { status.into() },
+        state_id: if status == "searching" {
+            "working".into()
+        } else {
+            status.into()
+        },
         status: status.into(),
         message: message.into(),
         ..Default::default()
@@ -2994,7 +3493,9 @@ fn make_bili_candidate(
     match_score: f64,
 ) -> AnimeMediaCandidate {
     let url = match kind {
-        "bili_pgc" => format!("ibili://bilibili/pgc?season_id={season_id}&ep_id={ep_id}&aid={aid}&cid={cid}"),
+        "bili_pgc" => {
+            format!("ibili://bilibili/pgc?season_id={season_id}&ep_id={ep_id}&aid={aid}&cid={cid}")
+        }
         _ => format!("ibili://bilibili/ugc?aid={aid}&bvid={bvid}&cid={cid}"),
     };
     AnimeMediaCandidate {
@@ -3069,7 +3570,9 @@ fn bili_episode_score(
         score += 65;
     }
     let name = episode_name.trim();
-    if !name.is_empty() && normalize_bili_match_text(&combined).contains(&normalize_bili_match_text(name)) {
+    if !name.is_empty()
+        && normalize_bili_match_text(&combined).contains(&normalize_bili_match_text(name))
+    {
         score += 35;
     }
     if let Some(duration) = duration_sec {
@@ -3106,11 +3609,30 @@ fn bili_ugc_score(
     } else if item.duration_sec > 0 && item.duration_sec < 360 {
         score -= 22.0;
     }
-    score += ((item.play.max(0) as f64 + item.danmaku.max(0) as f64 * 8.0).log10().max(0.0) * 3.0).min(12.0);
+    score += ((item.play.max(0) as f64 + item.danmaku.max(0) as f64 * 8.0)
+        .log10()
+        .max(0.0)
+        * 3.0)
+        .min(12.0);
     let lower = item.title.to_lowercase();
     for keyword in [
-        "解说", "reaction", "预告", "片段", "mad", "amv", "op", "ed", "pv", "合集", "剪辑",
-        "音乐", "盘点", "考察", "reaction", "ost", "主题曲",
+        "解说",
+        "reaction",
+        "预告",
+        "片段",
+        "mad",
+        "amv",
+        "op",
+        "ed",
+        "pv",
+        "合集",
+        "剪辑",
+        "音乐",
+        "盘点",
+        "考察",
+        "reaction",
+        "ost",
+        "主题曲",
     ] {
         if lower.contains(keyword) {
             score -= 28.0;
@@ -3119,7 +3641,11 @@ fn bili_ugc_score(
     score.clamp(0.0, 100.0)
 }
 
-fn bili_ugc_queries(subject_names: &[String], episode_sort: f64, episode_name: &str) -> Vec<String> {
+fn bili_ugc_queries(
+    subject_names: &[String],
+    episode_sort: f64,
+    episode_name: &str,
+) -> Vec<String> {
     let mut queries = Vec::new();
     let mut seen = HashSet::new();
     let sort = episode_sort.round() as i64;
@@ -3301,12 +3827,23 @@ struct DandanComment {
     m: String,
 }
 
-fn exact_dandan_anime_match(items: &[DandanSearchAnime], subject_names: &[String]) -> Option<DandanSearchAnime> {
-    items.iter().find(|item| {
-        item.anime_title.as_deref().map(|title| {
-            subject_names.iter().any(|name| normalize_bili_match_text(title) == normalize_bili_match_text(name))
-        }).unwrap_or(false)
-    }).cloned()
+fn exact_dandan_anime_match(
+    items: &[DandanSearchAnime],
+    subject_names: &[String],
+) -> Option<DandanSearchAnime> {
+    items
+        .iter()
+        .find(|item| {
+            item.anime_title
+                .as_deref()
+                .map(|title| {
+                    subject_names.iter().any(|name| {
+                        normalize_bili_match_text(title) == normalize_bili_match_text(name)
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .cloned()
 }
 
 fn pick_dandan_episode(
@@ -3333,16 +3870,22 @@ fn pick_dandan_episode(
     }
     let expected_name = normalize_bili_match_text(episode_name);
     if !expected_name.is_empty() {
-        if let Some(item) = episodes.iter().find(|item| normalize_bili_match_text(&item.episode_title).contains(&expected_name)) {
+        if let Some(item) = episodes
+            .iter()
+            .find(|item| normalize_bili_match_text(&item.episode_title).contains(&expected_name))
+        {
             return Some(item.id);
         }
     }
-    episodes.iter()
+    episodes
+        .iter()
         .max_by_key(|item| {
             bili_title_score(&item.subject_name, subject_primary_name)
                 + bili_episode_score(&item.episode_title, "", episode_sort, episode_name, None)
         })
-        .filter(|item| bili_episode_score(&item.episode_title, "", episode_sort, episode_name, None) >= 40)
+        .filter(|item| {
+            bili_episode_score(&item.episode_title, "", episode_sort, episode_name, None) >= 40
+        })
         .map(|item| item.id)
 }
 
@@ -3392,7 +3935,11 @@ fn simplify_keyword(text: &str) -> String {
 }
 
 fn first_non_empty(values: &[String]) -> String {
-    values.iter().find(|v| !v.trim().is_empty()).cloned().unwrap_or_default()
+    values
+        .iter()
+        .find(|v| !v.trim().is_empty())
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn stable_source_id(factory_id: &str, name: &str, index: usize) -> String {
@@ -3481,11 +4028,20 @@ mod anime_tests {
             .anime_oauth_start("client-id", "ibili://bangumi-oauth")
             .unwrap();
         let url = Url::parse(&start.authorize_url).unwrap();
-        assert_eq!(url.as_str().split('?').next().unwrap(), "https://bgm.tv/oauth/authorize");
+        assert_eq!(
+            url.as_str().split('?').next().unwrap(),
+            "https://bgm.tv/oauth/authorize"
+        );
         let pairs = url.query_pairs().collect::<Vec<_>>();
-        assert!(pairs.iter().any(|(k, v)| k == "client_id" && v == "client-id"));
-        assert!(pairs.iter().any(|(k, v)| k == "response_type" && v == "code"));
-        assert!(pairs.iter().any(|(k, v)| k == "redirect_uri" && v == "ibili://bangumi-oauth"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| k == "client_id" && v == "client-id"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| k == "response_type" && v == "code"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| k == "redirect_uri" && v == "ibili://bangumi-oauth"));
     }
 
     #[test]
@@ -3530,7 +4086,10 @@ mod anime_tests {
         assert_eq!(update.sources.len(), 2);
         assert_eq!(update.sources[0].factory_id, "rss");
         assert_eq!(update.sources[0].name, "AnimeGarden");
-        assert_eq!(update.sources[0].icon_url, "https://garden.example/favicon.ico");
+        assert_eq!(
+            update.sources[0].icon_url,
+            "https://garden.example/favicon.ico"
+        );
         assert_eq!(update.sources[1].factory_id, "web-selector");
         assert_eq!(update.sources[1].tier, "Fallback");
     }
@@ -3552,23 +4111,64 @@ mod anime_tests {
     #[test]
     fn related_people_sort_like_animeko_preview_roles() {
         let mut staff = vec![
-            AnimePerson { name: "角色设计".into(), role: "角色设计".into(), ..Default::default() },
-            AnimePerson { name: "音乐".into(), role: "音乐".into(), ..Default::default() },
-            AnimePerson { name: "制作".into(), role: "动画制作".into(), ..Default::default() },
-            AnimePerson { name: "导演".into(), role: "导演".into(), ..Default::default() },
-            AnimePerson { name: "脚本".into(), role: "脚本".into(), ..Default::default() },
+            AnimePerson {
+                name: "角色设计".into(),
+                role: "角色设计".into(),
+                ..Default::default()
+            },
+            AnimePerson {
+                name: "音乐".into(),
+                role: "音乐".into(),
+                ..Default::default()
+            },
+            AnimePerson {
+                name: "制作".into(),
+                role: "动画制作".into(),
+                ..Default::default()
+            },
+            AnimePerson {
+                name: "导演".into(),
+                role: "导演".into(),
+                ..Default::default()
+            },
+            AnimePerson {
+                name: "脚本".into(),
+                role: "脚本".into(),
+                ..Default::default()
+            },
         ];
         sort_related_staff(&mut staff);
-        let ordered_roles = staff.iter().map(|person| person.role.as_str()).collect::<Vec<_>>();
-        assert_eq!(ordered_roles, ["动画制作", "导演", "脚本", "音乐", "角色设计"]);
+        let ordered_roles = staff
+            .iter()
+            .map(|person| person.role.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered_roles,
+            ["动画制作", "导演", "脚本", "音乐", "角色设计"]
+        );
 
         let mut characters = vec![
-            AnimeCharacter { name: "B".into(), role: "配角".into(), ..Default::default() },
-            AnimeCharacter { name: "A".into(), role: "主角".into(), ..Default::default() },
-            AnimeCharacter { name: "C".into(), role: "客串".into(), ..Default::default() },
+            AnimeCharacter {
+                name: "B".into(),
+                role: "配角".into(),
+                ..Default::default()
+            },
+            AnimeCharacter {
+                name: "A".into(),
+                role: "主角".into(),
+                ..Default::default()
+            },
+            AnimeCharacter {
+                name: "C".into(),
+                role: "客串".into(),
+                ..Default::default()
+            },
         ];
         sort_related_characters(&mut characters);
-        let ordered_roles = characters.iter().map(|character| character.role.as_str()).collect::<Vec<_>>();
+        let ordered_roles = characters
+            .iter()
+            .map(|character| character.role.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(ordered_roles, ["主角", "配角", "客串"]);
     }
 
@@ -3611,14 +4211,8 @@ mod anime_tests {
             <source src="https://cdn.example/episode-02.m3u8">
           </body></html>
         "#;
-        let items = parse_selector_candidates(
-            &source,
-            html,
-            "https://video.example/search",
-            1.0,
-            "",
-            true,
-        );
+        let items =
+            parse_selector_candidates(&source, html, "https://video.example/search", 1.0, "", true);
         let mp4 = items.iter().find(|item| item.kind == "mp4").unwrap();
         assert_eq!(mp4.url, "https://video.example/media/episode-01-720p.mp4");
         assert_eq!(mp4.referer, "https://example.test/list");
@@ -3698,7 +4292,10 @@ mod anime_tests {
         assert_eq!(item.unsupported_reason, "可尝试 WebView 嗅探");
         assert_eq!(item.page_url, episode.url);
         assert_eq!(item.referer, episode.url);
-        assert_eq!(item.headers.get("Cookie").map(String::as_str), Some("quality=1080"));
+        assert_eq!(
+            item.headers.get("Cookie").map(String::as_str),
+            Some("quality=1080")
+        );
         assert!(item.match_video_url.contains("(?<v>"));
         assert_eq!(item.title, "测试番 · 新番主线① · 第06集");
     }
@@ -3718,7 +4315,8 @@ mod anime_tests {
             ..test_source("web-selector")
         };
         let html = r#"[{"title":"测试番","url":"/detail/1"},{"name":"备用名","link":"https://cdn.example/detail/2"}]"#;
-        let hits = parse_selector_subjects(&source, html, "https://example.test/search?q=a", "测试番");
+        let hits =
+            parse_selector_subjects(&source, html, "https://example.test/search?q=a", "测试番");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].title, "测试番");
         assert_eq!(hits[0].url, "https://example.test/detail/1");
@@ -3734,7 +4332,10 @@ mod anime_tests {
             "Sousou no Frieren".to_string(),
         ];
         let keywords = build_search_keywords(&names);
-        assert_eq!(keywords, vec!["葬送的芙莉莲 特别篇", "Frieren", "Sousou no Frieren"]);
+        assert_eq!(
+            keywords,
+            vec!["葬送的芙莉莲 特别篇", "Frieren", "Sousou no Frieren"]
+        );
     }
 
     #[test]
@@ -3791,7 +4392,8 @@ mod anime_tests {
     #[test]
     fn dandan_signature_uses_path_not_full_url() {
         let signature = dandan_signature("app", 1_700_000_000, "/api/v2/comment/123", "secret");
-        let expected = general_purpose::STANDARD.encode(Sha256::digest(b"app1700000000/api/v2/comment/123secret"));
+        let expected = general_purpose::STANDARD
+            .encode(Sha256::digest(b"app1700000000/api/v2/comment/123secret"));
         assert_eq!(signature, expected);
     }
 }

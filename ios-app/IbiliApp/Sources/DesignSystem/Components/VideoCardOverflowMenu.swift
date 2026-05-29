@@ -4,10 +4,15 @@ struct VideoCardOverflowMenu: View {
     let bvid: String
     let author: String
     let ownerMID: Int64
+    let dislikeReasons: [FeedDislikeReasonDTO]
+    let feedbackReasons: [FeedDislikeReasonDTO]
     var onCopyBVID: () -> Void
     var onWatchLater: () -> Void
     var onVisitOwner: () -> Void
-    var onNotInterested: () -> Void
+    var onPlainDislike: () -> Void
+    var onUndoDislike: () -> Void
+    var onDislikeReason: (FeedDislikeReasonDTO) -> Void
+    var onFeedbackReason: (FeedDislikeReasonDTO) -> Void
     var onBlockOwner: () -> Void
 
     var body: some View {
@@ -27,7 +32,39 @@ struct VideoCardOverflowMenu: View {
             }
             .disabled(ownerMID <= 0)
 
-            Button(action: onNotInterested) {
+            Menu {
+                if dislikeReasons.isEmpty && feedbackReasons.isEmpty {
+                    Button(action: onPlainDislike) {
+                        Label("点踩", systemImage: "hand.thumbsdown")
+                    }
+                    Button(action: onUndoDislike) {
+                        Label("撤销点踩", systemImage: "arrow.uturn.backward")
+                    }
+                } else {
+                    if !dislikeReasons.isEmpty {
+                        Section("我不想看") {
+                            ForEach(dislikeReasons) { reason in
+                                Button(action: { onDislikeReason(reason) }) {
+                                    Text(reason.name)
+                                }
+                            }
+                        }
+                    }
+                    if !feedbackReasons.isEmpty {
+                        Section("反馈") {
+                            ForEach(feedbackReasons) { reason in
+                                Button(action: { onFeedbackReason(reason) }) {
+                                    Text(reason.name)
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button(action: onUndoDislike) {
+                        Label("撤销", systemImage: "arrow.uturn.backward")
+                    }
+                }
+            } label: {
                 Label("不感兴趣", systemImage: "hand.thumbsdown")
             }
 

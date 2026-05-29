@@ -193,7 +193,11 @@ pub fn offline_build(request: OfflinePackagingRequest) -> CoreResult<OfflinePack
     let workspace_outputs = workspace_outputs_for(
         &prepared.workspace_root,
         prepared.has_audio,
-        if authored.startup_ready { "ready" } else { "incomplete" },
+        if authored.startup_ready {
+            "ready"
+        } else {
+            "incomplete"
+        },
     );
     let manifest = StreamManifest {
         schema_version: 1,
@@ -250,9 +254,7 @@ pub fn offline_build(request: OfflinePackagingRequest) -> CoreResult<OfflinePack
     })
 }
 
-fn prepare_workspace(
-    request: &OfflinePackagingRequest,
-) -> CoreResult<PreparedWorkspace> {
+fn prepare_workspace(request: &OfflinePackagingRequest) -> CoreResult<PreparedWorkspace> {
     let diagnostics_dir = PathBuf::from(&request.diagnostics_dir);
     if !diagnostics_dir.is_dir() {
         return Err(CoreError::InvalidArgument(format!(
@@ -313,10 +315,14 @@ fn prepare_workspace(
         )?,
     };
 
-    if metadata_hints.video_codec.is_none() && !matches!(source_kind, SourceKind::RemuxDiagnostics) {
+    if metadata_hints.video_codec.is_none() && !matches!(source_kind, SourceKind::RemuxDiagnostics)
+    {
         warnings.push("metadata.json did not provide videoCodec; master playlist will fall back to source master codecs when available".to_string());
     }
-    if has_audio && metadata_hints.audio_codec.is_none() && !matches!(source_kind, SourceKind::RemuxDiagnostics) {
+    if has_audio
+        && metadata_hints.audio_codec.is_none()
+        && !matches!(source_kind, SourceKind::RemuxDiagnostics)
+    {
         warnings.push("metadata.json did not provide audioCodec; master playlist will fall back to source master codecs when available".to_string());
     }
     if matches!(source_kind, SourceKind::RemuxDiagnostics) {
@@ -344,7 +350,12 @@ fn prepare_proxy_workspace(
     staged_inputs: &mut Vec<StagedInput>,
     staged_files: &mut Vec<String>,
     warnings: &mut Vec<String>,
-) -> CoreResult<(bool, MediaPlaylistTemplate, Option<MediaPlaylistTemplate>, MasterPlaylistTemplate)> {
+) -> CoreResult<(
+    bool,
+    MediaPlaylistTemplate,
+    Option<MediaPlaylistTemplate>,
+    MasterPlaylistTemplate,
+)> {
     stage_required(
         &diagnostics_dir.join("video-init.mp4"),
         &workspace_root.join("init-video.mp4"),
@@ -400,9 +411,27 @@ fn prepare_proxy_workspace(
         )?;
     }
 
-    stage_original_playlist(diagnostics_dir, workspace_root, "master.m3u8", staged_inputs, staged_files)?;
-    stage_original_playlist(diagnostics_dir, workspace_root, "video.m3u8", staged_inputs, staged_files)?;
-    stage_original_playlist(diagnostics_dir, workspace_root, "audio.m3u8", staged_inputs, staged_files)?;
+    stage_original_playlist(
+        diagnostics_dir,
+        workspace_root,
+        "master.m3u8",
+        staged_inputs,
+        staged_files,
+    )?;
+    stage_original_playlist(
+        diagnostics_dir,
+        workspace_root,
+        "video.m3u8",
+        staged_inputs,
+        staged_files,
+    )?;
+    stage_original_playlist(
+        diagnostics_dir,
+        workspace_root,
+        "audio.m3u8",
+        staged_inputs,
+        staged_files,
+    )?;
 
     let video_template = parse_media_playlist_template(&diagnostics_dir.join("video.m3u8")).unwrap_or_else(|| {
         warnings.push("source video.m3u8 was missing or incomplete; using 5.0s fallback for the first video segment".to_string());
@@ -416,9 +445,15 @@ fn prepare_proxy_workspace(
     } else {
         None
     };
-    let master_template = parse_master_playlist_template(&diagnostics_dir.join("master.m3u8")).unwrap_or_default();
+    let master_template =
+        parse_master_playlist_template(&diagnostics_dir.join("master.m3u8")).unwrap_or_default();
 
-    Ok((audio_present, video_template, audio_template, master_template))
+    Ok((
+        audio_present,
+        video_template,
+        audio_template,
+        master_template,
+    ))
 }
 
 fn prepare_remux_workspace(
@@ -427,7 +462,12 @@ fn prepare_remux_workspace(
     staged_inputs: &mut Vec<StagedInput>,
     staged_files: &mut Vec<String>,
     warnings: &mut Vec<String>,
-) -> CoreResult<(bool, MediaPlaylistTemplate, Option<MediaPlaylistTemplate>, MasterPlaylistTemplate)> {
+) -> CoreResult<(
+    bool,
+    MediaPlaylistTemplate,
+    Option<MediaPlaylistTemplate>,
+    MasterPlaylistTemplate,
+)> {
     stage_required(
         &diagnostics_dir.join("init.mp4"),
         &workspace_root.join("init-video.mp4"),
@@ -442,8 +482,20 @@ fn prepare_remux_workspace(
         staged_inputs,
         staged_files,
     )?;
-    stage_original_playlist(diagnostics_dir, workspace_root, "live.m3u8", staged_inputs, staged_files)?;
-    stage_original_playlist(diagnostics_dir, workspace_root, "local.m3u8", staged_inputs, staged_files)?;
+    stage_original_playlist(
+        diagnostics_dir,
+        workspace_root,
+        "live.m3u8",
+        staged_inputs,
+        staged_files,
+    )?;
+    stage_original_playlist(
+        diagnostics_dir,
+        workspace_root,
+        "local.m3u8",
+        staged_inputs,
+        staged_files,
+    )?;
 
     let video_template = parse_media_playlist_template(&diagnostics_dir.join("local.m3u8"))
         .or_else(|| parse_media_playlist_template(&diagnostics_dir.join("live.m3u8")))
@@ -452,13 +504,23 @@ fn prepare_remux_workspace(
             MediaPlaylistTemplate::new(10, 10.01)
         });
 
-    Ok((false, video_template, None, MasterPlaylistTemplate::default()))
+    Ok((
+        false,
+        video_template,
+        None,
+        MasterPlaylistTemplate::default(),
+    ))
 }
 
 fn author_local_hls_workspace(prepared: &PreparedWorkspace) -> CoreResult<AuthoredWorkspace> {
     let shared_target_duration = prepared
         .audio_template
-        .map(|template| prepared.video_template.target_duration.max(template.target_duration))
+        .map(|template| {
+            prepared
+                .video_template
+                .target_duration
+                .max(template.target_duration)
+        })
         .unwrap_or(prepared.video_template.target_duration);
     let video_playlist_path = prepared.workspace_root.join("video.m3u8");
     write_text(
@@ -475,7 +537,9 @@ fn author_local_hls_workspace(prepared: &PreparedWorkspace) -> CoreResult<Author
     let mut authoring_warnings = Vec::new();
 
     let audio_playlist_path = if prepared.has_audio {
-        let template = prepared.audio_template.unwrap_or(MediaPlaylistTemplate::new(6, 5.0));
+        let template = prepared
+            .audio_template
+            .unwrap_or(MediaPlaylistTemplate::new(6, 5.0));
         let path = prepared.workspace_root.join("audio.m3u8");
         write_text(
             &path,
@@ -541,8 +605,8 @@ fn detect_source_kind(diagnostics_dir: &Path) -> CoreResult<SourceKind> {
         return Ok(SourceKind::ProxyDiagnostics);
     }
 
-    let remux = diagnostics_dir.join("init.mp4").is_file()
-        && diagnostics_dir.join("seg-0.m4s").is_file();
+    let remux =
+        diagnostics_dir.join("init.mp4").is_file() && diagnostics_dir.join("seg-0.m4s").is_file();
     if remux {
         return Ok(SourceKind::RemuxDiagnostics);
     }
@@ -553,10 +617,7 @@ fn detect_source_kind(diagnostics_dir: &Path) -> CoreResult<SourceKind> {
     )))
 }
 
-fn resolve_workspace_root(
-    diagnostics_dir: &Path,
-    output_root_dir: &str,
-) -> CoreResult<PathBuf> {
+fn resolve_workspace_root(diagnostics_dir: &Path, output_root_dir: &str) -> CoreResult<PathBuf> {
     if output_root_dir.trim().is_empty() {
         return Ok(diagnostics_dir.join("packaging-workspace"));
     }
@@ -564,9 +625,8 @@ fn resolve_workspace_root(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("diagnostics");
-    Ok(PathBuf::from(output_root_dir).join(format!(
-        "{diagnostics_name}-{OFFLINE_BUILD_OUTPUT_SUFFIX}",
-    )))
+    Ok(PathBuf::from(output_root_dir)
+        .join(format!("{diagnostics_name}-{OFFLINE_BUILD_OUTPUT_SUFFIX}",)))
 }
 
 fn stage_required(
@@ -595,7 +655,9 @@ fn stage_required(
         ))
     })?;
     let bytes = fs::metadata(destination)
-        .map_err(|error| CoreError::Internal(format!("metadata {}: {error}", destination.display())))?
+        .map_err(|error| {
+            CoreError::Internal(format!("metadata {}: {error}", destination.display()))
+        })?
         .len();
     staged_inputs.push(StagedInput {
         kind: kind.to_string(),
@@ -632,7 +694,9 @@ fn stage_original_playlist(
     if !source.is_file() {
         return Ok(());
     }
-    let destination = workspace_root.join("diagnostics").join(format!("original-{file_name}"));
+    let destination = workspace_root
+        .join("diagnostics")
+        .join(format!("original-{file_name}"));
     stage_required(
         &source,
         &destination,
@@ -642,7 +706,11 @@ fn stage_original_playlist(
     )
 }
 
-fn workspace_outputs_for(workspace_root: &Path, has_audio: bool, status: &str) -> Vec<WorkspaceOutput> {
+fn workspace_outputs_for(
+    workspace_root: &Path,
+    has_audio: bool,
+    status: &str,
+) -> Vec<WorkspaceOutput> {
     let mut outputs = vec![
         WorkspaceOutput {
             kind: "master_playlist".to_string(),
@@ -673,7 +741,9 @@ fn playlist_summary_for(
     PlaylistSummary {
         video_target_duration: prepared.video_template.target_duration,
         video_first_segment_duration_sec: prepared.video_template.first_segment_duration_sec,
-        audio_target_duration: prepared.audio_template.map(|template| template.target_duration),
+        audio_target_duration: prepared
+            .audio_template
+            .map(|template| template.target_duration),
         audio_first_segment_duration_sec: prepared
             .audio_template
             .map(|template| template.first_segment_duration_sec),
@@ -735,7 +805,8 @@ fn parse_media_playlist_template(path: &Path) -> Option<MediaPlaylistTemplate> {
     }
 
     let first_segment_duration_sec = first_segment_duration_sec?;
-    let effective_target_duration = target_duration.unwrap_or_else(|| first_segment_duration_sec.ceil() as u64);
+    let effective_target_duration =
+        target_duration.unwrap_or_else(|| first_segment_duration_sec.ceil() as u64);
     Some(MediaPlaylistTemplate::new(
         effective_target_duration,
         first_segment_duration_sec,
@@ -812,7 +883,10 @@ fn resolve_master_codec_string(
             Some(format!("{video_codec},{audio_codec}"))
         }
         (Some(video_codec), _, false) => Some(video_codec.to_string()),
-        _ => master_template.codecs.clone().filter(|value| !value.trim().is_empty()),
+        _ => master_template
+            .codecs
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
     }
 }
 
@@ -866,8 +940,13 @@ fn build_master_playlist(
     if let Some(codec_string) = codec_string {
         output.push_str(&format!(",CODECS=\"{}\"", codec_string));
     }
-    if let Some(supplemental_codec_string) = supplemental_codec_string.filter(|value| !value.trim().is_empty()) {
-        output.push_str(&format!(",SUPPLEMENTAL-CODECS=\"{}\"", supplemental_codec_string.trim()));
+    if let Some(supplemental_codec_string) =
+        supplemental_codec_string.filter(|value| !value.trim().is_empty())
+    {
+        output.push_str(&format!(
+            ",SUPPLEMENTAL-CODECS=\"{}\"",
+            supplemental_codec_string.trim()
+        ));
     }
     if let Some((width, height)) = resolution {
         output.push_str(&format!(",RESOLUTION={}x{}", width, height));
@@ -926,12 +1005,24 @@ mod tests {
             br#"{"videoCodec":"hvc1.2.4.L153.90","audioCodec":"mp4a.40.2","videoWidth":3840,"videoHeight":2160,"videoFrameRate":"59.940","videoRange":"PQ"}"#,
         );
         write_file(&diagnostics_dir.join("video-init.mp4"), b"video-init");
-        write_file(&diagnostics_dir.join("video-fragment-000.m4s"), b"video-seg");
+        write_file(
+            &diagnostics_dir.join("video-fragment-000.m4s"),
+            b"video-seg",
+        );
         write_file(&diagnostics_dir.join("audio-init.mp4"), b"audio-init");
-        write_file(&diagnostics_dir.join("audio-fragment-000.m4s"), b"audio-seg");
+        write_file(
+            &diagnostics_dir.join("audio-fragment-000.m4s"),
+            b"audio-seg",
+        );
         write_file(&diagnostics_dir.join("master.m3u8"), b"#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"default\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS=\"hvc1.2.4.L153.90,mp4a.40.2\",AUDIO=\"aud\"\nvideo.m3u8\n");
-        write_file(&diagnostics_dir.join("video.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:5.005000,\nv.seg\n");
-        write_file(&diagnostics_dir.join("audio.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.992000,\na.seg\n");
+        write_file(
+            &diagnostics_dir.join("video.m3u8"),
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:5.005000,\nv.seg\n",
+        );
+        write_file(
+            &diagnostics_dir.join("audio.m3u8"),
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.992000,\na.seg\n",
+        );
 
         let build = offline_build(OfflinePackagingRequest {
             diagnostics_dir: diagnostics_dir.display().to_string(),
@@ -969,12 +1060,24 @@ mod tests {
             br#"{"videoCodec":"hvc1.2.20000000.L153.90","videoSupplementalCodec":"dvh1.08.09/db4h","audioCodec":"mp4a.40.2","videoWidth":4096,"videoHeight":2160,"videoFrameRate":"50.000","videoRange":"HLG"}"#,
         );
         write_file(&diagnostics_dir.join("video-init.mp4"), b"video-init");
-        write_file(&diagnostics_dir.join("video-fragment-000.m4s"), b"video-seg");
+        write_file(
+            &diagnostics_dir.join("video-fragment-000.m4s"),
+            b"video-seg",
+        );
         write_file(&diagnostics_dir.join("audio-init.mp4"), b"audio-init");
-        write_file(&diagnostics_dir.join("audio-fragment-000.m4s"), b"audio-seg");
+        write_file(
+            &diagnostics_dir.join("audio-fragment-000.m4s"),
+            b"audio-seg",
+        );
         write_file(&diagnostics_dir.join("master.m3u8"), b"#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"default\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS=\"hvc1.2.20000000.L153.90,mp4a.40.2\",AUDIO=\"aud\"\nvideo.m3u8\n");
-        write_file(&diagnostics_dir.join("video.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5.000000,\nv.seg\n");
-        write_file(&diagnostics_dir.join("audio.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.992000,\na.seg\n");
+        write_file(
+            &diagnostics_dir.join("video.m3u8"),
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5.000000,\nv.seg\n",
+        );
+        write_file(
+            &diagnostics_dir.join("audio.m3u8"),
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.992000,\na.seg\n",
+        );
 
         let build = offline_build(OfflinePackagingRequest {
             diagnostics_dir: diagnostics_dir.display().to_string(),
@@ -986,7 +1089,9 @@ mod tests {
         assert!(master_text.contains("CODECS=\"hvc1.2.20000000.L153.90,mp4a.40.2\""));
         assert!(master_text.contains("SUPPLEMENTAL-CODECS=\"dvh1.08.09/db4h\""));
         assert!(master_text.contains("VIDEO-RANGE=HLG"));
-        assert!(read_text(Path::new(&build.video_playlist_path)).contains("#EXT-X-TARGETDURATION:6"));
+        assert!(
+            read_text(Path::new(&build.video_playlist_path)).contains("#EXT-X-TARGETDURATION:6")
+        );
 
         cleanup_dir(Path::new(&build.workspace_root_dir));
         cleanup_dir(&diagnostics_dir);
@@ -998,7 +1103,10 @@ mod tests {
         write_file(&diagnostics_dir.join("metadata.json"), b"{}");
         write_file(&diagnostics_dir.join("init.mp4"), b"video-init");
         write_file(&diagnostics_dir.join("seg-0.m4s"), b"video-seg");
-        write_file(&diagnostics_dir.join("local.m3u8"), b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.010000,\nseg-0.m4s\n");
+        write_file(
+            &diagnostics_dir.join("local.m3u8"),
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.010000,\nseg-0.m4s\n",
+        );
 
         let build = offline_build(OfflinePackagingRequest {
             diagnostics_dir: diagnostics_dir.display().to_string(),
@@ -1013,7 +1121,8 @@ mod tests {
             read_text(Path::new(&build.video_playlist_path)),
             "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-TARGETDURATION:11\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-MAP:URI=\"init-video.mp4\"\n#EXTINF:10.010000,\nv-seg-00000.m4s\n#EXT-X-ENDLIST\n"
         );
-        assert!(read_text(Path::new(&build.master_playlist_path)).contains("#EXT-X-STREAM-INF:BANDWIDTH=8,AVERAGE-BANDWIDTH=8"));
+        assert!(read_text(Path::new(&build.master_playlist_path))
+            .contains("#EXT-X-STREAM-INF:BANDWIDTH=8,AVERAGE-BANDWIDTH=8"));
 
         cleanup_dir(Path::new(&build.workspace_root_dir));
         cleanup_dir(&diagnostics_dir);

@@ -38,6 +38,13 @@ pub enum TvQrPoll {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct FeedDislikeReason {
+    pub id: i64,
+    pub name: String,
+    pub toast: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct FeedItem {
     pub aid: i64,
     pub bvid: String,
@@ -59,6 +66,14 @@ pub struct FeedItem {
     /// for this card (the recommendation feed often omits it).
     pub pubdate: i64,
     pub is_followed: bool,
+    #[serde(default)]
+    pub feed_goto: String,
+    #[serde(default)]
+    pub feed_id: i64,
+    #[serde(default)]
+    pub dislike_reasons: Vec<FeedDislikeReason>,
+    #[serde(default)]
+    pub feedback_reasons: Vec<FeedDislikeReason>,
 }
 
 #[derive(Debug, Serialize, Clone)]

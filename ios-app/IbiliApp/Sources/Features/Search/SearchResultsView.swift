@@ -221,10 +221,15 @@ struct SearchResultsView: View {
                     bvid: video.bvid,
                     author: video.author,
                     ownerMID: video.ownerMID,
+                    dislikeReasons: [],
+                    feedbackReasons: [],
                     onCopyBVID: { copyBVID(video.bvid) },
                     onWatchLater: { addWatchLater(aid: video.aid) },
                     onVisitOwner: { openUserSpace(mid: video.ownerMID) },
-                    onNotInterested: { markNotInterested(aid: video.aid) },
+                    onPlainDislike: { markNotInterested(aid: video.aid) },
+                    onUndoDislike: { undoNotInterested(aid: video.aid) },
+                    onDislikeReason: { _ in markNotInterested(aid: video.aid) },
+                    onFeedbackReason: { _ in markNotInterested(aid: video.aid) },
                     onBlockOwner: { blockOwner(mid: video.ownerMID, author: video.author) }
                 )
                 .padding(.trailing, 4)
@@ -383,6 +388,23 @@ struct SearchResultsView: View {
                 try CoreClient.shared.archiveDislike(aid: aid)
             } catch {
                 AppLog.error("search", "卡片菜单不感兴趣同步失败", error: error, metadata: [
+                    "aid": String(aid),
+                ])
+            }
+        }
+    }
+
+    private func undoNotInterested(aid: Int64) {
+        guard aid > 0 else { return }
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try CoreClient.shared.archiveDislike(aid: aid, dislike: false)
+                }.value
+                showToast("已撤销")
+            } catch {
+                showToast("撤销失败")
+                AppLog.error("search", "卡片菜单撤销不感兴趣失败", error: error, metadata: [
                     "aid": String(aid),
                 ])
             }

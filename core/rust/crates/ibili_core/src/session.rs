@@ -34,7 +34,11 @@ impl Session {
     }
     pub fn snapshot(&self) -> SessionSnapshot {
         match &self.persisted {
-            Some(p) => SessionSnapshot { logged_in: true, mid: p.mid, expires_at_secs: p.expires_at_secs },
+            Some(p) => SessionSnapshot {
+                logged_in: true,
+                mid: p.mid,
+                expires_at_secs: p.expires_at_secs,
+            },
             None => SessionSnapshot::default(),
         }
     }

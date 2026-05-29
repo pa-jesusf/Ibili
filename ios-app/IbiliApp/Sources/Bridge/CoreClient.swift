@@ -903,9 +903,27 @@ public final class CoreClient: @unchecked Sendable {
         return try call("interaction.like", args: A(aid: aid, action: action), decoding: LikeResultDTO.self)
     }
 
-    public func archiveDislike(aid: Int64) throws {
-        struct A: Encodable { let aid: Int64 }
-        try callVoid("interaction.dislike", args: A(aid: aid))
+    public func archiveDislike(aid: Int64, dislike: Bool = true) throws {
+        struct A: Encodable { let aid: Int64; let dislike: Bool }
+        try callVoid("interaction.dislike", args: A(aid: aid, dislike: dislike))
+    }
+
+    public func feedDislike(goto: String, id: Int64, reasonID: Int64? = nil, feedbackID: Int64? = nil) throws {
+        struct A: Encodable {
+            let goto: String
+            let id: Int64
+            let reason_id: Int64?
+            let feedback_id: Int64?
+        }
+        try callVoid(
+            "interaction.feed_dislike",
+            args: A(goto: goto, id: id, reason_id: reasonID, feedback_id: feedbackID)
+        )
+    }
+
+    public func feedDislikeCancel(goto: String, id: Int64) throws {
+        struct A: Encodable { let goto: String; let id: Int64 }
+        try callVoid("interaction.feed_dislike_cancel", args: A(goto: goto, id: id))
     }
 
     public func archiveCoin(aid: Int64, multiply: Int32 = 1, alsoLike: Bool = false) throws -> CoinResultDTO {

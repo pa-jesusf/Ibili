@@ -24,7 +24,11 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
         epID: item.epID,
         seasonID: item.seasonID,
         isPGC: item.isPGC,
-        ownerMID: item.ownerMID
+        ownerMID: item.ownerMID,
+        feedGoto: item.feedGoto,
+        feedID: item.feedID,
+        dislikeReasons: item.dislikeReasons,
+        feedbackReasons: item.feedbackReasons
     )
 }
 

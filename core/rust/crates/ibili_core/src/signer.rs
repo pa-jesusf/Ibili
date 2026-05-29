@@ -17,11 +17,15 @@ impl AppSigner {
     /// Mutates `params` to include `appkey`, `ts`, `sign`.
     pub fn sign(params: &mut Vec<(String, String)>) {
         let ts = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()).to_string();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs())
+        .to_string();
         params.push(("appkey".into(), APPKEY.into()));
         params.push(("ts".into(), ts));
         params.sort_by(|a, b| a.0.cmp(&b.0));
-        let query = params.iter()
+        let query = params
+            .iter()
             .map(|(k, v)| format!("{}={}", k, urlencode(v)))
             .collect::<Vec<_>>()
             .join("&");
@@ -40,10 +44,9 @@ fn urlencode(s: &str) -> String {
 
 /// WBI mixin order (extracted from PiliPlus / public reverse engineering).
 const MIXIN_KEY_ENC_TAB: [usize; 64] = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29,
+    28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25,
+    54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ];
 
 #[derive(Debug, Clone)]
@@ -85,14 +88,18 @@ impl WbiSigner {
     /// Adds `wts`, sorts, computes `w_rid = md5(query + mixin_key)`.
     pub fn sign(params: &mut Vec<(String, String)>, key: &WbiKey) {
         let wts = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()).to_string();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs())
+        .to_string();
         params.push(("wts".into(), wts));
         // Strip characters Bilibili strips from values: "!'()*"
         for (_, v) in params.iter_mut() {
             *v = v.chars().filter(|c| !"!'()*".contains(*c)).collect();
         }
         params.sort_by(|a, b| a.0.cmp(&b.0));
-        let query = params.iter()
+        let query = params
+            .iter()
             .map(|(k, v)| format!("{}={}", k, urlencode(v)))
             .collect::<Vec<_>>()
             .join("&");

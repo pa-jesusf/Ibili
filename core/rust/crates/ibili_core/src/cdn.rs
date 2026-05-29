@@ -46,10 +46,7 @@ pub fn cdn_host_for_selection(selection: &str) -> Option<&'static str> {
     }
 }
 
-pub fn rank_urls_for_selection(
-    urls: &[String],
-    selection: &str,
-) -> Vec<String> {
+pub fn rank_urls_for_selection(urls: &[String], selection: &str) -> Vec<String> {
     let selection = if selection.trim().is_empty() {
         "auto"
     } else {
@@ -64,9 +61,8 @@ pub fn rank_urls_for_selection(
 
 // Original Dart regex uses `(?!302)` lookahead which the `regex` crate does
 // not support. We split detection into a host extractor + host predicate.
-static UPGCXCODE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^https?://([^/]+)/upgcxcode").expect("UPGCXCODE_RE compile")
-});
+static UPGCXCODE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^https?://([^/]+)/upgcxcode").expect("UPGCXCODE_RE compile"));
 
 static MCDN_TF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -142,10 +138,7 @@ pub fn rank_urls(urls: &[String], default_host: Option<&str>) -> Vec<String> {
 }
 
 /// Mirror of upstream `VideoUtils.getCdnUrl`.
-fn pick_preferred(
-    urls: &[String],
-    default_host: Option<&str>,
-) -> Option<String> {
+fn pick_preferred(urls: &[String], default_host: Option<&str>) -> Option<String> {
     if default_host.is_none() {
         return urls.first().cloned();
     }
@@ -249,9 +242,8 @@ mod tests {
 
     #[test]
     fn rewrites_mirror_host_to_default() {
-        let urls = vec![
-            "https://upos-sz-mirrorhw.bilivideo.com/upgcxcode/aa/bb/cc.mp4?os=hw".to_string(),
-        ];
+        let urls =
+            vec!["https://upos-sz-mirrorhw.bilivideo.com/upgcxcode/aa/bb/cc.mp4?os=hw".to_string()];
         let ranked = rank_urls(&urls, Some(DEFAULT_CDN_HOST));
         assert_eq!(
             ranked[0],

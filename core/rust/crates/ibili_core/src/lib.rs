@@ -4,25 +4,25 @@
 //! session state, and exposes high-level service methods that return
 //! plain DTOs serializable to JSON.
 
-pub mod error;
-pub mod dto;
-pub mod signer;
-pub mod http;
-pub mod session;
-pub mod auth;
-pub mod feed;
-pub mod live;
-pub mod video;
-pub mod danmaku;
-pub mod cdn;
-pub mod search;
-pub mod reply;
-pub mod interaction;
-pub mod packaging;
-pub mod user_space;
-pub mod dynamic;
-pub mod article;
 pub mod anime;
+pub mod article;
+pub mod auth;
+pub mod cdn;
+pub mod danmaku;
+pub mod dto;
+pub mod dynamic;
+pub mod error;
+pub mod feed;
+pub mod http;
+pub mod interaction;
+pub mod live;
+pub mod packaging;
+pub mod reply;
+pub mod search;
+pub mod session;
+pub mod signer;
+pub mod user_space;
+pub mod video;
 
 use std::sync::Arc;
 

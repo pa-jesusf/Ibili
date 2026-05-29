@@ -70,6 +70,18 @@ public struct FeedPageDTO: Decodable {
     public let items: [FeedItemDTO]
 }
 
+public struct FeedDislikeReasonDTO: Codable, Identifiable, Hashable {
+    public let id: Int64
+    public let name: String
+    public let toast: String
+
+    public init(id: Int64, name: String, toast: String = "") {
+        self.id = id
+        self.name = name
+        self.toast = toast
+    }
+}
+
 public struct FeedItemDTO: Codable, Identifiable, Hashable {
     public var id: Int64 { isPGC ? (epID > 0 ? epID : aid) : aid }
     public let aid: Int64
@@ -89,6 +101,10 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
     /// the recommendation feed often omits it, search always carries it.
     public let pubdate: Int64
     public let isFollowed: Bool
+    public let feedGoto: String
+    public let feedID: Int64
+    public let dislikeReasons: [FeedDislikeReasonDTO]
+    public let feedbackReasons: [FeedDislikeReasonDTO]
 
     enum CodingKeys: String, CodingKey {
         case aid, bvid, cid, title, cover, author, play, danmaku, pubdate
@@ -98,6 +114,10 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         case isPGC = "is_pgc"
         case durationSec = "duration_sec"
         case isFollowed = "is_followed"
+        case feedGoto = "feed_goto"
+        case feedID = "feed_id"
+        case dislikeReasons = "dislike_reasons"
+        case feedbackReasons = "feedback_reasons"
     }
 
     public init(from decoder: Decoder) throws {
@@ -117,6 +137,10 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         danmaku = try c.decodeIfPresent(Int64.self, forKey: .danmaku) ?? 0
         pubdate = try c.decodeIfPresent(Int64.self, forKey: .pubdate) ?? 0
         isFollowed = try c.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
+        feedGoto = try c.decodeIfPresent(String.self, forKey: .feedGoto) ?? ""
+        feedID = try c.decodeIfPresent(Int64.self, forKey: .feedID) ?? aid
+        dislikeReasons = try c.decodeIfPresent([FeedDislikeReasonDTO].self, forKey: .dislikeReasons) ?? []
+        feedbackReasons = try c.decodeIfPresent([FeedDislikeReasonDTO].self, forKey: .feedbackReasons) ?? []
     }
 
     /// Memberwise convenience init for synthetic feed items (related,
@@ -129,7 +153,11 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         play: Int64, danmaku: Int64, pubdate: Int64 = 0,
         isFollowed: Bool = false, epID: Int64 = 0,
         seasonID: Int64 = 0, isPGC: Bool = false,
-        ownerMID: Int64 = 0
+        ownerMID: Int64 = 0,
+        feedGoto: String = "",
+        feedID: Int64 = 0,
+        dislikeReasons: [FeedDislikeReasonDTO] = [],
+        feedbackReasons: [FeedDislikeReasonDTO] = []
     ) {
         self.aid = aid; self.bvid = bvid; self.cid = cid
         self.epID = epID; self.seasonID = seasonID; self.isPGC = isPGC
@@ -138,6 +166,10 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         self.durationSec = durationSec; self.play = play
         self.danmaku = danmaku; self.pubdate = pubdate
         self.isFollowed = isFollowed
+        self.feedGoto = feedGoto
+        self.feedID = feedID > 0 ? feedID : aid
+        self.dislikeReasons = dislikeReasons
+        self.feedbackReasons = feedbackReasons
     }
 }
 

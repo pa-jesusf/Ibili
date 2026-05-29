@@ -7,14 +7,18 @@
 //! watch-later. We mirror that split — keeps each call's authentication
 //! identical to upstream so server-side gating behaves the same.
 
-use crate::Core;
-use crate::dto::{ArchiveRelation, CoinResult, FavFolderInfo, FavoriteResult, LikeResult, TripleResult};
+use crate::dto::{
+    ArchiveRelation, CoinResult, FavFolderInfo, FavoriteResult, LikeResult, TripleResult,
+};
 use crate::error::{CoreError, CoreResult};
+use crate::Core;
 use serde::Deserialize;
 use serde_json::Value;
 
 const URL_LIKE_APP: &str = "https://app.bilibili.com/x/v2/view/like";
 const URL_DISLIKE_APP: &str = "https://app.bilibili.com/x/v2/view/dislike";
+const URL_FEED_DISLIKE_APP: &str = "https://app.bilibili.com/x/feed/dislike";
+const URL_FEED_DISLIKE_CANCEL_APP: &str = "https://app.bilibili.com/x/feed/dislike/cancel";
 const URL_COIN_APP: &str = "https://app.bilibili.com/x/v2/view/coin/add";
 const URL_TRIPLE_WEB: &str = "https://api.bilibili.com/x/web-interface/archive/like/triple";
 const URL_FAV_DEAL: &str = "https://api.bilibili.com/x/v3/fav/resource/deal";
@@ -43,22 +47,30 @@ const URL_EMOTE_PANEL: &str = "https://api.bilibili.com/x/emote/user/panel/web";
 
 #[derive(Default, Deserialize)]
 struct ToastWire {
-    #[serde(default)] toast: String,
+    #[serde(default)]
+    toast: String,
 }
 
 #[derive(Default, Deserialize)]
 struct TripleWire {
-    #[serde(default)] like: bool,
-    #[serde(default)] coin: bool,
-    #[serde(default)] fav: bool,
-    #[serde(default)] multiply: i32,
-    #[serde(default)] prompt: bool,
+    #[serde(default)]
+    like: bool,
+    #[serde(default)]
+    coin: bool,
+    #[serde(default)]
+    fav: bool,
+    #[serde(default)]
+    multiply: i32,
+    #[serde(default)]
+    prompt: bool,
 }
 
 #[derive(Default, Deserialize)]
 struct PromptWire {
-    #[serde(default)] prompt: bool,
-    #[serde(default)] toast_msg: String,
+    #[serde(default)]
+    prompt: bool,
+    #[serde(default)]
+    toast_msg: String,
 }
 
 impl Core {
@@ -71,7 +83,11 @@ impl Core {
     /// `type ? '0' : '1'` where `type = !hasLike`. We translate our
     /// caller-friendly 1/2 codes here so callers don't need to know.
     pub fn archive_like(&self, aid: i64, like_action: i32) -> CoreResult<LikeResult> {
-        let access_key = self.session.read().access_key().ok_or(CoreError::AuthRequired)?;
+        let access_key = self
+            .session
+            .read()
+            .access_key()
+            .ok_or(CoreError::AuthRequired)?;
         let want_like = like_action != 2;
         let like_param = if want_like { "0" } else { "1" };
         let params: Vec<(String, String)> = vec![
@@ -80,32 +96,120 @@ impl Core {
             ("like".into(), like_param.into()),
         ];
         let _: Value = self.http.post_signed_app(URL_LIKE_APP, params)?;
-        Ok(LikeResult { liked: if want_like { 1 } else { 0 }, toast: String::new() })
+        Ok(LikeResult {
+            liked: if want_like { 1 } else { 0 },
+            toast: String::new(),
+        })
     }
 
     /// App-flavoured 点踩 endpoint (web does not support dislike).
-    pub fn archive_dislike(&self, aid: i64) -> CoreResult<()> {
-        let access_key = self.session.read().access_key().ok_or(CoreError::AuthRequired)?;
+    pub fn archive_dislike(&self, aid: i64, dislike: bool) -> CoreResult<()> {
+        let access_key = self
+            .session
+            .read()
+            .access_key()
+            .ok_or(CoreError::AuthRequired)?;
+        // Bilibili app endpoint mirrors the like endpoint's inverted
+        // semantics: 0 = 点踩, 1 = 撤销点踩.
+        let dislike_param = if dislike { "0" } else { "1" };
         let params: Vec<(String, String)> = vec![
             ("access_key".into(), access_key),
             ("aid".into(), aid.to_string()),
+            ("dislike".into(), dislike_param.into()),
         ];
         let _: Value = self.http.post_signed_app(URL_DISLIKE_APP, params)?;
         Ok(())
     }
 
+    /// Home recommendation feedback endpoint with upstream-style
+    /// dislike / feedback reason ids from `three_point`.
+    pub fn feed_dislike(
+        &self,
+        goto: &str,
+        id: i64,
+        reason_id: Option<i64>,
+        feedback_id: Option<i64>,
+    ) -> CoreResult<()> {
+        if id <= 0 || goto.trim().is_empty() {
+            return Err(CoreError::InvalidArgument(
+                "missing feed dislike target".into(),
+            ));
+        }
+        if reason_id.is_some() == feedback_id.is_some() {
+            return Err(CoreError::InvalidArgument(
+                "provide exactly one of reason_id or feedback_id".into(),
+            ));
+        }
+        let access_key = self
+            .session
+            .read()
+            .access_key()
+            .ok_or(CoreError::AuthRequired)?;
+        let mut params: Vec<(String, String)> = vec![
+            ("access_key".into(), access_key),
+            ("goto".into(), goto.to_string()),
+            ("id".into(), id.to_string()),
+            ("build".into(), "1".into()),
+            ("mobi_app".into(), "android".into()),
+        ];
+        if let Some(reason_id) = reason_id {
+            params.push(("reason_id".into(), reason_id.to_string()));
+        }
+        if let Some(feedback_id) = feedback_id {
+            params.push(("feedback_id".into(), feedback_id.to_string()));
+        }
+        let _: Value = self
+            .http
+            .get_signed_android_app(URL_FEED_DISLIKE_APP, params)?;
+        Ok(())
+    }
+
+    pub fn feed_dislike_cancel(&self, goto: &str, id: i64) -> CoreResult<()> {
+        if id <= 0 || goto.trim().is_empty() {
+            return Err(CoreError::InvalidArgument(
+                "missing feed dislike target".into(),
+            ));
+        }
+        let access_key = self
+            .session
+            .read()
+            .access_key()
+            .ok_or(CoreError::AuthRequired)?;
+        let params: Vec<(String, String)> = vec![
+            ("access_key".into(), access_key),
+            ("goto".into(), goto.to_string()),
+            ("id".into(), id.to_string()),
+            ("build".into(), "1".into()),
+            ("mobi_app".into(), "android".into()),
+        ];
+        let _: Value = self
+            .http
+            .get_signed_android_app(URL_FEED_DISLIKE_CANCEL_APP, params)?;
+        Ok(())
+    }
+
     /// Add `multiply` (1 or 2) coins, optionally also liking the video.
     pub fn archive_coin(&self, aid: i64, multiply: i32, also_like: bool) -> CoreResult<CoinResult> {
-        let access_key = self.session.read().access_key().ok_or(CoreError::AuthRequired)?;
+        let access_key = self
+            .session
+            .read()
+            .access_key()
+            .ok_or(CoreError::AuthRequired)?;
         let multiply = multiply.clamp(1, 2);
         let params: Vec<(String, String)> = vec![
             ("access_key".into(), access_key),
             ("aid".into(), aid.to_string()),
             ("multiply".into(), multiply.to_string()),
-            ("select_like".into(), if also_like { "1".into() } else { "0".into() }),
+            (
+                "select_like".into(),
+                if also_like { "1".into() } else { "0".into() },
+            ),
         ];
         let raw: ToastWire = self.http.post_signed_app(URL_COIN_APP, params)?;
-        Ok(CoinResult { like: also_like, toast: raw.toast })
+        Ok(CoinResult {
+            like: also_like,
+            toast: raw.toast,
+        })
     }
 
     /// One-click 三连 — applies like+coin(2)+fav atomically server-side.
@@ -135,10 +239,18 @@ impl Core {
 
     /// Add/remove a video from one or more favourite folders.
     /// `add_ids` and `del_ids` are media_ids; comma-joined server-side.
-    pub fn archive_favorite(&self, aid: i64, add_ids: &[i64], del_ids: &[i64]) -> CoreResult<FavoriteResult> {
+    pub fn archive_favorite(
+        &self,
+        aid: i64,
+        add_ids: &[i64],
+        del_ids: &[i64],
+    ) -> CoreResult<FavoriteResult> {
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
         let join = |xs: &[i64]| -> String {
-            xs.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+            xs.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         };
         let params: Vec<(String, String)> = vec![
             ("rid".into(), aid.to_string()),
@@ -148,13 +260,21 @@ impl Core {
             ("csrf".into(), csrf),
         ];
         let raw: PromptWire = self.http.post_form_web(URL_FAV_DEAL, &params)?;
-        Ok(FavoriteResult { prompt: raw.prompt, toast: raw.toast_msg })
+        Ok(FavoriteResult {
+            prompt: raw.prompt,
+            toast: raw.toast_msg,
+        })
     }
 
-    /// Follow / unfollow a user. `act` is 1 (关注) or 2 (取消关注).
+    /// Modify relation with a user. Common acts: 1 关注, 2 取消关注, 5 拉黑.
     pub fn relation_modify(&self, fid: i64, act: i32) -> CoreResult<()> {
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
-        let act = if act == 2 { 2 } else { 1 };
+        let act = match act {
+            2 => 2,
+            5 => 5,
+            6 => 6,
+            _ => 1,
+        };
         let params: Vec<(String, String)> = vec![
             ("fid".into(), fid.to_string()),
             ("act".into(), act.to_string()),
@@ -168,10 +288,8 @@ impl Core {
     /// Add a video to the 稍后再看 list.
     pub fn watchlater_add(&self, aid: i64) -> CoreResult<()> {
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
-        let params: Vec<(String, String)> = vec![
-            ("aid".into(), aid.to_string()),
-            ("csrf".into(), csrf),
-        ];
+        let params: Vec<(String, String)> =
+            vec![("aid".into(), aid.to_string()), ("csrf".into(), csrf)];
         let _: Value = self.http.post_form_web(URL_WATCHLATER_ADD, &params)?;
         Ok(())
     }
@@ -185,10 +303,8 @@ impl Core {
         // which the server silently accepts with code != 0 instead
         // of failing loudly, so the cancel toast looked fine while
         // the bookmark stayed on the server.
-        let params: Vec<(String, String)> = vec![
-            ("resources".into(), aid.to_string()),
-            ("csrf".into(), csrf),
-        ];
+        let params: Vec<(String, String)> =
+            vec![("resources".into(), aid.to_string()), ("csrf".into(), csrf)];
         let _: Value = self.http.post_form_web(URL_WATCHLATER_DEL, &params)?;
         Ok(())
     }
@@ -201,8 +317,12 @@ impl Core {
             return Ok(ArchiveRelation::default());
         }
         let mut params: Vec<(String, String)> = Vec::new();
-        if aid > 0 { params.push(("aid".into(), aid.to_string())); }
-        if !bvid.is_empty() { params.push(("bvid".into(), bvid.to_string())); }
+        if aid > 0 {
+            params.push(("aid".into(), aid.to_string()));
+        }
+        if !bvid.is_empty() {
+            params.push(("bvid".into(), bvid.to_string()));
+        }
         let raw: ArchiveRelationWire = self.http.get_web(URL_ARCHIVE_RELATION, &params)?;
         Ok(ArchiveRelation {
             liked: raw.like.unwrap_or(false),
@@ -225,17 +345,23 @@ impl Core {
             ("type".into(), "2".into()),
             ("up_mid".into(), up_mid.to_string()),
         ];
-        if rid > 0 { params.push(("rid".into(), rid.to_string())); }
+        if rid > 0 {
+            params.push(("rid".into(), rid.to_string()));
+        }
         let raw: FavFoldersWire = self.http.get_web(URL_FAV_FOLDERS, &params)?;
-        Ok(raw.list.into_iter().map(|f| FavFolderInfo {
-            id: f.id,
-            fid: f.fid.unwrap_or(0),
-            mid: f.mid,
-            attr: f.attr,
-            title: f.title,
-            fav_state: f.fav_state.unwrap_or(0),
-            media_count: f.media_count,
-        }).collect())
+        Ok(raw
+            .list
+            .into_iter()
+            .map(|f| FavFolderInfo {
+                id: f.id,
+                fid: f.fid.unwrap_or(0),
+                mid: f.mid,
+                attr: f.attr,
+                title: f.title,
+                fav_state: f.fav_state.unwrap_or(0),
+                media_count: f.media_count,
+            })
+            .collect())
     }
 
     /// Report a UGC playback heartbeat so Bilibili records the
@@ -251,7 +377,9 @@ impl Core {
         cid: i64,
         played_seconds: i64,
     ) -> CoreResult<()> {
-        let Some(csrf) = self.http.csrf_token() else { return Ok(()); };
+        let Some(csrf) = self.http.csrf_token() else {
+            return Ok(());
+        };
         let mut params: Vec<(String, String)> = vec![
             ("cid".into(), cid.to_string()),
             ("type".into(), "3".into()),
@@ -260,8 +388,12 @@ impl Core {
         ];
         // Upstream sends `bvid` only — we send whichever identifier
         // the caller has. Both being present is harmless.
-        if !bvid.is_empty() { params.push(("bvid".into(), bvid.to_string())); }
-        if aid > 0 { params.push(("aid".into(), aid.to_string())); }
+        if !bvid.is_empty() {
+            params.push(("bvid".into(), bvid.to_string()));
+        }
+        if aid > 0 {
+            params.push(("aid".into(), aid.to_string()));
+        }
         let _: Value = self.http.post_form_web(URL_HEARTBEAT_WEB, &params)?;
         Ok(())
     }
@@ -355,14 +487,16 @@ impl Core {
             params.push(("parent".into(), parent.to_string()));
         }
         if !pictures.is_empty() {
-            let json = serde_json::to_string(&pictures)
-                .map_err(|e| CoreError::Decode(e.to_string()))?;
+            let json =
+                serde_json::to_string(&pictures).map_err(|e| CoreError::Decode(e.to_string()))?;
             params.push(("pictures".into(), json));
         }
         #[derive(Default, Deserialize)]
         struct Wire {
-            #[serde(default)] rpid: i64,
-            #[serde(default)] success_toast: String,
+            #[serde(default)]
+            rpid: i64,
+            #[serde(default)]
+            success_toast: String,
         }
         let raw: Wire = self.http.post_form_web(URL_REPLY_ADD, &params)?;
         Ok(crate::dto::ReplyAddResult {
@@ -384,10 +518,14 @@ impl Core {
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
         #[derive(Default, Deserialize)]
         struct Wire {
-            #[serde(default)] image_url: String,
-            #[serde(default)] image_width: i32,
-            #[serde(default)] image_height: i32,
-            #[serde(default)] img_size: f64,
+            #[serde(default)]
+            image_url: String,
+            #[serde(default)]
+            image_width: i32,
+            #[serde(default)]
+            image_height: i32,
+            #[serde(default)]
+            img_size: f64,
         }
         let raw: Wire = self.http.post_multipart_web(
             URL_UPLOAD_BFS,
@@ -414,35 +552,52 @@ impl Core {
     pub fn emote_panel(&self, business: &str) -> CoreResult<Vec<crate::dto::EmotePackage>> {
         #[derive(Default, Deserialize)]
         struct Root {
-            #[serde(default)] packages: Vec<RawPackage>,
+            #[serde(default)]
+            packages: Vec<RawPackage>,
         }
         #[derive(Default, Deserialize)]
         struct RawPackage {
-            #[serde(default)] id: i64,
-            #[serde(default)] text: String,
-            #[serde(default)] url: String,
-            #[serde(default)] r#type: i32,
-            #[serde(default)] emote: Vec<RawEmote>,
+            #[serde(default)]
+            id: i64,
+            #[serde(default)]
+            text: String,
+            #[serde(default)]
+            url: String,
+            #[serde(default)]
+            r#type: i32,
+            #[serde(default)]
+            emote: Vec<RawEmote>,
         }
         #[derive(Default, Deserialize)]
         struct RawEmote {
-            #[serde(default)] text: String,
-            #[serde(default)] url: String,
+            #[serde(default)]
+            text: String,
+            #[serde(default)]
+            url: String,
         }
         let params: Vec<(String, String)> = vec![
             ("business".into(), business.to_string()),
             ("web_location".into(), "333.1245".into()),
         ];
         let raw: Root = self.http.get_web(URL_EMOTE_PANEL, &params)?;
-        Ok(raw.packages.into_iter().map(|p| crate::dto::EmotePackage {
-            id: p.id,
-            text: p.text,
-            url: p.url,
-            kind: p.r#type,
-            emotes: p.emote.into_iter()
-                .map(|e| crate::dto::Emote { text: e.text, url: e.url })
-                .collect(),
-        }).collect())
+        Ok(raw
+            .packages
+            .into_iter()
+            .map(|p| crate::dto::EmotePackage {
+                id: p.id,
+                text: p.text,
+                url: p.url,
+                kind: p.r#type,
+                emotes: p
+                    .emote
+                    .into_iter()
+                    .map(|e| crate::dto::Emote {
+                        text: e.text,
+                        url: e.url,
+                    })
+                    .collect(),
+            })
+            .collect())
     }
 }
 
@@ -454,7 +609,8 @@ struct WatchLaterListWire {
 
 #[derive(Default, Deserialize)]
 struct WatchLaterItemWire {
-    #[serde(default)] aid: i64,
+    #[serde(default)]
+    aid: i64,
 }
 
 fn null_as_empty_vec<'de, D, T>(de: D) -> Result<Vec<T>, D::Error>
@@ -485,7 +641,9 @@ struct ArchiveRelationWire {
 }
 
 fn deser_attention<'de, D>(d: D) -> Result<Option<bool>, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error;
     let v = Option::<Value>::deserialize(d)?;
     Ok(match v {
@@ -498,7 +656,9 @@ where D: serde::Deserializer<'de> {
 }
 
 fn deser_loose_bool<'de, D>(d: D) -> Result<Option<bool>, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error;
     let v = Option::<Value>::deserialize(d)?;
     Ok(match v {
@@ -517,11 +677,18 @@ struct FavFoldersWire {
 
 #[derive(Default, Deserialize)]
 struct FavFolderWire {
-    #[serde(default)] id: i64,
-    #[serde(default)] fid: Option<i64>,
-    #[serde(default)] mid: i64,
-    #[serde(default)] attr: i32,
-    #[serde(default)] title: String,
-    #[serde(default)] fav_state: Option<i32>,
-    #[serde(default)] media_count: i32,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    fid: Option<i64>,
+    #[serde(default)]
+    mid: i64,
+    #[serde(default)]
+    attr: i32,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    fav_state: Option<i32>,
+    #[serde(default)]
+    media_count: i32,
 }

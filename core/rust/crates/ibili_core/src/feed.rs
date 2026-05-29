@@ -1,4 +1,4 @@
-use crate::dto::{FeedItem, FeedPage};
+use crate::dto::{FeedDislikeReason, FeedItem, FeedPage};
 use crate::error::{CoreError, CoreResult};
 use crate::signer::WbiKey;
 use crate::Core;
@@ -49,6 +49,26 @@ struct FeedRawItem {
     ad_info: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "lenient_string")]
     rcmd_reason: Option<String>,
+    #[serde(default)]
+    three_point: Option<Vec<ThreePointRaw>>,
+}
+
+#[derive(Deserialize, Default)]
+struct ThreePointRaw {
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    reasons: Vec<FeedReasonRaw>,
+}
+
+#[derive(Deserialize, Default)]
+struct FeedReasonRaw {
+    #[serde(default, deserialize_with = "lenient_i64_value")]
+    id: i64,
+    #[serde(default, deserialize_with = "lenient_string")]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    toast: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -306,6 +326,10 @@ impl Core {
                     danmaku: stat.danmaku,
                     pubdate: i.pubdate,
                     is_followed: i.is_followed.unwrap_or(false),
+                    feed_goto: i.goto,
+                    feed_id: i.id,
+                    dislike_reasons: Vec::new(),
+                    feedback_reasons: Vec::new(),
                 }
             })
             .collect();
@@ -375,6 +399,8 @@ impl Core {
                 } else {
                     0
                 };
+                let (dislike_reasons, feedback_reasons) = split_three_point(i.three_point);
+                let feed_id = feed_param_id(&i.param, pa.aid);
                 Some(FeedItem {
                     aid: pa.aid,
                     bvid: i.bvid,
@@ -396,6 +422,10 @@ impl Core {
                     danmaku: parse_stat_text(&i.cover_left_text_2),
                     pubdate: i.args.pubdate,
                     is_followed: rcmd_reason_marks_followed(i.rcmd_reason.as_deref()),
+                    feed_goto: i.goto,
+                    feed_id,
+                    dislike_reasons,
+                    feedback_reasons,
                 })
             })
             .collect();
@@ -439,6 +469,10 @@ impl Core {
                 danmaku: item.stat.danmaku,
                 pubdate: item.pubdate,
                 is_followed: false,
+                feed_goto: "av".into(),
+                feed_id: item.aid,
+                dislike_reasons: Vec::new(),
+                feedback_reasons: Vec::new(),
             })
             .collect();
         self.enrich_feed_follow_state(&mut items)?;
@@ -517,6 +551,40 @@ fn extract_pgc_id(raw: &str, prefix: &str) -> Option<i64> {
     let tail = &raw[index + prefix.len()..];
     let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
+}
+
+fn feed_param_id(raw: &str, fallback: i64) -> i64 {
+    raw.trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .unwrap_or(fallback)
+}
+
+fn split_three_point(
+    raw: Option<Vec<ThreePointRaw>>,
+) -> (Vec<FeedDislikeReason>, Vec<FeedDislikeReason>) {
+    let mut dislikes = Vec::new();
+    let mut feedbacks = Vec::new();
+    for section in raw.unwrap_or_default() {
+        let target = match section.kind.as_str() {
+            "dislike" => &mut dislikes,
+            "feedback" => &mut feedbacks,
+            _ => continue,
+        };
+        target.extend(section.reasons.into_iter().filter_map(|reason| {
+            let name = reason.name.unwrap_or_default().trim().to_string();
+            if reason.id <= 0 || name.is_empty() {
+                return None;
+            }
+            Some(FeedDislikeReason {
+                id: reason.id,
+                name,
+                toast: reason.toast.unwrap_or_default(),
+            })
+        }));
+    }
+    (dislikes, feedbacks)
 }
 
 fn lenient_string<'de, D>(de: D) -> Result<Option<String>, D::Error>

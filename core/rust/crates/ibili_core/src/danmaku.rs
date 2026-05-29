@@ -17,9 +17,9 @@
 //! fetch/decode fails, we fall back to the classic XML endpoint to preserve
 //! baseline playback functionality.
 
-use crate::Core;
 use crate::dto::{DanmakuItem, DanmakuTrack};
 use crate::error::{CoreError, CoreResult};
+use crate::Core;
 use prost::Message;
 use std::io::Read;
 
@@ -113,7 +113,9 @@ impl Core {
             return Err(CoreError::InvalidArgument("cid must be positive".into()));
         }
         if segment_index <= 0 {
-            return Err(CoreError::InvalidArgument("segment_index must be positive".into()));
+            return Err(CoreError::InvalidArgument(
+                "segment_index must be positive".into(),
+            ));
         }
 
         let params = [
@@ -125,7 +127,8 @@ impl Core {
         let reply = DmSegMobileReplyWire::decode(bytes.as_slice())
             .map_err(|e| CoreError::Decode(format!("dm seg decode: {e}")))?;
         let self_mid_hash = current_mid_hash(self);
-        let mut items: Vec<DanmakuItem> = reply.elems
+        let mut items: Vec<DanmakuItem> = reply
+            .elems
             .into_iter()
             .map(|elem| build_segment_item(elem, self_mid_hash.as_deref()))
             .collect();
@@ -176,7 +179,11 @@ fn build_segment_item(raw: DanmakuElemWire, self_mid_hash: Option<&str>) -> Danm
 /// Bilibili wraps the XML in raw deflate. Some CDN replies are already plain
 /// XML — we sniff for the `<` byte and only deflate when we can't see one.
 fn inflate_if_needed(bytes: &[u8]) -> CoreResult<String> {
-    let leading = bytes.iter().take(8).copied().find(|b| !b.is_ascii_whitespace());
+    let leading = bytes
+        .iter()
+        .take(8)
+        .copied()
+        .find(|b| !b.is_ascii_whitespace());
     if leading == Some(b'<') {
         return Ok(String::from_utf8_lossy(bytes).into_owned());
     }
@@ -200,7 +207,8 @@ fn parse_xml(xml: &str) -> DanmakuTrack {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().as_ref() == b"d" => {
-                current_p = e.attributes()
+                current_p = e
+                    .attributes()
                     .filter_map(|a| a.ok())
                     .find(|a| a.key.as_ref() == b"p")
                     .and_then(|a| a.unescape_value().ok().map(|c| c.into_owned()));
@@ -226,7 +234,9 @@ fn parse_xml(xml: &str) -> DanmakuTrack {
 
 fn build_item(p: &str, text: &str) -> Option<DanmakuItem> {
     let parts: Vec<&str> = p.split(',').collect();
-    if parts.len() < 4 { return None; }
+    if parts.len() < 4 {
+        return None;
+    }
     Some(DanmakuItem {
         time_sec: parts[0].parse().unwrap_or(0.0),
         mode: parts[1].parse().unwrap_or(1),

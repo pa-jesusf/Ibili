@@ -192,10 +192,15 @@ private struct HomeFeedPage: View {
                                     bvid: item.bvid,
                                     author: item.author,
                                     ownerMID: item.ownerMID,
+                                    dislikeReasons: item.dislikeReasons,
+                                    feedbackReasons: item.feedbackReasons,
                                     onCopyBVID: { copyBVID(item.bvid) },
                                     onWatchLater: { addWatchLater(aid: item.aid) },
                                     onVisitOwner: { openOwner(mid: item.ownerMID) },
-                                    onNotInterested: { markNotInterested(aid: item.aid) },
+                                    onPlainDislike: { markNotInterested(item: item) },
+                                    onUndoDislike: { undoNotInterested(item: item) },
+                                    onDislikeReason: { reason in submitFeedDislike(item: item, reason: reason, isFeedback: false) },
+                                    onFeedbackReason: { reason in submitFeedDislike(item: item, reason: reason, isFeedback: true) },
                                     onBlockOwner: { blockOwner(mid: item.ownerMID, author: item.author) }
                                 )
                                 .padding(.trailing, 4)
@@ -293,7 +298,8 @@ private struct HomeFeedPage: View {
         }
     }
 
-    private func markNotInterested(aid: Int64) {
+    private func markNotInterested(item: FeedItemDTO) {
+        let aid = item.aid
         guard aid > 0 else { return }
         vm.hideItem(aid: aid)
         showToast("已减少此类推荐")
@@ -303,6 +309,68 @@ private struct HomeFeedPage: View {
             } catch {
                 AppLog.error("home", "卡片菜单不感兴趣同步失败", error: error, metadata: [
                     "aid": String(aid),
+                ])
+            }
+        }
+    }
+
+    private func undoNotInterested(item: FeedItemDTO) {
+        let aid = item.aid
+        let feedGoto = item.feedGoto
+        let feedID = item.feedID
+        let usesFeedReasons = !item.dislikeReasons.isEmpty || !item.feedbackReasons.isEmpty
+        guard aid > 0 else { return }
+        showToast("正在撤销")
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .utility) {
+                    if usesFeedReasons, !feedGoto.isEmpty, feedID > 0 {
+                        try CoreClient.shared.feedDislikeCancel(goto: feedGoto, id: feedID)
+                    } else {
+                        try CoreClient.shared.archiveDislike(aid: aid, dislike: false)
+                    }
+                }.value
+                showToast("已撤销")
+            } catch {
+                showToast("撤销失败")
+                AppLog.error("home", "卡片菜单撤销不感兴趣失败", error: error, metadata: [
+                    "aid": String(aid),
+                    "feedID": String(feedID),
+                    "goto": feedGoto,
+                ])
+            }
+        }
+    }
+
+    private func submitFeedDislike(item: FeedItemDTO, reason: FeedDislikeReasonDTO, isFeedback: Bool) {
+        let aid = item.aid
+        let feedGoto = item.feedGoto
+        let feedID = item.feedID
+        let reasonID = reason.id
+        let toast = reason.toast.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard feedID > 0, !feedGoto.isEmpty else {
+            markNotInterested(item: item)
+            return
+        }
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .utility) {
+                    if isFeedback {
+                        try CoreClient.shared.feedDislike(goto: feedGoto, id: feedID, feedbackID: reasonID)
+                    } else {
+                        try CoreClient.shared.feedDislike(goto: feedGoto, id: feedID, reasonID: reasonID)
+                    }
+                }.value
+                vm.hideItem(aid: aid)
+                showToast(toast.isEmpty ? "已减少此类推荐" : toast)
+            } catch {
+                showToast("提交失败")
+                AppLog.error("home", "卡片菜单不感兴趣原因提交失败", error: error, metadata: [
+                    "aid": String(aid),
+                    "feedID": String(feedID),
+                    "goto": feedGoto,
+                    "reasonID": String(reasonID),
+                    "isFeedback": String(isFeedback),
                 ])
             }
         }
