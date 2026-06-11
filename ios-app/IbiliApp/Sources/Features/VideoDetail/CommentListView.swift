@@ -169,6 +169,7 @@ private struct CommentListContent: View {
     @EnvironmentObject private var session: AppSession
 
     var body: some View {
+        let prefetchTriggerID = viewModel.prefetchTriggerID
         LazyVStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("评论")
@@ -231,7 +232,7 @@ private struct CommentListContent: View {
                            onReply: session.isLoggedIn ? { onReply(item, item) } : nil,
                            onOpenUser: onOpenUser) { thread = item }
                     .onAppear {
-                        if item.id == viewModel.items.last?.id, !viewModel.isEnd {
+                        if item.rpid == prefetchTriggerID {
                             Task { await viewModel.loadMore() }
                         }
                     }
@@ -251,6 +252,7 @@ private struct CommentListContent: View {
         }
         .onAppear {
             viewModel.bind(oid: oid, kind: kind)
+            prefetchCommentAvatars()
         }
         .onChange(of: oid) { newValue in
             viewModel.bind(oid: newValue, kind: kind)
@@ -258,6 +260,26 @@ private struct CommentListContent: View {
         .onChange(of: kind) { newValue in
             viewModel.bind(oid: oid, kind: newValue)
         }
+        .onChange(of: viewModel.items.count) { _ in
+            prefetchCommentAvatars()
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+
+    private func prefetchCommentAvatars() {
+        var urls: [String] = []
+        if let face = viewModel.top?.face, !face.isEmpty {
+            urls.append(face)
+        }
+        urls.append(contentsOf: viewModel.items.suffix(24).map(\.face).filter { !$0.isEmpty })
+        guard !urls.isEmpty else { return }
+        CoverImagePrefetcher.shared.prefetch(
+            urls,
+            targetPointSize: CGSize(width: 64, height: 64),
+            quality: 75
+        )
     }
 }
 
@@ -360,7 +382,11 @@ struct CommentRow: View {
                               lineLimit: messageLineLimit,
                               font: .footnote,
                               textColor: IbiliTheme.textPrimary,
-                              onTruncationChange: { isMessageTruncated = $0 })
+                              onTruncationChange: { truncated in
+                                  if isMessageTruncated != truncated {
+                                      isMessageTruncated = truncated
+                                  }
+                              })
                     .contextMenu {
                         Button {
                             UIPasteboard.general.string = item.message

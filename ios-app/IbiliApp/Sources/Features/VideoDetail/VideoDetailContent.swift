@@ -15,6 +15,7 @@ import UIKit
 /// 7. Segmented tabs: 简介 / 评论 / 相关
 struct VideoDetailContent: View {
     let item: FeedItemDTO
+    let currentCid: Int64
     let currentSeasonID: Int64
     let currentEpisodeID: Int64
     @ObservedObject private var vm: VideoDetailViewModel
@@ -45,6 +46,7 @@ struct VideoDetailContent: View {
     private static let floatingControlsReservedBottomInset: CGFloat = 82
 
     init(item: FeedItemDTO,
+         currentCid: Int64 = 0,
          currentSeasonID: Int64 = 0,
          currentEpisodeID: Int64 = 0,
          detailViewModel: VideoDetailViewModel,
@@ -55,6 +57,7 @@ struct VideoDetailContent: View {
          onSeekToTime: ((Int64) -> Void)? = nil,
          onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.item = item
+        self.currentCid = currentCid
         self.currentSeasonID = currentSeasonID
         self.currentEpisodeID = currentEpisodeID
         self._vm = ObservedObject(wrappedValue: detailViewModel)
@@ -364,10 +367,10 @@ struct VideoDetailContent: View {
             }
 
             if !item.isPGC, let v = vm.view {
-                let currentCid = v.cid
+                let activeCid = currentCid > 0 ? currentCid : v.cid
                 if let season = v.ugcSeason, season.id > 0 {
-                    VideoSeasonCard(source: .season(season, currentCid: currentCid)) { aid, bvid, cid in
-                        guard cid != currentCid else { return }
+                    VideoSeasonCard(source: .season(season, currentCid: activeCid)) { aid, bvid, cid in
+                        guard cid != activeCid else { return }
                         let next = FeedItemDTO(
                             aid: aid ?? 0,
                             bvid: bvid ?? "",
@@ -379,8 +382,8 @@ struct VideoDetailContent: View {
                     }
                     .padding(.horizontal, 16)
                 } else if v.pages.count > 1 {
-                    VideoSeasonCard(source: .pages(aid: v.aid, bvid: v.bvid, pages: v.pages, currentCid: currentCid)) { aid, bvid, cid in
-                        guard cid != currentCid else { return }
+                    VideoSeasonCard(source: .pages(aid: v.aid, bvid: v.bvid, pages: v.pages, currentCid: activeCid)) { aid, bvid, cid in
+                        guard cid != activeCid else { return }
                         let next = FeedItemDTO(
                             aid: aid ?? v.aid,
                             bvid: (bvid?.isEmpty == false ? bvid : v.bvid) ?? "",

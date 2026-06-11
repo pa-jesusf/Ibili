@@ -51,6 +51,8 @@ struct FeedRawItem {
     rcmd_reason: Option<String>,
     #[serde(default)]
     three_point: Option<Vec<ThreePointRaw>>,
+    #[serde(default)]
+    three_point_v2: Option<Vec<ThreePointRaw>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -399,7 +401,8 @@ impl Core {
                 } else {
                     0
                 };
-                let (dislike_reasons, feedback_reasons) = split_three_point(i.three_point);
+                let (dislike_reasons, feedback_reasons) =
+                    split_three_point(i.three_point_v2.as_deref().or(i.three_point.as_deref()));
                 let feed_id = feed_param_id(&i.param, pa.aid);
                 Some(FeedItem {
                     aid: pa.aid,
@@ -562,7 +565,7 @@ fn feed_param_id(raw: &str, fallback: i64) -> i64 {
 }
 
 fn split_three_point(
-    raw: Option<Vec<ThreePointRaw>>,
+    raw: Option<&[ThreePointRaw]>,
 ) -> (Vec<FeedDislikeReason>, Vec<FeedDislikeReason>) {
     let mut dislikes = Vec::new();
     let mut feedbacks = Vec::new();
@@ -572,15 +575,20 @@ fn split_three_point(
             "feedback" => &mut feedbacks,
             _ => continue,
         };
-        target.extend(section.reasons.into_iter().filter_map(|reason| {
-            let name = reason.name.unwrap_or_default().trim().to_string();
+        target.extend(section.reasons.iter().filter_map(|reason| {
+            let name = reason
+                .name
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             if reason.id <= 0 || name.is_empty() {
                 return None;
             }
             Some(FeedDislikeReason {
                 id: reason.id,
                 name,
-                toast: reason.toast.unwrap_or_default(),
+                toast: reason.toast.clone().unwrap_or_default(),
             })
         }));
     }

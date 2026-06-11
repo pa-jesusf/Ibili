@@ -32,30 +32,15 @@ struct VideoCardOverflowMenu: View {
             }
             .disabled(ownerMID <= 0)
 
-            Menu {
-                if dislikeReasons.isEmpty && feedbackReasons.isEmpty {
-                    Button(action: onPlainDislike) {
-                        Label("点踩", systemImage: "hand.thumbsdown")
-                    }
-                    Button(action: onUndoDislike) {
-                        Label("撤销点踩", systemImage: "arrow.uturn.backward")
-                    }
-                } else {
-                    if !dislikeReasons.isEmpty {
-                        Section("我不想看") {
-                            ForEach(dislikeReasons) { reason in
-                                Button(action: { onDislikeReason(reason) }) {
-                                    Text(reason.name)
-                                }
-                            }
-                        }
-                    }
-                    if !feedbackReasons.isEmpty {
-                        Section("反馈") {
-                            ForEach(feedbackReasons) { reason in
-                                Button(action: { onFeedbackReason(reason) }) {
-                                    Text(reason.name)
-                                }
+            if hasFeedReasons {
+                Menu {
+                    ForEach(reasonChoices) { choice in
+                        Button(choice.reason.name) {
+                            switch choice.kind {
+                            case .dislike:
+                                onDislikeReason(choice.reason)
+                            case .feedback:
+                                onFeedbackReason(choice.reason)
                             }
                         }
                     }
@@ -63,9 +48,20 @@ struct VideoCardOverflowMenu: View {
                     Button(action: onUndoDislike) {
                         Label("撤销", systemImage: "arrow.uturn.backward")
                     }
+                } label: {
+                    Label("不感兴趣", systemImage: "hand.thumbsdown")
                 }
-            } label: {
-                Label("不感兴趣", systemImage: "hand.thumbsdown")
+            } else {
+                Menu {
+                    Button(action: onPlainDislike) {
+                        Label("点踩", systemImage: "hand.thumbsdown")
+                    }
+                    Button(action: onUndoDislike) {
+                        Label("撤销点踩", systemImage: "arrow.uturn.backward")
+                    }
+                } label: {
+                    Label("不感兴趣", systemImage: "hand.thumbsdown")
+                }
             }
 
             Button(role: .destructive, action: onBlockOwner) {
@@ -87,5 +83,28 @@ struct VideoCardOverflowMenu: View {
     private var ownerName: String {
         let trimmed = author.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "UP 主" : trimmed
+    }
+
+    private var hasFeedReasons: Bool {
+        !dislikeReasons.isEmpty || !feedbackReasons.isEmpty
+    }
+
+    private var reasonChoices: [VideoDislikeReasonChoice] {
+        dislikeReasons.map { .init(kind: .dislike, reason: $0) }
+            + feedbackReasons.map { .init(kind: .feedback, reason: $0) }
+    }
+}
+
+private struct VideoDislikeReasonChoice: Identifiable, Hashable {
+    enum Kind: String, Hashable {
+        case dislike
+        case feedback
+    }
+
+    let kind: Kind
+    let reason: FeedDislikeReasonDTO
+
+    var id: String {
+        "\(kind.rawValue):\(reason.id):\(reason.name)"
     }
 }

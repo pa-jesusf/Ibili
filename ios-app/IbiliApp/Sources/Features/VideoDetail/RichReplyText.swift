@@ -129,6 +129,9 @@ struct RichReplyText: View {
         let jumpDict = Dictionary(uniqueKeysWithValues: jumps.compactMap { j -> (String, ReplyJumpUrlDTO)? in
             j.keyword.isEmpty ? nil : (j.keyword, j)
         })
+        let jumpKeywords = jumpDict.keys
+            .sorted { $0.count > $1.count }
+            .map { ($0, Array($0)) }
 
         var out: [Segment] = []
         var buf = ""
@@ -151,9 +154,9 @@ struct RichReplyText: View {
             }
             // Try jump-keyword starting here. Match longest keyword first.
             var matched = false
-            for keyword in jumpDict.keys.sorted(by: { $0.count > $1.count }) {
-                let kchars = Array(keyword)
-                if i + kchars.count <= chars.count, Array(chars[i..<i+kchars.count]) == kchars {
+            for (keyword, kchars) in jumpKeywords {
+                if i + kchars.count <= chars.count,
+                   chars[i..<i+kchars.count].elementsEqual(kchars) {
                     if !buf.isEmpty { out.append(.text(buf)); buf.removeAll() }
                     let j = jumpDict[keyword]!
                     let url = mapJumpURL(keyword: keyword, raw: j.url)

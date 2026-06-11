@@ -58,38 +58,36 @@ final class VideoDetailViewModel: ObservableObject {
         guard !isLoadingMoreRelated, !relatedIsEnd else { return }
         isLoadingMoreRelated = true
         defer { isLoadingMoreRelated = false }
-        let idx = feedFreshIdx
-        let page = await Task.detached(priority: .utility) {
-            (try? CoreClient.shared.feedHome(idx: idx, ps: 12, source: "web"))
-        }.value
-        guard let page else {
-            relatedIsEnd = true
+        var fresh: [RelatedVideoItemDTO] = []
+        var reachedEnd = false
+        var nextIdx = feedFreshIdx
+
+        // Home feed pages can contain duplicates of the current detail or
+        // previously appended rows. Keep walking a few pages so pagination
+        // never appears to stall just because one page was all duplicates.
+        for _ in 0..<3 where fresh.isEmpty {
+            let idx = nextIdx
+            let page = await Task.detached(priority: .utility) {
+                (try? CoreClient.shared.feedHome(idx: idx, ps: 12, source: "web"))
+            }.value
+            guard let page else {
+                reachedEnd = true
+                break
+            }
+            nextIdx += 1
+            if page.items.isEmpty {
+                reachedEnd = true
+                break
+            }
+            fresh.append(contentsOf: page.items.compactMap(feedItemToFreshRelated(_:)))
+        }
+
+        feedFreshIdx = nextIdx
+        if fresh.isEmpty {
+            relatedIsEnd = reachedEnd
             return
         }
-        let mapped: [RelatedVideoItemDTO] = page.items.compactMap { f -> RelatedVideoItemDTO? in
-            guard !seenAids.contains(f.aid) else { return nil }
-            seenAids.insert(f.aid)
-            return RelatedVideoItemDTO(
-                aid: f.aid,
-                bvid: f.bvid,
-                cid: f.cid,
-                title: f.title,
-                cover: f.cover,
-                author: f.author,
-                face: "",
-                mid: 0,
-                durationSec: f.durationSec,
-                play: f.play,
-                danmaku: f.danmaku,
-                pubdate: 0
-            )
-        }
-        if mapped.isEmpty && page.items.isEmpty {
-            relatedIsEnd = true
-            return
-        }
-        related.append(contentsOf: mapped)
-        feedFreshIdx += 1
+        related.append(contentsOf: fresh)
     }
 
     private func loadDetail(aid: Int64, bvid: String, force: Bool) async {
@@ -107,9 +105,10 @@ final class VideoDetailViewModel: ObservableObject {
             self.aid = v.aid
             self.bvid = resolvedBvid
             self.view = v
-            self.related = await Task.detached(priority: .utility) {
+            let fetchedRelated = await Task.detached(priority: .utility) {
                 (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
             }.value
+            self.related = self.uniqueRelatedItems(fetchedRelated, currentAid: v.aid)
             self.seenAids = Set(self.related.map { $0.aid })
             self.seenAids.insert(v.aid)
             self.relatedIsEnd = false
@@ -131,5 +130,37 @@ final class VideoDetailViewModel: ObservableObject {
             ])
         }
         isLoading = false
+    }
+
+    private func uniqueRelatedItems(_ incoming: [RelatedVideoItemDTO], currentAid: Int64) -> [RelatedVideoItemDTO] {
+        var seen = Set<Int64>()
+        seen.insert(currentAid)
+        var result: [RelatedVideoItemDTO] = []
+        result.reserveCapacity(incoming.count)
+        for item in incoming {
+            guard item.aid > 0 else { continue }
+            guard seen.insert(item.aid).inserted else { continue }
+            result.append(item)
+        }
+        return result
+    }
+
+    private func feedItemToFreshRelated(_ item: FeedItemDTO) -> RelatedVideoItemDTO? {
+        guard item.aid > 0, item.aid != aid else { return nil }
+        guard seenAids.insert(item.aid).inserted else { return nil }
+        return RelatedVideoItemDTO(
+            aid: item.aid,
+            bvid: item.bvid,
+            cid: item.cid,
+            title: item.title,
+            cover: item.cover,
+            author: item.author,
+            face: "",
+            mid: item.ownerMID,
+            durationSec: item.durationSec,
+            play: item.play,
+            danmaku: item.danmaku,
+            pubdate: 0
+        )
     }
 }

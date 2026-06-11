@@ -123,6 +123,7 @@ final class PlayerViewModel: ObservableObject {
     private var transientPauseSuppressionContext: PlayerTransientPauseSuppressionContext?
     private var fullscreenPlaybackRecoveryWork: DispatchWorkItem?
     private var suppressedObservedPauseConfirmationWork: DispatchWorkItem?
+    private var pausedForDetailCollapseConfirmationWork: DispatchWorkItem?
     private var isClosing = false
     private var dismissalFadeTask: Task<Void, Never>?
 
@@ -136,6 +137,7 @@ final class PlayerViewModel: ObservableObject {
             PlayerNowPlayingCoordinator.shared.unregister(self)
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
             cancelSuppressedObservedPauseConfirmation()
+            clearPausedForDetailCollapse()
             fullscreenPlaybackRecoveryWork?.cancel()
             dismissalFadeTask?.cancel()
             stopHeartbeat()
@@ -759,6 +761,7 @@ final class PlayerViewModel: ObservableObject {
         PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
         cancelSuppressedObservedPauseConfirmation()
+        clearPausedForDetailCollapse()
         cancelFullscreenPlaybackRecovery()
         AppLog.debug("player", "销毁播放器", metadata: [
             "aid": String(aid),
@@ -791,6 +794,7 @@ final class PlayerViewModel: ObservableObject {
         isClosing = true
         loadGeneration &+= 1
         cancelSuppressedObservedPauseConfirmation()
+        clearPausedForDetailCollapse()
         cancelFullscreenPlaybackRecovery()
         itemStatusObservation = nil
         stopHeartbeat()
@@ -835,6 +839,7 @@ final class PlayerViewModel: ObservableObject {
         playerTimeControlObservation?.invalidate()
         playerTimeControlObservation = nil
         cancelSuppressedObservedPauseConfirmation()
+        clearPausedForDetailCollapse()
         if newPlayer == nil {
             temporaryPlaybackRateOverride = nil
             isTemporarySpeedBoostActive = false
@@ -921,10 +926,44 @@ final class PlayerViewModel: ObservableObject {
               isVideoReady,
               let targetPlayer = observedPlayer ?? player,
               targetPlayer === player else {
-            isPausedForDetailCollapse = false
+            clearPausedForDetailCollapse()
             return
         }
-        isPausedForDetailCollapse = targetPlayer.timeControlStatus == .paused && targetPlayer.rate == 0
+        if targetPlayer.timeControlStatus == .paused && targetPlayer.rate == 0 {
+            schedulePausedForDetailCollapseConfirmation(for: targetPlayer)
+        } else {
+            clearPausedForDetailCollapse()
+        }
+    }
+
+    private func schedulePausedForDetailCollapseConfirmation(for targetPlayer: AVPlayer) {
+        guard !isPausedForDetailCollapse else { return }
+        pausedForDetailCollapseConfirmationWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak targetPlayer] in
+            guard let self, let targetPlayer else { return }
+            self.confirmPausedForDetailCollapse(for: targetPlayer)
+        }
+        pausedForDetailCollapseConfirmationWork = work
+        // Native AVKit briefly reports `.paused` while scrubbing the
+        // progress bar. Only arm the scroll-collapse path after the
+        // pause stays stable for a moment.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    private func confirmPausedForDetailCollapse(for targetPlayer: AVPlayer) {
+        pausedForDetailCollapseConfirmationWork = nil
+        guard !isClosing,
+              isVideoReady,
+              targetPlayer === player,
+              targetPlayer.timeControlStatus == .paused,
+              targetPlayer.rate == 0 else { return }
+        isPausedForDetailCollapse = true
+    }
+
+    private func clearPausedForDetailCollapse() {
+        pausedForDetailCollapseConfirmationWork?.cancel()
+        pausedForDetailCollapseConfirmationWork = nil
+        isPausedForDetailCollapse = false
     }
 
     func armTransientPauseSuppression(for context: PlayerTransientPauseSuppressionContext) {
@@ -1890,6 +1929,8 @@ struct PlayerView: View {
     @State private var detailTimelineSeconds: Double = 0
     @State private var lastDetailTimelineWholeSecond: Int64 = -1
     @State private var detailScrollOffsetForPlayerCollapse: CGFloat = 0
+    @State private var isPlayerCollapseArmed = false
+    @State private var playerCollapseAnchorOffset: CGFloat = 0
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -2015,20 +2056,22 @@ struct PlayerView: View {
         !offlineOnly
             && shouldMountDetailContent
             && vm.isPausedForDetailCollapse
+            && isPlayerCollapseArmed
             && !isFullscreen
             && !presentationState.isFullscreenPresentationActive
             && !presentationState.isAwaitingInlineFullscreenReturn
     }
 
     private func collapsedPlayerHeight(expandedHeight: CGFloat) -> CGFloat {
-        min(expandedHeight, max(72, expandedHeight * 0.42))
+        min(expandedHeight, 72)
     }
 
     private func playerCollapseProgress(expandedHeight: CGFloat) -> CGFloat {
         guard canCollapsePlayerForDetailScroll else { return 0 }
         let collapsedHeight = collapsedPlayerHeight(expandedHeight: expandedHeight)
         let scrollDistance = max(60, expandedHeight - collapsedHeight)
-        return min(max(detailScrollOffsetForPlayerCollapse / scrollDistance, 0), 1)
+        let scrollDeltaAfterPause = detailScrollOffsetForPlayerCollapse - playerCollapseAnchorOffset
+        return min(max(scrollDeltaAfterPause / scrollDistance, 0), 1)
     }
 
     private func playerHeight(for width: CGFloat) -> CGFloat {
@@ -2036,6 +2079,83 @@ struct PlayerView: View {
         let collapsedHeight = collapsedPlayerHeight(expandedHeight: expandedHeight)
         let progress = playerCollapseProgress(expandedHeight: expandedHeight)
         return expandedHeight - (expandedHeight - collapsedHeight) * progress
+    }
+
+    private func handleDetailScrollOffsetForPlayerCollapse(_ offset: CGFloat) {
+        let clamped = max(0, offset)
+        detailScrollOffsetForPlayerCollapse = clamped
+        if vm.isPausedForDetailCollapse, !isPlayerCollapseArmed {
+            isPlayerCollapseArmed = true
+            playerCollapseAnchorOffset = clamped
+        }
+    }
+
+    private func armPlayerCollapseFromCurrentScrollPosition() {
+        guard vm.isPausedForDetailCollapse else {
+            resetPlayerCollapseAnchor()
+            return
+        }
+        isPlayerCollapseArmed = true
+        playerCollapseAnchorOffset = detailScrollOffsetForPlayerCollapse
+    }
+
+    private func resetPlayerCollapseAnchor() {
+        isPlayerCollapseArmed = false
+        playerCollapseAnchorOffset = detailScrollOffsetForPlayerCollapse
+    }
+
+    private func expandCollapsedPlayerAndPlay() {
+        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9, blendDuration: 0.12)) {
+            playerCollapseAnchorOffset = detailScrollOffsetForPlayerCollapse
+            isPlayerCollapseArmed = true
+        }
+        vm.handle(.playbackIntentChanged(.play))
+    }
+
+    @ViewBuilder
+    private func collapsedPlayerButton(progress: CGFloat) -> some View {
+        let visibility = min(max((progress - 0.42) / 0.58, 0), 1)
+        Button(action: expandCollapsedPlayerAndPlay) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(IbiliTheme.accent)
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .offset(x: 1)
+                }
+                .frame(width: 40, height: 40)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("继续播放")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(IbiliTheme.textPrimary)
+                    Text((vm.currentFeedItem ?? item).title)
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.up")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(IbiliTheme.textSecondary)
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: 64)
+            .background(IbiliTheme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+        }
+        .buttonStyle(.plain)
+        .opacity(Double(visibility))
+        .allowsHitTesting(progress > 0.72)
+        .accessibilityLabel("继续播放")
     }
 
     private func resetSubtitleState() {
@@ -2161,60 +2281,72 @@ struct PlayerView: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let playerWidth = proxy.size.width
+            let expandedPlayerHeight = playerWidth * 9.0 / 16.0
+            let collapseProgress = playerCollapseProgress(expandedHeight: expandedPlayerHeight)
+            let visiblePlayerHeight = playerHeight(for: playerWidth)
             VStack(spacing: 0) {
-                ZStack {
-                    Color.black
-                    if let p = vm.player {
-                        PlayerContainer(
-                            player: p,
-                            sessionID: vm.currentSessionID,
-                            title: item.title,
-                            prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
-                            isPresentationRouteActive: isPresentationRouteActive,
-                            danmaku: danmaku,
-                            subtitle: subtitle,
-                            subtitleEnabled: subtitleEnabled,
-                            danmakuEnabled: settings.danmakuEnabled,
-                            danmakuOpacity: settings.danmakuOpacity,
-                            danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
-                            danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
-                            danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
-                            danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
-                            danmakuFontScale: settings.resolvedDanmakuFontScale(),
-                            isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
-                            canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
-                            beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
-                            endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
-                            canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
-                            onCreated: { vc in playerVCRef.vc = vc },
-                            onPresentationEvent: handlePresentationEvent
-                        )
-                        // Cover the native chrome until the first frame is
-                        // ready, otherwise users see a misleading pause icon
-                        // hovering over a black surface during buffering.
-                        if !vm.isVideoReady {
-                            Color.black.opacity(0.85)
+                ZStack(alignment: .top) {
+                    ZStack {
+                        Color.black
+                        if let p = vm.player {
+                            PlayerContainer(
+                                player: p,
+                                sessionID: vm.currentSessionID,
+                                title: item.title,
+                                prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
+                                isPresentationRouteActive: isPresentationRouteActive,
+                                danmaku: danmaku,
+                                subtitle: subtitle,
+                                subtitleEnabled: subtitleEnabled,
+                                danmakuEnabled: settings.danmakuEnabled,
+                                danmakuOpacity: settings.danmakuOpacity,
+                                danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
+                                danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
+                                danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
+                                danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
+                                danmakuFontScale: settings.resolvedDanmakuFontScale(),
+                                isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
+                                canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
+                                beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
+                                endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
+                                canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
+                                onCreated: { vc in playerVCRef.vc = vc },
+                                onPresentationEvent: handlePresentationEvent
+                            )
+                            // Cover the native chrome until the first frame is
+                            // ready, otherwise users see a misleading pause icon
+                            // hovering over a black surface during buffering.
+                            if !vm.isVideoReady {
+                                Color.black.opacity(0.85)
+                                ProgressView().tint(.white)
+                            }
+                        } else if vm.isLoading {
                             ProgressView().tint(.white)
-                        }
-                    } else if vm.isLoading {
-                        ProgressView().tint(.white)
-                    } else if let err = vm.errorText {
-                        VStack(spacing: 12) {
-                            Image(systemName: "exclamationmark.triangle").font(.largeTitle)
-                                .foregroundStyle(.yellow)
-                            Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
-                                .padding(.horizontal)
+                        } else if let err = vm.errorText {
+                            VStack(spacing: 12) {
+                                Image(systemName: "exclamationmark.triangle").font(.largeTitle)
+                                    .foregroundStyle(.yellow)
+                                Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
+                                    .padding(.horizontal)
+                            }
                         }
                     }
+                    .frame(width: playerWidth, height: expandedPlayerHeight)
+                    .opacity(Double(max(0, 1 - collapseProgress * 1.6)))
+                    .allowsHitTesting(collapseProgress < 0.78)
+
+                    collapsedPlayerButton(progress: collapseProgress)
                 }
-                .frame(width: proxy.size.width, height: playerHeight(for: proxy.size.width))
+                .frame(width: playerWidth, height: visiblePlayerHeight, alignment: .top)
                 .clipped()
-                .animation(.spring(response: 0.26, dampingFraction: 0.92), value: vm.isPausedForDetailCollapse)
+                .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.9, blendDuration: 0.08), value: vm.isPausedForDetailCollapse)
 
                 if offlineOnly {
                     offlineDetailPlaceholder
                 } else if shouldMountDetailContent {
                     VideoDetailContent(item: item,
+                                       currentCid: vm.currentCid,
                                        currentSeasonID: vm.currentSeasonID,
                                        currentEpisodeID: vm.currentEpisodeID,
                                    detailViewModel: vm.pageCache.detailViewModel,
@@ -2223,7 +2355,7 @@ struct PlayerView: View {
                                    viewPoints: vm.viewPoints,
                                    currentPlaybackSeconds: detailTimelineSeconds,
                                    onSeekToTime: { seconds in seekTo(seconds: seconds) },
-                                   onScrollOffsetChange: { detailScrollOffsetForPlayerCollapse = $0 })
+                                   onScrollOffsetChange: handleDetailScrollOffsetForPlayerCollapse)
                         .transition(.opacity)
                 } else {
                     VStack(spacing: 12) {
@@ -2377,6 +2509,13 @@ struct PlayerView: View {
                 return
             }
             disableSubtitle()
+        }
+        .onChange(of: vm.isPausedForDetailCollapse) { paused in
+            if paused {
+                armPlayerCollapseFromCurrentScrollPosition()
+            } else {
+                resetPlayerCollapseAnchor()
+            }
         }
         .onChange(of: settings.cdnService.rawValue) { _ in
             PlayUrlPrefetcher.shared.clear()

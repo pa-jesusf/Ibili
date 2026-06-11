@@ -20,22 +20,25 @@ struct RelatedVideoList: View {
             emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
                 .padding(.vertical, 40)
         } else {
+            let prefetchIDs = Set(items.suffix(3).map(\.id))
+            let lastID = items.last?.id
             LazyVStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                ForEach(items) { item in
                     Button {
                         onTap(adapt(item))
                     } label: {
                         RelatedRow(item: item)
+                            .equatable()
                     }
                     .buttonStyle(.plain)
                     .onAppear {
                         // Trigger more when the third-from-last row appears
                         // so the list feels seamless on slower networks.
-                        if !isEnd, index >= max(0, items.count - 3) {
+                        if !isEnd, prefetchIDs.contains(item.id) {
                             onReachEnd()
                         }
                     }
-                    if index < items.count - 1 {
+                    if item.id != lastID {
                         Divider().padding(.leading, 132)
                     }
                 }
@@ -46,6 +49,15 @@ struct RelatedVideoList: View {
                     HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
                         .padding(.vertical, 14)
                 }
+            }
+            .onAppear {
+                prefetchCovers(from: Array(items.prefix(18)))
+            }
+            .onChange(of: items.count) { _ in
+                prefetchCovers(from: Array(items.suffix(18)))
+            }
+            .transaction { transaction in
+                transaction.animation = nil
             }
         }
     }
@@ -64,6 +76,16 @@ struct RelatedVideoList: View {
             ownerMID: r.mid
         )
     }
+
+    private func prefetchCovers(from items: [RelatedVideoItemDTO]) {
+        let urls = items.map(\.cover).filter { !$0.isEmpty }
+        guard !urls.isEmpty else { return }
+        CoverImagePrefetcher.shared.prefetch(
+            urls,
+            targetPointSize: CGSize(width: 240, height: 150),
+            quality: 75
+        )
+    }
 }
 
 /// Single row: cover left (16:10) with duration overlay, title + UP +
@@ -71,8 +93,12 @@ struct RelatedVideoList: View {
 /// so the "我的" → 历史 / 收藏 / 稍后再看 二级 lists render with the
 /// exact same rhythm — keeping the app's vertical-list surfaces
 /// visually consistent.
-private struct RelatedRow: View {
+private struct RelatedRow: View, Equatable {
     let item: RelatedVideoItemDTO
+
+    static func == (lhs: RelatedRow, rhs: RelatedRow) -> Bool {
+        lhs.item == rhs.item
+    }
 
     var body: some View {
         CompactVideoRow(

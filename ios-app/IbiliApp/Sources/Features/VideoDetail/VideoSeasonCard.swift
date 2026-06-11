@@ -56,7 +56,12 @@ struct VideoSeasonCard: View {
     private var subtitle: String {
         switch source {
         case .season(let s, _): return "共 \(s.epCount > 0 ? s.epCount : Int32(s.sections.flatMap(\.episodes).count)) 集"
-        case .pages(_, _, let pages, _): return "共 \(pages.count) P"
+        case .pages(_, _, let pages, let currentCid):
+            if let current = pages.first(where: { $0.cid == currentCid }) {
+                let part = current.part.trimmingCharacters(in: .whitespacesAndNewlines)
+                return part.isEmpty ? "当前 P\(current.page) / 共 \(pages.count) P" : "P\(current.page) · \(part)"
+            }
+            return "共 \(pages.count) P"
         }
     }
 

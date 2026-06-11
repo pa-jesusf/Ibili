@@ -11,12 +11,25 @@ final class CommentListViewModel: ObservableObject {
     @Published private(set) var upperMid: Int64 = 0
     @Published private(set) var isLoading = false
     @Published private(set) var isEnd = false
-    @Published var sort: Int32 = 1 { didSet { reset() } }
+    @Published var sort: Int32 = 1 {
+        didSet {
+            guard sort != oldValue else { return }
+            reset()
+        }
+    }
     @Published var errorText: String?
 
     private var oid: Int64 = 0
     private var kind: Int32 = 1
     private var nextOffset: String = ""
+    private var generation: UInt64 = 0
+    private var loadedReplyIDs = Set<Int64>()
+
+    var prefetchTriggerID: Int64? {
+        guard !isEnd, !items.isEmpty else { return nil }
+        let index = max(0, items.count - 4)
+        return items[index].rpid
+    }
 
     func bind(oid: Int64, kind: Int32 = 1) {
         let isSameTarget = self.oid == oid && self.kind == kind
@@ -33,31 +46,42 @@ final class CommentListViewModel: ObservableObject {
     }
 
     func reset() {
+        generation &+= 1
+        let requestGeneration = generation
         items.removeAll()
+        loadedReplyIDs.removeAll()
         top = nil
         total = 0
         upperMid = 0
         nextOffset = ""
+        isLoading = false
         isEnd = false
         errorText = nil
-        Task { await loadMore() }
+        Task { await loadMore(expectedGeneration: requestGeneration) }
     }
 
     func refresh(oid: Int64, kind: Int32 = 1) async {
         self.oid = oid
         self.kind = kind
-        guard oid > 0, !isLoading else { return }
+        generation &+= 1
+        let requestGeneration = generation
+        guard oid > 0 else { return }
         isLoading = true
         errorText = nil
-        defer { isLoading = false }
+        defer {
+            if requestGeneration == generation {
+                isLoading = false
+            }
+        }
         do {
             let page = try await Task.detached(priority: .userInitiated) { [oid, kind, sort] in
                 try CoreClient.shared.replyMain(oid: oid, kind: kind, sort: sort, nextOffset: "")
             }.value
+            guard requestGeneration == generation, self.oid == oid, self.kind == kind else { return }
             top = page.top
             total = page.total
             upperMid = page.upperMid
-            items = page.items
+            replaceItems(page.items, pinnedTop: page.top)
             nextOffset = page.cursorNext
             isEnd = page.isEnd || page.cursorNext.isEmpty
             AppLog.info("comments", "评论刷新成功", metadata: [
@@ -66,30 +90,58 @@ final class CommentListViewModel: ObservableObject {
                 "count": String(page.items.count),
             ])
         } catch {
+            guard requestGeneration == generation, self.oid == oid, self.kind == kind else { return }
             errorText = (error as NSError).localizedDescription
             AppLog.error("comments", "评论刷新失败", error: error, metadata: ["oid": String(oid)])
         }
     }
 
     func loadMore() async {
+        await loadMore(expectedGeneration: nil)
+    }
+
+    private func loadMore(expectedGeneration: UInt64?) async {
+        let requestGeneration = expectedGeneration ?? generation
+        guard requestGeneration == generation else { return }
         guard oid > 0, !isLoading, !isEnd else { return }
+        let requestOid = oid
+        let requestKind = kind
+        let requestSort = sort
+        let requestOffset = nextOffset
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if requestGeneration == generation {
+                isLoading = false
+            }
+        }
         do {
-            let page = try await Task.detached(priority: .userInitiated) { [oid, kind, sort, nextOffset] in
-                try CoreClient.shared.replyMain(oid: oid, kind: kind, sort: sort, nextOffset: nextOffset)
+            let page = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.replyMain(
+                    oid: requestOid,
+                    kind: requestKind,
+                    sort: requestSort,
+                    nextOffset: requestOffset
+                )
             }.value
-            if nextOffset.isEmpty {
+            guard requestGeneration == generation,
+                  self.oid == requestOid,
+                  self.kind == requestKind,
+                  self.sort == requestSort else { return }
+            if requestOffset.isEmpty {
                 top = page.top
                 total = page.total
                 upperMid = page.upperMid
             }
-            items.append(contentsOf: page.items)
+            appendItems(page.items, pinnedTop: top)
             nextOffset = page.cursorNext
             isEnd = page.isEnd || page.cursorNext.isEmpty
         } catch {
+            guard requestGeneration == generation,
+                  self.oid == requestOid,
+                  self.kind == requestKind,
+                  self.sort == requestSort else { return }
             errorText = (error as NSError).localizedDescription
-            AppLog.error("comments", "评论加载失败", error: error, metadata: ["oid": String(oid)])
+            AppLog.error("comments", "评论加载失败", error: error, metadata: ["oid": String(requestOid)])
         }
     }
 
@@ -119,6 +171,13 @@ final class CommentListViewModel: ObservableObject {
     /// user sees their own comment immediately — saves a full page
     /// refetch round-trip after `replyAdd`.
     func prependLocal(_ item: ReplyItemDTO) {
+        if item.rpid > 0, let existing = items.firstIndex(where: { $0.rpid == item.rpid }) {
+            items[existing] = item
+            return
+        }
+        if item.rpid > 0 {
+            loadedReplyIDs.insert(item.rpid)
+        }
         items.insert(item, at: 0)
         total += 1
     }
@@ -152,5 +211,29 @@ final class CommentListViewModel: ObservableObject {
                 items[idx].like = max(0, items[idx].like + (action == 1 ? 1 : -1))
             }
         }
+    }
+
+    private func replaceItems(_ incoming: [ReplyItemDTO], pinnedTop: ReplyItemDTO?) {
+        loadedReplyIDs.removeAll(keepingCapacity: true)
+        items = uniqueFreshItems(from: incoming, pinnedTop: pinnedTop)
+    }
+
+    private func appendItems(_ incoming: [ReplyItemDTO], pinnedTop: ReplyItemDTO?) {
+        let fresh = uniqueFreshItems(from: incoming, pinnedTop: pinnedTop)
+        guard !fresh.isEmpty else { return }
+        items.append(contentsOf: fresh)
+    }
+
+    private func uniqueFreshItems(from incoming: [ReplyItemDTO], pinnedTop: ReplyItemDTO?) -> [ReplyItemDTO] {
+        let pinnedID = pinnedTop?.rpid
+        var fresh: [ReplyItemDTO] = []
+        fresh.reserveCapacity(incoming.count)
+        for item in incoming {
+            guard item.rpid > 0 else { continue }
+            guard item.rpid != pinnedID else { continue }
+            guard loadedReplyIDs.insert(item.rpid).inserted else { continue }
+            fresh.append(item)
+        }
+        return fresh
     }
 }
