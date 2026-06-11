@@ -352,6 +352,8 @@ struct AnimeDanmakuFetchArgs {
     #[serde(default)]
     app_secret: String,
     #[serde(default)]
+    subject_id: i64,
+    #[serde(default)]
     subject_primary_name: String,
     #[serde(default)]
     subject_names: Vec<String>,
@@ -907,6 +909,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             to_value(c.inner.anime_danmaku_fetch(
                 &a.app_id,
                 &a.app_secret,
+                a.subject_id,
                 &a.subject_primary_name,
                 a.subject_names,
                 &a.subject_air_date,

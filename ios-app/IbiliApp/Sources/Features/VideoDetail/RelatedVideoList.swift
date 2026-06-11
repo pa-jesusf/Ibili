@@ -14,50 +14,47 @@ struct RelatedVideoList: View {
     let isEnd: Bool
     let onTap: (FeedItemDTO) -> Void
     let onReachEnd: () -> Void
+    var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
 
     var body: some View {
         if items.isEmpty {
             emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
                 .padding(.vertical, 40)
         } else {
-            let prefetchIDs = Set(items.suffix(3).map(\.id))
-            let lastID = items.last?.id
-            LazyVStack(spacing: 0) {
-                ForEach(items) { item in
-                    Button {
-                        onTap(adapt(item))
-                    } label: {
-                        RelatedRow(item: item)
-                            .equatable()
+            VirtualizedCollectionView(
+                items: items,
+                layout: .list(
+                    rowHeight: 92,
+                    contentInsets: NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 92, trailing: 12)
+                ),
+                onTap: { item in
+                    onTap(adapt(item))
+                },
+                onReachEnd: {
+                    if !isEnd {
+                        onReachEnd()
                     }
-                    .buttonStyle(.plain)
-                    .onAppear {
-                        // Trigger more when the third-from-last row appears
-                        // so the list feels seamless on slower networks.
-                        if !isEnd, prefetchIDs.contains(item.id) {
-                            onReachEnd()
-                        }
-                    }
-                    if item.id != lastID {
-                        Divider().padding(.leading, 132)
-                    }
-                }
+                },
+                onPrefetch: prefetchCovers,
+                onScrollOffsetChange: onScrollOffsetChange
+            ) { item in
+                RelatedRow(item: item)
+                    .equatable()
+            }
+            .overlay(alignment: .bottom) {
                 if isLoadingMore {
-                    HStack { Spacer(); ProgressView(); Spacer() }
-                        .padding(.vertical, 14)
+                    ProgressView()
+                        .padding(10)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.bottom, 14)
                 } else if isEnd {
-                    HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
-                        .padding(.vertical, 14)
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(10)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.bottom, 14)
                 }
-            }
-            .onAppear {
-                prefetchCovers(from: Array(items.prefix(18)))
-            }
-            .onChange(of: items.count) { _ in
-                prefetchCovers(from: Array(items.suffix(18)))
-            }
-            .transaction { transaction in
-                transaction.animation = nil
             }
         }
     }
@@ -77,7 +74,7 @@ struct RelatedVideoList: View {
         )
     }
 
-    private func prefetchCovers(from items: [RelatedVideoItemDTO]) {
+    private func prefetchCovers(_ items: [RelatedVideoItemDTO]) {
         let urls = items.map(\.cover).filter { !$0.isEmpty }
         guard !urls.isEmpty else { return }
         CoverImagePrefetcher.shared.prefetch(

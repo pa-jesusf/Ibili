@@ -17,7 +17,11 @@ final class VideoDetailViewModel: ObservableObject {
     private(set) var aid: Int64 = 0
     private(set) var bvid: String = ""
     private var feedFreshIdx: Int64 = 1
-    private var seenAids: Set<Int64> = []
+    private var detailGeneration: UInt64 = 0
+    private let relatedStore = StablePagedStore<FeedStableIdentity, RelatedVideoItemDTO> {
+        let id = FeedStableIdentity($0)
+        return id.isValid ? id : nil
+    }
 
     /// Best-effort initial fill from the home/search list — lets us
     /// render title/cover before the network round-trip lands.
@@ -58,14 +62,15 @@ final class VideoDetailViewModel: ObservableObject {
         guard !isLoadingMoreRelated, !relatedIsEnd else { return }
         isLoadingMoreRelated = true
         defer { isLoadingMoreRelated = false }
-        var fresh: [RelatedVideoItemDTO] = []
         var reachedEnd = false
         var nextIdx = feedFreshIdx
+        let generation = relatedStore.generation
+        var appendedAny = false
 
         // Home feed pages can contain duplicates of the current detail or
         // previously appended rows. Keep walking a few pages so pagination
         // never appears to stall just because one page was all duplicates.
-        for _ in 0..<3 where fresh.isEmpty {
+        for _ in 0..<3 {
             let idx = nextIdx
             let page = await Task.detached(priority: .utility) {
                 (try? CoreClient.shared.feedHome(idx: idx, ps: 12, source: "web"))
@@ -79,19 +84,26 @@ final class VideoDetailViewModel: ObservableObject {
                 reachedEnd = true
                 break
             }
-            fresh.append(contentsOf: page.items.compactMap(feedItemToFreshRelated(_:)))
+            let incoming = page.items.compactMap(feedItemToFreshRelated(_:))
+            let fresh = relatedStore.append(incoming, generation: generation)
+            if !fresh.isEmpty {
+                appendedAny = true
+                break
+            }
         }
 
+        guard relatedStore.accepts(generation: generation) else { return }
         feedFreshIdx = nextIdx
-        if fresh.isEmpty {
+        related = relatedStore.items
+        if !appendedAny {
             relatedIsEnd = reachedEnd
-            return
         }
-        related.append(contentsOf: fresh)
     }
 
     private func loadDetail(aid: Int64, bvid: String, force: Bool) async {
         guard force || self.view == nil || self.aid != aid || self.bvid != bvid else { return }
+        detailGeneration &+= 1
+        let generation = detailGeneration
         let hadVisibleContent = view != nil || !related.isEmpty
         self.aid = aid
         self.bvid = bvid
@@ -101,53 +113,51 @@ final class VideoDetailViewModel: ObservableObject {
             let v = try await Task.detached(priority: .userInitiated) {
                 try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
             }.value
+            guard generation == detailGeneration else { return }
             let resolvedBvid = v.bvid.isEmpty ? bvid : v.bvid
             self.aid = v.aid
             self.bvid = resolvedBvid
             self.view = v
-            let fetchedRelated = await Task.detached(priority: .utility) {
-                (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
-            }.value
-            self.related = self.uniqueRelatedItems(fetchedRelated, currentAid: v.aid)
-            self.seenAids = Set(self.related.map { $0.aid })
-            self.seenAids.insert(v.aid)
+            let relatedGeneration = relatedStore.reset()
+            self.related = []
             self.relatedIsEnd = false
             self.feedFreshIdx = 1
-            AppLog.info("video", force ? "视频详情刷新成功" : "视频详情加载成功", metadata: [
+            self.isLoading = false
+            AppLog.info("video", force ? "视频详情首屏刷新成功" : "视频详情首屏加载成功", metadata: [
                 "aid": String(v.aid),
                 "bvid": resolvedBvid,
                 "tags": String(v.tags.count),
                 "pages": String(v.pages.count),
             ])
+
+            let fetchedRelated = await Task.detached(priority: .utility) {
+                (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
+            }.value
+            guard generation == detailGeneration else { return }
+            let initialRelated = fetchedRelated.filter { $0.aid > 0 && $0.aid != v.aid }
+            _ = relatedStore.replace(with: initialRelated, generation: relatedGeneration)
+            self.related = relatedStore.items
+            AppLog.info("video", "视频相关列表加载成功", metadata: [
+                "aid": String(v.aid),
+                "bvid": resolvedBvid,
+                "count": String(self.related.count),
+            ])
         } catch {
+            guard generation == detailGeneration else { return }
             self.errorText = (error as NSError).localizedDescription
             if !hadVisibleContent {
                 self.related = []
             }
+            self.isLoading = false
             AppLog.error("video", force ? "视频详情刷新失败" : "视频详情加载失败", error: error, metadata: [
                 "aid": String(aid),
                 "bvid": bvid,
             ])
         }
-        isLoading = false
-    }
-
-    private func uniqueRelatedItems(_ incoming: [RelatedVideoItemDTO], currentAid: Int64) -> [RelatedVideoItemDTO] {
-        var seen = Set<Int64>()
-        seen.insert(currentAid)
-        var result: [RelatedVideoItemDTO] = []
-        result.reserveCapacity(incoming.count)
-        for item in incoming {
-            guard item.aid > 0 else { continue }
-            guard seen.insert(item.aid).inserted else { continue }
-            result.append(item)
-        }
-        return result
     }
 
     private func feedItemToFreshRelated(_ item: FeedItemDTO) -> RelatedVideoItemDTO? {
         guard item.aid > 0, item.aid != aid else { return nil }
-        guard seenAids.insert(item.aid).inserted else { return nil }
         return RelatedVideoItemDTO(
             aid: item.aid,
             bvid: item.bvid,

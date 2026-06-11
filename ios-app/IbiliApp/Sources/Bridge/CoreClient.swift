@@ -440,6 +440,7 @@ public final class CoreClient: @unchecked Sendable {
     public func animeDanmakuFetch(
         appID: String,
         appSecret: String,
+        subjectID: Int64,
         subjectPrimaryName: String,
         subjectNames: [String],
         subjectAirDate: String,
@@ -450,6 +451,7 @@ public final class CoreClient: @unchecked Sendable {
         struct A: Encodable {
             let app_id: String
             let app_secret: String
+            let subject_id: Int64
             let subject_primary_name: String
             let subject_names: [String]
             let subject_air_date: String
@@ -462,6 +464,7 @@ public final class CoreClient: @unchecked Sendable {
             args: A(
                 app_id: appID,
                 app_secret: appSecret,
+                subject_id: subjectID,
                 subject_primary_name: subjectPrimaryName,
                 subject_names: subjectNames,
                 subject_air_date: subjectAirDate,

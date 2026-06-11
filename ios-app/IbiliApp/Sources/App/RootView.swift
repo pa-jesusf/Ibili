@@ -440,7 +440,6 @@ private struct DeepLinkPlayerHost: View {
     /// "frozen" lag the user complained about.
     private func dismiss() {
         if !router.path.isEmpty {
-            prepareRouteForDismissal(router.path.last)
             router.path.removeLast()
             return
         }
@@ -529,19 +528,6 @@ private struct DeepLinkPlayerHost: View {
         case .animePlayer(let animeRoute):
             AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
         case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
-            break
-        }
-    }
-
-    private func prepareRouteForDismissal(_ route: DeepLinkRouter.SessionRoute?) {
-        switch route {
-        case .player(let playerRoute):
-            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
-        case .live(let liveRoute):
-            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .animePlayer(let animeRoute):
-            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, nil:
             break
         }
     }
@@ -787,7 +773,6 @@ private struct DeepLinkSplitHost: View {
 
     private func dismiss() {
         if !router.path.isEmpty {
-            prepareRouteForDismissal(router.path.last)
             router.path.removeLast()
             return
         }
@@ -825,19 +810,6 @@ private struct DeepLinkSplitHost: View {
         case .animePlayer(let animeRoute):
             AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
         case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
-            break
-        }
-    }
-
-    private func prepareRouteForDismissal(_ route: DeepLinkRouter.SessionRoute?) {
-        switch route {
-        case .player(let playerRoute):
-            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
-        case .live(let liveRoute):
-            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .animePlayer(let animeRoute):
-            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, .animeSubject, nil:
             break
         }
     }
@@ -1045,6 +1017,7 @@ private extension UIView {
 
 struct MainTabView: View {
     @State private var selectedTab: MainTab = .home
+    @StateObject private var tabReselect = TabReselectSignals()
     @EnvironmentObject private var settings: AppSettings
 
     var body: some View {
@@ -1085,6 +1058,8 @@ struct MainTabView: View {
             }
             .tint(IbiliTheme.accent)
             .tabViewStyle(.tabBarOnly)
+            .environmentObject(tabReselect)
+            .background(tabReselectObserver(order: [.home, .dynamic] + (settings.animeTrackingEnabled ? [.anime] : []) + [.profile, .search]))
         } else {
             TabView(selection: $selectedTab) {
                 NavigationStack {
@@ -1118,7 +1093,23 @@ struct MainTabView: View {
                 .tag(MainTab.profile)
             }
             .tint(IbiliTheme.accent)
+            .environmentObject(tabReselect)
+            .background(tabReselectObserver(order: [.home, .dynamic] + (settings.animeTrackingEnabled ? [.anime] : []) + [.search, .profile]))
         }
+    }
+
+    private func tabReselectObserver(order: [MainTab]) -> some View {
+        TabBarReselectObserver(
+            selectedTab: selectedTab,
+            orderedTabs: order,
+            onReselect: { tab in
+                if tab == .home {
+                    tabReselect.triggerHome()
+                }
+            }
+        )
+        .frame(width: 0, height: 0)
+        .allowsHitTesting(false)
     }
 
     private enum MainTab: Hashable {

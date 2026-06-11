@@ -116,7 +116,7 @@ enum MediaCDNService: String, CaseIterable, Identifiable, Sendable {
 
 /// Per-screen visibility config for video card meta. Pure value type so
 /// it can be diffed cheaply by SwiftUI when passed into card views.
-struct FeedCardMetaConfig: Equatable {
+struct FeedCardMetaConfig: Equatable, Hashable {
     var showPlay: Bool
     var showDuration: Bool
     var showPubdate: Bool

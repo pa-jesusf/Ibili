@@ -804,6 +804,17 @@ final class PlayerViewModel: ObservableObject {
         PlayerNowPlayingCoordinator.shared.refresh(for: self)
     }
 
+    func prepareForStackBackground() {
+        guard !isClosing, !behaviorState.pictureInPictureIsActive else { return }
+        let status = player?.timeControlStatus
+        let playerNeedsPause = (player?.rate ?? 0) > 0 || (status != nil && status != .paused)
+        guard behaviorState.interfaceIsActive || playerNeedsPause || isTemporarySpeedBoostActive else { return }
+        AppLog.debug("player", "播放器进入导航栈后台", metadata: playbackDebugMetadata(extra: [
+            "reason": "route-not-foreground",
+        ]))
+        handle(.interfaceDeactivated)
+    }
+
     private static func prefersLandscapeFullscreen(for source: PlayUrlDTO) -> Bool {
         guard let width = source.videoWidth,
               let height = source.videoHeight,

@@ -273,7 +273,8 @@ final class AnimeMediaFetchSession {
     }
 
     private func emitSnapshot() {
-        let candidates = Self.sortedCandidates(Array(candidatesByID.values))
+        let preferred = UserDefaults.standard.string(forKey: preferredSourceKey)
+        let candidates = Self.sortedCandidates(Array(candidatesByID.values), preferredSourceID: preferred)
         let sourceOrder = (biliSourceEnabled ? [Self.biliSource.id] : []) + orderedSources().map(\.id)
         let reports = Self.sortedReports(Array(reportsBySourceID.values), sourceOrder: sourceOrder)
         let diagnostics = AnimeMediaFetchDiagnosticsDTO(
@@ -339,8 +340,13 @@ final class AnimeMediaFetchSession {
         }
     }
 
-    private static func sortedCandidates(_ candidates: [AnimeMediaCandidateDTO]) -> [AnimeMediaCandidateDTO] {
+    private static func sortedCandidates(_ candidates: [AnimeMediaCandidateDTO], preferredSourceID: String?) -> [AnimeMediaCandidateDTO] {
         candidates.sorted {
+            if let preferredSourceID {
+                let leftPreferred = $0.sourceID == preferredSourceID
+                let rightPreferred = $1.sourceID == preferredSourceID
+                if leftPreferred != rightPreferred { return leftPreferred }
+            }
             if $0.isPlayableOrSniffable != $1.isPlayableOrSniffable { return $0.isPlayableOrSniffable && !$1.isPlayableOrSniffable }
             let leftKind = kindPriority($0.kind)
             let rightKind = kindPriority($1.kind)

@@ -10,6 +10,11 @@ import Combine
 /// active, so jumps work uniformly from comments / descriptions / etc.
 @MainActor
 final class DeepLinkRouter: ObservableObject {
+    private static let maxPushedPlayerRoutes = 3
+    private static let maxPushedLiveRoutes = 2
+    private static let maxPushedAnimePlayerRoutes = 3
+    private static let maxSessionPathDepth = 12
+
     struct PlayerRoute: Hashable, Identifiable {
         let id: UUID
         var item: FeedItemDTO
@@ -332,7 +337,7 @@ final class DeepLinkRouter: ObservableObject {
             if revealCurrentPlayerIfNeeded(matching: item, offlineOnly: offlineOnly) {
                 return
             }
-            path.append(.player(PlayerRoute(item: item, offlineOnly: offlineOnly)))
+            appendRoute(.player(PlayerRoute(item: item, offlineOnly: offlineOnly)))
         case .replaceCurrent:
             replaceCurrentPlayer(with: item, offlineOnly: offlineOnly)
         }
@@ -359,7 +364,7 @@ final class DeepLinkRouter: ObservableObject {
             if revealCurrentLiveIfNeeded(roomID: roomID) {
                 return
             }
-            path.append(.live(route))
+            appendRoute(.live(route))
         case .replaceCurrent:
             replaceCurrentLive(with: route)
         }
@@ -380,7 +385,7 @@ final class DeepLinkRouter: ObservableObject {
 
     func openUserSpace(mid: Int64) {
         guard pending != nil, mid > 0 else { return }
-        path.append(.userSpace(UserSpaceRoute(mid: mid)))
+        appendRoute(.userSpace(UserSpaceRoute(mid: mid)))
     }
 
     func selectUserSpace(mid: Int64) {
@@ -393,7 +398,7 @@ final class DeepLinkRouter: ObservableObject {
 
     func openDynamicDetail(_ item: DynamicItemDTO) {
         guard pending != nil else { return }
-        path.append(.dynamicDetail(DynamicDetailRoute(item: item)))
+        appendRoute(.dynamicDetail(DynamicDetailRoute(item: item)))
     }
 
     func selectDynamicDetail(_ item: DynamicItemDTO) {
@@ -414,7 +419,7 @@ final class DeepLinkRouter: ObservableObject {
             pending = .article(route)
             return
         }
-        path.append(.article(route))
+        appendRoute(.article(route))
     }
 
     func selectArticle(id: String, kind: String = "read") {
@@ -437,7 +442,7 @@ final class DeepLinkRouter: ObservableObject {
             pending = .search(route)
             return
         }
-        path.append(.search(route))
+        appendRoute(.search(route))
     }
 
     func selectSearch(keyword: String) {
@@ -464,7 +469,7 @@ final class DeepLinkRouter: ObservableObject {
         }
         switch mode {
         case .push:
-            path.append(.animeSubject(route))
+            appendRoute(.animeSubject(route))
         case .replaceCurrent:
             replaceCurrentGeneric(with: .animeSubject(route), root: .animeSubject(route))
         }
@@ -488,7 +493,7 @@ final class DeepLinkRouter: ObservableObject {
         }
         switch mode {
         case .push:
-            path.append(.animePlayer(route))
+            appendRoute(.animePlayer(route))
         case .replaceCurrent:
             replaceCurrentGeneric(with: .animePlayer(route), root: .animePlayer(route))
         }
@@ -511,7 +516,7 @@ final class DeepLinkRouter: ObservableObject {
         }
         switch mode {
         case .push:
-            path.append(.animePlayer(route))
+            appendRoute(.animePlayer(route))
         case .replaceCurrent:
             replaceCurrentGeneric(with: .animePlayer(route), root: .animePlayer(route))
         }
@@ -572,6 +577,7 @@ final class DeepLinkRouter: ObservableObject {
         isClosingRootSession = false
         pending = snapshot.pending
         path = snapshot.path
+        prunePathForPerformance()
     }
 
     func beginRootSessionDismissal() {
@@ -811,6 +817,65 @@ final class DeepLinkRouter: ObservableObject {
         } else {
             pending = root
         }
+        prunePathForPerformance()
+    }
+
+    private func appendRoute(_ route: SessionRoute) {
+        path.append(route)
+        prunePathForPerformance()
+    }
+
+    private func prunePathForPerformance() {
+        pruneExcessRoutes(
+            label: "player",
+            maximum: Self.maxPushedPlayerRoutes,
+            routeID: { $0.playerRoute?.id }
+        )
+        pruneExcessRoutes(
+            label: "live",
+            maximum: Self.maxPushedLiveRoutes,
+            routeID: { $0.liveRoute?.id }
+        )
+        pruneExcessRoutes(
+            label: "animePlayer",
+            maximum: Self.maxPushedAnimePlayerRoutes,
+            routeID: { $0.animePlayerRoute?.id }
+        )
+
+        guard path.count > Self.maxSessionPathDepth else { return }
+        let removeCount = path.count - Self.maxSessionPathDepth
+        let removedIDs = path.prefix(removeCount).map(\.id.uuidString).joined(separator: ",")
+        path.removeFirst(removeCount)
+        AppLog.info("router", "裁剪过长播放器导航栈", metadata: [
+            "removed": String(removeCount),
+            "remaining": String(path.count),
+            "removedRouteIDs": removedIDs,
+        ])
+    }
+
+    private func pruneExcessRoutes(
+        label: String,
+        maximum: Int,
+        routeID: (SessionRoute) -> UUID?
+    ) {
+        guard maximum >= 0 else { return }
+        let routeIndices = path.indices.filter { routeID(path[$0]) != nil }
+        let overflow = routeIndices.count - maximum
+        guard overflow > 0 else { return }
+        let removeOffsets = Set(routeIndices.prefix(overflow))
+        let removedIDs = routeIndices
+            .prefix(overflow)
+            .compactMap { routeID(path[$0])?.uuidString }
+            .joined(separator: ",")
+        path = path.enumerated()
+            .filter { !removeOffsets.contains($0.offset) }
+            .map { $0.element }
+        AppLog.info("router", "裁剪播放器导航栈", metadata: [
+            "kind": label,
+            "removed": String(overflow),
+            "remaining": String(routeIndices.count - overflow),
+            "removedRouteIDs": removedIDs,
+        ])
     }
 }
 

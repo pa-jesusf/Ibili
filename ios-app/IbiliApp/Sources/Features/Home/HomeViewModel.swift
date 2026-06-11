@@ -27,6 +27,10 @@ final class HomeViewModel: ObservableObject {
     private var idx: Int64 = 0
     private var page: Int64 = 1
     private var loadedRecommendSource: HomeRecommendSource?
+    private let store = StablePagedStore<FeedStableIdentity, FeedItemDTO> {
+        let id = FeedStableIdentity($0)
+        return id.isValid ? id : nil
+    }
 
     init(section: HomeFeedSection) {
         self.section = section
@@ -52,15 +56,18 @@ final class HomeViewModel: ObservableObject {
 
     func hideItem(aid: Int64) {
         guard aid > 0 else { return }
-        items.removeAll { $0.aid == aid }
+        store.remove { $0.aid == aid }
+        items = store.items
     }
 
     func hideItems(fromOwner mid: Int64) {
         guard mid > 0 else { return }
-        items.removeAll { $0.ownerMID == mid }
+        store.remove { $0.ownerMID == mid }
+        items = store.items
     }
 
     private func load(reset: Bool, recommendSource: HomeRecommendSource) async {
+        let requestGeneration = reset ? store.reset(preservingItems: !items.isEmpty) : store.generation
         isLoading = true
         errorText = nil
         if reset {
@@ -71,17 +78,18 @@ final class HomeViewModel: ObservableObject {
 
         switch section {
         case .recommend:
-            await loadRecommend(reset: reset, source: recommendSource)
+            await loadRecommend(reset: reset, source: recommendSource, generation: requestGeneration)
         case .hot:
-            await loadHot(reset: reset)
+            await loadHot(reset: reset, generation: requestGeneration)
         case .live:
             break
         }
 
+        guard store.accepts(generation: requestGeneration) else { return }
         isLoading = false
     }
 
-    private func loadRecommend(reset: Bool, source: HomeRecommendSource) async {
+    private func loadRecommend(reset: Bool, source: HomeRecommendSource, generation requestGeneration: UInt64) async {
         let targetIdx: Int64 = {
             switch source {
             case .web:
@@ -100,9 +108,11 @@ final class HomeViewModel: ObservableObject {
             let response = try await Task.detached {
                 try CoreClient.shared.feedHome(idx: targetIdx, ps: 20, source: sourceRaw)
             }.value
-            let fresh = mergeFresh(response.items, reset: reset)
-            if reset { items = fresh }
-            else { items.append(contentsOf: fresh) }
+            guard store.accepts(generation: requestGeneration) else { return }
+            let fresh = reset
+                ? store.replace(with: response.items, generation: requestGeneration)
+                : store.append(response.items, generation: requestGeneration)
+            items = store.items
             switch source {
             case .web:
                 page = targetIdx + 1
@@ -111,6 +121,7 @@ final class HomeViewModel: ObservableObject {
             }
             loadedRecommendSource = source
             isEnd = fresh.isEmpty
+            store.markEnd(isEnd, generation: requestGeneration)
             AppLog.info("home", reset ? "首页推荐加载成功" : "首页推荐追加成功", metadata: [
                 "count": String(fresh.count),
                 "nextIdx": String(source == .app ? idx : page),
@@ -127,7 +138,7 @@ final class HomeViewModel: ObservableObject {
         }
     }
 
-    private func loadHot(reset: Bool) async {
+    private func loadHot(reset: Bool, generation requestGeneration: UInt64) async {
         let targetPage: Int64 = reset ? 1 : page
         AppLog.info("home", reset ? "开始加载首页热门" : "开始加载更多首页热门", metadata: [
             "page": String(targetPage),
@@ -137,11 +148,14 @@ final class HomeViewModel: ObservableObject {
             let page = try await Task.detached {
                 try CoreClient.shared.feedPopular(pn: targetPage, ps: 20)
             }.value
-            let fresh = mergeFresh(page.items, reset: reset)
-            if reset { items = fresh }
-            else { items.append(contentsOf: fresh) }
+            guard store.accepts(generation: requestGeneration) else { return }
+            let fresh = reset
+                ? store.replace(with: page.items, generation: requestGeneration)
+                : store.append(page.items, generation: requestGeneration)
+            items = store.items
             self.page = targetPage + 1
             isEnd = fresh.isEmpty
+            store.markEnd(isEnd, generation: requestGeneration)
             AppLog.info("home", reset ? "首页热门加载成功" : "首页热门追加成功", metadata: [
                 "count": String(fresh.count),
                 "nextPage": String(self.page),
@@ -156,11 +170,6 @@ final class HomeViewModel: ObservableObject {
         }
     }
 
-    private func mergeFresh(_ incoming: [FeedItemDTO], reset: Bool) -> [FeedItemDTO] {
-        guard !reset else { return incoming }
-        let existing = Set(items.map(FeedIdentity.init))
-        return incoming.filter { !existing.contains(FeedIdentity($0)) }
-    }
 }
 
 @MainActor
@@ -171,6 +180,10 @@ final class LiveHomeViewModel: ObservableObject {
     @Published var errorText: String?
 
     private var page: Int64 = 1
+    private let store = StablePagedStore<FeedStableIdentity, LiveFeedItemDTO> {
+        let id = FeedStableIdentity($0)
+        return id.isValid ? id : nil
+    }
 
     func loadInitial() async {
         guard items.isEmpty else { return }
@@ -187,6 +200,7 @@ final class LiveHomeViewModel: ObservableObject {
     }
 
     private func load(reset: Bool) async {
+        let generation = reset ? store.reset(preservingItems: !items.isEmpty) : store.generation
         isLoading = true
         errorText = nil
         if reset {
@@ -198,36 +212,19 @@ final class LiveHomeViewModel: ObservableObject {
             let response = try await Task.detached(priority: .userInitiated) {
                 try CoreClient.shared.liveFeed(page: targetPage)
             }.value
-            let fresh = mergeFresh(response.items, reset: reset)
-            if reset {
-                items = fresh
-            } else {
-                items.append(contentsOf: fresh)
-            }
+            guard store.accepts(generation: generation) else { return }
+            let fresh = reset
+                ? store.replace(with: response.items, generation: generation)
+                : store.append(response.items, generation: generation)
+            items = store.items
             page = targetPage + 1
             isEnd = !response.hasMore || fresh.isEmpty
+            store.markEnd(isEnd, generation: generation)
         } catch {
             errorText = error.localizedDescription
             isEnd = false
         }
+        guard store.accepts(generation: generation) else { return }
         isLoading = false
-    }
-
-    private func mergeFresh(_ incoming: [LiveFeedItemDTO], reset: Bool) -> [LiveFeedItemDTO] {
-        guard !reset else { return incoming }
-        let existing = Set(items.map(\.roomID))
-        return incoming.filter { !existing.contains($0.roomID) }
-    }
-}
-
-private struct FeedIdentity: Hashable {
-    let aid: Int64
-    let bvid: String
-    let cid: Int64
-
-    init(_ item: FeedItemDTO) {
-        aid = item.aid
-        bvid = item.bvid
-        cid = item.cid
     }
 }

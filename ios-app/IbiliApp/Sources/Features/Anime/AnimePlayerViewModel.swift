@@ -234,6 +234,14 @@ final class AnimePlayerViewModel: ObservableObject {
         ])
         let playable = candidates.filter(shouldAutoAttemptCandidate(_:))
         if currentPlay == nil, !isAutoSelecting, !playable.isEmpty {
+            if shouldWaitForPreferredSource(playableCandidates: playable, snapshot: snapshot, route: route) {
+                AppLog.debug("anime", "追番自动选源等待偏好源", metadata: [
+                    "subjectID": String(route.subject.id),
+                    "episodeID": String(route.episode.id),
+                    "preferredSourceID": preferredSourceID(for: route) ?? "",
+                ])
+                return
+            }
             isAutoSelecting = true
             Task { @MainActor in
                 let didStart = await startFirstPlayable(from: playable, route: route, generation: generation)
@@ -535,6 +543,25 @@ final class AnimePlayerViewModel: ObservableObject {
         return false
     }
 
+    private func shouldWaitForPreferredSource(
+        playableCandidates: [AnimeMediaCandidateDTO],
+        snapshot: AnimeMediaSessionSnapshotDTO,
+        route: DeepLinkRouter.AnimePlayerRoute
+    ) -> Bool {
+        guard let preferred = preferredSourceID(for: route), !preferred.isEmpty else { return false }
+        if playableCandidates.contains(where: { $0.sourceID == preferred }) {
+            return false
+        }
+        guard let report = snapshot.diagnostics.sourceReports.first(where: { $0.sourceID == preferred }) else {
+            return false
+        }
+        return report.status == "pending" || report.status == "searching"
+    }
+
+    private func preferredSourceID(for route: DeepLinkRouter.AnimePlayerRoute) -> String? {
+        UserDefaults.standard.string(forKey: "ibili.anime.preferredSource.\(route.subject.id)")
+    }
+
     private func resolveCandidate(
         _ candidate: AnimeMediaCandidateDTO,
         route: DeepLinkRouter.AnimePlayerRoute
@@ -667,6 +694,7 @@ final class AnimePlayerViewModel: ObservableObject {
                     try CoreClient.shared.animeDanmakuFetch(
                         appID: AnimeDanmakuConfig.dandanplayAppID,
                         appSecret: AnimeDanmakuConfig.dandanplayAppSecret,
+                        subjectID: route.subject.id,
                         subjectPrimaryName: route.subject.displayTitle,
                         subjectNames: names,
                         subjectAirDate: route.subject.date,

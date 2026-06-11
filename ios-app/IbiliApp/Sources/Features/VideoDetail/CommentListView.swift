@@ -51,6 +51,8 @@ struct CommentListView: View {
     var kind: Int32 = 1
     @StateObject private var ownedViewModel = CommentListViewModel()
     private let providedViewModel: CommentListViewModel?
+    private let usesVirtualizedList: Bool
+    private let onScrollOffsetChange: ((CGFloat) -> Void)?
     @State private var thread: ReplyItemDTO?
     @State private var composer: CommentComposerContext?
     @State private var userSpaceMID: Int64?
@@ -60,10 +62,14 @@ struct CommentListView: View {
 
     init(oid: Int64,
          kind: Int32 = 1,
-         viewModel: CommentListViewModel? = nil) {
+         viewModel: CommentListViewModel? = nil,
+         usesVirtualizedList: Bool = false,
+         onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.oid = oid
         self.kind = kind
         self.providedViewModel = viewModel
+        self.usesVirtualizedList = usesVirtualizedList
+        self.onScrollOffsetChange = onScrollOffsetChange
     }
 
     private var currentViewModel: CommentListViewModel {
@@ -80,7 +86,9 @@ struct CommentListView: View {
                     thread: $thread,
                     onCompose: { composer = .topLevel },
                     onReply: { root, parent in composer = .reply(root: root, parent: parent) },
-                    onOpenUser: openUserSpace
+                    onOpenUser: openUserSpace,
+                    usesVirtualizedList: usesVirtualizedList,
+                    onScrollOffsetChange: onScrollOffsetChange
                 )
             } else {
                 CommentListContent(
@@ -90,7 +98,9 @@ struct CommentListView: View {
                     thread: $thread,
                     onCompose: { composer = .topLevel },
                     onReply: { root, parent in composer = .reply(root: root, parent: parent) },
-                    onOpenUser: openUserSpace
+                    onOpenUser: openUserSpace,
+                    usesVirtualizedList: usesVirtualizedList,
+                    onScrollOffsetChange: onScrollOffsetChange
                 )
             }
         }
@@ -166,11 +176,61 @@ private struct CommentListContent: View {
     let onCompose: () -> Void
     let onReply: (ReplyItemDTO, ReplyItemDTO) -> Void
     let onOpenUser: (Int64) -> Void
+    let usesVirtualizedList: Bool
+    let onScrollOffsetChange: ((CGFloat) -> Void)?
     @EnvironmentObject private var session: AppSession
 
     var body: some View {
+        Group {
+            if usesVirtualizedList {
+                virtualizedContent
+            } else {
+                legacyContent
+            }
+        }
+        .onAppear {
+            viewModel.bind(oid: oid, kind: kind)
+            prefetchCommentAvatars()
+        }
+        .onChange(of: oid) { newValue in
+            viewModel.bind(oid: newValue, kind: kind)
+        }
+        .onChange(of: kind) { newValue in
+            viewModel.bind(oid: oid, kind: newValue)
+        }
+        .onChange(of: viewModel.items.count) { _ in
+            prefetchCommentAvatars()
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+
+    private var virtualizedContent: some View {
+        CommentCollectionView(
+            rows: commentRows,
+            upperMid: viewModel.upperMid,
+            isLoggedIn: session.isLoggedIn,
+            isLoading: viewModel.isLoading,
+            onSetSort: { viewModel.sort = $0 },
+            onCompose: { if session.isLoggedIn { onCompose() } },
+            onLike: { item in Task { await viewModel.toggleLike(rpid: item.rpid) } },
+            onReply: { root, parent in
+                if session.isLoggedIn {
+                    onReply(root, parent)
+                }
+            },
+            onOpenUser: onOpenUser,
+            onOpenThread: { thread = $0 },
+            onReachEnd: { Task { await viewModel.loadMore() } },
+            onRefresh: { Task { await viewModel.refresh(oid: oid, kind: kind) } },
+            onScrollOffsetChange: { onScrollOffsetChange?($0) }
+        )
+    }
+
+    private var legacyContent: some View {
         let prefetchTriggerID = viewModel.prefetchTriggerID
-        LazyVStack(alignment: .leading, spacing: 0) {
+        return LazyVStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("评论")
                     .font(.headline)
@@ -250,22 +310,25 @@ private struct CommentListContent: View {
                     .padding(.vertical, 30)
             }
         }
-        .onAppear {
-            viewModel.bind(oid: oid, kind: kind)
-            prefetchCommentAvatars()
+    }
+
+    private var commentRows: [CommentCollectionRow] {
+        var rows: [CommentCollectionRow] = [
+            .header(total: viewModel.total, sort: viewModel.sort),
+            .composer(isLoggedIn: session.isLoggedIn),
+        ]
+        if let top = viewModel.top {
+            rows.append(.pinned(top))
         }
-        .onChange(of: oid) { newValue in
-            viewModel.bind(oid: newValue, kind: kind)
+        rows.append(contentsOf: viewModel.items.map { .comment($0) })
+        if viewModel.isLoading {
+            rows.append(.loading)
+        } else if viewModel.isEnd, !viewModel.items.isEmpty {
+            rows.append(.end)
+        } else if viewModel.items.isEmpty {
+            rows.append(.empty)
         }
-        .onChange(of: kind) { newValue in
-            viewModel.bind(oid: oid, kind: newValue)
-        }
-        .onChange(of: viewModel.items.count) { _ in
-            prefetchCommentAvatars()
-        }
-        .transaction { transaction in
-            transaction.animation = nil
-        }
+        return rows
     }
 
     private func prefetchCommentAvatars() {
@@ -280,6 +343,301 @@ private struct CommentListContent: View {
             targetPointSize: CGSize(width: 64, height: 64),
             quality: 75
         )
+    }
+}
+
+private enum CommentCollectionRow: Hashable, Identifiable {
+    case header(total: Int64, sort: Int32)
+    case composer(isLoggedIn: Bool)
+    case pinned(ReplyItemDTO)
+    case comment(ReplyItemDTO)
+    case loading
+    case end
+    case empty
+
+    var id: String {
+        switch self {
+        case .header:
+            return "header"
+        case .composer:
+            return "composer"
+        case .pinned(let item):
+            return "pinned-\(item.rpid)"
+        case .comment(let item):
+            return "comment-\(item.rpid)"
+        case .loading:
+            return "loading"
+        case .end:
+            return "end"
+        case .empty:
+            return "empty"
+        }
+    }
+
+    var replyItem: ReplyItemDTO? {
+        switch self {
+        case .pinned(let item), .comment(let item):
+            return item
+        default:
+            return nil
+        }
+    }
+}
+
+private struct CommentCollectionView: UIViewRepresentable {
+    let rows: [CommentCollectionRow]
+    let upperMid: Int64
+    let isLoggedIn: Bool
+    let isLoading: Bool
+    let onSetSort: (Int32) -> Void
+    let onCompose: () -> Void
+    let onLike: (ReplyItemDTO) -> Void
+    let onReply: (ReplyItemDTO, ReplyItemDTO) -> Void
+    let onOpenUser: (Int64) -> Void
+    let onOpenThread: (ReplyItemDTO) -> Void
+    let onReachEnd: () -> Void
+    let onRefresh: () -> Void
+    let onScrollOffsetChange: (CGFloat) -> Void
+
+    @EnvironmentObject var settings: AppSettings
+    @Environment(\.commentViewportHeight) var commentViewportHeight
+
+    func makeUIView(context: Context) -> UICollectionView {
+        let layout = UICollectionViewFlowLayout()
+        layout.minimumLineSpacing = 0
+        layout.minimumInteritemSpacing = 0
+        layout.sectionInset = UIEdgeInsets(top: 12, left: 16, bottom: 96, right: 16)
+        layout.estimatedItemSize = UICollectionViewFlowLayout.automaticSize
+
+        let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView.backgroundColor = .clear
+        collectionView.alwaysBounceVertical = true
+        collectionView.delegate = context.coordinator
+        collectionView.dataSource = context.coordinator
+        collectionView.prefetchDataSource = context.coordinator
+        collectionView.keyboardDismissMode = .interactive
+        collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: CommentCollectionCoordinator.cellID)
+        collectionView.refreshControl = context.coordinator.makeRefreshControl()
+        context.coordinator.collectionView = collectionView
+        context.coordinator.apply(parent: self, forceReload: true)
+        return collectionView
+    }
+
+    func updateUIView(_ collectionView: UICollectionView, context: Context) {
+        context.coordinator.apply(parent: self, forceReload: false)
+        if !isLoading {
+            collectionView.refreshControl?.endRefreshing()
+        }
+    }
+
+    func makeCoordinator() -> CommentCollectionCoordinator {
+        CommentCollectionCoordinator(parent: self)
+    }
+}
+
+private final class CommentCollectionCoordinator: NSObject,
+                                                  UICollectionViewDataSource,
+                                                  UICollectionViewDelegateFlowLayout,
+                                                  UICollectionViewDataSourcePrefetching {
+    static let cellID = "CommentCollectionCell"
+
+    private var parent: CommentCollectionView
+    private var rows: [CommentCollectionRow] = []
+    private var lastWidth: CGFloat = 0
+    weak var collectionView: UICollectionView?
+
+    init(parent: CommentCollectionView) {
+        self.parent = parent
+        self.rows = parent.rows
+    }
+
+    func makeRefreshControl() -> UIRefreshControl {
+        let refresh = UIRefreshControl()
+        refresh.tintColor = UIColor(IbiliTheme.accent)
+        refresh.addTarget(self, action: #selector(refreshPulled), for: .valueChanged)
+        return refresh
+    }
+
+    func apply(parent: CommentCollectionView, forceReload: Bool) {
+        self.parent = parent
+        let newRows = parent.rows
+        guard forceReload || newRows != rows || abs((collectionView?.bounds.width ?? 0) - lastWidth) > 0.5 else { return }
+        rows = newRows
+        lastWidth = collectionView?.bounds.width ?? 0
+        collectionView?.reloadData()
+    }
+
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        rows.count
+    }
+
+    func collectionView(_ collectionView: UICollectionView,
+                        cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: Self.cellID, for: indexPath)
+        guard rows.indices.contains(indexPath.item) else { return cell }
+        let row = rows[indexPath.item]
+        let width = max(1, collectionView.bounds.width - collectionView.adjustedContentInset.left - collectionView.adjustedContentInset.right - 32)
+        cell.backgroundColor = .clear
+        cell.contentConfiguration = UIHostingConfiguration {
+            CommentCollectionRowView(
+                row: row,
+                upperMid: parent.upperMid,
+                isLoggedIn: parent.isLoggedIn,
+                onSetSort: parent.onSetSort,
+                onCompose: parent.onCompose,
+                onLike: parent.onLike,
+                onReply: parent.onReply,
+                onOpenUser: parent.onOpenUser,
+                onOpenThread: parent.onOpenThread
+            )
+            .environmentObject(parent.settings)
+            .environment(\.commentContentWidth, width)
+            .environment(\.commentViewportHeight, parent.commentViewportHeight)
+            .frame(width: width, alignment: .topLeading)
+        }
+        .margins(.all, 0)
+        return cell
+    }
+
+    func collectionView(_ collectionView: UICollectionView,
+                        willDisplay cell: UICollectionViewCell,
+                        forItemAt indexPath: IndexPath) {
+        guard rows.count > 4, indexPath.item >= rows.count - 4 else { return }
+        parent.onReachEnd()
+    }
+
+    func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        let avatarURLs = indexPaths.compactMap { indexPath -> String? in
+            guard rows.indices.contains(indexPath.item),
+                  let face = rows[indexPath.item].replyItem?.face,
+                  !face.isEmpty else { return nil }
+            return face
+        }
+        guard !avatarURLs.isEmpty else { return }
+        CoverImagePrefetcher.shared.prefetch(
+            avatarURLs,
+            targetPointSize: CGSize(width: 64, height: 64),
+            quality: 75
+        )
+    }
+
+    func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {}
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        parent.onScrollOffsetChange(scrollView.contentOffset.y)
+    }
+
+    @objc private func refreshPulled() {
+        parent.onRefresh()
+    }
+}
+
+private struct CommentCollectionRowView: View {
+    let row: CommentCollectionRow
+    let upperMid: Int64
+    let isLoggedIn: Bool
+    let onSetSort: (Int32) -> Void
+    let onCompose: () -> Void
+    let onLike: (ReplyItemDTO) -> Void
+    let onReply: (ReplyItemDTO, ReplyItemDTO) -> Void
+    let onOpenUser: (Int64) -> Void
+    let onOpenThread: (ReplyItemDTO) -> Void
+
+    var body: some View {
+        switch row {
+        case .header(let total, let sort):
+            HStack {
+                Text("评论")
+                    .font(.headline)
+                Text("\(total)")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                Spacer()
+                Menu {
+                    Button { onSetSort(1) } label: {
+                        Label("热门", systemImage: sort == 1 ? "checkmark" : "")
+                    }
+                    Button { onSetSort(2) } label: {
+                        Label("时间", systemImage: sort == 2 ? "checkmark" : "")
+                    }
+                } label: {
+                    HStack(spacing: 2) {
+                        Text(sort == 1 ? "热门" : "时间")
+                        Image(systemName: "chevron.down").imageScale(.small)
+                    }
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                }
+            }
+            .padding(.bottom, 8)
+
+        case .composer(let isLoggedIn):
+            Button {
+                if isLoggedIn { onCompose() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.pencil")
+                        .imageScale(.small)
+                        .foregroundStyle(IbiliTheme.accent)
+                    Text(isLoggedIn ? "发条友善的评论…" : "登录后即可发表评论")
+                        .font(.footnote)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Capsule().fill(IbiliTheme.surface))
+            }
+            .buttonStyle(.plain)
+            .disabled(!isLoggedIn)
+            .padding(.bottom, 12)
+
+        case .pinned(let item):
+            VStack(spacing: 0) {
+                CommentRow(
+                    item: item,
+                    upperMid: upperMid,
+                    isPinned: true,
+                    onLike: { onLike(item) },
+                    onReply: isLoggedIn ? { onReply(item, item) } : nil,
+                    onOpenUser: onOpenUser,
+                    onOpenThread: { onOpenThread(item) }
+                )
+                Divider()
+            }
+
+        case .comment(let item):
+            VStack(spacing: 0) {
+                CommentRow(
+                    item: item,
+                    upperMid: upperMid,
+                    isPinned: false,
+                    onLike: { onLike(item) },
+                    onReply: isLoggedIn ? { onReply(item, item) } : nil,
+                    onOpenUser: onOpenUser,
+                    onOpenThread: { onOpenThread(item) }
+                )
+                Divider()
+            }
+
+        case .loading:
+            HStack { Spacer(); ProgressView(); Spacer() }
+                .padding(.vertical, 12)
+
+        case .end:
+            HStack {
+                Spacer()
+                Text("已经到底了")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.vertical, 12)
+
+        case .empty:
+            emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
+                .padding(.vertical, 30)
+        }
     }
 }
 

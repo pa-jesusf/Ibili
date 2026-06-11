@@ -214,7 +214,44 @@ struct VideoDetailContent: View {
 
     @ViewBuilder
     private func tabScrollContent(for targetTab: Tab) -> some View {
-        if #available(iOS 18.0, *) {
+        if targetTab == .replies {
+            CommentListView(
+                oid: item.isPGC ? pgcCommentOID : commentOID,
+                kind: item.isPGC ? pgcCommentKind : 1,
+                viewModel: commentListViewModel,
+                usesVirtualizedList: true,
+                onScrollOffsetChange: { value in
+                    guard tab == targetTab else { return }
+                    handleDetailScrollOffsetChange(value)
+                }
+            )
+            .refreshable {
+                if item.isPGC {
+                    await commentListViewModel.refresh(oid: pgcCommentOID, kind: pgcCommentKind)
+                } else {
+                    await commentListViewModel.refresh(oid: commentOID)
+                }
+            }
+        } else if targetTab == .related, !item.isPGC {
+            RelatedVideoList(
+                items: vm.related,
+                isLoadingMore: vm.isLoadingMoreRelated,
+                isEnd: vm.relatedIsEnd,
+                onTap: { feedItem in
+                    router.open(feedItem)
+                },
+                onReachEnd: {
+                    Task { await vm.loadMoreRelated() }
+                },
+                onScrollOffsetChange: { value in
+                    guard tab == targetTab else { return }
+                    handleDetailScrollOffsetChange(value)
+                }
+            )
+            .refreshable {
+                await refreshMetadata()
+            }
+        } else if #available(iOS 18.0, *) {
             ScrollView {
                 InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
                     .frame(width: 0, height: 0)

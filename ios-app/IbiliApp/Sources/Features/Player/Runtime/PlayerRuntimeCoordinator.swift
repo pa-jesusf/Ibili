@@ -3,9 +3,11 @@ import Foundation
 @MainActor
 final class PlayerRuntimeCoordinator {
     static let shared = PlayerRuntimeCoordinator()
+    private static let prepareGrace: TimeInterval = 0.28
     private static let teardownGrace: TimeInterval = 2.0
 
     private var viewModels: [PlayerSessionID: PlayerViewModel] = [:]
+    private var pendingPreparationWork: [PlayerSessionID: DispatchWorkItem] = [:]
     private var pendingTeardownWork: [PlayerSessionID: DispatchWorkItem] = [:]
     private var pendingTeardownTokens: [PlayerSessionID: UUID] = [:]
     private var pictureInPictureRouteID: PlayerSessionID?
@@ -54,8 +56,15 @@ final class PlayerRuntimeCoordinator {
         if let pictureInPictureRouteID {
             retainedIDs.insert(pictureInPictureRouteID)
         }
+        let foregroundRouteID = stack.last?.id ?? root?.id
         for routeID in retainedIDs {
             cancelPendingTeardown(for: routeID)
+        }
+        for (routeID, viewModel) in viewModels
+        where retainedIDs.contains(routeID)
+            && routeID != foregroundRouteID
+            && routeID != pictureInPictureRouteID {
+            viewModel.prepareForStackBackground()
         }
         let staleSessions = viewModels.filter { !retainedIDs.contains($0.key) }
         for (routeID, viewModel) in staleSessions {
@@ -64,23 +73,35 @@ final class PlayerRuntimeCoordinator {
     }
 
     private func cancelPendingTeardown(for routeID: PlayerSessionID) {
+        pendingPreparationWork.removeValue(forKey: routeID)?.cancel()
         pendingTeardownWork.removeValue(forKey: routeID)?.cancel()
         pendingTeardownTokens.removeValue(forKey: routeID)
     }
 
     private func scheduleTeardown(for routeID: PlayerSessionID, viewModel: PlayerViewModel) {
         guard pendingTeardownWork[routeID] == nil else { return }
-        viewModel.prepareForDismissal()
         let token = UUID()
         pendingTeardownTokens[routeID] = token
+        let prepareWork = DispatchWorkItem { [weak self, weak viewModel] in
+            Task { @MainActor [weak self, weak viewModel] in
+                guard let self,
+                      self.pendingTeardownTokens[routeID] == token else { return }
+                self.pendingPreparationWork.removeValue(forKey: routeID)
+                viewModel?.prepareForDismissal()
+            }
+        }
+        pendingPreparationWork[routeID] = prepareWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.prepareGrace, execute: prepareWork)
         AppLog.debug("player", "延迟销毁播放器会话", metadata: [
             "routeID": routeID.uuidString,
+            "prepareDelayMs": String(Int(Self.prepareGrace * 1000)),
             "delayMs": String(Int(Self.teardownGrace * 1000)),
         ])
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.pendingTeardownTokens[routeID] == token else { return }
+                self.pendingPreparationWork.removeValue(forKey: routeID)?.cancel()
                 self.pendingTeardownWork.removeValue(forKey: routeID)
                 self.pendingTeardownTokens.removeValue(forKey: routeID)
                 guard let viewModel = self.viewModels[routeID] else { return }

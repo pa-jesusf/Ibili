@@ -17,10 +17,7 @@ final class FeedPrefetchCoordinator: ObservableObject {
     /// product spec caps this at the top 1–2 fully visible cells.
     private let prefetchDepth = 2
 
-    private var visibleAids: Set<Int64> = []
-    /// Cards in their feed-order when they appeared; the lowest index
-    /// is the topmost visible item.
-    private var orderedItems: [FeedItemDTO] = []
+    private var visibleItems: [FeedItemDTO] = []
     private var settleTask: Task<Void, Never>?
 
     var preferredQn: Int64 = 0
@@ -33,17 +30,16 @@ final class FeedPrefetchCoordinator: ObservableObject {
         self.cdnSelection = cdnSelection
     }
 
-    func cardAppeared(_ item: FeedItemDTO, allItems: [FeedItemDTO]) {
-        guard !visibleAids.contains(item.aid) else { return }
-        visibleAids.insert(item.aid)
-        orderedItems = allItems
+    func visibleItemsChanged(_ items: [FeedItemDTO]) {
+        let newIDs = items.map(\.aid)
+        guard newIDs != visibleItems.map(\.aid) else { return }
+        visibleItems = items
         scheduleSettle()
     }
 
-    func cardDisappeared(_ item: FeedItemDTO) {
-        guard visibleAids.contains(item.aid) else { return }
-        visibleAids.remove(item.aid)
-        scheduleSettle()
+    func clearVisibleItems() {
+        visibleItems.removeAll()
+        PlayUrlPrefetcher.shared.retain(visibleKeys: [])
     }
 
     /// Touch-Down warm-up. Bypasses the settle window because the user
@@ -67,11 +63,9 @@ final class FeedPrefetchCoordinator: ObservableObject {
     }
 
     private func fireSettlePrefetch() {
-        guard !visibleAids.isEmpty else { return }
-        let visible = visibleAids
-        let top = orderedItems
-            .filter { visible.contains($0.aid) }
-            .prefix(prefetchDepth)
+        guard !visibleItems.isEmpty else { return }
+        let visible = Set(visibleItems.map(\.aid))
+        let top = visibleItems.prefix(prefetchDepth)
         for item in top {
             PlayUrlPrefetcher.shared.prefetch(item: item,
                                               qn: max(preferredQn, 120),

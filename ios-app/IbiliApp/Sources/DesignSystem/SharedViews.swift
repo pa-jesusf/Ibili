@@ -101,46 +101,19 @@ private final class RemoteImageLoader: ObservableObject {
         if loadedURL == url, image != nil { return }
         loadedURL = url
         if loadFromMemoryCache(url) { return }
-        // Disk-cache hit — decode + promote into memory cache so
-        // subsequent reads stay cheap.
-        if let diskData = ImageDiskCache.shared.read(url),
-           let raw = UIImage(data: diskData) {
-            let display = downsample(raw, maxPixelDimension: Self.maxDisplayPixelDimension())
-            ImageCache.shared.store(display, for: url, cost: diskData.count)
-            image = display
-            failed = false
-            return
-        }
         let maxDisplayPixelDimension = Self.maxDisplayPixelDimension()
         task?.cancel()
         failed = false
         task = Task { [url] in
-            // Three retry attempts with backoff — Bilibili's CDN occasionally
-            // 502s on the first hit for fresh URLs.
-            for attempt in 0..<3 {
-                if Task.isCancelled { return }
-                do {
-                    let (data, response) = try await URLSession.shared.data(from: url)
-                    if Task.isCancelled { return }
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        throw URLError(.badServerResponse)
-                    }
-                    if let img = UIImage(data: data) {
-                        let display = downsample(img, maxPixelDimension: maxDisplayPixelDimension)
-                        ImageCache.shared.store(display, for: url, cost: data.count)
-                        ImageDiskCache.shared.write(url, data: data)
-                        await MainActor.run {
-                            if self.loadedURL == url { self.image = display; self.failed = false }
-                        }
-                        return
-                    }
-                } catch {
-                    if Task.isCancelled { return }
-                }
-                try? await Task.sleep(nanoseconds: UInt64(150_000_000 * (attempt + 1)))
-            }
+            let display = await ImagePipeline.shared.image(for: url, maxPixelDimension: maxDisplayPixelDimension)
             await MainActor.run {
-                if self.loadedURL == url, self.image == nil { self.failed = true }
+                guard self.loadedURL == url else { return }
+                if let display {
+                    self.image = display
+                    self.failed = false
+                } else if self.image == nil {
+                    self.failed = true
+                }
             }
         }
     }
@@ -167,17 +140,6 @@ private final class RemoteImageLoader: ObservableObject {
         UIScreen.main.bounds.width * UIScreen.main.scale
     }
 
-    private nonisolated func downsample(_ image: UIImage, maxPixelDimension maxDim: CGFloat) -> UIImage {
-        let size = image.size
-        let scale = min(maxDim / max(size.width, 1), maxDim / max(size.height, 1))
-        guard scale < 0.9 else { return image }
-        let targetSize = CGSize(width: (size.width * scale).rounded(),
-                                height: (size.height * scale).rounded())
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        return renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-    }
 }
 
 /// Cover image with caching + retry. Replaces the previous `AsyncImage` based

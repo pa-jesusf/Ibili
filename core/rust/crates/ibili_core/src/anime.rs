@@ -1022,6 +1022,7 @@ impl Core {
         &self,
         app_id: &str,
         app_secret: &str,
+        subject_id: i64,
         subject_primary_name: &str,
         subject_names: Vec<String>,
         subject_air_date: &str,
@@ -1036,6 +1037,7 @@ impl Core {
         let dandan_episode = self.match_dandanplay_episode(
             app_id,
             app_secret,
+            subject_id,
             subject_primary_name,
             &names,
             subject_air_date,
@@ -1199,6 +1201,7 @@ impl Core {
         &self,
         app_id: &str,
         app_secret: &str,
+        subject_id: i64,
         subject_primary_name: &str,
         subject_names: &[String],
         subject_air_date: &str,
@@ -1207,34 +1210,43 @@ impl Core {
         episode_name: &str,
     ) -> CoreResult<i64> {
         let mut episodes = Vec::new();
-        if let Some((year, month)) = dandan_season(subject_air_date) {
-            let season: DandanSeasonResponse = self.dandan_get_json(
+        if subject_id > 0 {
+            if let Ok(mapped) = self.dandan_get_json::<DandanBangumiResponse>(
                 app_id,
                 app_secret,
-                &format!("/api/v2/bangumi/season/anime/{year}/{month:02}"),
+                &format!("/api/v2/bangumi/bgmtv/{subject_id}"),
                 &[],
-            )?;
-            if let Some(anime) = exact_dandan_anime_match(&season.bangumi_list, subject_names) {
-                let details: DandanBangumiResponse = self.dandan_get_json(
+            ) {
+                if let Some(details) = mapped.bangumi {
+                    episodes.extend(dandan_bangumi_episodes(details, subject_primary_name));
+                }
+            }
+        }
+        if let Some((year, month)) = dandan_season(subject_air_date) {
+            if episodes.is_empty() {
+                let season: DandanSeasonResponse = self.dandan_get_json(
                     app_id,
                     app_secret,
-                    &format!(
-                        "/api/v2/bangumi/{}",
-                        anime.bangumi_id.unwrap_or(anime.anime_id)
-                    ),
+                    &format!("/api/v2/bangumi/season/anime/{year}/{month:02}"),
                     &[],
                 )?;
-                episodes.extend(details.bangumi.episodes.into_iter().map(|ep| {
-                    DandanEpisodeWithSubject {
-                        id: ep.episode_id,
-                        subject_name: anime
-                            .anime_title
-                            .clone()
-                            .unwrap_or_else(|| subject_primary_name.to_string()),
-                        episode_title: ep.episode_title,
-                        episode_number: ep.episode_number,
+                if let Some(anime) = exact_dandan_anime_match(&season.bangumi_list, subject_names) {
+                    let details: DandanBangumiResponse = self.dandan_get_json(
+                        app_id,
+                        app_secret,
+                        &format!(
+                            "/api/v2/bangumi/{}",
+                            anime.bangumi_id.unwrap_or(anime.anime_id)
+                        ),
+                        &[],
+                    )?;
+                    if let Some(details) = details.bangumi {
+                        episodes.extend(dandan_bangumi_episodes(
+                            details,
+                            anime.anime_title.as_deref().unwrap_or(subject_primary_name),
+                        ));
                     }
-                }));
+                }
             }
         }
         if episodes.is_empty() {
@@ -1896,8 +1908,17 @@ fn detect_web_captcha(page_url: &str, html: &str) -> Option<&'static str> {
     if safeline {
         return Some("验证码");
     }
+    if lower_html.contains("puzzle-container")
+        || lower_html.contains("slider-captcha")
+        || lower_html.contains("slide-to-verify")
+        || html.contains("滑动验证")
+        || html.contains("滑块验证")
+    {
+        return Some("滑动验证");
+    }
     let has_inline_verify_input = lower_html.contains("name=\"verify\"")
         || lower_html.contains("name='verify'")
+        || html.contains("需要输入验证码")
         || html.contains("placeholder=\"请输入验证码\"")
         || html.contains("placeholder='请输入验证码'")
         || html.contains("placeholder=\"請輸入驗證碼\"")
@@ -1913,6 +1934,9 @@ fn detect_web_captcha(page_url: &str, html: &str) -> Option<&'static str> {
         || html.contains("提交驗證");
     if has_inline_verify_image && has_inline_verify_input && has_inline_verify_submit {
         return Some("图片验证码");
+    }
+    if has_inline_verify_input {
+        return Some("验证码");
     }
     if lower_html.contains("captcha")
         && (lower_html.contains("<img")
@@ -2654,6 +2678,9 @@ fn captcha_kind_from_error(error: &CoreError) -> &str {
             "Cloudflare Turnstile 验证"
         }
         CoreError::Api { msg, .. } if msg.contains("Cloudflare") => "Cloudflare 验证",
+        CoreError::Api { msg, .. } if msg.contains("滑动") || msg.contains("滑块") => {
+            "滑动验证"
+        }
         CoreError::Api { msg, .. } if msg.contains("图片") => "图片验证码",
         _ => "验证码",
     }
@@ -3783,11 +3810,13 @@ struct DandanSearchEpisodeResponse {
 #[derive(Debug, Deserialize, Default)]
 struct DandanBangumiResponse {
     #[serde(default)]
-    bangumi: DandanBangumiDetails,
+    bangumi: Option<DandanBangumiDetails>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct DandanBangumiDetails {
+    #[serde(default, rename = "animeTitle")]
+    anime_title: Option<String>,
     #[serde(default)]
     episodes: Vec<DandanBangumiEpisode>,
 }
@@ -3844,6 +3873,25 @@ fn exact_dandan_anime_match(
                 .unwrap_or(false)
         })
         .cloned()
+}
+
+fn dandan_bangumi_episodes(
+    details: DandanBangumiDetails,
+    fallback_subject_name: &str,
+) -> Vec<DandanEpisodeWithSubject> {
+    let subject_name = details
+        .anime_title
+        .unwrap_or_else(|| fallback_subject_name.to_string());
+    details
+        .episodes
+        .into_iter()
+        .map(|ep| DandanEpisodeWithSubject {
+            id: ep.episode_id,
+            subject_name: subject_name.clone(),
+            episode_title: ep.episode_title,
+            episode_number: ep.episode_number,
+        })
+        .collect()
 }
 
 fn pick_dandan_episode(
@@ -4371,6 +4419,49 @@ mod anime_tests {
         };
         assert!(bili_ugc_score(&full, &names, 6.0, "") > 78.0);
         assert!(bili_ugc_score(&clip, &names, 6.0, "") < bili_ugc_score(&full, &names, 6.0, ""));
+    }
+
+    #[test]
+    fn dandan_bangumi_mapping_allows_null_and_matches_episode_number() {
+        let missing: DandanBangumiResponse = serde_json::from_str(
+            r#"{"success":false,"errorCode":7,"errorMessage":"无法找到指定的资源","bangumi":null}"#,
+        )
+        .unwrap();
+        assert!(missing.bangumi.is_none());
+
+        let mapped: DandanBangumiResponse = serde_json::from_str(
+            r#"{
+              "success": true,
+              "bangumi": {
+                "animeTitle": "网球优等生 第二期",
+                "episodes": [
+                  {"episodeId":108470001,"episodeTitle":"第1话 世界与鸿沟","episodeNumber":"1"},
+                  {"episodeId":108470002,"episodeTitle":"第2话 恶魔与计划","episodeNumber":"2"}
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        let episodes = dandan_bangumi_episodes(mapped.bangumi.unwrap(), "fallback");
+        assert_eq!(
+            pick_dandan_episode(&episodes, "ベイビーステップ 第2シリーズ", 2.0, 2.0, ""),
+            Some(108470002)
+        );
+    }
+
+    #[test]
+    fn web_captcha_detection_recognizes_slider_and_inline_text() {
+        assert_eq!(
+            detect_web_captcha(
+                "https://example.test/search",
+                r#"<div id="puzzle-container"></div>"#
+            ),
+            Some("滑动验证")
+        );
+        assert_eq!(
+            detect_web_captcha("https://example.test/search", "需要输入验证码"),
+            Some("验证码")
+        );
     }
 
     #[test]

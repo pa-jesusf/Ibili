@@ -9,6 +9,7 @@ struct HomeView: View {
     @StateObject private var hotVM: HomeViewModel
     @StateObject private var liveVM = LiveHomeViewModel()
     @StateObject private var prefetch = FeedPrefetchCoordinator()
+    @EnvironmentObject private var tabReselect: TabReselectSignals
 
     init() {
         _recommendVM = StateObject(wrappedValue: HomeViewModel(section: .recommend))
@@ -24,14 +25,16 @@ struct HomeView: View {
                     collapseProgress: $headerCollapseProgress,
                     switcherProgress: $switcherCollapseProgress,
                     vm: activeViewModel,
-                    prefetch: prefetch
+                    prefetch: prefetch,
+                    scrollToTopSignal: tabReselect.home
                 )
             case .live:
                 HomeLiveFeedPage(
                     section: $section,
                     collapseProgress: $headerCollapseProgress,
                     switcherProgress: $switcherCollapseProgress,
-                    vm: liveVM
+                    vm: liveVM,
+                    scrollToTopSignal: tabReselect.home
                 )
             }
         }
@@ -67,6 +70,7 @@ private struct HomeFeedPage: View {
     @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: HomeViewModel
     let prefetch: FeedPrefetchCoordinator
+    let scrollToTopSignal: Int
 
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
@@ -77,6 +81,7 @@ private struct HomeFeedPage: View {
     @State private var userSpaceMID: Int64?
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
+    @State private var lastScrollOffset: CGFloat = 0
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
@@ -129,31 +134,38 @@ private struct HomeFeedPage: View {
             let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
             let usesTopTrailingDuration = UIDevice.current.userInterfaceIdiom == .phone && cols >= 3
-            let hPad: CGFloat = 12
-            let spacing: CGFloat = 12
-            let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
-            let cardW = max(1, floor((geo.size.width - totalSpacing) / CGFloat(cols)))
-            let rowSpacing: CGFloat = 14
-            let gridItems = Array(
-                repeating: GridItem(.fixed(cardW), spacing: spacing, alignment: .top),
-                count: cols
-            )
 
-            ScrollView {
-                if #unavailable(iOS 18.0) {
-                    ScrollHeaderOffsetReader(coordinateSpace: "home-feed-scroll")
-                }
-
-                FeedTitleHeader(
-                    title: "主页",
-                    collapseProgress: collapseProgress,
-                    showsBackground: false
+            ZStack {
+                HomeFeedCollectionView(
+                    items: vm.items,
+                    columns: cols,
+                    imageQuality: settings.resolvedImageQuality(),
+                    showsDurationAtTopTrailing: usesTopTrailingDuration,
+                    meta: settings.homeCardMeta,
+                    scrollToTopSignal: scrollToTopSignal,
+                    isRefreshing: vm.isLoading && !vm.items.isEmpty,
+                    onTap: openFeedItem,
+                    onTouchDown: { item in prefetch.touchDown(item) },
+                    onAction: { item, action in
+                        handleCardAction(item: item, action: action)
+                    },
+                    onRefresh: {
+                        Task { await vm.refresh(recommendSource: settings.homeRecommendSource) }
+                    },
+                    onReachEnd: {
+                        Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
+                    },
+                    onVisibleItemsChange: { visible in
+                        prefetch.visibleItemsChanged(visible)
+                    },
+                    onScrollOffsetChange: handleScrollOffset
                 )
+                .modifier(ProMotionScrollHint())
 
                 if vm.items.isEmpty && vm.isLoading {
                     ProgressView()
                         .tint(IbiliTheme.accent)
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.top, 28)
                 } else if let err = vm.errorText, vm.items.isEmpty {
                     VStack(spacing: 12) {
@@ -162,79 +174,10 @@ private struct HomeFeedPage: View {
                         Button("重试") { Task { await vm.refresh(recommendSource: settings.homeRecommendSource) } }
                             .buttonStyle(.borderedProminent).tint(IbiliTheme.accent)
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 20)
-                    .padding(.top, 18)
-                } else {
-                    LazyVGrid(columns: gridItems, spacing: rowSpacing) {
-                        ForEach(vm.items) { item in
-                            ZStack(alignment: .bottomTrailing) {
-                                Button {
-                                    if prefersSplitRootSelection {
-                                        router.select(item)
-                                    } else {
-                                        router.open(item)
-                                    }
-                                } label: {
-                                    VideoCardView(
-                                        item: item,
-                                        cardWidth: cardW,
-                                        imageQuality: settings.resolvedImageQuality(),
-                                        showsDurationAtTopTrailing: usesTopTrailingDuration,
-                                        meta: settings.homeCardMeta
-                                    )
-                                }
-                                .buttonStyle(TouchDownReportingButtonStyle {
-                                    prefetch.touchDown(item)
-                                })
-
-                                VideoCardOverflowMenu(
-                                    bvid: item.bvid,
-                                    author: item.author,
-                                    ownerMID: item.ownerMID,
-                                    dislikeReasons: item.dislikeReasons,
-                                    feedbackReasons: item.feedbackReasons,
-                                    onCopyBVID: { copyBVID(item.bvid) },
-                                    onWatchLater: { addWatchLater(aid: item.aid) },
-                                    onVisitOwner: { openOwner(mid: item.ownerMID) },
-                                    onPlainDislike: { markNotInterested(item: item) },
-                                    onUndoDislike: { undoNotInterested(item: item) },
-                                    onDislikeReason: { reason in submitFeedDislike(item: item, reason: reason, isFeedback: false) },
-                                    onFeedbackReason: { reason in submitFeedDislike(item: item, reason: reason, isFeedback: true) },
-                                    onBlockOwner: { blockOwner(mid: item.ownerMID, author: item.author) }
-                                )
-                                .padding(.trailing, 4)
-                                .padding(.bottom, 4)
-                            }
-                            .frame(width: cardW, alignment: .topLeading)
-                            .onAppear {
-                                prefetch.cardAppeared(item, allItems: vm.items)
-                                prefetchCovers(around: item, cardWidth: cardW)
-                                if !vm.isEnd, item.aid == vm.items.last?.aid {
-                                    Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
-                                }
-                            }
-                            .onDisappear { prefetch.cardDisappeared(item) }
-                        }
-                    }
-                    .padding(.horizontal, hPad)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
-
-                    if vm.isLoading && !vm.items.isEmpty {
-                        ProgressView().padding()
-                    } else if vm.isEnd, !vm.items.isEmpty {
-                        Text("已经到底了")
-                            .font(.caption)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.bottom, 18)
-                    }
                 }
             }
-            .coordinateSpace(name: "home-feed-scroll")
-            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
-            .modifier(ProMotionScrollHint())
             .transaction { $0.animation = nil }
             .onAppear {
                 prefetch.update(
@@ -254,7 +197,49 @@ private struct HomeFeedPage: View {
                 updatePrefetchSettings()
                 PlayUrlPrefetcher.shared.clear()
             }
+            .onChange(of: scrollToTopSignal) { _ in
+                if lastScrollOffset < 48 {
+                    Task { await vm.refresh(recommendSource: settings.homeRecommendSource) }
+                }
+            }
         }
+    }
+
+    private func openFeedItem(_ item: FeedItemDTO) {
+        if prefersSplitRootSelection {
+            router.select(item)
+        } else {
+            router.open(item)
+        }
+    }
+
+    private func handleCardAction(item: FeedItemDTO, action: HomeFeedCardAction) {
+        switch action {
+        case .copyBVID:
+            copyBVID(item.bvid)
+        case .watchLater:
+            addWatchLater(aid: item.aid)
+        case .visitOwner:
+            openOwner(mid: item.ownerMID)
+        case .plainDislike:
+            markNotInterested(item: item)
+        case .undoDislike:
+            undoNotInterested(item: item)
+        case .dislikeReason(let reason):
+            submitFeedDislike(item: item, reason: reason, isFeedback: false)
+        case .feedbackReason(let reason):
+            submitFeedDislike(item: item, reason: reason, isFeedback: true)
+        case .blockOwner:
+            blockOwner(mid: item.ownerMID, author: item.author)
+        }
+    }
+
+    private func handleScrollOffset(_ rawOffset: CGFloat) {
+        let offset = max(rawOffset, 0)
+        lastScrollOffset = offset
+        let absoluteProgress = min(max(offset / 16, 0), 1)
+        collapseProgress = absoluteProgress
+        switcherProgress = absoluteProgress
     }
 
     private func openOwner(mid: Int64) {
@@ -437,43 +422,66 @@ private struct HomeLiveFeedPage: View {
     @Binding var collapseProgress: CGFloat
     @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: LiveHomeViewModel
+    let scrollToTopSignal: Int
 
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
+    @State private var lastScrollOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
             let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
-            let hPad: CGFloat = 12
             let spacing: CGFloat = 12
+            let hPad: CGFloat = 12
             let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
             let cardW = max(1, floor((geo.size.width - totalSpacing) / CGFloat(cols)))
-            let rowSpacing: CGFloat = 14
-            let gridItems = Array(
-                repeating: GridItem(.fixed(cardW), spacing: spacing, alignment: .top),
-                count: cols
-            )
+            let cardH = (cardW / VideoCoverView.aspectRatio).rounded() + 82
 
-            ScrollView {
-                if #unavailable(iOS 18.0) {
-                    ScrollHeaderOffsetReader(coordinateSpace: "home-feed-scroll")
+            ZStack {
+                VirtualizedCollectionView(
+                    items: vm.items,
+                    layout: .grid(
+                        columns: cols,
+                        itemHeight: cardH,
+                        interitemSpacing: spacing,
+                        lineSpacing: 14,
+                        contentInsets: NSDirectionalEdgeInsets(
+                            top: 8,
+                            leading: hPad,
+                            bottom: 18,
+                            trailing: hPad
+                        )
+                    ),
+                    headerTitle: "主页",
+                    scrollToTopSignal: scrollToTopSignal,
+                    isRefreshing: vm.isLoading && !vm.items.isEmpty,
+                    onTap: openLiveItem,
+                    onReachEnd: {
+                        Task { await vm.loadMore() }
+                    },
+                    onRefresh: {
+                        Task { await vm.refresh() }
+                    },
+                    onPrefetch: { items in
+                        prefetchLiveCovers(items, cardWidth: cardW)
+                    },
+                    onScrollOffsetChange: handleLiveScrollOffset
+                ) { item in
+                    LiveCardView(
+                        item: item,
+                        cardWidth: cardW,
+                        imageQuality: settings.resolvedImageQuality()
+                    )
                 }
-
-                FeedTitleHeader(
-                    title: "主页",
-                    collapseProgress: collapseProgress,
-                    showsBackground: false
-                )
 
                 if vm.items.isEmpty && vm.isLoading {
                     ProgressView()
                         .tint(IbiliTheme.accent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 28)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let err = vm.errorText, vm.items.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "wifi.exclamationmark").font(.largeTitle)
@@ -481,79 +489,53 @@ private struct HomeLiveFeedPage: View {
                         Button("重试") { Task { await vm.refresh() } }
                             .buttonStyle(.borderedProminent).tint(IbiliTheme.accent)
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 20)
-                    .padding(.top, 18)
-                } else {
-                    LazyVGrid(columns: gridItems, spacing: rowSpacing) {
-                        ForEach(vm.items) { item in
-                            Button {
-                                let cover = item.systemCover.isEmpty ? item.cover : item.systemCover
-                                if prefersSplitRootSelection {
-                                    router.selectLive(
-                                        roomID: item.roomID,
-                                        title: item.title,
-                                        cover: cover,
-                                        anchorName: item.uname
-                                    )
-                                } else {
-                                    router.openLive(
-                                        roomID: item.roomID,
-                                        title: item.title,
-                                        cover: cover,
-                                        anchorName: item.uname
-                                    )
-                                }
-                            } label: {
-                                LiveCardView(
-                                    item: item,
-                                    cardWidth: cardW,
-                                    imageQuality: settings.resolvedImageQuality()
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .onAppear {
-                                prefetchCovers(around: item, cardWidth: cardW)
-                                if !vm.isEnd, item.roomID == vm.items.last?.roomID {
-                                    Task { await vm.loadMore() }
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, hPad)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
-
-                    if vm.isLoading && !vm.items.isEmpty {
-                        ProgressView().padding()
-                    } else if vm.isEnd, !vm.items.isEmpty {
-                        Text("已经到底了")
-                            .font(.caption)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.bottom, 18)
-                    }
                 }
             }
-            .coordinateSpace(name: "home-feed-scroll")
-            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
             .modifier(ProMotionScrollHint())
             .transaction { $0.animation = nil }
+            .onChange(of: scrollToTopSignal) { _ in
+                if lastScrollOffset < 48 {
+                    Task { await vm.refresh() }
+                }
+            }
         }
         .task { await vm.loadInitial() }
-        .refreshable { await vm.refresh() }
     }
 
-    private func prefetchCovers(around item: LiveFeedItemDTO, cardWidth: CGFloat) {
-        let lookahead = 18
-        guard let idx = vm.items.firstIndex(where: { $0.roomID == item.roomID }) else { return }
-        let start = min(idx + 1, vm.items.count)
-        let end = min(start + lookahead, vm.items.count)
-        guard start < end else { return }
-        let covers = vm.items[start..<end].map { $0.systemCover.isEmpty ? $0.cover : $0.systemCover }
+    private func openLiveItem(_ item: LiveFeedItemDTO) {
+        let cover = item.systemCover.isEmpty ? item.cover : item.systemCover
+        if prefersSplitRootSelection {
+            router.selectLive(
+                roomID: item.roomID,
+                title: item.title,
+                cover: cover,
+                anchorName: item.uname
+            )
+        } else {
+            router.openLive(
+                roomID: item.roomID,
+                title: item.title,
+                cover: cover,
+                anchorName: item.uname
+            )
+        }
+    }
+
+    private func prefetchLiveCovers(_ items: [LiveFeedItemDTO], cardWidth: CGFloat) {
+        let covers = items.map { $0.systemCover.isEmpty ? $0.cover : $0.systemCover }
         let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
         CoverImagePrefetcher.shared.prefetch(covers,
                                              targetPointSize: size,
                                              quality: settings.resolvedImageQuality())
+    }
+
+    private func handleLiveScrollOffset(_ rawOffset: CGFloat) {
+        let offset = max(rawOffset, 0)
+        lastScrollOffset = offset
+        let absoluteProgress = min(max(offset / 16, 0), 1)
+        collapseProgress = absoluteProgress
+        switcherProgress = absoluteProgress
     }
 }
