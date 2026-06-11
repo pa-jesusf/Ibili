@@ -128,15 +128,21 @@ private struct HomeFeedPage: View {
 
             ZStack {
                 HomeFeedCollectionView(
-                    items: vm.items,
+                    items: vm.items.map(HomeFeedCardContent.video),
                     columns: cols,
                     imageQuality: settings.resolvedImageQuality(),
                     showsDurationAtTopTrailing: usesTopTrailingDuration,
                     meta: settings.homeCardMeta,
                     scrollToTopSignal: scrollToTopSignal,
                     isRefreshing: vm.isLoading && !vm.items.isEmpty,
-                    onTap: openFeedItem,
-                    onTouchDown: { item in prefetch.touchDown(item) },
+                    onTap: { item in
+                        guard case .video(let feedItem) = item else { return }
+                        openFeedItem(feedItem)
+                    },
+                    onTouchDown: { item in
+                        guard case .video(let feedItem) = item else { return }
+                        prefetch.touchDown(feedItem)
+                    },
                     onAction: { item, action in
                         handleCardAction(item: item, action: action)
                     },
@@ -151,6 +157,7 @@ private struct HomeFeedPage: View {
                     },
                     onScrollOffsetChange: handleScrollOffset
                 )
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
                 .modifier(ProMotionScrollHint())
 
                 if vm.items.isEmpty && vm.isLoading {
@@ -421,53 +428,56 @@ private struct HomeLiveFeedPage: View {
         GeometryReader { geo in
             let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
-            let spacing: CGFloat = 12
-            let hPad: CGFloat = 12
-            let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
-            let cardW = max(1, floor((geo.size.width - totalSpacing) / CGFloat(cols)))
-            let cardH = (cardW / VideoCoverView.aspectRatio).rounded() + 82
-
-            PagedCollectionSurface(
-                    items: vm.items,
-                    layout: .grid(
-                        columns: cols,
-                        itemHeight: cardH,
-                        interitemSpacing: spacing,
-                        lineSpacing: 14,
-                        contentInsets: NSDirectionalEdgeInsets(
-                            top: 8,
-                            leading: hPad,
-                            bottom: 18,
-                            trailing: hPad
-                        )
-                    ),
-                    headerTitle: "主页",
+            ZStack {
+                HomeFeedCollectionView(
+                    items: vm.items.map(HomeFeedCardContent.live),
+                    columns: cols,
+                    imageQuality: settings.resolvedImageQuality(),
+                    showsDurationAtTopTrailing: false,
+                    meta: settings.homeCardMeta,
                     scrollToTopSignal: scrollToTopSignal,
-                    isInitialLoading: vm.isLoading && vm.items.isEmpty,
                     isRefreshing: vm.isLoading && !vm.items.isEmpty,
-                    isLoadingMore: vm.isLoading && !vm.items.isEmpty,
-                    isEnd: vm.isEnd,
-                    errorText: vm.errorText,
-                    emptyState: .empty(title: "暂无直播", systemImage: "dot.radiowaves.left.and.right"),
-                    onTap: openLiveItem,
-                    onReachEnd: {
-                        Task { await vm.loadMore() }
+                    onTap: { item in
+                        guard case .live(let liveItem) = item else { return }
+                        openLiveItem(liveItem)
                     },
+                    onTouchDown: { _ in },
+                    onAction: { _, _ in },
                     onRefresh: {
                         Task { await vm.refresh() }
                     },
-                    onPrefetch: { items in
-                        prefetchLiveCovers(items, cardWidth: cardW)
+                    onReachEnd: {
+                        Task { await vm.loadMore() }
                     },
+                    onVisibleItemsChange: { _ in },
                     onScrollOffsetChange: handleLiveScrollOffset
-            ) { item in
-                    LiveCardView(
-                        item: item,
-                        cardWidth: cardW,
-                        imageQuality: settings.resolvedImageQuality()
-                    )
+                )
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
+                .modifier(ProMotionScrollHint())
+
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView()
+                        .tint(IbiliTheme.accent)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.top, 28)
+                } else if let err = vm.errorText, vm.items.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.largeTitle)
+                        Text(err)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                        Button("重试") { Task { await vm.refresh() } }
+                            .buttonStyle(.borderedProminent)
+                            .tint(IbiliTheme.accent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 20)
+                } else if vm.items.isEmpty {
+                    emptyState(title: "暂无直播", symbol: "dot.radiowaves.left.and.right")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
-            .modifier(ProMotionScrollHint())
             .transaction { $0.animation = nil }
         }
         .task { await vm.loadInitial() }
@@ -490,14 +500,6 @@ private struct HomeLiveFeedPage: View {
                 anchorName: item.uname
             )
         }
-    }
-
-    private func prefetchLiveCovers(_ items: [LiveFeedItemDTO], cardWidth: CGFloat) {
-        let covers = items.map { $0.systemCover.isEmpty ? $0.cover : $0.systemCover }
-        let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
-        CoverImagePrefetcher.shared.prefetch(covers,
-                                             targetPointSize: size,
-                                             quality: settings.resolvedImageQuality())
     }
 
     private func handleLiveScrollOffset(_ rawOffset: CGFloat) {

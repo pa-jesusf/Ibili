@@ -12,16 +12,39 @@ enum HomeFeedCardAction {
     case blockOwner
 }
 
+enum HomeFeedCardContent: Hashable {
+    case video(FeedItemDTO)
+    case live(LiveFeedItemDTO)
+
+    var identity: FeedStableIdentity {
+        switch self {
+        case .video(let item):
+            return FeedStableIdentity(item)
+        case .live(let item):
+            return FeedStableIdentity(item)
+        }
+    }
+
+    var cover: String {
+        switch self {
+        case .video(let item):
+            return item.cover
+        case .live(let item):
+            return item.systemCover.isEmpty ? item.cover : item.systemCover
+        }
+    }
+}
+
 struct HomeFeedCollectionView: UIViewRepresentable {
-    let items: [FeedItemDTO]
+    let items: [HomeFeedCardContent]
     let columns: Int
     let imageQuality: Int?
     let showsDurationAtTopTrailing: Bool
     let meta: FeedCardMetaConfig
     let scrollToTopSignal: Int
     let isRefreshing: Bool
-    let onTap: (FeedItemDTO) -> Void
-    let onTouchDown: (FeedItemDTO) -> Void
+    let onTap: (HomeFeedCardContent) -> Void
+    let onTouchDown: (HomeFeedCardContent) -> Void
     let onAction: (FeedItemDTO, HomeFeedCardAction) -> Void
     let onRefresh: () -> Void
     let onReachEnd: () -> Void
@@ -79,17 +102,18 @@ struct HomeFeedCollectionView: UIViewRepresentable {
         weak var collectionView: UICollectionView?
         var lastScrollToTopSignal = 0
 
-        private var currentItems: [FeedItemDTO] = []
+        private var currentItems: [HomeFeedCardContent] = []
         private var currentIDs: [FeedStableIdentity] = []
         private var lastLayoutWidth: CGFloat = 0
+        private var lastSafeAreaInsets: UIEdgeInsets = .zero
         private var visibleSettleTask: Task<Void, Never>?
 
         init(parent: HomeFeedCollectionView) {
             self.parent = parent
         }
 
-        func apply(items: [FeedItemDTO]) {
-            let newIDs = items.map(FeedStableIdentity.init)
+        func apply(items: [HomeFeedCardContent]) {
+            let newIDs = items.map(\.identity)
             guard newIDs != currentIDs else { return }
             guard let collectionView else {
                 currentItems = items
@@ -116,14 +140,16 @@ struct HomeFeedCollectionView: UIViewRepresentable {
 
         func applyLayout(to collectionView: UICollectionView) {
             let width = max(collectionView.bounds.width, 1)
-            guard abs(width - lastLayoutWidth) > 0.5,
+            let safeInsets = resolvedSafeAreaInsets(for: collectionView)
+            guard abs(width - lastLayoutWidth) > 0.5 || safeInsets != lastSafeAreaInsets,
                   let layout = collectionView.collectionViewLayout as? UICollectionViewFlowLayout else { return }
             lastLayoutWidth = width
+            lastSafeAreaInsets = safeInsets
             let metrics = layoutMetrics(containerWidth: width)
             layout.sectionInset = UIEdgeInsets(
                 top: 0,
                 left: metrics.horizontalPadding,
-                bottom: 12,
+                bottom: max(16, safeInsets.bottom + 16),
                 right: metrics.horizontalPadding
             )
             layout.minimumInteritemSpacing = metrics.spacing
@@ -131,9 +157,16 @@ struct HomeFeedCollectionView: UIViewRepresentable {
             layout.itemSize = CGSize(width: metrics.cardWidth, height: metrics.cardHeight)
             layout.headerReferenceSize = CGSize(
                 width: width,
-                height: FeedSegmentedHeaderMetrics.expandedHeight
+                height: safeInsets.top + FeedSegmentedHeaderMetrics.expandedHeight
             )
             layout.invalidateLayout()
+        }
+
+        private func resolvedSafeAreaInsets(for collectionView: UICollectionView) -> UIEdgeInsets {
+            if let window = collectionView.window {
+                return window.safeAreaInsets
+            }
+            return collectionView.safeAreaInsets
         }
 
         func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -156,7 +189,8 @@ struct HomeFeedCollectionView: UIViewRepresentable {
                 showsDurationAtTopTrailing: parent.showsDurationAtTopTrailing,
                 meta: parent.meta,
                 actionHandler: { [weak self] action in
-                    self?.parent.onAction(item, action)
+                    guard case .video(let feedItem) = item else { return }
+                    self?.parent.onAction(feedItem, action)
                 }
             )
             return cell
@@ -240,7 +274,11 @@ struct HomeFeedCollectionView: UIViewRepresentable {
             guard let collectionView else { return }
             let visible = collectionView.indexPathsForVisibleItems
                 .sorted()
-                .compactMap { currentItems.indices.contains($0.item) ? currentItems[$0.item] : nil }
+                .compactMap { indexPath -> FeedItemDTO? in
+                    guard currentItems.indices.contains(indexPath.item),
+                          case .video(let item) = currentItems[indexPath.item] else { return nil }
+                    return item
+                }
             parent.onVisibleItemsChange(visible)
         }
 
@@ -275,12 +313,14 @@ private struct HomeFeedLayoutMetrics {
 private final class HomeFeedHeaderView: UICollectionReusableView {
     static let reuseID = "HomeFeedHeaderView"
 
+    private let gradientView = FeedCollectionHeaderGradientView()
     private let titleLabel = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
         isOpaque = false
+        addSubview(gradientView)
         titleLabel.font = .systemFont(ofSize: 34, weight: .bold)
         titleLabel.textColor = .label
         titleLabel.adjustsFontSizeToFitWidth = true
@@ -294,9 +334,16 @@ private final class HomeFeedHeaderView: UICollectionReusableView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        let topInset = resolvedSafeAreaTopInset()
+        gradientView.frame = CGRect(
+            x: 0,
+            y: -topInset - 24,
+            width: bounds.width,
+            height: topInset + FeedSegmentedHeaderMetrics.expandedHeight + 44
+        )
         titleLabel.frame = CGRect(
             x: 16,
-            y: 52,
+            y: topInset + 52,
             width: bounds.width - 32,
             height: 40
         )
@@ -304,6 +351,16 @@ private final class HomeFeedHeaderView: UICollectionReusableView {
 
     func configure(title: String) {
         titleLabel.text = title
+    }
+
+    private func resolvedSafeAreaTopInset() -> CGFloat {
+        if let window {
+            return window.safeAreaInsets.top
+        }
+        if let superview {
+            return superview.safeAreaInsets.top
+        }
+        return safeAreaInsets.top
     }
 }
 
@@ -399,30 +456,140 @@ private final class HomeFeedCardCell: UICollectionViewCell {
                    showsDurationAtTopTrailing: Bool,
                    meta: FeedCardMetaConfig,
                    actionHandler: @escaping (HomeFeedCardAction) -> Void) {
+        configure(
+            item: .video(item),
+            width: width,
+            imageQuality: imageQuality,
+            showsDurationAtTopTrailing: showsDurationAtTopTrailing,
+            meta: meta,
+            actionHandler: actionHandler
+        )
+    }
+
+    func configure(item: HomeFeedCardContent,
+                   width: CGFloat,
+                   imageQuality: Int?,
+                   showsDurationAtTopTrailing: Bool,
+                   meta: FeedCardMetaConfig,
+                   actionHandler: @escaping (HomeFeedCardAction) -> Void) {
         self.actionHandler = actionHandler
         durationAtTopTrailing = showsDurationAtTopTrailing
-        titleLabel.text = item.title
-        authorLabel.text = item.author
-        authorLabel.isHidden = !meta.showAuthor
-        authorLabel.textColor = item.isFollowed ? IbiliTheme.accentUIColor : .secondaryLabel
+        let display = displayModel(for: item, meta: meta)
+        titleLabel.text = display.title
+        authorLabel.attributedText = authorText(display.author, isFollowed: display.isFollowed)
+        authorLabel.isHidden = !display.showsAuthor
 
-        if meta.stat == .none {
+        if display.metaText.length == 0 {
             metaLabel.isHidden = true
         } else {
             metaLabel.isHidden = false
-            let value = meta.stat == .danmaku ? item.danmaku : 0
-            metaLabel.text = "\(BiliFormat.compactCount(value))"
+            metaLabel.attributedText = display.metaText
         }
 
-        playChip.configure(systemImage: "play.fill", text: BiliFormat.compactCount(item.play))
-        playChip.isHidden = !meta.showPlay
-        durationChip.configure(systemImage: nil, text: BiliFormat.duration(item.durationSec))
-        durationChip.isHidden = !meta.showDuration || item.durationSec <= 0
+        playChip.configure(systemImage: display.leadingChipIcon, text: display.leadingChipText)
+        playChip.isHidden = display.leadingChipText.isEmpty
+        durationChip.configure(systemImage: nil, text: display.trailingChipText)
+        durationChip.isHidden = display.trailingChipText.isEmpty
         if showsDurationAtTopTrailing {
             setNeedsLayout()
         }
-        menuButton.menu = makeMenu(item: item)
-        loadCover(item.cover, width: width, imageQuality: imageQuality)
+        switch item {
+        case .video(let feedItem):
+            menuButton.isHidden = false
+            menuButton.menu = makeMenu(item: feedItem)
+        case .live:
+            menuButton.isHidden = true
+            menuButton.menu = nil
+        }
+        loadCover(display.cover, width: width, imageQuality: imageQuality)
+    }
+
+    private struct DisplayModel {
+        let title: String
+        let cover: String
+        let author: String
+        let isFollowed: Bool
+        let showsAuthor: Bool
+        let leadingChipIcon: String?
+        let leadingChipText: String
+        let trailingChipText: String
+        let metaText: NSAttributedString
+    }
+
+    private func displayModel(for item: HomeFeedCardContent, meta: FeedCardMetaConfig) -> DisplayModel {
+        switch item {
+        case .video(let video):
+            let metaString: String
+            switch meta.stat {
+            case .none:
+                metaString = ""
+            case .danmaku:
+                metaString = BiliFormat.compactCount(video.danmaku)
+            case .like:
+                metaString = "0"
+            }
+            return DisplayModel(
+                title: video.title,
+                cover: video.cover,
+                author: video.author,
+                isFollowed: video.isFollowed,
+                showsAuthor: meta.showAuthor,
+                leadingChipIcon: "play.fill",
+                leadingChipText: meta.showPlay ? BiliFormat.compactCount(video.play) : "",
+                trailingChipText: meta.showDuration && video.durationSec > 0 ? BiliFormat.duration(video.durationSec) : "",
+                metaText: metaText(metaString, systemImage: meta.stat.systemImage)
+            )
+        case .live(let live):
+            let cover = live.systemCover.isEmpty ? live.cover : live.systemCover
+            let metaParts = [
+                live.areaName.trimmingCharacters(in: .whitespacesAndNewlines),
+                live.watchedLabel.trimmingCharacters(in: .whitespacesAndNewlines),
+            ].filter { !$0.isEmpty }
+            return DisplayModel(
+                title: live.title,
+                cover: cover,
+                author: live.uname,
+                isFollowed: live.isFollowed,
+                showsAuthor: meta.showAuthor,
+                leadingChipIcon: nil,
+                leadingChipText: "LIVE",
+                trailingChipText: "",
+                metaText: metaText(metaParts.joined(separator: " · "), systemImage: "dot.radiowaves.left.and.right")
+            )
+        }
+    }
+
+    private func authorText(_ text: String, isFollowed: Bool) -> NSAttributedString {
+        let color = isFollowed ? IbiliTheme.accentUIColor : UIColor.secondaryLabel
+        let result = NSMutableAttributedString()
+        let symbol = NSTextAttachment()
+        let configuration = UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        symbol.image = UIImage(systemName: "person.fill", withConfiguration: configuration)?
+            .withTintColor(color, renderingMode: .alwaysOriginal)
+        result.append(NSAttributedString(attachment: symbol))
+        result.append(NSAttributedString(string: " \(text)", attributes: [
+            .foregroundColor: color,
+            .font: UIFont.preferredFont(forTextStyle: .caption1),
+        ]))
+        return result
+    }
+
+    private func metaText(_ text: String, systemImage: String) -> NSAttributedString {
+        guard !text.isEmpty else { return NSAttributedString(string: "") }
+        let result = NSMutableAttributedString()
+        if !systemImage.isEmpty {
+            let symbol = NSTextAttachment()
+            let configuration = UIImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+            symbol.image = UIImage(systemName: systemImage, withConfiguration: configuration)?
+                .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+            result.append(NSAttributedString(attachment: symbol))
+            result.append(NSAttributedString(string: " "))
+        }
+        result.append(NSAttributedString(string: text, attributes: [
+            .foregroundColor: UIColor.secondaryLabel,
+            .font: UIFont.preferredFont(forTextStyle: .caption2),
+        ]))
+        return result
     }
 
     private func loadCover(_ rawURL: String, width: CGFloat, imageQuality: Int?) {

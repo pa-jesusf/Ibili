@@ -52,6 +52,7 @@ struct CommentListView: View {
     @StateObject private var ownedViewModel = CommentListViewModel()
     private let providedViewModel: CommentListViewModel?
     private let usesVirtualizedList: Bool
+    private let bottomContentInset: CGFloat
     private let onScrollOffsetChange: ((CGFloat) -> Void)?
     @State private var thread: ReplyItemDTO?
     @State private var composer: CommentComposerContext?
@@ -64,11 +65,13 @@ struct CommentListView: View {
          kind: Int32 = 1,
          viewModel: CommentListViewModel? = nil,
          usesVirtualizedList: Bool = false,
+         bottomContentInset: CGFloat = 24,
          onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.oid = oid
         self.kind = kind
         self.providedViewModel = viewModel
         self.usesVirtualizedList = usesVirtualizedList
+        self.bottomContentInset = bottomContentInset
         self.onScrollOffsetChange = onScrollOffsetChange
     }
 
@@ -88,6 +91,7 @@ struct CommentListView: View {
                     onReply: { root, parent in composer = .reply(root: root, parent: parent) },
                     onOpenUser: openUserSpace,
                     usesVirtualizedList: usesVirtualizedList,
+                    bottomContentInset: bottomContentInset,
                     onScrollOffsetChange: onScrollOffsetChange
                 )
             } else {
@@ -100,6 +104,7 @@ struct CommentListView: View {
                     onReply: { root, parent in composer = .reply(root: root, parent: parent) },
                     onOpenUser: openUserSpace,
                     usesVirtualizedList: usesVirtualizedList,
+                    bottomContentInset: bottomContentInset,
                     onScrollOffsetChange: onScrollOffsetChange
                 )
             }
@@ -177,6 +182,7 @@ private struct CommentListContent: View {
     let onReply: (ReplyItemDTO, ReplyItemDTO) -> Void
     let onOpenUser: (Int64) -> Void
     let usesVirtualizedList: Bool
+    let bottomContentInset: CGFloat
     let onScrollOffsetChange: ((CGFloat) -> Void)?
     @EnvironmentObject private var session: AppSession
 
@@ -224,6 +230,7 @@ private struct CommentListContent: View {
             onOpenThread: { thread = $0 },
             onReachEnd: { Task { await viewModel.loadMore() } },
             onRefresh: { Task { await viewModel.refresh(oid: oid, kind: kind) } },
+            bottomContentInset: bottomContentInset,
             onScrollOffsetChange: { onScrollOffsetChange?($0) }
         )
     }
@@ -397,6 +404,7 @@ private struct CommentCollectionView: UIViewRepresentable {
     let onOpenThread: (ReplyItemDTO) -> Void
     let onReachEnd: () -> Void
     let onRefresh: () -> Void
+    let bottomContentInset: CGFloat
     let onScrollOffsetChange: (CGFloat) -> Void
 
     @EnvironmentObject var settings: AppSettings
@@ -406,7 +414,7 @@ private struct CommentCollectionView: UIViewRepresentable {
         let layout = UICollectionViewFlowLayout()
         layout.minimumLineSpacing = 0
         layout.minimumInteritemSpacing = 0
-        layout.sectionInset = UIEdgeInsets(top: 12, left: 16, bottom: 96, right: 16)
+        layout.sectionInset = UIEdgeInsets(top: 12, left: 16, bottom: max(24, bottomContentInset), right: 16)
         layout.estimatedItemSize = UICollectionViewFlowLayout.automaticSize
 
         let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
@@ -425,6 +433,11 @@ private struct CommentCollectionView: UIViewRepresentable {
     }
 
     func updateUIView(_ collectionView: UICollectionView, context: Context) {
+        if let layout = collectionView.collectionViewLayout as? UICollectionViewFlowLayout,
+           abs(layout.sectionInset.bottom - max(24, bottomContentInset)) > 0.5 {
+            layout.sectionInset.bottom = max(24, bottomContentInset)
+            layout.invalidateLayout()
+        }
         context.coordinator.apply(parent: self, forceReload: false)
         if !isLoading {
             collectionView.refreshControl?.endRefreshing()

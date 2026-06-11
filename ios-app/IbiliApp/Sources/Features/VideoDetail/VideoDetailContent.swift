@@ -38,12 +38,12 @@ struct VideoDetailContent: View {
     @State private var pgcSeason: PgcSeasonDTO?
     @State private var pgcLoading = false
     @State private var pgcErrorText: String?
+    @State private var floatingControlsHeight: CGFloat = 0
 
     private let topAnchorID = "videoDetailTop"
     private static let upwardRefreshTriggerOffset: CGFloat = 72
     private static let upwardRefreshResetOffset: CGFloat = 8
     private static let metadataRefreshCooldown: TimeInterval = 12
-    private static let floatingControlsReservedBottomInset: CGFloat = 82
 
     init(item: FeedItemDTO,
          currentCid: Int64 = 0,
@@ -93,12 +93,16 @@ struct VideoDetailContent: View {
 
     var body: some View {
         GeometryReader { viewportProxy in
+            let bottomContentInset = max(
+                24,
+                floatingControlsHeight + viewportProxy.safeAreaInsets.bottom + 12
+            )
             ScrollViewReader { proxy in
-                scrollContent
+                scrollContent(bottomContentInset: bottomContentInset)
                     .background(IbiliTheme.background)
                     .environment(\.commentViewportHeight, max(1, viewportProxy.size.height))
                     .environment(\.commentContentWidth, max(1, viewportProxy.size.width - 32))
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                    .overlay(alignment: .bottom) {
                         PlayerDetailFloatingControlCluster(
                             tabs: visibleTabs,
                             selection: $tab,
@@ -111,6 +115,17 @@ struct VideoDetailContent: View {
                                 )
                             }
                         )
+                        .background {
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: FloatingControlsHeightPreferenceKey.self,
+                                    value: geo.size.height
+                                )
+                            }
+                        }
+                    }
+                    .onPreferenceChange(FloatingControlsHeightPreferenceKey.self) { value in
+                        floatingControlsHeight = value
                     }
             }
         }
@@ -197,11 +212,11 @@ struct VideoDetailContent: View {
     }
 
     @ViewBuilder
-    private var scrollContent: some View {
+    private func scrollContent(bottomContentInset: CGFloat) -> some View {
         ZStack(alignment: .top) {
             ForEach(visibleTabs) { targetTab in
                 if mountedTabs.contains(targetTab) || tab == targetTab {
-                    tabScrollContent(for: targetTab)
+                    tabScrollContent(for: targetTab, bottomContentInset: bottomContentInset)
                         .opacity(tab == targetTab ? 1 : 0)
                         .allowsHitTesting(tab == targetTab)
                         .accessibilityHidden(tab != targetTab)
@@ -213,13 +228,14 @@ struct VideoDetailContent: View {
     }
 
     @ViewBuilder
-    private func tabScrollContent(for targetTab: Tab) -> some View {
+    private func tabScrollContent(for targetTab: Tab, bottomContentInset: CGFloat) -> some View {
         if targetTab == .replies {
             CommentListView(
                 oid: item.isPGC ? pgcCommentOID : commentOID,
                 kind: item.isPGC ? pgcCommentKind : 1,
                 viewModel: commentListViewModel,
                 usesVirtualizedList: true,
+                bottomContentInset: bottomContentInset,
                 onScrollOffsetChange: { value in
                     guard tab == targetTab else { return }
                     handleDetailScrollOffsetChange(value)
@@ -237,6 +253,7 @@ struct VideoDetailContent: View {
                 items: vm.related,
                 isLoadingMore: vm.isLoadingMoreRelated,
                 isEnd: vm.relatedIsEnd,
+                bottomContentInset: bottomContentInset,
                 onTap: { feedItem in
                     router.open(feedItem)
                 },
@@ -256,7 +273,7 @@ struct VideoDetailContent: View {
                 InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
                     .frame(width: 0, height: 0)
                 Color.clear.frame(height: 0).id(topAnchorID(for: targetTab))
-                contentColumn(for: targetTab)
+                contentColumn(for: targetTab, bottomContentInset: bottomContentInset)
             }
             .refreshable {
                 await refreshMetadata()
@@ -287,7 +304,7 @@ struct VideoDetailContent: View {
                 }
                 .frame(height: 1)
                 .id(topAnchorID(for: targetTab))
-                contentColumn(for: targetTab)
+                contentColumn(for: targetTab, bottomContentInset: bottomContentInset)
             }
             .refreshable {
                 await refreshMetadata()
@@ -302,7 +319,7 @@ struct VideoDetailContent: View {
     }
 
     @ViewBuilder
-    private func contentColumn(for targetTab: Tab) -> some View {
+    private func contentColumn(for targetTab: Tab, bottomContentInset: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Group {
                 switch targetTab {
@@ -324,6 +341,7 @@ struct VideoDetailContent: View {
                             items: vm.related,
                             isLoadingMore: vm.isLoadingMoreRelated,
                             isEnd: vm.relatedIsEnd,
+                            bottomContentInset: bottomContentInset,
                             onTap: { feedItem in
                                 router.open(feedItem)
                             },
@@ -335,7 +353,7 @@ struct VideoDetailContent: View {
                     }
                 }
             }
-            .padding(.bottom, Self.floatingControlsReservedBottomInset)
+            .padding(.bottom, bottomContentInset)
         }
         .padding(.top, 12)
     }
@@ -599,6 +617,14 @@ private struct DetailScrollOffsetPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private struct FloatingControlsHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

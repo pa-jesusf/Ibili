@@ -156,6 +156,8 @@ where Item: Identifiable & Hashable, Content: View {
         var lastScrollToTopSignal = 0
         private var currentItems: [Item] = []
         private var lastBoundsWidth: CGFloat = 0
+        private var lastLayout: VirtualizedCollectionLayout?
+        private var lastHeaderTitle: String?
         private var hasRefreshControl = false
 
         init(parent: VirtualizedCollectionView) {
@@ -164,8 +166,12 @@ where Item: Identifiable & Hashable, Content: View {
 
         func applyLayoutIfNeeded(on collectionView: UICollectionView) {
             let width = collectionView.bounds.width
-            guard abs(width - lastBoundsWidth) > 0.5 else { return }
+            guard abs(width - lastBoundsWidth) > 0.5
+                    || lastLayout != parent.layout
+                    || lastHeaderTitle != parent.headerTitle else { return }
             lastBoundsWidth = width
+            lastLayout = parent.layout
+            lastHeaderTitle = parent.headerTitle
             collectionView.setCollectionViewLayout(parent.makeLayout(containerWidth: max(width, 1)), animated: false)
         }
 
@@ -291,12 +297,14 @@ where Item: Identifiable & Hashable, Content: View {
 }
 
 private final class VirtualizedCollectionHeaderView: UICollectionReusableView {
+    private let gradientView = FeedCollectionHeaderGradientView()
     private let titleLabel = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
         isOpaque = false
+        addSubview(gradientView)
         titleLabel.font = .systemFont(ofSize: 34, weight: .bold)
         titleLabel.textColor = .label
         titleLabel.adjustsFontSizeToFitWidth = true
@@ -310,6 +318,12 @@ private final class VirtualizedCollectionHeaderView: UICollectionReusableView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        gradientView.frame = CGRect(
+            x: 0,
+            y: -24,
+            width: bounds.width,
+            height: FeedSegmentedHeaderMetrics.expandedHeight + 44
+        )
         titleLabel.frame = CGRect(
             x: 16,
             y: 52,

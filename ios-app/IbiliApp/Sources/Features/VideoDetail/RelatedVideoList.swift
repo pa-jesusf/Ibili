@@ -12,6 +12,7 @@ struct RelatedVideoList: View {
     let items: [RelatedVideoItemDTO]
     let isLoadingMore: Bool
     let isEnd: Bool
+    var bottomContentInset: CGFloat = 24
     let onTap: (FeedItemDTO) -> Void
     let onReachEnd: () -> Void
     var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
@@ -21,7 +22,12 @@ struct RelatedVideoList: View {
             items: items,
             layout: .list(
                 rowHeight: 92,
-                contentInsets: NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 92, trailing: 12)
+                contentInsets: NSDirectionalEdgeInsets(
+                    top: 12,
+                    leading: 12,
+                    bottom: max(24, bottomContentInset),
+                    trailing: 12
+                )
             ),
             isLoadingMore: isLoadingMore,
             isEnd: isEnd,

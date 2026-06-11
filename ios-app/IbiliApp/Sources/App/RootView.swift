@@ -1058,6 +1058,7 @@ struct MainTabView: View {
             }
             .tint(IbiliTheme.accent)
             .tabViewStyle(.tabBarOnly)
+            .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
             .background(tabReselectObserver(order: [.home, .dynamic] + (settings.animeTrackingEnabled ? [.anime] : []) + [.profile, .search]))
         } else {
@@ -1093,6 +1094,7 @@ struct MainTabView: View {
                 .tag(MainTab.profile)
             }
             .tint(IbiliTheme.accent)
+            .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
             .background(tabReselectObserver(order: [.home, .dynamic] + (settings.animeTrackingEnabled ? [.anime] : []) + [.search, .profile]))
         }
