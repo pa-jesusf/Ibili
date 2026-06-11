@@ -28,10 +28,12 @@ struct AnimeSubjectView: View {
                     subjectHero(subject)
                     actionPanel(subject)
                     episodeSection(subject)
-                    IbiliSegmentedTabs(
+                    DetailFloatingTabs(
                         tabs: AnimeSubjectTab.allCases,
                         title: { $0.title },
-                        selection: $selectedTab
+                        systemImage: { $0.systemImage },
+                        selection: $selectedTab,
+                        maxWidth: 260
                     )
                     .padding(.top, 2)
 
@@ -85,67 +87,15 @@ struct AnimeSubjectView: View {
     }
 
     private func subjectHero(_ subject: AnimeSubjectDTO) -> some View {
-        ZStack(alignment: .bottom) {
-            RemoteImage(url: subject.coverURL, targetPointSize: CGSize(width: 760, height: 760), quality: 72)
-                .scaledToFill()
-                .frame(height: 356)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .blur(radius: 22)
-                .scaleEffect(1.12)
-                .overlay(
-                    LinearGradient(
-                        colors: [
-                            Color.black.opacity(0.10),
-                            Color.black.opacity(0.56),
-                            IbiliTheme.background.opacity(0.90),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .center, spacing: 16) {
-                    RemoteImage(url: subject.coverURL, targetPointSize: CGSize(width: 260, height: 370), quality: 86)
-                        .frame(width: 130, height: 184)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(.white.opacity(0.18), lineWidth: 0.8)
-                        )
-                        .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: 12)
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(subject.displayTitle)
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .lineLimit(4)
-                            .minimumScaleFactor(0.86)
-                            .textSelection(.enabled)
-
-                        if subject.displayTitle != subject.name, !subject.name.isEmpty {
-                            Text(subject.name)
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.white.opacity(0.72))
-                                .lineLimit(2)
-                        }
-
-                        if !subject.date.isEmpty {
-                            AnimeHeroCapsule(text: formattedDate(subject.date))
-                        }
-
-                        Text(progressText(subject))
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.84))
-                            .lineLimit(1)
-
-                        ratingLine(subject)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
+        MediaHero(
+            coverURL: subject.coverURL,
+            title: subject.displayTitle,
+            originalTitle: subject.name,
+            dateText: subject.date.isEmpty ? nil : formattedDate(subject.date),
+            progressText: progressText(subject)
+        ) {
+            ratingLine(subject)
+        } footer: {
                 HStack(alignment: .center, spacing: 10) {
                     Text(collectionStatsText(subject))
                         .font(.subheadline.weight(.semibold))
@@ -155,10 +105,7 @@ struct AnimeSubjectView: View {
                     Spacer(minLength: 0)
                     AnimeCollectionStatusPill(label: subject.collectionType > 0 ? subject.collectionLabel : "未收藏")
                 }
-            }
-            .padding(18)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func ratingLine(_ subject: AnimeSubjectDTO) -> some View {
@@ -242,22 +189,15 @@ struct AnimeSubjectView: View {
                     .foregroundStyle(IbiliTheme.textSecondary)
                     .padding(.vertical, 8)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 10) {
-                        ForEach(Array(subject.episodes.enumerated()), id: \.element.id) { index, episode in
-                            AnimeLargeEpisodeCard(
-                                episode: episode,
-                                index: index + 1,
-                                stateLabel: episodeStateLabel(episode.collectionType)
-                            ) {
-                                openEpisode(episode, reason: "tap")
-                            }
-                        }
+                EpisodeRail(items: subject.episodes, spacing: 10) { index, episode in
+                    AnimeLargeEpisodeCard(
+                        episode: episode,
+                        index: index,
+                        stateLabel: episodeStateLabel(episode.collectionType)
+                    ) {
+                        openEpisode(episode, reason: "tap")
                     }
-                    .padding(.vertical, 2)
                 }
-                .background(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: true))
-                .overlay(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: false))
             }
         }
         .padding(14)
@@ -387,10 +327,8 @@ struct AnimeSubjectView: View {
 
     private func peopleSection(title: String, people: [AnimePeopleSheet.Entry], allSheet: AnimePeopleSheet) -> some View {
         section(title) {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
-                ForEach(people) { entry in
-                    AnimePersonMiniRow(entry: entry)
-                }
+            PersonGrid(items: people) { entry in
+                AnimePersonMiniRow(entry: entry)
             }
             if allSheet.entries.count > people.count {
                 Button("查看全部") {
@@ -670,6 +608,13 @@ private enum AnimeSubjectTab: String, CaseIterable, Identifiable {
         switch self {
         case .details: return "详情"
         case .reviews: return "评价"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .details: return "doc.text"
+        case .reviews: return "text.bubble"
         }
     }
 }

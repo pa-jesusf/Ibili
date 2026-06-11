@@ -17,45 +17,28 @@ struct RelatedVideoList: View {
     var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
 
     var body: some View {
-        if items.isEmpty {
-            emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
-                .padding(.vertical, 40)
-        } else {
-            VirtualizedCollectionView(
-                items: items,
-                layout: .list(
-                    rowHeight: 92,
-                    contentInsets: NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 92, trailing: 12)
-                ),
-                onTap: { item in
-                    onTap(adapt(item))
-                },
-                onReachEnd: {
-                    if !isEnd {
-                        onReachEnd()
-                    }
-                },
-                onPrefetch: prefetchCovers,
-                onScrollOffsetChange: onScrollOffsetChange
-            ) { item in
-                RelatedRow(item: item)
-                    .equatable()
-            }
-            .overlay(alignment: .bottom) {
-                if isLoadingMore {
-                    ProgressView()
-                        .padding(10)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(.bottom, 14)
-                } else if isEnd {
-                    Text("已经到底了")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(10)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(.bottom, 14)
+        PagedCollectionSurface(
+            items: items,
+            layout: .list(
+                rowHeight: 92,
+                contentInsets: NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 92, trailing: 12)
+            ),
+            isLoadingMore: isLoadingMore,
+            isEnd: isEnd,
+            emptyState: .empty(title: "暂无相关视频", systemImage: "rectangle.stack.badge.minus"),
+            onTap: { item in
+                onTap(adapt(item))
+            },
+            onReachEnd: {
+                if !isEnd {
+                    onReachEnd()
                 }
-            }
+            },
+            onPrefetch: prefetchCovers,
+            onScrollOffsetChange: onScrollOffsetChange
+        ) { item in
+            RelatedRow(item: item)
+                .equatable()
         }
     }
 

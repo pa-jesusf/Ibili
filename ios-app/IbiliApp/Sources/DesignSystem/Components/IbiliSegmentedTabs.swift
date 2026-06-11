@@ -330,7 +330,6 @@ private struct FeedGlassCapsule: View {
         if #available(iOS 26.0, *) {
             Capsule()
                 .fill(.regularMaterial)
-                .glassEffect(.regular, in: Capsule())
                 .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
         } else {
             Capsule()
@@ -345,7 +344,6 @@ private struct FeedSelectedGlassPill: View {
         if #available(iOS 26.0, *) {
             Capsule()
                 .fill(IbiliTheme.accent.opacity(0.34))
-                .glassEffect(.regular, in: Capsule())
                 .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 0.5))
         } else {
             Capsule()
@@ -360,7 +358,6 @@ private struct FeedCompactGlassCircle: View {
         if #available(iOS 26.0, *) {
             Circle()
                 .fill(.regularMaterial)
-                .glassEffect(.regular, in: Circle())
                 .overlay(Circle().fill(IbiliTheme.accent.opacity(0.10)))
                 .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 0.5))
         } else {

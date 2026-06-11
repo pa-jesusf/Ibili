@@ -170,10 +170,36 @@ where Item: Identifiable & Hashable, Content: View {
         }
 
         func apply(items: [Item], animated: Bool) {
-            currentItems = items
             guard let collectionView else { return }
             collectionView.dataSource = self
-            collectionView.reloadData()
+            guard currentItems != items else { return }
+
+            let oldItems = currentItems
+            let oldCount = oldItems.count
+            currentItems = items
+
+            guard canAppend(oldItems: oldItems, newItems: items), items.count > oldCount else {
+                collectionView.reloadData()
+                return
+            }
+
+            let inserted = (oldCount..<items.count).map { IndexPath(item: $0, section: 0) }
+            guard !inserted.isEmpty else { return }
+            collectionView.performBatchUpdates {
+                collectionView.insertItems(at: inserted)
+            }
+        }
+
+        private func canAppend(oldItems: [Item], newItems: [Item]) -> Bool {
+            guard !oldItems.isEmpty, newItems.count >= oldItems.count else { return false }
+            for index in oldItems.indices {
+                let old = oldItems[index]
+                let new = newItems[index]
+                if old.id != new.id || old != new {
+                    return false
+                }
+            }
+            return true
         }
 
         func installRefreshControlIfNeeded(on collectionView: UICollectionView) {

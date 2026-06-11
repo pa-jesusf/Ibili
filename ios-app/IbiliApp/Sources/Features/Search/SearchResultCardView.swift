@@ -11,38 +11,11 @@ struct SearchResultCardView: View {
     let imageQuality: Int?
     let meta: FeedCardMetaConfig
 
-    private let cardCornerRadius: CGFloat = 10
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VideoCoverView(
-                cover: item.cover,
-                width: cardWidth,
-                imageQuality: imageQuality,
-                playCount: item.play,
-                durationSec: item.durationSec,
-                durationPlacement: .bottomTrailing,
-                showPlayCount: meta.showPlay,
-                showDuration: meta.showDuration
-            )
-            CardInfoSection(
-                title: item.title,
-                author: item.author,
-                pubdate: item.pubdate,
-                stats: FeedCardStats(danmaku: item.danmaku, like: item.like),
-                config: meta,
-                titleFont: .system(size: 15, weight: .medium),
-                showAuthorIcon: true,
-                bottomTrailingInset: 26
-            )
-            .padding(.horizontal, 8)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
-        }
-        .frame(width: cardWidth, alignment: .topLeading)
-        .background(IbiliTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
-        .drawingGroup(opaque: false)
+        MediaCardView(
+            model: MediaCardRenderModel(search: item, imageQuality: imageQuality, meta: meta),
+            width: cardWidth
+        )
     }
 }
 

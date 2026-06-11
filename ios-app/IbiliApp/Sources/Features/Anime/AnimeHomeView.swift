@@ -53,24 +53,19 @@ struct AnimeHomeView: View {
     @State private var switcherCollapseProgress: CGFloat = 0
 
     var body: some View {
-        content
-            .background(IbiliTheme.background.ignoresSafeArea())
-            .overlay(alignment: .top) {
-                FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
-            }
-            .overlay(alignment: .top) {
-                FeedFloatingSegmentedControlOverlay(
-                    tabs: Array(AnimeHomeSection.allCases),
-                    title: { $0.title },
-                    selection: $section,
-                    collapseProgress: switcherCollapseProgress,
-                    positionProgress: headerCollapseProgress
-                )
-            }
-            .toolbar(.hidden, for: .navigationBar)
+        PageChrome(
+            title: "追番",
+            tabs: Array(AnimeHomeSection.allCases),
+            tabTitle: { $0.title },
+            selection: $section,
+            headerCollapseProgress: $headerCollapseProgress,
+            switcherCollapseProgress: $switcherCollapseProgress
+        ) {
+            content
+        }
             .sheet(isPresented: $showsSourceSheet) {
-                NavigationStack {
-                    AnimeSourceSettingsView(store: sourceStore, showsDoneButton: true)
+                SheetScaffold(title: "数据源") {
+                    AnimeSourceSettingsView(store: sourceStore, showsDoneButton: false)
                 }
                 .environmentObject(settings)
             }

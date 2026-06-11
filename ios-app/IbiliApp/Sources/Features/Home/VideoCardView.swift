@@ -14,38 +14,15 @@ struct VideoCardView: View {
     let showsDurationAtTopTrailing: Bool
     let meta: FeedCardMetaConfig
 
-    private let cardCornerRadius: CGFloat = 10
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VideoCoverView(
-                cover: item.cover,
-                width: cardWidth,
+        MediaCardView(
+            model: MediaCardRenderModel(
+                feed: item,
                 imageQuality: imageQuality,
-                playCount: item.play,
-                durationSec: item.durationSec,
-                durationPlacement: showsDurationAtTopTrailing ? .topTrailing : .bottomTrailing,
-                showPlayCount: meta.showPlay,
-                showDuration: meta.showDuration
-            )
-            CardInfoSection(
-                title: item.title,
-                author: item.author,
-                pubdate: item.pubdate,
-                stats: FeedCardStats(danmaku: item.danmaku),
-                config: meta,
-                titleFont: .system(size: 15, weight: .medium),
-                showAuthorIcon: true,
-                isAuthorFollowed: item.isFollowed,
-                bottomTrailingInset: 26
-            )
-            .padding(.horizontal, 8)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
-        }
-        .frame(width: cardWidth, alignment: .topLeading)
-        .background(IbiliTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
-        .drawingGroup(opaque: false)
+                meta: meta,
+                durationPlacement: showsDurationAtTopTrailing ? .topTrailing : .bottomTrailing
+            ),
+            width: cardWidth
+        )
     }
 }

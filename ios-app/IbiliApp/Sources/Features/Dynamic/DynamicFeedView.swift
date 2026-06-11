@@ -149,38 +149,33 @@ struct DynamicFeedView: View {
     }
 
     var body: some View {
-        DynamicFeedPage(
-            scope: $scope,
-            collapseProgress: $headerCollapseProgress,
-            switcherProgress: $switcherCollapseProgress,
-            vm: activeViewModel,
-            emptyTitle: scope.emptyTitle,
-            emptyMessage: scope.emptyMessage,
-            scrollToTopSignal: tabReselect.dynamic,
-            onOpenDetail: { dyn in
-                if isInPlayerHostNavigation {
-                    router.openDynamicDetail(dyn)
-                } else if prefersSplitRootSelection {
-                    router.selectDynamicDetail(dyn)
-                } else {
-                    pendingDetail = dyn
+        PageChrome(
+            title: "动态",
+            tabs: Array(DynamicFeedScope.allCases),
+            tabTitle: { $0.title },
+            selection: $scope,
+            headerCollapseProgress: $headerCollapseProgress,
+            switcherCollapseProgress: $switcherCollapseProgress
+        ) {
+            DynamicFeedPage(
+                scope: $scope,
+                collapseProgress: $headerCollapseProgress,
+                switcherProgress: $switcherCollapseProgress,
+                vm: activeViewModel,
+                emptyTitle: scope.emptyTitle,
+                emptyMessage: scope.emptyMessage,
+                scrollToTopSignal: tabReselect.dynamic,
+                onOpenDetail: { dyn in
+                    if isInPlayerHostNavigation {
+                        router.openDynamicDetail(dyn)
+                    } else if prefersSplitRootSelection {
+                        router.selectDynamicDetail(dyn)
+                    } else {
+                        pendingDetail = dyn
+                    }
                 }
-            }
-        )
-        .background(IbiliTheme.background.ignoresSafeArea())
-        .overlay(alignment: .top) {
-            FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
-        }
-        .overlay(alignment: .top) {
-            FeedFloatingSegmentedControlOverlay(
-                tabs: Array(DynamicFeedScope.allCases),
-                title: { $0.title },
-                selection: $scope,
-                collapseProgress: switcherCollapseProgress,
-                positionProgress: headerCollapseProgress
             )
         }
-        .toolbar(.hidden, for: .navigationBar)
         .background {
             if !isInPlayerHostNavigation {
                 NavigationLink(

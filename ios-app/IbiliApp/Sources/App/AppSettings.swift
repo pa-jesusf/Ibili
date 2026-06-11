@@ -122,6 +122,14 @@ struct FeedCardMetaConfig: Equatable, Hashable {
     var showPubdate: Bool
     var showAuthor: Bool
     var stat: FeedCardStat
+
+    static let standard = FeedCardMetaConfig(
+        showPlay: true,
+        showDuration: true,
+        showPubdate: false,
+        showAuthor: true,
+        stat: .danmaku
+    )
 }
 
 /// User-tunable display preferences. Persisted via `@AppStorage`.

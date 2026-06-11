@@ -33,7 +33,6 @@ struct AnimePlayerView: View {
     var body: some View {
         VStack(spacing: 0) {
             playerSurface
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
             contentArea
         }
         .background(IbiliTheme.background)
@@ -88,43 +87,40 @@ struct AnimePlayerView: View {
             }
         }
         .sheet(isPresented: $showsCandidates) {
-            NavigationStack {
-                AnimeCandidateListView(
-                    candidates: vm.candidates,
-                    diagnostics: vm.diagnostics,
-                    isLoading: vm.isResolving,
-                    activeCandidateID: vm.currentCandidateID,
-                    activePlayURL: vm.currentPlay?.url,
-                    onPick: { candidate in
-                        showsCandidates = false
-                        Task { await vm.play(candidate: candidate, route: route) }
-                    },
-                    onSolveCaptcha: { report in
-                        showsCandidates = false
-                        guard report.status == "captcha",
-                              let url = URL(string: report.captchaURL),
-                              !report.captchaURL.isEmpty else { return }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            captchaRequest = AnimeCaptchaRequest(sourceID: report.sourceID, sourceName: report.sourceName, url: url)
-                        }
-                    },
-                    onManageSources: {
-                        showsCandidates = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            showsSourceSettings = true
-                        }
+            SourcePickerSurface(
+                candidates: vm.candidates,
+                diagnostics: vm.diagnostics,
+                isLoading: vm.isResolving,
+                activeCandidateID: vm.currentCandidateID,
+                activePlayURL: vm.currentPlay?.url,
+                onPick: { candidate in
+                    showsCandidates = false
+                    Task { await vm.play(candidate: candidate, route: route) }
+                },
+                onSolveCaptcha: { report in
+                    showsCandidates = false
+                    guard report.status == "captcha",
+                          let url = URL(string: report.captchaURL),
+                          !report.captchaURL.isEmpty else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        captchaRequest = AnimeCaptchaRequest(sourceID: report.sourceID, sourceName: report.sourceName, url: url)
                     }
-                )
-            }
+                },
+                onManageSources: {
+                    showsCandidates = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        showsSourceSettings = true
+                    }
+                }
+            )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showsSourceSettings) {
-            NavigationStack {
-                AnimeSourceSettingsView(store: sourceStore, showsDoneButton: true)
+            SheetScaffold(title: "数据源") {
+                AnimeSourceSettingsView(store: sourceStore, showsDoneButton: false)
             }
             .environmentObject(settings)
-            .tint(IbiliTheme.accent)
         }
         .sheet(item: $captchaRequest) { request in
             AnimeCaptchaWebViewSheet(request: request) { session in
@@ -224,21 +220,19 @@ struct AnimePlayerView: View {
                 .padding(.bottom, 86)
             }
 
-            IbiliSegmentedTabs(
+            DetailFloatingTabs(
                 tabs: AnimePlayerContentTab.allCases,
                 title: { $0.title },
-                selection: $selectedContentTab
+                systemImage: { $0.systemImage },
+                selection: $selectedContentTab,
+                maxWidth: 260
             )
-            .frame(maxWidth: 260)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 14)
         }
     }
 
     @ViewBuilder
     private var playerSurface: some View {
-        ZStack {
-            Color.black
+        PlayerSurface {
             if let player = vm.player, let play = vm.currentPlay {
                 PlayerContainer(
                     player: player,
@@ -379,35 +373,15 @@ struct AnimePlayerView: View {
                 }
                 Spacer(minLength: 0)
             }
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 8) {
-                        ForEach(Array(route.subject.episodes.enumerated()), id: \.element.id) { index, episode in
-                            AnimePlayerEpisodeChip(
-                                episode: episode,
-                                index: index + 1,
-                                isCurrent: episode.id == route.episode.id,
-                                stateLabel: episodeStateLabel(episode.collectionType)
-                            ) {
-                                guard episode.id != route.episode.id else { return }
-                                router.openAnimeEpisode(subject: route.subject, episode: episode, mode: .replaceCurrent)
-                            }
-                            .id(episode.id)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-                .background(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: true))
-                .overlay(PlayerSwipeBackExclusionZone(includeEnclosingScrollView: false))
-                .onAppear {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        proxy.scrollTo(route.episode.id, anchor: .center)
-                    }
-                }
-                .onChange(of: route.episode.id) { _ in
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        proxy.scrollTo(route.episode.id, anchor: .center)
-                    }
+            EpisodeRail(items: route.subject.episodes, currentID: route.episode.id) { index, episode in
+                AnimePlayerEpisodeChip(
+                    episode: episode,
+                    index: index,
+                    isCurrent: episode.id == route.episode.id,
+                    stateLabel: episodeStateLabel(episode.collectionType)
+                ) {
+                    guard episode.id != route.episode.id else { return }
+                    router.openAnimeEpisode(subject: route.subject, episode: episode, mode: .replaceCurrent)
                 }
             }
         }
@@ -501,45 +475,18 @@ struct AnimePlayerView: View {
     }
 
     private var playerCommentContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("评论")
-                        .font(.title3.weight(.bold))
-                    Text(route.episode.displayTitle)
-                        .font(.caption)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                }
-                Spacer()
-                Button {
-                    Task { await loadEpisodeComments(force: true) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(IbiliTheme.accent)
-                .disabled(isLoadingComments)
+        CommentSurface(
+            title: "评论",
+            subtitle: route.episode.displayTitle,
+            items: episodeComments,
+            isLoading: isLoadingComments,
+            errorText: commentsErrorText,
+            emptyMessage: "Bangumi 暂无当前单集讨论",
+            onRefresh: {
+                Task { await loadEpisodeComments(force: true) }
             }
-
-            if isLoadingComments, episodeComments.isEmpty {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 36)
-            } else if let commentsErrorText, episodeComments.isEmpty {
-                emptyState(title: "评论加载失败", symbol: "bubble.left.and.bubble.right", message: commentsErrorText)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-            } else if episodeComments.isEmpty {
-                emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right", message: "Bangumi 暂无当前单集讨论")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-            } else {
-                LazyVStack(spacing: 12) {
-                    ForEach(episodeComments) { comment in
-                        AnimeEpisodeCommentRow(comment: comment)
-                    }
-                }
-            }
+        ) { comment in
+            AnimeEpisodeCommentRow(comment: comment)
         }
     }
 
@@ -693,6 +640,13 @@ private enum AnimePlayerContentTab: String, CaseIterable, Identifiable {
         switch self {
         case .details: return "详情"
         case .comments: return "评论"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .details: return "doc.text"
+        case .comments: return "bubble.left.and.bubble.right"
         }
     }
 }

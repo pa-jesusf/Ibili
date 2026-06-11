@@ -373,25 +373,17 @@ struct UserSpaceView: View {
     }
 }
 
-// MARK: - Liquid glass capsule
+// MARK: - Material capsule
 
-/// iOS 26 introduces the native `.glassEffect(_:in:)` modifier that
-/// renders the new "Liquid Glass" material — same blur + chromatic
-/// edge highlight that the system uses for the floating tab bar and
-/// control-center tiles. On older systems we fall back to the
-/// existing `.ultraThinMaterial` capsule, which is the closest
-/// pre-iOS-26 approximation.
+/// Shared material capsule used by the user-space search surface. Keep the
+/// implementation boring and local: the global page chrome owns the larger
+/// navigation glass treatment.
 private struct GlassCapsuleModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            // Layer a `.regularMaterial` blur *behind* the liquid
-            // glass so the effective blur radius is higher and
-            // foreground text stays legible — the bare glass effect
-            // is intentionally subtle on iOS 26 and our pink-tinted
-            // labels can read as low-contrast on bright wallpapers.
             content
                 .background(Capsule().fill(.regularMaterial))
-                .glassEffect(.regular, in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.10), lineWidth: 0.5))
         } else {
             content
                 .background(

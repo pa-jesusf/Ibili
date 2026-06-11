@@ -23,7 +23,7 @@ struct VideoCoverView: View {
     /// When false the duration chip is hidden regardless of placement.
     var showDuration: Bool = true
 
-    enum DurationPlacement {
+    enum DurationPlacement: Hashable {
         /// Duration sits next to the play-count chip on the bottom row.
         case bottomTrailing
         /// Duration is pinned to the upper-right corner; the bottom row

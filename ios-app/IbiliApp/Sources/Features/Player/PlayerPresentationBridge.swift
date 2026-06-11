@@ -122,7 +122,14 @@ private struct PlayerHoldSpeedBadgeBackgroundModifier: ViewModifier {
         if #available(iOS 26.0, *) {
             // Liquid glass: highly translucent, picks up the video's
             // colours behind it instead of painting a solid dark slab.
-            content.glassEffect(.regular, in: Circle())
+            content.background(
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        Circle()
+                            .stroke(.white.opacity(0.18), lineWidth: 0.5)
+                    )
+            )
         } else {
             content.background(
                 Circle()

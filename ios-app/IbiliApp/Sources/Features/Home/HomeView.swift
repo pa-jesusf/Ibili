@@ -17,7 +17,14 @@ struct HomeView: View {
     }
 
     var body: some View {
-        Group {
+        PageChrome(
+            title: "主页",
+            tabs: Array(HomeFeedSection.allCases),
+            tabTitle: { $0.title },
+            selection: $section,
+            headerCollapseProgress: $headerCollapseProgress,
+            switcherCollapseProgress: $switcherCollapseProgress
+        ) {
             switch section {
             case .recommend, .hot:
                 HomeFeedPage(
@@ -38,20 +45,6 @@ struct HomeView: View {
                 )
             }
         }
-        .background(IbiliTheme.background.ignoresSafeArea())
-        .overlay(alignment: .top) {
-            FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
-        }
-        .overlay(alignment: .top) {
-            FeedFloatingSegmentedControlOverlay(
-                tabs: Array(HomeFeedSection.allCases),
-                title: { $0.title },
-                selection: $section,
-                collapseProgress: switcherCollapseProgress,
-                positionProgress: headerCollapseProgress
-            )
-        }
-        .toolbar(.hidden, for: .navigationBar)
     }
 
     private var activeViewModel: HomeViewModel {
@@ -434,8 +427,7 @@ private struct HomeLiveFeedPage: View {
             let cardW = max(1, floor((geo.size.width - totalSpacing) / CGFloat(cols)))
             let cardH = (cardW / VideoCoverView.aspectRatio).rounded() + 82
 
-            ZStack {
-                VirtualizedCollectionView(
+            PagedCollectionSurface(
                     items: vm.items,
                     layout: .grid(
                         columns: cols,
@@ -451,7 +443,12 @@ private struct HomeLiveFeedPage: View {
                     ),
                     headerTitle: "主页",
                     scrollToTopSignal: scrollToTopSignal,
+                    isInitialLoading: vm.isLoading && vm.items.isEmpty,
                     isRefreshing: vm.isLoading && !vm.items.isEmpty,
+                    isLoadingMore: vm.isLoading && !vm.items.isEmpty,
+                    isEnd: vm.isEnd,
+                    errorText: vm.errorText,
+                    emptyState: .empty(title: "暂无直播", systemImage: "dot.radiowaves.left.and.right"),
                     onTap: openLiveItem,
                     onReachEnd: {
                         Task { await vm.loadMore() }
@@ -463,28 +460,12 @@ private struct HomeLiveFeedPage: View {
                         prefetchLiveCovers(items, cardWidth: cardW)
                     },
                     onScrollOffsetChange: handleLiveScrollOffset
-                ) { item in
+            ) { item in
                     LiveCardView(
                         item: item,
                         cardWidth: cardW,
                         imageQuality: settings.resolvedImageQuality()
                     )
-                }
-
-                if vm.items.isEmpty && vm.isLoading {
-                    ProgressView()
-                        .tint(IbiliTheme.accent)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let err = vm.errorText, vm.items.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "wifi.exclamationmark").font(.largeTitle)
-                        Text(err).multilineTextAlignment(.center).foregroundStyle(.secondary)
-                        Button("重试") { Task { await vm.refresh() } }
-                            .buttonStyle(.borderedProminent).tint(IbiliTheme.accent)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 20)
-                }
             }
             .modifier(ProMotionScrollHint())
             .transaction { $0.animation = nil }
