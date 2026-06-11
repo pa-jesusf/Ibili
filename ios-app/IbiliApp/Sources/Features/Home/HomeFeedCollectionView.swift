@@ -32,6 +32,7 @@ struct HomeFeedCollectionView: UIViewRepresentable {
         let layout = UICollectionViewFlowLayout()
         let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
+        collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.alwaysBounceVertical = true
         collectionView.delegate = context.coordinator
         collectionView.dataSource = context.coordinator
@@ -278,6 +279,8 @@ private final class HomeFeedHeaderView: UICollectionReusableView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
         titleLabel.font = .systemFont(ofSize: 34, weight: .bold)
         titleLabel.textColor = .label
         titleLabel.adjustsFontSizeToFitWidth = true
@@ -322,6 +325,7 @@ private final class HomeFeedCardCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        backgroundColor = .clear
         contentView.backgroundColor = .secondarySystemBackground
         contentView.layer.cornerRadius = 10
         contentView.layer.cornerCurve = .continuous

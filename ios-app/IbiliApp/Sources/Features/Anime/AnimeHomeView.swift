@@ -38,6 +38,7 @@ struct AnimeHomeView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var router: DeepLinkRouter
+    @EnvironmentObject private var tabReselect: TabReselectSignals
     @Environment(\.openURL) private var openURL
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @StateObject private var vm = AnimeHomeViewModel()
@@ -110,72 +111,94 @@ struct AnimeHomeView: View {
 
     private var collectionPage: some View {
         GeometryReader { geo in
-            ScrollView {
-                if #unavailable(iOS 18.0) {
-                    ScrollHeaderOffsetReader(coordinateSpace: "anime-collection-scroll")
-                }
-                FeedTitleHeader(title: "追番", collapseProgress: headerCollapseProgress, showsBackground: false)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    Color.clear.frame(height: 0).id("anime-collection-top")
+                    if #unavailable(iOS 18.0) {
+                        ScrollHeaderOffsetReader(coordinateSpace: "anime-collection-scroll")
+                    }
+                    FeedTitleHeader(title: "追番", collapseProgress: headerCollapseProgress, showsBackground: false)
 
-                VStack(alignment: .leading, spacing: 14) {
-                    accountSection
-                    Picker("分组", selection: $selectedKind) {
-                        ForEach(AnimeCollectionKind.allCases) { kind in
-                            Text(kind.title).tag(kind)
+                    VStack(alignment: .leading, spacing: 14) {
+                        accountSection
+                        Picker("分组", selection: $selectedKind) {
+                            ForEach(AnimeCollectionKind.allCases) { kind in
+                                Text(kind.title).tag(kind)
+                            }
                         }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: selectedKind) { kind in
-                        Task { await vm.load(kind: kind, session: session, force: true) }
-                    }
+                        .pickerStyle(.segmented)
+                        .onChange(of: selectedKind) { kind in
+                            Task { await vm.load(kind: kind, session: session, force: true) }
+                        }
 
-                    collectionContent(cardWidth: max(1, geo.size.width - 24))
+                        collectionContent(cardWidth: max(1, geo.size.width - 24))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 28)
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 28)
-            }
-            .coordinateSpace(name: "anime-collection-scroll")
-            .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: $switcherCollapseProgress))
-            .modifier(ProMotionScrollHint())
-            .refreshable {
-                await vm.load(kind: selectedKind, session: session, force: true)
+                .onChange(of: tabReselect.anime) { _ in
+                    guard section == .collection else { return }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                        scrollProxy.scrollTo("anime-collection-top", anchor: .top)
+                    }
+                    headerCollapseProgress = 0
+                    switcherCollapseProgress = 0
+                }
+                .coordinateSpace(name: "anime-collection-scroll")
+                .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: $switcherCollapseProgress))
+                .modifier(ProMotionScrollHint())
+                .refreshable {
+                    await vm.load(kind: selectedKind, session: session, force: true)
+                }
             }
         }
     }
 
     private var explorePage: some View {
         GeometryReader { geo in
-            ScrollView {
-                if #unavailable(iOS 18.0) {
-                    ScrollHeaderOffsetReader(coordinateSpace: "anime-explore-scroll")
-                }
-                FeedTitleHeader(title: "追番", collapseProgress: headerCollapseProgress, showsBackground: false)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    Color.clear.frame(height: 0).id("anime-explore-top")
+                    if #unavailable(iOS 18.0) {
+                        ScrollHeaderOffsetReader(coordinateSpace: "anime-explore-scroll")
+                    }
+                    FeedTitleHeader(title: "追番", collapseProgress: headerCollapseProgress, showsBackground: false)
 
-                VStack(alignment: .leading, spacing: 14) {
-                    searchBar
-                    if let errorText = vm.errorText, !errorText.isEmpty, vm.searchResults.isEmpty {
-                        emptyState(title: "搜索失败", symbol: "wifi.exclamationmark", message: errorText)
-                            .padding(.top, 40)
-                    } else if isSearching {
-                        ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
-                    } else if vm.searchResults.isEmpty {
-                        emptyState(title: "搜索 Bangumi 条目", symbol: "magnifyingglass")
-                            .padding(.top, 52)
-                    } else {
-                        LazyVStack(spacing: 12) {
-                            ForEach(vm.searchResults) { subject in
-                                animeCardButton(subject: subject, cardWidth: max(1, geo.size.width - 24), style: .detailed)
+                    VStack(alignment: .leading, spacing: 14) {
+                        searchBar
+                        if let errorText = vm.errorText, !errorText.isEmpty, vm.searchResults.isEmpty {
+                            emptyState(title: "搜索失败", symbol: "wifi.exclamationmark", message: errorText)
+                                .padding(.top, 40)
+                        } else if isSearching {
+                            ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                        } else if vm.searchResults.isEmpty {
+                            emptyState(title: "搜索 Bangumi 条目", symbol: "magnifyingglass")
+                                .padding(.top, 52)
+                        } else {
+                            LazyVStack(spacing: 12) {
+                                ForEach(vm.searchResults) { subject in
+                                    animeCardButton(subject: subject, cardWidth: max(1, geo.size.width - 24), style: .detailed)
+                                }
                             }
                         }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 28)
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 28)
+                .onChange(of: tabReselect.anime) { _ in
+                    guard section == .explore else { return }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                        scrollProxy.scrollTo("anime-explore-top", anchor: .top)
+                    }
+                    headerCollapseProgress = 0
+                    switcherCollapseProgress = 0
+                }
+                .coordinateSpace(name: "anime-explore-scroll")
+                .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: $switcherCollapseProgress))
+                .modifier(ProMotionScrollHint())
             }
-            .coordinateSpace(name: "anime-explore-scroll")
-            .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: $switcherCollapseProgress))
-            .modifier(ProMotionScrollHint())
         }
     }
 

@@ -19,42 +19,52 @@ import SwiftUI
 ///     animates smoothly as the card hydrates, instead of popping.
 struct ProfileRoot: View {
     @EnvironmentObject var session: AppSession
+    @EnvironmentObject private var tabReselect: TabReselectSignals
     @StateObject private var loader = ProfileHeaderLoader()
     @State private var headerCollapseProgress: CGFloat = 0
 
     var body: some View {
-        ScrollView {
-            if #unavailable(iOS 18.0) {
-                ScrollHeaderOffsetReader(coordinateSpace: "profile-scroll")
-            }
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                Color.clear.frame(height: 0).id("profile-top")
+                if #unavailable(iOS 18.0) {
+                    ScrollHeaderOffsetReader(coordinateSpace: "profile-scroll")
+                }
 
-            FeedTitleHeader(
-                title: "我的",
-                collapseProgress: headerCollapseProgress,
-                showsBackground: false
-            )
+                FeedTitleHeader(
+                    title: "我的",
+                    collapseProgress: headerCollapseProgress,
+                    showsBackground: false
+                )
 
-            LazyVStack(spacing: 16) {
-                ProfileHeaderCard(card: loader.card, mid: session.mid)
-                ProfileQuickActions(mid: session.mid)
-                ProfileSystemSection()
+                LazyVStack(spacing: 16) {
+                    ProfileHeaderCard(card: loader.card, mid: session.mid)
+                    ProfileQuickActions(mid: session.mid)
+                    ProfileSystemSection()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 32)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 32)
+            .coordinateSpace(name: "profile-scroll")
+            .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress))
+            .scrollContentBackground(.hidden)
+            .refreshable {
+                await loader.reload(mid: session.mid)
+            }
+            .onChange(of: tabReselect.profile) { _ in
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                    scrollProxy.scrollTo("profile-top", anchor: .top)
+                }
+                headerCollapseProgress = 0
+            }
         }
-        .coordinateSpace(name: "profile-scroll")
-        .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress))
         .background(IbiliTheme.background)
-        .scrollContentBackground(.hidden)
         .overlay(alignment: .top) {
             FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
         }
         .task(id: session.mid) {
             await loader.load(mid: session.mid)
-        }
-        .refreshable {
-            await loader.reload(mid: session.mid)
         }
         .tint(IbiliTheme.accent)
     }

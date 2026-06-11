@@ -411,6 +411,7 @@ private struct CommentCollectionView: UIViewRepresentable {
 
         let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
+        collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.alwaysBounceVertical = true
         collectionView.delegate = context.coordinator
         collectionView.dataSource = context.coordinator
@@ -478,6 +479,7 @@ private final class CommentCollectionCoordinator: NSObject,
         let row = rows[indexPath.item]
         let width = max(1, collectionView.bounds.width - collectionView.adjustedContentInset.left - collectionView.adjustedContentInset.right - 32)
         cell.backgroundColor = .clear
+        cell.contentView.backgroundColor = .clear
         cell.contentConfiguration = UIHostingConfiguration {
             CommentCollectionRowView(
                 row: row,

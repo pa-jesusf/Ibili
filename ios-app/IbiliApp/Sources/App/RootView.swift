@@ -1103,8 +1103,17 @@ struct MainTabView: View {
             selectedTab: selectedTab,
             orderedTabs: order,
             onReselect: { tab in
-                if tab == .home {
+                switch tab {
+                case .home:
                     tabReselect.triggerHome()
+                case .dynamic:
+                    tabReselect.triggerDynamic()
+                case .anime:
+                    tabReselect.triggerAnime()
+                case .search:
+                    tabReselect.triggerSearch()
+                case .profile:
+                    tabReselect.triggerProfile()
                 }
             }
         )

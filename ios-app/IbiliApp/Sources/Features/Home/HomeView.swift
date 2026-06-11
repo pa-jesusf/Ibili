@@ -82,6 +82,7 @@ private struct HomeFeedPage: View {
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
     @State private var lastScrollOffset: CGFloat = 0
+    @State private var collapseState = FeedScrollCollapseState()
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
@@ -119,9 +120,6 @@ private struct HomeFeedPage: View {
         .animation(.easeInOut(duration: 0.18), value: toast)
         .task(id: vm.section) {
             await vm.loadInitial(recommendSource: recommendSource)
-        }
-        .refreshable {
-            await vm.refresh(recommendSource: recommendSource)
         }
         .onChange(of: settings.homeRecommendSource.rawValue) { _ in
             guard vm.section == .recommend else { return }
@@ -197,11 +195,6 @@ private struct HomeFeedPage: View {
                 updatePrefetchSettings()
                 PlayUrlPrefetcher.shared.clear()
             }
-            .onChange(of: scrollToTopSignal) { _ in
-                if lastScrollOffset < 48 {
-                    Task { await vm.refresh(recommendSource: settings.homeRecommendSource) }
-                }
-            }
         }
     }
 
@@ -235,11 +228,10 @@ private struct HomeFeedPage: View {
     }
 
     private func handleScrollOffset(_ rawOffset: CGFloat) {
-        let offset = max(rawOffset, 0)
-        lastScrollOffset = offset
-        let absoluteProgress = min(max(offset / 16, 0), 1)
-        collapseProgress = absoluteProgress
-        switcherProgress = absoluteProgress
+        let next = collapseState.update(rawOffset: rawOffset)
+        lastScrollOffset = next.offset
+        collapseProgress = next.headerProgress
+        switcherProgress = next.switcherProgress
     }
 
     private func openOwner(mid: Int64) {
@@ -430,6 +422,7 @@ private struct HomeLiveFeedPage: View {
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
     @State private var lastScrollOffset: CGFloat = 0
+    @State private var collapseState = FeedScrollCollapseState()
 
     var body: some View {
         GeometryReader { geo in
@@ -495,11 +488,6 @@ private struct HomeLiveFeedPage: View {
             }
             .modifier(ProMotionScrollHint())
             .transaction { $0.animation = nil }
-            .onChange(of: scrollToTopSignal) { _ in
-                if lastScrollOffset < 48 {
-                    Task { await vm.refresh() }
-                }
-            }
         }
         .task { await vm.loadInitial() }
     }
@@ -532,10 +520,9 @@ private struct HomeLiveFeedPage: View {
     }
 
     private func handleLiveScrollOffset(_ rawOffset: CGFloat) {
-        let offset = max(rawOffset, 0)
-        lastScrollOffset = offset
-        let absoluteProgress = min(max(offset / 16, 0), 1)
-        collapseProgress = absoluteProgress
-        switcherProgress = absoluteProgress
+        let next = collapseState.update(rawOffset: rawOffset)
+        lastScrollOffset = next.offset
+        collapseProgress = next.headerProgress
+        switcherProgress = next.switcherProgress
     }
 }

@@ -82,6 +82,7 @@ where Item: Identifiable & Hashable, Content: View {
             collectionViewLayout: makeLayout(containerWidth: 1)
         )
         collectionView.backgroundColor = .clear
+        collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.alwaysBounceVertical = true
         collectionView.delegate = context.coordinator
         collectionView.prefetchDataSource = context.coordinator
@@ -199,6 +200,7 @@ where Item: Identifiable & Hashable, Content: View {
             guard currentItems.indices.contains(indexPath.item) else { return cell }
             let item = currentItems[indexPath.item]
             cell.backgroundColor = .clear
+            cell.contentView.backgroundColor = .clear
             cell.contentConfiguration = UIHostingConfiguration {
                 parent.content(item)
             }
@@ -253,6 +255,7 @@ where Item: Identifiable & Hashable, Content: View {
         func scrollToTop(_ collectionView: UICollectionView) {
             let top = CGPoint(x: 0, y: -collectionView.adjustedContentInset.top)
             collectionView.setContentOffset(top, animated: false)
+            parent.onScrollOffsetChange(0)
         }
 
         @objc private func refreshPulled() {
@@ -266,6 +269,8 @@ private final class VirtualizedCollectionHeaderView: UICollectionReusableView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
         titleLabel.font = .systemFont(ofSize: 34, weight: .bold)
         titleLabel.textColor = .label
         titleLabel.adjustsFontSizeToFitWidth = true

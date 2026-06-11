@@ -220,6 +220,68 @@ struct ScrollHeaderOffsetPreferenceKey: PreferenceKey {
     }
 }
 
+struct FeedScrollCollapseState {
+    private var lastObservedOffset: CGFloat?
+    private var reverseScrollDistance: CGFloat = 0
+    private var reverseScrollSamples: Int = 0
+    private var currentSwitcherProgress: CGFloat = 0
+
+    mutating func update(rawOffset: CGFloat) -> FeedScrollCollapseProgress {
+        let offset = max(rawOffset, 0)
+        let absoluteProgress = min(max(offset / 16, 0), 1)
+        updateSwitcherProgress(offset: offset, absoluteProgress: absoluteProgress)
+        return FeedScrollCollapseProgress(
+            offset: offset,
+            headerProgress: absoluteProgress,
+            switcherProgress: currentSwitcherProgress
+        )
+    }
+
+    mutating func reset() {
+        lastObservedOffset = nil
+        reverseScrollDistance = 0
+        reverseScrollSamples = 0
+        currentSwitcherProgress = 0
+    }
+
+    private mutating func updateSwitcherProgress(offset: CGFloat, absoluteProgress: CGFloat) {
+        defer { lastObservedOffset = offset }
+
+        if absoluteProgress < 0.08 {
+            reverseScrollDistance = 0
+            reverseScrollSamples = 0
+            currentSwitcherProgress = absoluteProgress
+            return
+        }
+
+        guard let lastObservedOffset else {
+            currentSwitcherProgress = absoluteProgress
+            return
+        }
+
+        let delta = offset - lastObservedOffset
+        let directionThreshold: CGFloat = 0.8
+        let expandDistanceThreshold: CGFloat = 18
+        if delta > directionThreshold {
+            reverseScrollDistance = 0
+            reverseScrollSamples = 0
+            currentSwitcherProgress = 1
+        } else if delta < -directionThreshold {
+            reverseScrollDistance += -delta
+            reverseScrollSamples += 1
+            if reverseScrollSamples >= 2, reverseScrollDistance >= expandDistanceThreshold {
+                currentSwitcherProgress = 0
+            }
+        }
+    }
+}
+
+struct FeedScrollCollapseProgress {
+    let offset: CGFloat
+    let headerProgress: CGFloat
+    let switcherProgress: CGFloat
+}
+
 enum FeedSegmentedHeaderMetrics {
     // Matches the current custom large-title layout: ~49pt top gap,
     // ~41pt title line height, ~12pt bottom pad.
@@ -239,9 +301,7 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
     /// can expand immediately when the user scrolls back toward the top.
     var switcherProgress: Binding<CGFloat>? = nil
 
-    @State private var lastObservedOffset: CGFloat?
-    @State private var reverseScrollDistance: CGFloat = 0
-    @State private var reverseScrollSamples: Int = 0
+    @State private var collapseState = FeedScrollCollapseState()
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
@@ -259,46 +319,9 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
     }
 
     private func updateProgress(offset rawOffset: CGFloat) {
-        let offset = max(rawOffset, 0)
-        let absoluteProgress = min(max(offset / 16, 0), 1)
-        progress = absoluteProgress
-        updateSwitcherProgress(offset: offset, absoluteProgress: absoluteProgress)
-    }
-
-    private func updateSwitcherProgress(offset: CGFloat, absoluteProgress: CGFloat) {
-        guard let switcherProgress else {
-            lastObservedOffset = offset
-            return
-        }
-
-        defer { lastObservedOffset = offset }
-
-        if absoluteProgress < 0.08 {
-            reverseScrollDistance = 0
-            reverseScrollSamples = 0
-            switcherProgress.wrappedValue = absoluteProgress
-            return
-        }
-
-        guard let lastObservedOffset else {
-            switcherProgress.wrappedValue = absoluteProgress
-            return
-        }
-
-        let delta = offset - lastObservedOffset
-        let directionThreshold: CGFloat = 0.8
-        let expandDistanceThreshold: CGFloat = 18
-        if delta > directionThreshold {
-            reverseScrollDistance = 0
-            reverseScrollSamples = 0
-            switcherProgress.wrappedValue = 1
-        } else if delta < -directionThreshold {
-            reverseScrollDistance += -delta
-            reverseScrollSamples += 1
-            if reverseScrollSamples >= 2, reverseScrollDistance >= expandDistanceThreshold {
-                switcherProgress.wrappedValue = 0
-            }
-        }
+        let next = collapseState.update(rawOffset: rawOffset)
+        progress = next.headerProgress
+        switcherProgress?.wrappedValue = next.switcherProgress
     }
 }
 
@@ -355,7 +378,7 @@ struct FeedNavigationBackgroundOverlay: View {
 
     var body: some View {
         let p = min(1, max(0, collapseProgress))
-        let overlayOpacity = 0.84 + p * 0.16
+        let overlayOpacity = 0.64 + p * 0.26
 
         ZStack(alignment: .top) {
             // Use the system compositor-backed Material blur instead
@@ -363,13 +386,13 @@ struct FeedNavigationBackgroundOverlay: View {
             // smoothest option during live scrolling because UIKit /
             // SwiftUI already optimise it as nav-bar style chrome.
             Rectangle()
-                .fill(.thinMaterial)
+                .fill(.ultraThinMaterial)
                 .mask(
                     LinearGradient(
                         colors: [
-                            Color.black.opacity(0.98),
-                            Color.black.opacity(0.70),
-                            Color.black.opacity(0.26),
+                            Color.black.opacity(0.96),
+                            Color.black.opacity(0.62),
+                            Color.black.opacity(0.18),
                             Color.clear
                         ],
                         startPoint: .top,
@@ -377,14 +400,13 @@ struct FeedNavigationBackgroundOverlay: View {
                     )
                 )
 
-            // A dark tint gradient keeps text legible and gives the
-            // bar more presence over bright content without requiring
-            // another expensive blur layer.
+            // A tiny tint keeps text legible over bright thumbnails while
+            // still letting the underlying feed remain visible.
             LinearGradient(
                 colors: [
-                    Color.black.opacity(0.42),
-                    Color.black.opacity(0.22),
-                    Color.black.opacity(0.06),
+                    IbiliTheme.background.opacity(0.18 + p * 0.12),
+                    IbiliTheme.background.opacity(0.08 + p * 0.06),
+                    IbiliTheme.background.opacity(0.02),
                     Color.black.opacity(0)
                 ],
                 startPoint: .top,

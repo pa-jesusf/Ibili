@@ -4,9 +4,29 @@ import UIKit
 @MainActor
 final class TabReselectSignals: ObservableObject {
     @Published private(set) var home = 0
+    @Published private(set) var dynamic = 0
+    @Published private(set) var anime = 0
+    @Published private(set) var search = 0
+    @Published private(set) var profile = 0
 
     func triggerHome() {
         home &+= 1
+    }
+
+    func triggerDynamic() {
+        dynamic &+= 1
+    }
+
+    func triggerAnime() {
+        anime &+= 1
+    }
+
+    func triggerSearch() {
+        search &+= 1
+    }
+
+    func triggerProfile() {
+        profile &+= 1
     }
 }
 
@@ -121,4 +141,3 @@ private extension UIViewController {
         return nil
     }
 }
-

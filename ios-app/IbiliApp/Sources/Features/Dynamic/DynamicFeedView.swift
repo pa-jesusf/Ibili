@@ -138,6 +138,7 @@ struct DynamicFeedView: View {
     @StateObject private var allVM: DynamicFeedViewModel
     @StateObject private var videoVM: DynamicFeedViewModel
     @EnvironmentObject private var router: DeepLinkRouter
+    @EnvironmentObject private var tabReselect: TabReselectSignals
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var pendingDetail: DynamicItemDTO?
@@ -155,6 +156,7 @@ struct DynamicFeedView: View {
             vm: activeViewModel,
             emptyTitle: scope.emptyTitle,
             emptyMessage: scope.emptyMessage,
+            scrollToTopSignal: tabReselect.dynamic,
             onOpenDetail: { dyn in
                 if isInPlayerHostNavigation {
                     router.openDynamicDetail(dyn)
@@ -214,6 +216,7 @@ private struct DynamicFeedPage: View {
     @ObservedObject var vm: DynamicFeedViewModel
     let emptyTitle: String
     let emptyMessage: String
+    let scrollToTopSignal: Int
     let onOpenDetail: (DynamicItemDTO) -> Void
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitRootIsActive) private var splitRootIsActive
@@ -229,63 +232,73 @@ private struct DynamicFeedPage: View {
             let shouldCenterWideFeed = isWidePad && !splitRootIsActive
             let feedWidth = usesPreviewWidth ? (previewWidth ?? geo.size.width) : (shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width)
             let contentWidth = DynamicLayout.contentWidth(containerWidth: feedWidth)
-            ScrollView {
-                VStack(spacing: 0) {
-                    if #unavailable(iOS 18.0) {
-                        ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
-                    }
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: 0).id("dynamic-feed-top")
+                        if #unavailable(iOS 18.0) {
+                            ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
+                        }
 
-                    FeedTitleHeader(
-                        title: "动态",
-                        collapseProgress: collapseProgress,
-                        showsBackground: false
-                    )
+                        FeedTitleHeader(
+                            title: "动态",
+                            collapseProgress: collapseProgress,
+                            showsBackground: false
+                        )
 
-                    if vm.items.isEmpty && vm.isLoading {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 28)
-                    } else if vm.items.isEmpty {
-                        emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
-                            .padding(.top, 18)
-                    } else {
-                        LazyVStack(spacing: 14) {
-                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                                DynamicItemCard(
-                                    item: item,
-                                    contentWidth: contentWidth,
-                                    onOpenDetail: onOpenDetail
-                                )
-                                .onAppear {
-                                    if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                        Task { await vm.loadMore() }
+                        if vm.items.isEmpty && vm.isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 28)
+                        } else if vm.items.isEmpty {
+                            emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
+                                .padding(.top, 18)
+                        } else {
+                            LazyVStack(spacing: 14) {
+                                ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                                    DynamicItemCard(
+                                        item: item,
+                                        contentWidth: contentWidth,
+                                        onOpenDetail: onOpenDetail
+                                    )
+                                    .onAppear {
+                                        if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                            Task { await vm.loadMore() }
+                                        }
                                     }
                                 }
+                                if vm.isLoading {
+                                    ProgressView().padding()
+                                } else if vm.isEnd {
+                                    Text("已经到底了")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .padding()
+                                }
                             }
-                            if vm.isLoading {
-                                ProgressView().padding()
-                            } else if vm.isEnd {
-                                Text("已经到底了")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .padding()
-                            }
+                            .padding(.horizontal, DynamicLayout.outerPad)
+                            .padding(.top, 8)
+                            .padding(.bottom, 32)
                         }
-                        .padding(.horizontal, DynamicLayout.outerPad)
-                        .padding(.top, 8)
-                        .padding(.bottom, 32)
                     }
+                    .frame(width: feedWidth, alignment: .top)
+                    .frame(maxWidth: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
                 }
-                .frame(width: feedWidth, alignment: .top)
-                .frame(maxWidth: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
+                .onChange(of: scrollToTopSignal) { _ in
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                        scrollProxy.scrollTo("dynamic-feed-top", anchor: .top)
+                    }
+                    collapseProgress = 0
+                    switcherProgress = 0
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .contentShape(Rectangle())
+                .coordinateSpace(name: "dynamic-feed-scroll")
+                .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
+                .modifier(ProMotionScrollHint())
+                .scrollContentBackground(.hidden)
+                .transaction { $0.animation = nil }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .contentShape(Rectangle())
-            .coordinateSpace(name: "dynamic-feed-scroll")
-            .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
-            .modifier(ProMotionScrollHint())
-            .scrollContentBackground(.hidden)
-            .transaction { $0.animation = nil }
         }
         .task(id: vm.scope) { await vm.loadInitial() }
         .refreshable { await vm.loadInitial(force: true) }
