@@ -85,39 +85,41 @@ struct PagedCollectionSurface<Item: Identifiable & Hashable, Content: View>: Vie
     }
 
     private var listBody: some View {
-        VirtualizedCollectionView(
-            items: items,
-            layout: layout,
-            headerTitle: headerTitle,
-            scrollToTopSignal: scrollToTopSignal,
-            isRefreshing: isRefreshing,
-            onTap: onTap,
-            onReachEnd: onReachEnd,
-            onRefresh: onRefresh,
-            onPrefetch: onPrefetch,
-            onCancelPrefetch: onCancelPrefetch,
-            onScrollOffsetChange: onScrollOffsetChange,
-            content: row
-        )
-        .overlay(alignment: .bottom) {
-            bottomStatus
+        GeometryReader { proxy in
+            VirtualizedCollectionView(
+                items: items,
+                layout: layout,
+                headerTitle: headerTitle,
+                scrollToTopSignal: scrollToTopSignal,
+                isRefreshing: isRefreshing,
+                onTap: onTap,
+                onReachEnd: onReachEnd,
+                onRefresh: onRefresh,
+                onPrefetch: onPrefetch,
+                onCancelPrefetch: onCancelPrefetch,
+                onScrollOffsetChange: onScrollOffsetChange,
+                content: row
+            )
+            .overlay(alignment: .bottom) {
+                bottomStatus(bottomSafeArea: proxy.safeAreaInsets.bottom)
+            }
         }
     }
 
     @ViewBuilder
-    private var bottomStatus: some View {
+    private func bottomStatus(bottomSafeArea: CGFloat) -> some View {
         if isLoadingMore {
             ProgressView()
                 .padding(10)
                 .background(.regularMaterial, in: Capsule())
-                .padding(.bottom, 14)
+                .padding(.bottom, max(14, bottomSafeArea + 10))
         } else if isEnd {
             Text("已经到底了")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(10)
                 .background(.regularMaterial, in: Capsule())
-                .padding(.bottom, 14)
+                .padding(.bottom, max(14, bottomSafeArea + 10))
         }
     }
 }

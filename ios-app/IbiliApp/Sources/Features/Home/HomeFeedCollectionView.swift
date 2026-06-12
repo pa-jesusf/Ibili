@@ -16,6 +16,20 @@ enum HomeFeedCardContent: Hashable {
     case video(FeedItemDTO)
     case live(LiveFeedItemDTO)
 
+    enum Kind {
+        case video
+        case live
+    }
+
+    var kind: Kind {
+        switch self {
+        case .video:
+            return .video
+        case .live:
+            return .live
+        }
+    }
+
     var identity: FeedStableIdentity {
         switch self {
         case .video(let item):
@@ -104,9 +118,12 @@ struct HomeFeedCollectionView: UIViewRepresentable {
 
         private var currentItems: [HomeFeedCardContent] = []
         private var currentIDs: [FeedStableIdentity] = []
+        private var currentContentKind: HomeFeedCardContent.Kind?
         private var lastLayoutWidth: CGFloat = 0
         private var lastSafeAreaInsets: UIEdgeInsets = .zero
         private var visibleSettleTask: Task<Void, Never>?
+        private var collapseState = FeedScrollCollapseState()
+        private var currentHeaderProgress: CGFloat = 0
 
         init(parent: HomeFeedCollectionView) {
             self.parent = parent
@@ -114,15 +131,23 @@ struct HomeFeedCollectionView: UIViewRepresentable {
 
         func apply(items: [HomeFeedCardContent]) {
             let newIDs = items.map(\.identity)
+            let newKind = items.first?.kind
+            let didChangeKind = currentContentKind != nil && currentContentKind != newKind
             guard newIDs != currentIDs else { return }
             guard let collectionView else {
                 currentItems = items
                 currentIDs = newIDs
+                currentContentKind = newKind
                 return
             }
+            currentContentKind = newKind
 
             if currentIDs.count < newIDs.count,
-               Array(newIDs.prefix(currentIDs.count)) == currentIDs {
+               Array(newIDs.prefix(currentIDs.count)) == currentIDs,
+               !didChangeKind,
+               collectionView.window != nil,
+               collectionView.numberOfSections > 0,
+               collectionView.numberOfItems(inSection: 0) == currentIDs.count {
                 let start = currentIDs.count
                 currentItems = items
                 currentIDs = newIDs
@@ -205,6 +230,7 @@ struct HomeFeedCollectionView: UIViewRepresentable {
                 for: indexPath
             ) as! HomeFeedHeaderView
             view.configure(title: "主页")
+            view.setCollapseProgress(currentHeaderProgress)
             return view
         }
 
@@ -244,6 +270,9 @@ struct HomeFeedCollectionView: UIViewRepresentable {
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             let offset = scrollView.contentOffset.y
+            let collapse = collapseState.update(rawOffset: offset)
+            currentHeaderProgress = collapse.headerProgress
+            updateVisibleHeader(collapseProgress: collapse.headerProgress)
             parent.onScrollOffsetChange(offset)
             scheduleVisibleItemsReport()
         }
@@ -252,6 +281,9 @@ struct HomeFeedCollectionView: UIViewRepresentable {
             collectionView.layer.removeAllAnimations()
             let target = CGPoint(x: 0, y: -collectionView.adjustedContentInset.top)
             collectionView.setContentOffset(target, animated: false)
+            collapseState.reset()
+            currentHeaderProgress = 0
+            updateVisibleHeader(collapseProgress: 0)
             parent.onScrollOffsetChange(0)
             scheduleVisibleItemsReport()
         }
@@ -289,6 +321,13 @@ struct HomeFeedCollectionView: UIViewRepresentable {
                 meta: parent.meta
             )
         }
+
+        private func updateVisibleHeader(collapseProgress: CGFloat) {
+            guard let collectionView else { return }
+            collectionView.visibleSupplementaryViews(ofKind: UICollectionView.elementKindSectionHeader)
+                .compactMap { $0 as? HomeFeedHeaderView }
+                .forEach { $0.setCollapseProgress(collapseProgress) }
+        }
     }
 }
 
@@ -315,6 +354,7 @@ private final class HomeFeedHeaderView: UICollectionReusableView {
 
     private let gradientView = FeedCollectionHeaderGradientView()
     private let titleLabel = UILabel()
+    private var collapseProgress: CGFloat = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -335,6 +375,9 @@ private final class HomeFeedHeaderView: UICollectionReusableView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let topInset = resolvedSafeAreaTopInset()
+        let p = min(1, max(0, collapseProgress))
+        let titleSize = 34 - p * 17
+        titleLabel.font = .systemFont(ofSize: titleSize, weight: p > 0.5 ? .semibold : .bold)
         gradientView.frame = CGRect(
             x: 0,
             y: -topInset - 24,
@@ -343,7 +386,7 @@ private final class HomeFeedHeaderView: UICollectionReusableView {
         )
         titleLabel.frame = CGRect(
             x: 16,
-            y: topInset + 52,
+            y: topInset + 52 - p * 35,
             width: bounds.width - 32,
             height: 40
         )
@@ -351,6 +394,14 @@ private final class HomeFeedHeaderView: UICollectionReusableView {
 
     func configure(title: String) {
         titleLabel.text = title
+        setNeedsLayout()
+    }
+
+    func setCollapseProgress(_ progress: CGFloat) {
+        let clamped = min(1, max(0, progress))
+        guard abs(clamped - collapseProgress) > 0.01 else { return }
+        collapseProgress = clamped
+        setNeedsLayout()
     }
 
     private func resolvedSafeAreaTopInset() -> CGFloat {
@@ -404,9 +455,7 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         metaLabel.textColor = .secondaryLabel
         metaLabel.numberOfLines = 1
 
-        menuButton.setImage(UIImage(systemName: "ellipsis"), for: .normal)
-        menuButton.tintColor = .secondaryLabel
-        menuButton.showsMenuAsPrimaryAction = true
+        VideoCardOverflowMenuBuilder.configureButton(menuButton)
 
         [coverView, titleLabel, authorLabel, metaLabel, playChip, durationChip, menuButton].forEach {
             contentView.addSubview($0)
@@ -425,6 +474,9 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         coverView.image = nil
         actionHandler = nil
         menuButton.menu = nil
+        titleLabel.text = nil
+        authorLabel.attributedText = nil
+        metaLabel.attributedText = nil
     }
 
     override func layoutSubviews() {
@@ -436,17 +488,26 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         titleLabel.frame = CGRect(x: 8, y: coverHeight + 8, width: width - 16, height: 38)
         authorLabel.frame = CGRect(x: 8, y: titleLabel.frame.maxY + 5, width: width - 42, height: 18)
         metaLabel.frame = CGRect(x: 8, y: authorLabel.frame.maxY + 2, width: width - 42, height: 16)
-        menuButton.frame = CGRect(x: width - 32, y: bounds.height - 34, width: 30, height: 30)
+        menuButton.frame = CGRect(x: width - 36, y: bounds.height - 38, width: 32, height: 32)
 
         let playSize = playChip.intrinsicContentSize
-        playChip.frame = CGRect(x: 8, y: coverHeight - playSize.height - 8, width: playSize.width, height: playSize.height)
         let durationSize = durationChip.intrinsicContentSize
         let durationY: CGFloat = durationAtTopTrailing ? 8 : coverHeight - durationSize.height - 8
-        durationChip.frame = CGRect(
-            x: width - durationSize.width - 8,
+        let durationFrame = CGRect(
+            x: width - min(durationSize.width, width - 16) - 8,
             y: durationY,
-            width: durationSize.width,
+            width: min(durationSize.width, width - 16),
             height: durationSize.height
+        )
+        durationChip.frame = durationFrame
+        let maxPlayWidth = durationChip.isHidden
+            ? width - 16
+            : max(32, durationFrame.minX - 16)
+        playChip.frame = CGRect(
+            x: 8,
+            y: coverHeight - playSize.height - 8,
+            width: min(playSize.width, maxPlayWidth),
+            height: playSize.height
         )
     }
 
@@ -488,7 +549,7 @@ private final class HomeFeedCardCell: UICollectionViewCell {
 
         playChip.configure(systemImage: display.leadingChipIcon, text: display.leadingChipText)
         playChip.isHidden = display.leadingChipText.isEmpty
-        durationChip.configure(systemImage: nil, text: display.trailingChipText)
+        durationChip.configure(systemImage: nil, text: display.trailingChipText, isMonospaced: display.trailingChipIsMonospaced)
         durationChip.isHidden = display.trailingChipText.isEmpty
         if showsDurationAtTopTrailing {
             setNeedsLayout()
@@ -513,48 +574,55 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         let leadingChipIcon: String?
         let leadingChipText: String
         let trailingChipText: String
+        let trailingChipIsMonospaced: Bool
         let metaText: NSAttributedString
     }
 
     private func displayModel(for item: HomeFeedCardContent, meta: FeedCardMetaConfig) -> DisplayModel {
         switch item {
         case .video(let video):
+            let model = MediaCardRenderModel(
+                feed: video,
+                imageQuality: nil,
+                meta: meta,
+                durationPlacement: durationAtTopTrailing ? .topTrailing : .bottomTrailing
+            )
             let metaString: String
             switch meta.stat {
             case .none:
                 metaString = ""
             case .danmaku:
-                metaString = BiliFormat.compactCount(video.danmaku)
+                metaString = BiliFormat.compactCount(model.danmaku)
             case .like:
                 metaString = "0"
             }
             return DisplayModel(
-                title: video.title,
-                cover: video.cover,
-                author: video.author,
-                isFollowed: video.isFollowed,
+                title: model.title,
+                cover: model.cover,
+                author: model.author,
+                isFollowed: model.isAuthorFollowed,
                 showsAuthor: meta.showAuthor,
                 leadingChipIcon: "play.fill",
-                leadingChipText: meta.showPlay ? BiliFormat.compactCount(video.play) : "",
-                trailingChipText: meta.showDuration && video.durationSec > 0 ? BiliFormat.duration(video.durationSec) : "",
+                leadingChipText: meta.showPlay ? BiliFormat.compactCount(model.play) : "",
+                trailingChipText: meta.showDuration && model.durationSec > 0 ? BiliFormat.duration(model.durationSec) : "",
+                trailingChipIsMonospaced: true,
                 metaText: metaText(metaString, systemImage: meta.stat.systemImage)
             )
         case .live(let live):
             let cover = live.systemCover.isEmpty ? live.cover : live.systemCover
-            let metaParts = [
-                live.areaName.trimmingCharacters(in: .whitespacesAndNewlines),
-                live.watchedLabel.trimmingCharacters(in: .whitespacesAndNewlines),
-            ].filter { !$0.isEmpty }
+            let watched = live.watchedLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let area = live.areaName.trimmingCharacters(in: .whitespacesAndNewlines)
             return DisplayModel(
                 title: live.title,
                 cover: cover,
                 author: live.uname,
                 isFollowed: live.isFollowed,
                 showsAuthor: meta.showAuthor,
-                leadingChipIcon: nil,
-                leadingChipText: "LIVE",
-                trailingChipText: "",
-                metaText: metaText(metaParts.joined(separator: " · "), systemImage: "dot.radiowaves.left.and.right")
+                leadingChipIcon: "dot.radiowaves.left.and.right",
+                leadingChipText: watched.isEmpty ? "直播中" : watched,
+                trailingChipText: area,
+                trailingChipIsMonospaced: false,
+                metaText: NSAttributedString(string: "")
             )
         }
     }
@@ -616,53 +684,32 @@ private final class HomeFeedCardCell: UICollectionViewCell {
     }
 
     private func makeMenu(item: FeedItemDTO) -> UIMenu {
-        let copy = UIAction(title: item.bvid.isEmpty ? "复制 BV 号" : item.bvid,
-                            image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
-            self?.actionHandler?(.copyBVID)
-        }
-        let watchLater = UIAction(title: "稍后再看", image: UIImage(systemName: "clock")) { [weak self] _ in
-            self?.actionHandler?(.watchLater)
-        }
-        let visit = UIAction(title: "访问：\(item.author)", image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in
-            self?.actionHandler?(.visitOwner)
-        }
-        let dislikeChildren = dislikeMenuItems(item: item)
-        let dislike = UIMenu(
-            title: "不感兴趣",
-            image: UIImage(systemName: "hand.thumbsdown"),
-            children: dislikeChildren
-        )
-        let block = UIAction(title: "拉黑：\(item.author)",
-                             image: UIImage(systemName: "nosign"),
-                             attributes: .destructive) { [weak self] _ in
-            self?.actionHandler?(.blockOwner)
-        }
-        return UIMenu(children: [copy, watchLater, visit, dislike, block])
-    }
-
-    private func dislikeMenuItems(item: FeedItemDTO) -> [UIMenuElement] {
-        var elements: [UIMenuElement] = []
-        let reasonActions = item.dislikeReasons.map { reason in
-            UIAction(title: reason.name, image: UIImage(systemName: "hand.thumbsdown")) { [weak self] _ in
-                self?.actionHandler?(.dislikeReason(reason))
-            }
-        }
-        let feedbackActions = item.feedbackReasons.map { reason in
-            UIAction(title: reason.name, image: UIImage(systemName: "exclamationmark.bubble")) { [weak self] _ in
-                self?.actionHandler?(.feedbackReason(reason))
-            }
-        }
-        elements.append(contentsOf: reasonActions)
-        elements.append(contentsOf: feedbackActions)
-        if elements.isEmpty {
-            elements.append(UIAction(title: "点踩", image: UIImage(systemName: "hand.thumbsdown")) { [weak self] _ in
+        VideoCardOverflowMenuBuilder.makeMenu(
+            bvid: item.bvid,
+            author: item.author,
+            ownerMID: item.ownerMID,
+            dislikeReasons: item.dislikeReasons,
+            feedbackReasons: item.feedbackReasons
+        ) { [weak self] action in
+            switch action {
+            case .copyBVID:
+                self?.actionHandler?(.copyBVID)
+            case .watchLater:
+                self?.actionHandler?(.watchLater)
+            case .visitOwner:
+                self?.actionHandler?(.visitOwner)
+            case .plainDislike:
                 self?.actionHandler?(.plainDislike)
-            })
+            case .undoDislike:
+                self?.actionHandler?(.undoDislike)
+            case .dislikeReason(let reason):
+                self?.actionHandler?(.dislikeReason(reason))
+            case .feedbackReason(let reason):
+                self?.actionHandler?(.feedbackReason(reason))
+            case .blockOwner:
+                self?.actionHandler?(.blockOwner)
+            }
         }
-        elements.append(UIAction(title: "撤销点踩", image: UIImage(systemName: "arrow.uturn.backward")) { [weak self] _ in
-            self?.actionHandler?(.undoDislike)
-        })
-        return elements
     }
 }
 
@@ -672,13 +719,16 @@ private final class HomeFeedOverlayChip: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = UIColor.black.withAlphaComponent(0.58)
-        layer.cornerRadius = 8
+        backgroundColor = UIColor.black.withAlphaComponent(0.68)
+        layer.cornerRadius = 9
         layer.cornerCurve = .continuous
         iconView.tintColor = .white
         iconView.contentMode = .scaleAspectFit
         label.textColor = .white
-        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.lineBreakMode = .byTruncatingTail
+        label.adjustsFontSizeToFitWidth = true
+        label.minimumScaleFactor = 0.7
         addSubview(iconView)
         addSubview(label)
     }
@@ -691,8 +741,8 @@ private final class HomeFeedOverlayChip: UIView {
         let labelSize = label.intrinsicContentSize
         let hasIcon = iconView.image != nil
         return CGSize(
-            width: labelSize.width + (hasIcon ? 15 : 0) + 10,
-            height: 18
+            width: labelSize.width + (hasIcon ? 16 : 0) + 12,
+            height: 19
         )
     }
 
@@ -700,16 +750,19 @@ private final class HomeFeedOverlayChip: UIView {
         super.layoutSubviews()
         let hasIcon = iconView.image != nil
         if hasIcon {
-            iconView.frame = CGRect(x: 5, y: 3, width: 12, height: 12)
-            label.frame = CGRect(x: 19, y: 1, width: bounds.width - 24, height: 16)
+            iconView.frame = CGRect(x: 6, y: 3.5, width: 12, height: 12)
+            label.frame = CGRect(x: 22, y: 1.5, width: bounds.width - 28, height: 16)
         } else {
-            label.frame = bounds.insetBy(dx: 5, dy: 1)
+            label.frame = bounds.insetBy(dx: 6, dy: 1.5)
         }
     }
 
-    func configure(systemImage: String?, text: String) {
+    func configure(systemImage: String?, text: String, isMonospaced: Bool = false) {
         iconView.image = systemImage.flatMap { UIImage(systemName: $0) }
         label.text = text
+        label.font = isMonospaced
+            ? .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+            : .systemFont(ofSize: 11, weight: .semibold)
         invalidateIntrinsicContentSize()
         setNeedsLayout()
     }

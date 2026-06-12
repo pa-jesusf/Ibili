@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct VideoCardOverflowMenu: View {
     let bvid: String
@@ -106,5 +107,114 @@ private struct VideoDislikeReasonChoice: Identifiable, Hashable {
 
     var id: String {
         "\(kind.rawValue):\(reason.id):\(reason.name)"
+    }
+}
+
+enum VideoCardOverflowUIKitAction {
+    case copyBVID
+    case watchLater
+    case visitOwner
+    case plainDislike
+    case undoDislike
+    case dislikeReason(FeedDislikeReasonDTO)
+    case feedbackReason(FeedDislikeReasonDTO)
+    case blockOwner
+}
+
+enum VideoCardOverflowMenuBuilder {
+    static func configureButton(_ button: UIButton) {
+        button.setImage(UIImage(systemName: "ellipsis"), for: .normal)
+        button.tintColor = UIColor.secondaryLabel
+        button.transform = CGAffineTransform(rotationAngle: .pi / 2)
+        button.showsMenuAsPrimaryAction = true
+        button.preferredMenuElementOrder = .fixed
+        button.accessibilityLabel = "更多操作"
+    }
+
+    static func makeMenu(
+        bvid: String,
+        author: String,
+        ownerMID: Int64,
+        dislikeReasons: [FeedDislikeReasonDTO],
+        feedbackReasons: [FeedDislikeReasonDTO],
+        actionHandler: @escaping (VideoCardOverflowUIKitAction) -> Void
+    ) -> UIMenu {
+        let trimmedBVID = bvid.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ownerName = author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "UP 主"
+            : author.trimmingCharacters(in: .whitespacesAndNewlines)
+        var children: [UIMenuElement] = []
+
+        if !trimmedBVID.isEmpty {
+            children.append(UIAction(title: trimmedBVID, image: UIImage(systemName: "doc.on.doc")) { _ in
+                actionHandler(.copyBVID)
+            })
+        } else {
+            children.append(UIAction(title: "复制 BV 号", image: UIImage(systemName: "doc.on.doc")) { _ in
+                actionHandler(.copyBVID)
+            })
+        }
+
+        children.append(UIAction(title: "稍后再看", image: UIImage(systemName: "clock")) { _ in
+            actionHandler(.watchLater)
+        })
+
+        children.append(UIAction(
+            title: "访问：\(ownerName)",
+            image: UIImage(systemName: "person.circle"),
+            attributes: ownerMID <= 0 ? [.disabled] : []
+        ) { _ in
+            actionHandler(.visitOwner)
+        })
+
+        children.append(dislikeMenu(
+            dislikeReasons: dislikeReasons,
+            feedbackReasons: feedbackReasons,
+            actionHandler: actionHandler
+        ))
+
+        children.append(UIAction(
+            title: "拉黑：\(ownerName)",
+            image: UIImage(systemName: "nosign"),
+            attributes: ownerMID <= 0 ? [.disabled, .destructive] : [.destructive]
+        ) { _ in
+            actionHandler(.blockOwner)
+        })
+
+        return UIMenu(children: children)
+    }
+
+    private static func dislikeMenu(
+        dislikeReasons: [FeedDislikeReasonDTO],
+        feedbackReasons: [FeedDislikeReasonDTO],
+        actionHandler: @escaping (VideoCardOverflowUIKitAction) -> Void
+    ) -> UIMenu {
+        var elements: [UIMenuElement] = []
+        elements.append(contentsOf: dislikeReasons.map { reason in
+            UIAction(title: reason.name, image: UIImage(systemName: "hand.thumbsdown")) { _ in
+                actionHandler(.dislikeReason(reason))
+            }
+        })
+        elements.append(contentsOf: feedbackReasons.map { reason in
+            UIAction(title: reason.name, image: UIImage(systemName: "exclamationmark.bubble")) { _ in
+                actionHandler(.feedbackReason(reason))
+            }
+        })
+
+        if elements.isEmpty {
+            elements.append(UIAction(title: "点踩", image: UIImage(systemName: "hand.thumbsdown")) { _ in
+                actionHandler(.plainDislike)
+            })
+        }
+
+        elements.append(UIAction(title: "撤销点踩", image: UIImage(systemName: "arrow.uturn.backward")) { _ in
+            actionHandler(.undoDislike)
+        })
+
+        return UIMenu(
+            title: "不感兴趣",
+            image: UIImage(systemName: "hand.thumbsdown"),
+            children: elements
+        )
     }
 }

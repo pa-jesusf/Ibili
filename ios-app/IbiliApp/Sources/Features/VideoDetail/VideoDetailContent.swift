@@ -100,6 +100,7 @@ struct VideoDetailContent: View {
             ScrollViewReader { proxy in
                 scrollContent(bottomContentInset: bottomContentInset)
                     .background(IbiliTheme.background)
+                    .ignoresSafeArea(.container, edges: .bottom)
                     .environment(\.commentViewportHeight, max(1, viewportProxy.size.height))
                     .environment(\.commentContentWidth, max(1, viewportProxy.size.width - 32))
                     .overlay(alignment: .bottom) {

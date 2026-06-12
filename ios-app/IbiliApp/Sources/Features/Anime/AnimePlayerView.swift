@@ -22,6 +22,7 @@ struct AnimePlayerView: View {
     @State private var commentsEpisodeID: Int64?
     @State private var isLoadingComments = false
     @State private var commentsErrorText: String?
+    @State private var floatingTabsHeight: CGFloat = 0
 
     let route: DeepLinkRouter.AnimePlayerRoute
 
@@ -35,7 +36,7 @@ struct AnimePlayerView: View {
             playerSurface
             contentArea
         }
-        .background(IbiliTheme.background)
+        .background(IbiliTheme.background.ignoresSafeArea(.container, edges: .bottom))
         .navigationTitle(route.episode.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -205,28 +206,45 @@ struct AnimePlayerView: View {
     }
 
     private var contentArea: some View {
-        ZStack(alignment: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    switch selectedContentTab {
-                    case .details:
-                        playerDetailContent
-                    case .comments:
-                        playerCommentContent
+        GeometryReader { proxy in
+            let bottomInset = max(24, floatingTabsHeight + proxy.safeAreaInsets.bottom + 12)
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        switch selectedContentTab {
+                        case .details:
+                            playerDetailContent
+                        case .comments:
+                            playerCommentContent
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 18)
+                    .padding(.bottom, bottomInset)
+                }
+                .scrollContentBackground(.hidden)
+                .ignoresSafeArea(.container, edges: .bottom)
+
+                DetailFloatingTabs(
+                    tabs: AnimePlayerContentTab.allCases,
+                    title: { $0.title },
+                    systemImage: { $0.systemImage },
+                    selection: $selectedContentTab,
+                    maxWidth: 260
+                )
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: AnimePlayerFloatingTabsHeightPreferenceKey.self,
+                            value: geo.size.height
+                        )
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 18)
-                .padding(.bottom, 86)
             }
-
-            DetailFloatingTabs(
-                tabs: AnimePlayerContentTab.allCases,
-                title: { $0.title },
-                systemImage: { $0.systemImage },
-                selection: $selectedContentTab,
-                maxWidth: 260
-            )
+            .background(IbiliTheme.background.ignoresSafeArea(.container, edges: .bottom))
+            .onPreferenceChange(AnimePlayerFloatingTabsHeightPreferenceKey.self) { value in
+                floatingTabsHeight = value
+            }
         }
     }
 
@@ -737,5 +755,13 @@ private struct AnimeEpisodeCommentHeader: View {
             }
             Spacer(minLength: 0)
         }
+    }
+}
+
+private struct AnimePlayerFloatingTabsHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

@@ -2380,6 +2380,8 @@ struct PlayerView: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            .background(IbiliTheme.background.ignoresSafeArea(.container, edges: .bottom))
+            .ignoresSafeArea(.container, edges: .bottom)
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

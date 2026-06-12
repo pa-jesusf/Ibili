@@ -79,7 +79,7 @@ where Item: Identifiable & Hashable, Content: View {
     func makeUIView(context: Context) -> UICollectionView {
         let collectionView = UICollectionView(
             frame: .zero,
-            collectionViewLayout: makeLayout(containerWidth: 1)
+            collectionViewLayout: makeLayout(containerWidth: 1, safeAreaInsets: .zero)
         )
         collectionView.backgroundColor = .clear
         collectionView.contentInsetAdjustmentBehavior = .never
@@ -117,7 +117,7 @@ where Item: Identifiable & Hashable, Content: View {
         Coordinator(parent: self)
     }
 
-    private func makeLayout(containerWidth: CGFloat) -> UICollectionViewLayout {
+    private func makeLayout(containerWidth: CGFloat, safeAreaInsets: UIEdgeInsets) -> UICollectionViewLayout {
         let flow = UICollectionViewFlowLayout()
         flow.sectionInset = UIEdgeInsets(
             top: layout.contentInsets.top,
@@ -146,7 +146,7 @@ where Item: Identifiable & Hashable, Content: View {
         }
         flow.headerReferenceSize = headerTitle == nil
             ? .zero
-            : CGSize(width: containerWidth, height: FeedSegmentedHeaderMetrics.expandedHeight)
+            : CGSize(width: containerWidth, height: safeAreaInsets.top + FeedSegmentedHeaderMetrics.expandedHeight)
         return flow
     }
 
@@ -156,9 +156,12 @@ where Item: Identifiable & Hashable, Content: View {
         var lastScrollToTopSignal = 0
         private var currentItems: [Item] = []
         private var lastBoundsWidth: CGFloat = 0
+        private var lastSafeAreaInsets: UIEdgeInsets = .zero
         private var lastLayout: VirtualizedCollectionLayout?
         private var lastHeaderTitle: String?
         private var hasRefreshControl = false
+        private var collapseState = FeedScrollCollapseState()
+        private var currentHeaderProgress: CGFloat = 0
 
         init(parent: VirtualizedCollectionView) {
             self.parent = parent
@@ -166,13 +169,19 @@ where Item: Identifiable & Hashable, Content: View {
 
         func applyLayoutIfNeeded(on collectionView: UICollectionView) {
             let width = collectionView.bounds.width
+            let safeInsets = resolvedSafeAreaInsets(for: collectionView)
             guard abs(width - lastBoundsWidth) > 0.5
+                    || safeInsets != lastSafeAreaInsets
                     || lastLayout != parent.layout
                     || lastHeaderTitle != parent.headerTitle else { return }
             lastBoundsWidth = width
+            lastSafeAreaInsets = safeInsets
             lastLayout = parent.layout
             lastHeaderTitle = parent.headerTitle
-            collectionView.setCollectionViewLayout(parent.makeLayout(containerWidth: max(width, 1)), animated: false)
+            collectionView.setCollectionViewLayout(
+                parent.makeLayout(containerWidth: max(width, 1), safeAreaInsets: safeInsets),
+                animated: false
+            )
         }
 
         func apply(items: [Item], animated: Bool) {
@@ -184,7 +193,11 @@ where Item: Identifiable & Hashable, Content: View {
             let oldCount = oldItems.count
             currentItems = items
 
-            guard canAppend(oldItems: oldItems, newItems: items), items.count > oldCount else {
+            guard canAppend(oldItems: oldItems, newItems: items),
+                  items.count > oldCount,
+                  collectionView.window != nil,
+                  collectionView.numberOfSections > 0,
+                  collectionView.numberOfItems(inSection: 0) == oldCount else {
                 collectionView.reloadData()
                 return
             }
@@ -249,6 +262,7 @@ where Item: Identifiable & Hashable, Content: View {
                 for: indexPath
             ) as! VirtualizedCollectionHeaderView
             view.configure(title: parent.headerTitle ?? "")
+            view.setCollapseProgress(currentHeaderProgress)
             return view
         }
 
@@ -281,17 +295,38 @@ where Item: Identifiable & Hashable, Content: View {
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            parent.onScrollOffsetChange(scrollView.contentOffset.y)
+            let offset = scrollView.contentOffset.y
+            let collapse = collapseState.update(rawOffset: offset)
+            currentHeaderProgress = collapse.headerProgress
+            updateVisibleHeader(collapseProgress: collapse.headerProgress)
+            parent.onScrollOffsetChange(offset)
         }
 
         func scrollToTop(_ collectionView: UICollectionView) {
             let top = CGPoint(x: 0, y: -collectionView.adjustedContentInset.top)
             collectionView.setContentOffset(top, animated: false)
+            collapseState.reset()
+            currentHeaderProgress = 0
+            updateVisibleHeader(collapseProgress: 0)
             parent.onScrollOffsetChange(0)
         }
 
         @objc private func refreshPulled() {
             parent.onRefresh?()
+        }
+
+        private func resolvedSafeAreaInsets(for collectionView: UICollectionView) -> UIEdgeInsets {
+            if let window = collectionView.window {
+                return window.safeAreaInsets
+            }
+            return collectionView.safeAreaInsets
+        }
+
+        private func updateVisibleHeader(collapseProgress: CGFloat) {
+            guard let collectionView else { return }
+            collectionView.visibleSupplementaryViews(ofKind: UICollectionView.elementKindSectionHeader)
+                .compactMap { $0 as? VirtualizedCollectionHeaderView }
+                .forEach { $0.setCollapseProgress(collapseProgress) }
         }
     }
 }
@@ -299,6 +334,7 @@ where Item: Identifiable & Hashable, Content: View {
 private final class VirtualizedCollectionHeaderView: UICollectionReusableView {
     private let gradientView = FeedCollectionHeaderGradientView()
     private let titleLabel = UILabel()
+    private var collapseProgress: CGFloat = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -318,15 +354,19 @@ private final class VirtualizedCollectionHeaderView: UICollectionReusableView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        let topInset = resolvedSafeAreaTopInset()
+        let p = min(1, max(0, collapseProgress))
+        let titleSize = 34 - p * 17
+        titleLabel.font = .systemFont(ofSize: titleSize, weight: p > 0.5 ? .semibold : .bold)
         gradientView.frame = CGRect(
             x: 0,
-            y: -24,
+            y: -topInset - 24,
             width: bounds.width,
-            height: FeedSegmentedHeaderMetrics.expandedHeight + 44
+            height: topInset + FeedSegmentedHeaderMetrics.expandedHeight + 44
         )
         titleLabel.frame = CGRect(
             x: 16,
-            y: 52,
+            y: topInset + 52 - p * 35,
             width: bounds.width - 32,
             height: 40
         )
@@ -334,5 +374,23 @@ private final class VirtualizedCollectionHeaderView: UICollectionReusableView {
 
     func configure(title: String) {
         titleLabel.text = title
+        setNeedsLayout()
+    }
+
+    func setCollapseProgress(_ progress: CGFloat) {
+        let clamped = min(1, max(0, progress))
+        guard abs(clamped - collapseProgress) > 0.01 else { return }
+        collapseProgress = clamped
+        setNeedsLayout()
+    }
+
+    private func resolvedSafeAreaTopInset() -> CGFloat {
+        if let window {
+            return window.safeAreaInsets.top
+        }
+        if let superview {
+            return superview.safeAreaInsets.top
+        }
+        return safeAreaInsets.top
     }
 }
