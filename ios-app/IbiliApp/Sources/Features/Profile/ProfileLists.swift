@@ -34,6 +34,37 @@ private func profileFields(_ fields: [String], match query: String) -> Bool {
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
 }
 
+private struct ProfileVideoListSurface<Item: Identifiable, RowContent: View>: View where Item.ID: Hashable {
+    let items: [Item]
+    let isLoading: Bool
+    let isEnd: Bool
+    var showsEndText: Bool = true
+    var onReachEnd: () -> Void
+    @ViewBuilder let rowContent: (Item) -> RowContent
+
+    var body: some View {
+        ScrollView {
+            PagedCollectionSurface(
+                items: items,
+                layout: .list(spacing: 0),
+                isLoading: isLoading,
+                isEnd: isEnd,
+                prefetchThreshold: 3,
+                endText: showsEndText ? "已经到底了" : nil,
+                onReachEnd: onReachEnd
+            ) {
+                EmptyView()
+            } itemContent: { index, item in
+                rowContent(item)
+                    .padding(.horizontal, 12)
+                if index < items.count - 1 {
+                    Divider().padding(.leading, 144)
+                }
+            }
+        }
+    }
+}
+
 private struct ProfileInlineSearchBar: View {
     let placeholder: String
     @Binding var text: String
@@ -108,49 +139,34 @@ struct HistoryListView: View {
                     emptyState(title: isSearching ? "没有搜索结果" : "暂无观看记录", symbol: "clock")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
-                                Button {
-                                    pushVideo(router,
-                                              aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                              title: item.title, cover: item.cover,
-                                              author: item.author, durationSec: item.durationSec,
-                                              prefersSplitRootSelection: prefersSplitRootSelection)
-                                } label: {
-                                    CompactVideoRow(
-                                        cover: item.cover,
-                                        title: item.title,
-                                        author: item.author,
-                                        durationSec: item.durationSec,
-                                        play: 0, danmaku: 0,
-                                        progress: progressFraction(item),
-                                        durationOverride: progressLabel(item)
-                                    )
+                    ProfileVideoListSurface(
+                        items: displayedItems,
+                        isLoading: displayedIsLoading,
+                        isEnd: displayedIsEnd,
+                        onReachEnd: {
+                            Task {
+                                if isSearching {
+                                    await vm.loadMoreSearch(keyword: normalizedProfileSearchQuery(searchText))
+                                } else {
+                                    await vm.loadMore()
                                 }
-                                .buttonStyle(.plain)
-                                .padding(.horizontal, 12)
-                                .onAppear {
-                                    if !displayedIsEnd, index >= max(0, displayedItems.count - 3) {
-                                        Task {
-                                            if isSearching {
-                                                await vm.loadMoreSearch(keyword: normalizedProfileSearchQuery(searchText))
-                                            } else {
-                                                await vm.loadMore()
-                                            }
-                                        }
-                                    }
-                                }
-                                if index < displayedItems.count - 1 {
-                                    Divider().padding(.leading, 144)
-                                }
-                            }
-                            if displayedIsLoading {
-                                ProgressView().padding()
-                            } else if displayedIsEnd {
-                                Text("已经到底了").font(.caption).foregroundStyle(.secondary).padding()
                             }
                         }
+                    ) { item in
+                        Button {
+                            pushVideo(router,
+                                      aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                      title: item.title, cover: item.cover,
+                                      author: item.author, durationSec: item.durationSec,
+                                      prefersSplitRootSelection: prefersSplitRootSelection)
+                        } label: {
+                            CompactVideoRow(
+                                model: MediaCardRenderModel(history: item),
+                                progress: progressFraction(item),
+                                durationOverride: progressLabel(item)
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -317,32 +333,26 @@ struct WatchLaterListView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                                Button {
-                                    pushVideo(router,
-                                              aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                              title: item.title, cover: item.cover,
-                                              author: item.author, durationSec: item.durationSec,
-                                              prefersSplitRootSelection: prefersSplitRootSelection)
-                                } label: {
-                                    CompactVideoRow(
-                                        cover: item.cover,
-                                        title: item.title,
-                                        author: item.author,
-                                        durationSec: item.durationSec,
-                                        play: 0, danmaku: 0,
-                                        progress: fraction(item)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .padding(.horizontal, 12)
-                                if index < vm.items.count - 1 {
-                                    Divider().padding(.leading, 144)
-                                }
-                            }
+                    ProfileVideoListSurface(
+                        items: vm.items,
+                        isLoading: vm.isLoading,
+                        isEnd: true,
+                        showsEndText: false,
+                        onReachEnd: {}
+                    ) { item in
+                        Button {
+                            pushVideo(router,
+                                      aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                      title: item.title, cover: item.cover,
+                                      author: item.author, durationSec: item.durationSec,
+                                      prefersSplitRootSelection: prefersSplitRootSelection)
+                        } label: {
+                            CompactVideoRow(
+                                model: MediaCardRenderModel(watchLater: item),
+                                progress: fraction(item)
+                            )
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -525,44 +535,34 @@ private struct FavoriteRootSearchResultsView: View {
                 emptyState(title: "没有搜索结果", symbol: "magnifyingglass")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                            Button {
-                                pushVideo(router,
-                                          aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                          title: item.title, cover: item.cover,
-                                          author: item.author, durationSec: item.durationSec,
-                                          play: item.play, danmaku: item.danmaku,
-                                          prefersSplitRootSelection: prefersSplitRootSelection)
-                            } label: {
-                                CompactVideoRow(
-                                    cover: item.cover,
-                                    title: item.title,
-                                    author: item.author,
-                                    durationSec: item.durationSec,
-                                    play: item.play,
-                                    danmaku: item.danmaku
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal, 12)
-                            .onAppear {
-                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                    Task {
-                                        await vm.loadMore(folderId: folderId, keyword: keyword, allFolders: true)
-                                    }
-                                }
-                            }
-                            if index < vm.items.count - 1 {
-                                Divider().padding(.leading, 144)
-                            }
-                        }
-                        if vm.isLoading { ProgressView().padding() }
+                ProfileVideoListSurface(
+                    items: vm.items,
+                    isLoading: vm.isLoading,
+                    isEnd: vm.isEnd,
+                    onReachEnd: {
+                        Task { await vm.loadMore(folderId: folderId, keyword: keyword, allFolders: true) }
                     }
+                ) { item in
+                    favoriteResourceButton(item)
                 }
             }
         }
+    }
+
+    private func favoriteResourceButton(_ item: FavResourceItemDTO) -> some View {
+        Button {
+            pushVideo(router,
+                      aid: item.aid, bvid: item.bvid, cid: item.cid,
+                      title: item.title, cover: item.cover,
+                      author: item.author, durationSec: item.durationSec,
+                      play: item.play, danmaku: item.danmaku,
+                      prefersSplitRootSelection: prefersSplitRootSelection)
+        } label: {
+            CompactVideoRow(
+                model: MediaCardRenderModel(favorite: item)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -589,44 +589,20 @@ struct FavoriteResourcesView: View {
                     emptyState(title: isSearching ? "没有搜索结果" : "收藏夹是空的", symbol: "star")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                                Button {
-                                    pushVideo(router,
-                                              aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                              title: item.title, cover: item.cover,
-                                              author: item.author, durationSec: item.durationSec,
-                                              play: item.play, danmaku: item.danmaku,
-                                              prefersSplitRootSelection: prefersSplitRootSelection)
-                                } label: {
-                                    CompactVideoRow(
-                                        cover: item.cover,
-                                        title: item.title,
-                                        author: item.author,
-                                        durationSec: item.durationSec,
-                                        play: item.play,
-                                        danmaku: item.danmaku
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .padding(.horizontal, 12)
-                                .onAppear {
-                                    if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                        Task {
-                                            await vm.loadMore(
-                                                folderId: folderId,
-                                                keyword: normalizedProfileSearchQuery(searchText)
-                                            )
-                                        }
-                                    }
-                                }
-                                if index < vm.items.count - 1 {
-                                    Divider().padding(.leading, 144)
-                                }
+                    ProfileVideoListSurface(
+                        items: vm.items,
+                        isLoading: vm.isLoading,
+                        isEnd: vm.isEnd,
+                        onReachEnd: {
+                            Task {
+                                await vm.loadMore(
+                                    folderId: folderId,
+                                    keyword: normalizedProfileSearchQuery(searchText)
+                                )
                             }
-                            if vm.isLoading { ProgressView().padding() }
                         }
+                    ) { item in
+                        favoriteResourceButton(item)
                     }
                 }
             }
@@ -651,6 +627,22 @@ struct FavoriteResourcesView: View {
             guard !Task.isCancelled else { return }
             await vm.search(folderId: folderId, keyword: keyword)
         }
+    }
+
+    private func favoriteResourceButton(_ item: FavResourceItemDTO) -> some View {
+        Button {
+            pushVideo(router,
+                      aid: item.aid, bvid: item.bvid, cid: item.cid,
+                      title: item.title, cover: item.cover,
+                      author: item.author, durationSec: item.durationSec,
+                      play: item.play, danmaku: item.danmaku,
+                      prefersSplitRootSelection: prefersSplitRootSelection)
+        } label: {
+            CompactVideoRow(
+                model: MediaCardRenderModel(favorite: item)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -886,40 +878,28 @@ struct SubscriptionResourcesView: View {
                 emptyState(title: "订阅内容为空", symbol: "rectangle.stack")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                            Button {
-                                pushVideo(router,
-                                          aid: item.aid, bvid: item.bvid, cid: item.cid,
-                                          title: item.title, cover: item.cover,
-                                          author: folder.upperName,
-                                          durationSec: item.durationSec,
-                                          play: item.play, danmaku: item.danmaku,
-                                          prefersSplitRootSelection: prefersSplitRootSelection)
-                            } label: {
-                                CompactVideoRow(
-                                    cover: item.cover,
-                                    title: item.title,
-                                    author: folder.upperName,
-                                    durationSec: item.durationSec,
-                                    play: item.play,
-                                    danmaku: item.danmaku
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal, 12)
-                            .onAppear {
-                                if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                    Task { await vm.loadMore(id: folder.folderID) }
-                                }
-                            }
-                            if index < vm.items.count - 1 {
-                                Divider().padding(.leading, 144)
-                            }
-                        }
-                        if vm.isLoading { ProgressView().padding() }
+                ProfileVideoListSurface(
+                    items: vm.items,
+                    isLoading: vm.isLoading,
+                    isEnd: vm.isEnd,
+                    onReachEnd: {
+                        Task { await vm.loadMore(id: folder.folderID) }
                     }
+                ) { item in
+                    Button {
+                        pushVideo(router,
+                                  aid: item.aid, bvid: item.bvid, cid: item.cid,
+                                  title: item.title, cover: item.cover,
+                                  author: folder.upperName,
+                                  durationSec: item.durationSec,
+                                  play: item.play, danmaku: item.danmaku,
+                                  prefersSplitRootSelection: prefersSplitRootSelection)
+                    } label: {
+                        CompactVideoRow(
+                            model: MediaCardRenderModel(subscription: item, author: folder.upperName)
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }

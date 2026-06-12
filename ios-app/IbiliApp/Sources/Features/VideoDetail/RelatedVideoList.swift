@@ -16,49 +16,31 @@ struct RelatedVideoList: View {
     let onReachEnd: () -> Void
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            if items.isEmpty, !isLoadingMore {
-                emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 32)
-            } else {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    Button {
-                        onTap(adapt(item))
-                    } label: {
-                        RelatedRow(item: item)
-                            .equatable()
-                    }
-                    .buttonStyle(.plain)
-                    .onAppear {
-                        if index >= max(0, items.count - 4), !isEnd {
-                            onReachEnd()
-                        }
-                        prefetchCovers(around: index)
-                    }
-
-                    if index < items.count - 1 {
-                        Divider()
-                    }
-                }
+        PagedCollectionSurface(
+            items: items,
+            layout: .list(spacing: 0),
+            isLoading: isLoadingMore,
+            isEnd: isEnd,
+            prefetchThreshold: 4,
+            onReachEnd: onReachEnd,
+            onItemAppear: { index, _ in
+                prefetchCovers(around: index)
             }
+        ) {
+            emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 32)
+        } itemContent: { index, item in
+            Button {
+                onTap(adapt(item))
+            } label: {
+                RelatedRow(item: item)
+                    .equatable()
+            }
+            .buttonStyle(.plain)
 
-            if isLoadingMore {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                .padding(.vertical, 14)
-            } else if isEnd, !items.isEmpty {
-                HStack {
-                    Spacer()
-                    Text("已经到底了")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(.vertical, 14)
+            if index < items.count - 1 {
+                Divider()
             }
         }
     }
@@ -106,12 +88,7 @@ private struct RelatedRow: View, Equatable {
 
     var body: some View {
         CompactVideoRow(
-            cover: item.cover,
-            title: item.title,
-            author: item.author,
-            durationSec: item.durationSec,
-            play: item.play,
-            danmaku: item.danmaku
+            model: MediaCardRenderModel(related: item)
         )
     }
 }

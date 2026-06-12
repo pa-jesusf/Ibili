@@ -16,20 +16,34 @@ import SwiftUI
 /// "history" surface can render the upstream resume bar without
 /// needing a second component.
 struct CompactVideoRow: View {
-    let cover: String
-    let title: String
-    let author: String
-    let durationSec: Int64
-    let play: Int64
-    let danmaku: Int64
+    let model: MediaCardRenderModel
     /// Optional resume-progress (0…1). Zero hides the bar entirely.
     var progress: Double = 0
     /// Optional override for the duration pill (e.g. "已看完", "看到 3 分钟").
     /// Falls back to formatted duration when nil.
     var durationOverride: String? = nil
 
-    var body: some View {
-        MediaRowView(
+    init(
+        model: MediaCardRenderModel,
+        progress: Double = 0,
+        durationOverride: String? = nil
+    ) {
+        self.model = model
+        self.progress = progress
+        self.durationOverride = durationOverride
+    }
+
+    init(
+        cover: String,
+        title: String,
+        author: String,
+        durationSec: Int64,
+        play: Int64,
+        danmaku: Int64,
+        progress: Double = 0,
+        durationOverride: String? = nil
+    ) {
+        self.init(
             model: MediaCardRenderModel(
                 identity: FeedStableIdentity(aid: title.hashStableInt64, bvid: cover),
                 title: title,
@@ -41,6 +55,14 @@ struct CompactVideoRow: View {
                 imageQuality: 75,
                 meta: .standard
             ),
+            progress: progress,
+            durationOverride: durationOverride
+        )
+    }
+
+    var body: some View {
+        MediaRowView(
+            model: model,
             progress: progress,
             durationOverride: durationOverride
         )

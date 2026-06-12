@@ -165,4 +165,79 @@ struct MediaCardRenderModel: Hashable, Identifiable {
             meta: meta
         )
     }
+
+    init(
+        history item: HistoryItemDTO,
+        imageQuality: Int? = 75,
+        meta: FeedCardMetaConfig = .standard
+    ) {
+        self.init(
+            identity: FeedStableIdentity(aid: item.aid, bvid: item.bvid, cid: item.cid),
+            title: item.title,
+            cover: item.cover,
+            author: item.author,
+            durationSec: item.durationSec,
+            play: 0,
+            danmaku: 0,
+            imageQuality: imageQuality,
+            meta: meta
+        )
+    }
+
+    init(
+        watchLater item: WatchLaterItemDTO,
+        imageQuality: Int? = 75,
+        meta: FeedCardMetaConfig = .standard
+    ) {
+        self.init(
+            identity: FeedStableIdentity(aid: item.aid, bvid: item.bvid, cid: item.cid),
+            title: item.title,
+            cover: item.cover,
+            author: item.author,
+            durationSec: item.durationSec,
+            play: 0,
+            danmaku: 0,
+            imageQuality: imageQuality,
+            meta: meta
+        )
+    }
+
+    init(
+        favorite item: FavResourceItemDTO,
+        imageQuality: Int? = 75,
+        meta: FeedCardMetaConfig = .standard
+    ) {
+        self.init(
+            identity: FeedStableIdentity(aid: item.aid, bvid: item.bvid, cid: item.cid),
+            title: item.title,
+            cover: item.cover,
+            author: item.author,
+            durationSec: item.durationSec,
+            play: item.play,
+            danmaku: item.danmaku,
+            pubdate: item.pubdate,
+            imageQuality: imageQuality,
+            meta: meta
+        )
+    }
+
+    init(
+        subscription item: SubscriptionResourceDTO,
+        author: String,
+        imageQuality: Int? = 75,
+        meta: FeedCardMetaConfig = .standard
+    ) {
+        self.init(
+            identity: FeedStableIdentity(aid: item.aid, bvid: item.bvid, cid: item.cid),
+            title: item.title,
+            cover: item.cover,
+            author: author,
+            durationSec: item.durationSec,
+            play: item.play,
+            danmaku: item.danmaku,
+            pubdate: item.pubdate,
+            imageQuality: imageQuality,
+            meta: meta
+        )
+    }
 }

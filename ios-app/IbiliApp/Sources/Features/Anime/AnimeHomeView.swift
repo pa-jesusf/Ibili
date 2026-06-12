@@ -53,7 +53,7 @@ struct AnimeHomeView: View {
     @State private var switcherCollapseProgress: CGFloat = 0
 
     var body: some View {
-        PageChrome(
+        FeedChrome(
             title: "追番",
             tabs: Array(AnimeHomeSection.allCases),
             tabTitle: { $0.title },

@@ -17,7 +17,7 @@ struct HomeView: View {
     }
 
     var body: some View {
-        PageChrome(
+        FeedChrome(
             title: "主页",
             tabs: Array(HomeFeedSection.allCases),
             tabTitle: { $0.title },
@@ -228,24 +228,23 @@ private struct HomeFeedPage: View {
                                columnCount: Int,
                                metrics: HomeSwiftUIGridMetrics,
                                usesTopTrailingDuration: Bool) -> some View {
-        LazyVGrid(columns: columns, alignment: .center, spacing: metrics.rowSpacing) {
-            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                feedCard(item: item, index: index, metrics: metrics, usesTopTrailingDuration: usesTopTrailingDuration)
+        PagedCollectionSurface(
+            items: vm.items,
+            layout: .grid(columns: columns, spacing: metrics.rowSpacing, footerColumnSpan: max(1, columnCount)),
+            isLoading: vm.isLoading,
+            isEnd: vm.isEnd,
+            prefetchThreshold: 4,
+            onReachEnd: {
+                Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
+            },
+            onItemAppear: { index, item in
+                prefetch.visibleItemsChanged(visibleItems(around: index))
+                prefetchCovers(around: item, cardWidth: metrics.cardWidth)
             }
-
-            if vm.isLoading && !vm.items.isEmpty {
-                ProgressView()
-                    .gridCellColumns(max(1, columnCount))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            } else if vm.isEnd && !vm.items.isEmpty {
-                Text("已经到底了")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .gridCellColumns(max(1, columnCount))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            }
+        ) {
+            EmptyView()
+        } itemContent: { _, item in
+            feedCard(item: item, metrics: metrics, usesTopTrailingDuration: usesTopTrailingDuration)
         }
         .padding(.horizontal, metrics.horizontalPadding)
         .padding(.top, 8)
@@ -253,7 +252,6 @@ private struct HomeFeedPage: View {
     }
 
     private func feedCard(item: FeedItemDTO,
-                          index: Int,
                           metrics: HomeSwiftUIGridMetrics,
                           usesTopTrailingDuration: Bool) -> some View {
         VideoCardView(
@@ -272,13 +270,6 @@ private struct HomeFeedPage: View {
         .onTapGesture {
             prefetch.touchDown(item)
             openFeedItem(item)
-        }
-        .onAppear {
-            if !vm.isEnd, index >= max(0, vm.items.count - 4) {
-                Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
-            }
-            prefetch.visibleItemsChanged(visibleItems(around: index))
-            prefetchCovers(around: item, cardWidth: metrics.cardWidth)
         }
     }
 
@@ -553,8 +544,18 @@ private struct HomeLiveFeedPage: View {
                         emptyState(title: "暂无直播", symbol: "dot.radiowaves.left.and.right")
                             .padding(.top, 28)
                     } else {
-                        LazyVGrid(columns: gridItems, alignment: .center, spacing: metrics.rowSpacing) {
-                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                        PagedCollectionSurface(
+                            items: vm.items,
+                            layout: .grid(columns: gridItems, spacing: metrics.rowSpacing, footerColumnSpan: max(1, cols)),
+                            isLoading: vm.isLoading,
+                            isEnd: vm.isEnd,
+                            prefetchThreshold: 4,
+                            onReachEnd: {
+                                Task { await vm.loadMore() }
+                            }
+                        ) {
+                            EmptyView()
+                        } itemContent: { _, item in
                                 LiveCardView(
                                     item: item,
                                     cardWidth: metrics.cardWidth,
@@ -564,26 +565,6 @@ private struct HomeLiveFeedPage: View {
                                 .onTapGesture {
                                     openLiveItem(item)
                                 }
-                                .onAppear {
-                                    if !vm.isEnd, index >= max(0, vm.items.count - 4) {
-                                        Task { await vm.loadMore() }
-                                    }
-                                }
-                            }
-
-                            if vm.isLoading && !vm.items.isEmpty {
-                                ProgressView()
-                                    .gridCellColumns(max(1, cols))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 14)
-                            } else if vm.isEnd && !vm.items.isEmpty {
-                                Text("已经到底了")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .gridCellColumns(max(1, cols))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 14)
-                            }
                         }
                         .padding(.horizontal, metrics.horizontalPadding)
                         .padding(.top, 8)

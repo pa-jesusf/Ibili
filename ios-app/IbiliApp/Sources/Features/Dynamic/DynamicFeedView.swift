@@ -149,7 +149,7 @@ struct DynamicFeedView: View {
     }
 
     var body: some View {
-        PageChrome(
+        FeedChrome(
             title: "动态",
             tabs: Array(DynamicFeedScope.allCases),
             tabTitle: { $0.title },

@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct PageChrome<Tab: Hashable & Identifiable, Content: View>: View {
+struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
     let title: String
     let tabs: [Tab]
     let tabTitle: (Tab) -> String
