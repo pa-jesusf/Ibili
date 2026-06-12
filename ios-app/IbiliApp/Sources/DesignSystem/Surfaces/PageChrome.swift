@@ -91,7 +91,7 @@ struct FeedScrollPage<Content: View>: View {
     let coordinateSpace: String
     let scrollToTopSignal: Int
     @Binding var headerCollapseProgress: CGFloat
-    @Binding var switcherCollapseProgress: CGFloat
+    private let switcherCollapseProgress: Binding<CGFloat>?
     var showsRefresh: Bool = false
     var onRefresh: (() async -> Void)?
     let content: Content
@@ -101,7 +101,7 @@ struct FeedScrollPage<Content: View>: View {
         coordinateSpace: String,
         scrollToTopSignal: Int = 0,
         headerCollapseProgress: Binding<CGFloat>,
-        switcherCollapseProgress: Binding<CGFloat>,
+        switcherCollapseProgress: Binding<CGFloat>? = nil,
         showsRefresh: Bool = false,
         onRefresh: (() async -> Void)? = nil,
         @ViewBuilder content: () -> Content
@@ -110,7 +110,7 @@ struct FeedScrollPage<Content: View>: View {
         self.coordinateSpace = coordinateSpace
         self.scrollToTopSignal = scrollToTopSignal
         self._headerCollapseProgress = headerCollapseProgress
-        self._switcherCollapseProgress = switcherCollapseProgress
+        self.switcherCollapseProgress = switcherCollapseProgress
         self.showsRefresh = showsRefresh
         self.onRefresh = onRefresh
         self.content = content()
@@ -131,7 +131,7 @@ struct FeedScrollPage<Content: View>: View {
                     scrollProxy.scrollTo(topAnchorID, anchor: .top)
                 }
                 headerCollapseProgress = 0
-                switcherCollapseProgress = 0
+                switcherCollapseProgress?.wrappedValue = 0
             }
         }
     }
@@ -146,7 +146,7 @@ struct FeedScrollPage<Content: View>: View {
             content()
         }
         .coordinateSpace(name: coordinateSpace)
-        .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: $switcherCollapseProgress))
+        .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: switcherCollapseProgress ?? .constant(0)))
         .modifier(ProMotionScrollHint())
         .scrollContentBackground(.hidden)
 

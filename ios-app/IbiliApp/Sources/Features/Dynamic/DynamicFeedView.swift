@@ -158,7 +158,6 @@ struct DynamicFeedView: View {
             switcherCollapseProgress: $switcherCollapseProgress
         ) {
             DynamicFeedPage(
-                scope: $scope,
                 collapseProgress: $headerCollapseProgress,
                 switcherProgress: $switcherCollapseProgress,
                 vm: activeViewModel,
@@ -205,7 +204,6 @@ struct DynamicFeedView: View {
 }
 
 private struct DynamicFeedPage: View {
-    @Binding var scope: DynamicFeedScope
     @Binding var collapseProgress: CGFloat
     @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: DynamicFeedViewModel
@@ -227,76 +225,61 @@ private struct DynamicFeedPage: View {
             let shouldCenterWideFeed = isWidePad && !splitRootIsActive
             let feedWidth = usesPreviewWidth ? (previewWidth ?? geo.size.width) : (shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width)
             let contentWidth = DynamicLayout.contentWidth(containerWidth: feedWidth)
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        Color.clear.frame(height: 0).id("dynamic-feed-top")
-                        if #unavailable(iOS 18.0) {
-                            ScrollHeaderOffsetReader(coordinateSpace: "dynamic-feed-scroll")
-                        }
-
-                        FeedTitleHeader(
-                            title: "动态",
-                            collapseProgress: collapseProgress,
-                            showsBackground: false
-                        )
-
-                        if vm.items.isEmpty && vm.isLoading {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 28)
-                        } else if vm.items.isEmpty {
-                            emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
-                                .padding(.top, 18)
-                        } else {
-                            LazyVStack(spacing: 14) {
-                                ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
-                                    DynamicItemCard(
-                                        item: item,
-                                        contentWidth: contentWidth,
-                                        onOpenDetail: onOpenDetail
-                                    )
-                                    .onAppear {
-                                        if !vm.isEnd, index >= max(0, vm.items.count - 3) {
-                                            Task { await vm.loadMore() }
-                                        }
+            FeedScrollPage(
+                title: "动态",
+                coordinateSpace: "dynamic-feed-scroll",
+                scrollToTopSignal: scrollToTopSignal,
+                headerCollapseProgress: $collapseProgress,
+                switcherCollapseProgress: $switcherProgress,
+                showsRefresh: true,
+                onRefresh: {
+                    await vm.loadInitial(force: true)
+                }
+            ) {
+                VStack(spacing: 0) {
+                    if vm.items.isEmpty && vm.isLoading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 28)
+                    } else if vm.items.isEmpty {
+                        emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
+                            .padding(.top, 18)
+                    } else {
+                        LazyVStack(spacing: 14) {
+                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                                DynamicItemCard(
+                                    item: item,
+                                    contentWidth: contentWidth,
+                                    onOpenDetail: onOpenDetail
+                                )
+                                .onAppear {
+                                    if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                        Task { await vm.loadMore() }
                                     }
                                 }
-                                if vm.isLoading {
-                                    ProgressView().padding()
-                                } else if vm.isEnd {
-                                    Text("已经到底了")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .padding()
-                                }
                             }
-                            .padding(.horizontal, DynamicLayout.outerPad)
-                            .padding(.top, 8)
-                            .padding(.bottom, 32)
+                            if vm.isLoading {
+                                ProgressView().padding()
+                            } else if vm.isEnd {
+                                Text("已经到底了")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding()
+                            }
                         }
+                        .padding(.horizontal, DynamicLayout.outerPad)
+                        .padding(.top, 8)
+                        .padding(.bottom, 32)
                     }
-                    .frame(width: feedWidth, alignment: .top)
-                    .frame(maxWidth: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
                 }
-                .onChange(of: scrollToTopSignal) { _ in
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                        scrollProxy.scrollTo("dynamic-feed-top", anchor: .top)
-                    }
-                    collapseProgress = 0
-                    switcherProgress = 0
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .contentShape(Rectangle())
-                .coordinateSpace(name: "dynamic-feed-scroll")
-                .modifier(ScrollOffsetCollapseDriver(progress: $collapseProgress, switcherProgress: $switcherProgress))
-                .modifier(ProMotionScrollHint())
-                .scrollContentBackground(.hidden)
-                .transaction { $0.animation = nil }
+                .frame(width: feedWidth, alignment: .top)
+                .frame(maxWidth: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .contentShape(Rectangle())
+            .transaction { $0.animation = nil }
         }
         .task(id: vm.scope) { await vm.loadInitial() }
-        .refreshable { await vm.loadInitial(force: true) }
     }
 }
 

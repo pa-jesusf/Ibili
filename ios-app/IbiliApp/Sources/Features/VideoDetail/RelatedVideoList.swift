@@ -12,7 +12,6 @@ struct RelatedVideoList: View {
     let items: [RelatedVideoItemDTO]
     let isLoadingMore: Bool
     let isEnd: Bool
-    var bottomContentInset: CGFloat = 24
     let onTap: (FeedItemDTO) -> Void
     let onReachEnd: () -> Void
 
@@ -62,7 +61,6 @@ struct RelatedVideoList: View {
                 .padding(.vertical, 14)
             }
         }
-        .padding(.bottom, max(24, bottomContentInset))
     }
 
     private func adapt(_ r: RelatedVideoItemDTO) -> FeedItemDTO {

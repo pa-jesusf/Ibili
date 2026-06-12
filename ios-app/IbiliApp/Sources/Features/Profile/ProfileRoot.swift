@@ -25,40 +25,24 @@ struct ProfileRoot: View {
 
     var body: some View {
         TitlePageChrome(headerCollapseProgress: $headerCollapseProgress) {
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    Color.clear.frame(height: 0).id("profile-top")
-                    if #unavailable(iOS 18.0) {
-                        ScrollHeaderOffsetReader(coordinateSpace: "profile-scroll")
-                    }
-
-                    FeedTitleHeader(
-                        title: "我的",
-                        collapseProgress: headerCollapseProgress,
-                        showsBackground: false
-                    )
-
-                    LazyVStack(spacing: 16) {
-                        ProfileHeaderCard(card: loader.card, mid: session.mid)
-                        ProfileQuickActions(mid: session.mid)
-                        ProfileSystemSection()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-                    .padding(.bottom, 32)
-                }
-                .coordinateSpace(name: "profile-scroll")
-                .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress))
-                .scrollContentBackground(.hidden)
-                .refreshable {
+            FeedScrollPage(
+                title: "我的",
+                coordinateSpace: "profile-scroll",
+                scrollToTopSignal: tabReselect.profile,
+                headerCollapseProgress: $headerCollapseProgress,
+                showsRefresh: true,
+                onRefresh: {
                     await loader.reload(mid: session.mid)
                 }
-                .onChange(of: tabReselect.profile) { _ in
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                        scrollProxy.scrollTo("profile-top", anchor: .top)
-                    }
-                    headerCollapseProgress = 0
+            ) {
+                LazyVStack(spacing: 16) {
+                    ProfileHeaderCard(card: loader.card, mid: session.mid)
+                    ProfileQuickActions(mid: session.mid)
+                    ProfileSystemSection()
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 32)
             }
         }
         .task(id: session.mid) {

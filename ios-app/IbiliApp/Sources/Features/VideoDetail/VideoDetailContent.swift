@@ -332,7 +332,6 @@ struct VideoDetailContent: View {
                             items: vm.related,
                             isLoadingMore: vm.isLoadingMoreRelated,
                             isEnd: vm.relatedIsEnd,
-                            bottomContentInset: bottomContentInset,
                             onTap: { feedItem in
                                 router.open(feedItem)
                             },
