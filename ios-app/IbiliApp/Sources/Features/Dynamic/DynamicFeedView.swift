@@ -134,7 +134,6 @@ private func openVideo(_ router: DeepLinkRouter, video: DynamicVideoDTO, authorN
 struct DynamicFeedView: View {
     @State private var scope: DynamicFeedScope = .all
     @State private var headerCollapseProgress: CGFloat = 0
-    @State private var switcherCollapseProgress: CGFloat = 0
     @StateObject private var allVM: DynamicFeedViewModel
     @StateObject private var videoVM: DynamicFeedViewModel
     @EnvironmentObject private var router: DeepLinkRouter
@@ -154,12 +153,10 @@ struct DynamicFeedView: View {
             tabs: Array(DynamicFeedScope.allCases),
             tabTitle: { $0.title },
             selection: $scope,
-            headerCollapseProgress: $headerCollapseProgress,
-            switcherCollapseProgress: $switcherCollapseProgress
+            headerCollapseProgress: $headerCollapseProgress
         ) {
             DynamicFeedPage(
                 collapseProgress: $headerCollapseProgress,
-                switcherProgress: $switcherCollapseProgress,
                 vm: activeViewModel,
                 emptyTitle: scope.emptyTitle,
                 emptyMessage: scope.emptyMessage,
@@ -205,7 +202,6 @@ struct DynamicFeedView: View {
 
 private struct DynamicFeedPage: View {
     @Binding var collapseProgress: CGFloat
-    @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: DynamicFeedViewModel
     let emptyTitle: String
     let emptyMessage: String
@@ -230,7 +226,6 @@ private struct DynamicFeedPage: View {
                 coordinateSpace: "dynamic-feed-scroll",
                 scrollToTopSignal: scrollToTopSignal,
                 headerCollapseProgress: $collapseProgress,
-                switcherCollapseProgress: $switcherProgress,
                 showsRefresh: true,
                 onRefresh: {
                     await vm.loadInitial(force: true)

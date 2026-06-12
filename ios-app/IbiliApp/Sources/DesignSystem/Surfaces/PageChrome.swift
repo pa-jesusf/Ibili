@@ -6,8 +6,6 @@ struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
     let tabTitle: (Tab) -> String
     @Binding var selection: Tab
     @Binding var headerCollapseProgress: CGFloat
-    @Binding var switcherCollapseProgress: CGFloat
-    var hidesNavigationBar: Bool = true
     let content: Content
 
     init(
@@ -16,8 +14,6 @@ struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
         tabTitle: @escaping (Tab) -> String,
         selection: Binding<Tab>,
         headerCollapseProgress: Binding<CGFloat>,
-        switcherCollapseProgress: Binding<CGFloat>,
-        hidesNavigationBar: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
@@ -25,8 +21,6 @@ struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
         self.tabTitle = tabTitle
         self._selection = selection
         self._headerCollapseProgress = headerCollapseProgress
-        self._switcherCollapseProgress = switcherCollapseProgress
-        self.hidesNavigationBar = hidesNavigationBar
         self.content = content()
     }
 
@@ -36,16 +30,11 @@ struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
             .overlay(alignment: .top) {
                 FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
             }
-            .overlay(alignment: .top) {
-                FeedFloatingSegmentedControlOverlay(
-                    tabs: tabs,
-                    title: tabTitle,
-                    selection: $selection,
-                    collapseProgress: switcherCollapseProgress,
-                    positionProgress: headerCollapseProgress
-                )
-            }
-            .modifier(HiddenNavigationBarModifier(isHidden: hidesNavigationBar))
+            .modifier(FeedChromeNavigationModifier(
+                tabs: tabs,
+                tabTitle: tabTitle,
+                selection: $selection
+            ))
     }
 }
 
@@ -86,12 +75,57 @@ private struct HiddenNavigationBarModifier: ViewModifier {
     }
 }
 
+private struct FeedChromeNavigationModifier<Tab: Hashable & Identifiable>: ViewModifier {
+    let tabs: [Tab]
+    let tabTitle: (Tab) -> String
+    @Binding var selection: Tab
+
+    func body(content: Content) -> some View {
+        content
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    ForEach(tabs) { tab in
+                        FeedToolbarTabButton(
+                            title: tabTitle(tab),
+                            isSelected: tab == selection
+                        ) {
+                            guard tab != selection else { return }
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                selection = tab
+                            }
+                        }
+                    }
+                }
+            }
+    }
+}
+
+private struct FeedToolbarTabButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.body.weight(isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? IbiliTheme.accent : .white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .tint(isSelected ? IbiliTheme.accent : .white)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
 struct FeedScrollPage<Content: View>: View {
     let title: String
     let coordinateSpace: String
     let scrollToTopSignal: Int
     @Binding var headerCollapseProgress: CGFloat
-    private let switcherCollapseProgress: Binding<CGFloat>?
     var showsRefresh: Bool = false
     var onRefresh: (() async -> Void)?
     let content: Content
@@ -101,7 +135,6 @@ struct FeedScrollPage<Content: View>: View {
         coordinateSpace: String,
         scrollToTopSignal: Int = 0,
         headerCollapseProgress: Binding<CGFloat>,
-        switcherCollapseProgress: Binding<CGFloat>? = nil,
         showsRefresh: Bool = false,
         onRefresh: (() async -> Void)? = nil,
         @ViewBuilder content: () -> Content
@@ -110,7 +143,6 @@ struct FeedScrollPage<Content: View>: View {
         self.coordinateSpace = coordinateSpace
         self.scrollToTopSignal = scrollToTopSignal
         self._headerCollapseProgress = headerCollapseProgress
-        self.switcherCollapseProgress = switcherCollapseProgress
         self.showsRefresh = showsRefresh
         self.onRefresh = onRefresh
         self.content = content()
@@ -131,7 +163,6 @@ struct FeedScrollPage<Content: View>: View {
                     scrollProxy.scrollTo(topAnchorID, anchor: .top)
                 }
                 headerCollapseProgress = 0
-                switcherCollapseProgress?.wrappedValue = 0
             }
         }
     }
@@ -146,7 +177,7 @@ struct FeedScrollPage<Content: View>: View {
             content()
         }
         .coordinateSpace(name: coordinateSpace)
-        .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress, switcherProgress: switcherCollapseProgress ?? .constant(0)))
+        .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress))
         .modifier(ProMotionScrollHint())
         .scrollContentBackground(.hidden)
 

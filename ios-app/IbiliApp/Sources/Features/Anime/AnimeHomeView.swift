@@ -50,7 +50,6 @@ struct AnimeHomeView: View {
     @State private var showsSourceSheet = false
     @State private var showsLogoutConfirmation = false
     @State private var headerCollapseProgress: CGFloat = 0
-    @State private var switcherCollapseProgress: CGFloat = 0
 
     var body: some View {
         FeedChrome(
@@ -58,8 +57,7 @@ struct AnimeHomeView: View {
             tabs: Array(AnimeHomeSection.allCases),
             tabTitle: { $0.title },
             selection: $section,
-            headerCollapseProgress: $headerCollapseProgress,
-            switcherCollapseProgress: $switcherCollapseProgress
+            headerCollapseProgress: $headerCollapseProgress
         ) {
             content
         }
@@ -89,7 +87,6 @@ struct AnimeHomeView: View {
             }
             .onChange(of: section) { _ in
                 headerCollapseProgress = 0
-                switcherCollapseProgress = 0
             }
             .tint(IbiliTheme.accent)
     }
@@ -111,7 +108,6 @@ struct AnimeHomeView: View {
                 coordinateSpace: "anime-collection-scroll",
                 scrollToTopSignal: tabReselect.anime,
                 headerCollapseProgress: $headerCollapseProgress,
-                switcherCollapseProgress: $switcherCollapseProgress,
                 showsRefresh: true,
                 onRefresh: {
                     await vm.load(kind: selectedKind, session: session, force: true)
@@ -144,8 +140,7 @@ struct AnimeHomeView: View {
                 title: "追番",
                 coordinateSpace: "anime-explore-scroll",
                 scrollToTopSignal: tabReselect.anime,
-                headerCollapseProgress: $headerCollapseProgress,
-                switcherCollapseProgress: $switcherCollapseProgress
+                headerCollapseProgress: $headerCollapseProgress
             ) {
                 VStack(alignment: .leading, spacing: 14) {
                     searchBar

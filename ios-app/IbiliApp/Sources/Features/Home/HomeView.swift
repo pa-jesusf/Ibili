@@ -4,7 +4,6 @@ import UIKit
 struct HomeView: View {
     @State private var section: HomeFeedSection = .recommend
     @State private var headerCollapseProgress: CGFloat = 0
-    @State private var switcherCollapseProgress: CGFloat = 0
     @StateObject private var recommendVM: HomeViewModel
     @StateObject private var hotVM: HomeViewModel
     @StateObject private var liveVM = LiveHomeViewModel()
@@ -22,15 +21,13 @@ struct HomeView: View {
             tabs: Array(HomeFeedSection.allCases),
             tabTitle: { $0.title },
             selection: $section,
-            headerCollapseProgress: $headerCollapseProgress,
-            switcherCollapseProgress: $switcherCollapseProgress
+            headerCollapseProgress: $headerCollapseProgress
         ) {
             switch section {
             case .recommend, .hot:
                 HomeFeedPage(
                     section: $section,
                     collapseProgress: $headerCollapseProgress,
-                    switcherProgress: $switcherCollapseProgress,
                     vm: activeViewModel,
                     prefetch: prefetch,
                     scrollToTopSignal: tabReselect.home
@@ -39,7 +36,6 @@ struct HomeView: View {
                 HomeLiveFeedPage(
                     section: $section,
                     collapseProgress: $headerCollapseProgress,
-                    switcherProgress: $switcherCollapseProgress,
                     vm: liveVM,
                     scrollToTopSignal: tabReselect.home
                 )
@@ -60,7 +56,6 @@ struct HomeView: View {
 private struct HomeFeedPage: View {
     @Binding var section: HomeFeedSection
     @Binding var collapseProgress: CGFloat
-    @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: HomeViewModel
     let prefetch: FeedPrefetchCoordinator
     let scrollToTopSignal: Int
@@ -188,7 +183,6 @@ private struct HomeFeedPage: View {
             coordinateSpace: "home-\(vm.section.rawValue)",
             scrollToTopSignal: scrollToTopSignal,
             headerCollapseProgress: $collapseProgress,
-            switcherCollapseProgress: $switcherProgress,
             showsRefresh: true,
             onRefresh: {
                 await vm.refresh(recommendSource: settings.homeRecommendSource)
@@ -490,7 +484,6 @@ private struct HomeFeedPage: View {
 private struct HomeLiveFeedPage: View {
     @Binding var section: HomeFeedSection
     @Binding var collapseProgress: CGFloat
-    @Binding var switcherProgress: CGFloat
     @ObservedObject var vm: LiveHomeViewModel
     let scrollToTopSignal: Int
 
@@ -515,7 +508,6 @@ private struct HomeLiveFeedPage: View {
                     coordinateSpace: "home-live",
                     scrollToTopSignal: scrollToTopSignal,
                     headerCollapseProgress: $collapseProgress,
-                    switcherCollapseProgress: $switcherProgress,
                     showsRefresh: true,
                     onRefresh: {
                         await vm.refresh()
