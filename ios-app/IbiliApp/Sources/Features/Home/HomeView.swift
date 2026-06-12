@@ -74,8 +74,6 @@ private struct HomeFeedPage: View {
     @State private var userSpaceMID: Int64?
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
-    @State private var lastScrollOffset: CGFloat = 0
-    @State private var collapseState = FeedScrollCollapseState()
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
@@ -125,56 +123,19 @@ private struct HomeFeedPage: View {
             let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
             let usesTopTrailingDuration = UIDevice.current.userInterfaceIdiom == .phone && cols >= 3
+            let metrics = homeGridMetrics(containerWidth: geo.size.width, columns: cols)
+            let gridItems = Array(
+                repeating: GridItem(.fixed(metrics.cardWidth), spacing: metrics.spacing, alignment: .top),
+                count: max(1, cols)
+            )
 
             ZStack {
-                HomeFeedCollectionView(
-                    items: vm.items.map(HomeFeedCardContent.video),
-                    columns: cols,
-                    imageQuality: settings.resolvedImageQuality(),
-                    showsDurationAtTopTrailing: usesTopTrailingDuration,
-                    meta: settings.homeCardMeta,
-                    scrollToTopSignal: scrollToTopSignal,
-                    isRefreshing: vm.isLoading && !vm.items.isEmpty,
-                    onTap: { item in
-                        guard case .video(let feedItem) = item else { return }
-                        openFeedItem(feedItem)
-                    },
-                    onTouchDown: { item in
-                        guard case .video(let feedItem) = item else { return }
-                        prefetch.touchDown(feedItem)
-                    },
-                    onAction: { item, action in
-                        handleCardAction(item: item, action: action)
-                    },
-                    onRefresh: {
-                        Task { await vm.refresh(recommendSource: settings.homeRecommendSource) }
-                    },
-                    onReachEnd: {
-                        Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
-                    },
-                    onVisibleItemsChange: { visible in
-                        prefetch.visibleItemsChanged(visible)
-                    },
-                    onScrollOffsetChange: handleScrollOffset
+                feedScrollContent(
+                    columns: gridItems,
+                    columnCount: cols,
+                    metrics: metrics,
+                    usesTopTrailingDuration: usesTopTrailingDuration
                 )
-                .ignoresSafeArea(.container, edges: [.top, .bottom])
-                .modifier(ProMotionScrollHint())
-
-                if vm.items.isEmpty && vm.isLoading {
-                    ProgressView()
-                        .tint(IbiliTheme.accent)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.top, 28)
-                } else if let err = vm.errorText, vm.items.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "wifi.exclamationmark").font(.largeTitle)
-                        Text(err).multilineTextAlignment(.center).foregroundStyle(.secondary)
-                        Button("重试") { Task { await vm.refresh(recommendSource: settings.homeRecommendSource) } }
-                            .buttonStyle(.borderedProminent).tint(IbiliTheme.accent)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 20)
-                }
             }
             .transaction { $0.animation = nil }
             .onAppear {
@@ -198,6 +159,17 @@ private struct HomeFeedPage: View {
         }
     }
 
+    private func homeGridMetrics(containerWidth: CGFloat, columns: Int) -> HomeSwiftUIGridMetrics {
+        HomeSwiftUIGridMetrics(containerWidth: containerWidth, columns: columns)
+    }
+
+    private func visibleItems(around index: Int) -> [FeedItemDTO] {
+        guard vm.items.indices.contains(index) else { return [] }
+        let lower = max(0, index - 4)
+        let upper = min(vm.items.count, index + 8)
+        return Array(vm.items[lower..<upper])
+    }
+
     private func openFeedItem(_ item: FeedItemDTO) {
         if prefersSplitRootSelection {
             router.select(item)
@@ -206,7 +178,129 @@ private struct HomeFeedPage: View {
         }
     }
 
-    private func handleCardAction(item: FeedItemDTO, action: HomeFeedCardAction) {
+    @ViewBuilder
+    private func feedScrollContent(columns: [GridItem],
+                                   columnCount: Int,
+                                   metrics: HomeSwiftUIGridMetrics,
+                                   usesTopTrailingDuration: Bool) -> some View {
+        FeedScrollPage(
+            title: "主页",
+            coordinateSpace: "home-\(vm.section.rawValue)",
+            scrollToTopSignal: scrollToTopSignal,
+            headerCollapseProgress: $collapseProgress,
+            switcherCollapseProgress: $switcherProgress,
+            showsRefresh: true,
+            onRefresh: {
+                await vm.refresh(recommendSource: settings.homeRecommendSource)
+            }
+        ) {
+            if vm.items.isEmpty && vm.isLoading {
+                ProgressView()
+                    .tint(IbiliTheme.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 28)
+            } else if let err = vm.errorText, vm.items.isEmpty {
+                homeErrorState(err)
+            } else {
+                feedItemsGrid(
+                    columns: columns,
+                    columnCount: columnCount,
+                    metrics: metrics,
+                    usesTopTrailingDuration: usesTopTrailingDuration
+                )
+            }
+        }
+    }
+
+    private func homeErrorState(_ message: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "wifi.exclamationmark").font(.largeTitle)
+            Text(message).multilineTextAlignment(.center).foregroundStyle(.secondary)
+            Button("重试") { Task { await vm.refresh(recommendSource: settings.homeRecommendSource) } }
+                .buttonStyle(.borderedProminent).tint(IbiliTheme.accent)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+        .padding(.top, 28)
+    }
+
+    private func feedItemsGrid(columns: [GridItem],
+                               columnCount: Int,
+                               metrics: HomeSwiftUIGridMetrics,
+                               usesTopTrailingDuration: Bool) -> some View {
+        LazyVGrid(columns: columns, alignment: .center, spacing: metrics.rowSpacing) {
+            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                feedCard(item: item, index: index, metrics: metrics, usesTopTrailingDuration: usesTopTrailingDuration)
+            }
+
+            if vm.isLoading && !vm.items.isEmpty {
+                ProgressView()
+                    .gridCellColumns(max(1, columnCount))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            } else if vm.isEnd && !vm.items.isEmpty {
+                Text("已经到底了")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .gridCellColumns(max(1, columnCount))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+        }
+        .padding(.horizontal, metrics.horizontalPadding)
+        .padding(.top, 8)
+        .padding(.bottom, 32)
+    }
+
+    private func feedCard(item: FeedItemDTO,
+                          index: Int,
+                          metrics: HomeSwiftUIGridMetrics,
+                          usesTopTrailingDuration: Bool) -> some View {
+        VideoCardView(
+            item: item,
+            cardWidth: metrics.cardWidth,
+            imageQuality: settings.resolvedImageQuality(),
+            showsDurationAtTopTrailing: usesTopTrailingDuration,
+            meta: settings.homeCardMeta
+        )
+        .overlay(alignment: .bottomTrailing) {
+            feedCardMenu(for: item)
+                .padding(.trailing, 2)
+                .padding(.bottom, 2)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture {
+            prefetch.touchDown(item)
+            openFeedItem(item)
+        }
+        .onAppear {
+            if !vm.isEnd, index >= max(0, vm.items.count - 4) {
+                Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
+            }
+            prefetch.visibleItemsChanged(visibleItems(around: index))
+            prefetchCovers(around: item, cardWidth: metrics.cardWidth)
+        }
+    }
+
+    private func feedCardMenu(for item: FeedItemDTO) -> some View {
+        VideoCardOverflowMenu(
+            bvid: item.bvid,
+            author: item.author,
+            ownerMID: item.ownerMID,
+            dislikeReasons: item.dislikeReasons,
+            feedbackReasons: item.feedbackReasons,
+            onCopyBVID: { handleCardAction(item: item, action: .copyBVID) },
+            onWatchLater: { handleCardAction(item: item, action: .watchLater) },
+            onVisitOwner: { handleCardAction(item: item, action: .visitOwner) },
+            onPlainDislike: { handleCardAction(item: item, action: .plainDislike) },
+            onUndoDislike: { handleCardAction(item: item, action: .undoDislike) },
+            onDislikeReason: { handleCardAction(item: item, action: .dislikeReason($0)) },
+            onFeedbackReason: { handleCardAction(item: item, action: .feedbackReason($0)) },
+            onBlockOwner: { handleCardAction(item: item, action: .blockOwner) }
+        )
+    }
+
+    private func handleCardAction(item: FeedItemDTO, action: VideoCardOverflowAction) {
         switch action {
         case .copyBVID:
             copyBVID(item.bvid)
@@ -225,13 +319,6 @@ private struct HomeFeedPage: View {
         case .blockOwner:
             blockOwner(mid: item.ownerMID, author: item.author)
         }
-    }
-
-    private func handleScrollOffset(_ rawOffset: CGFloat) {
-        let next = collapseState.update(rawOffset: rawOffset)
-        lastScrollOffset = next.offset
-        collapseProgress = next.headerProgress
-        switcherProgress = next.switcherProgress
     }
 
     private func openOwner(mid: Int64) {
@@ -421,61 +508,87 @@ private struct HomeLiveFeedPage: View {
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
-    @State private var lastScrollOffset: CGFloat = 0
-    @State private var collapseState = FeedScrollCollapseState()
 
     var body: some View {
         GeometryReader { geo in
             let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
+            let metrics = HomeSwiftUIGridMetrics(containerWidth: geo.size.width, columns: cols)
+            let gridItems = Array(
+                repeating: GridItem(.fixed(metrics.cardWidth), spacing: metrics.spacing, alignment: .top),
+                count: max(1, cols)
+            )
             ZStack {
-                HomeFeedCollectionView(
-                    items: vm.items.map(HomeFeedCardContent.live),
-                    columns: cols,
-                    imageQuality: settings.resolvedImageQuality(),
-                    showsDurationAtTopTrailing: false,
-                    meta: settings.homeCardMeta,
+                FeedScrollPage(
+                    title: "主页",
+                    coordinateSpace: "home-live",
                     scrollToTopSignal: scrollToTopSignal,
-                    isRefreshing: vm.isLoading && !vm.items.isEmpty,
-                    onTap: { item in
-                        guard case .live(let liveItem) = item else { return }
-                        openLiveItem(liveItem)
-                    },
-                    onTouchDown: { _ in },
-                    onAction: { _, _ in },
+                    headerCollapseProgress: $collapseProgress,
+                    switcherCollapseProgress: $switcherProgress,
+                    showsRefresh: true,
                     onRefresh: {
-                        Task { await vm.refresh() }
-                    },
-                    onReachEnd: {
-                        Task { await vm.loadMore() }
-                    },
-                    onVisibleItemsChange: { _ in },
-                    onScrollOffsetChange: handleLiveScrollOffset
-                )
-                .ignoresSafeArea(.container, edges: [.top, .bottom])
-                .modifier(ProMotionScrollHint())
-
-                if vm.items.isEmpty && vm.isLoading {
-                    ProgressView()
-                        .tint(IbiliTheme.accent)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.top, 28)
-                } else if let err = vm.errorText, vm.items.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "dot.radiowaves.left.and.right")
-                            .font(.largeTitle)
-                        Text(err)
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.secondary)
-                        Button("重试") { Task { await vm.refresh() } }
-                            .buttonStyle(.borderedProminent)
-                            .tint(IbiliTheme.accent)
+                        await vm.refresh()
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 20)
-                } else if vm.items.isEmpty {
-                    emptyState(title: "暂无直播", symbol: "dot.radiowaves.left.and.right")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ) {
+                    if vm.items.isEmpty && vm.isLoading {
+                        ProgressView()
+                            .tint(IbiliTheme.accent)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 28)
+                    } else if let err = vm.errorText, vm.items.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                                .font(.largeTitle)
+                            Text(err)
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.secondary)
+                            Button("重试") { Task { await vm.refresh() } }
+                                .buttonStyle(.borderedProminent)
+                                .tint(IbiliTheme.accent)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 28)
+                    } else if vm.items.isEmpty {
+                        emptyState(title: "暂无直播", symbol: "dot.radiowaves.left.and.right")
+                            .padding(.top, 28)
+                    } else {
+                        LazyVGrid(columns: gridItems, alignment: .center, spacing: metrics.rowSpacing) {
+                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                                LiveCardView(
+                                    item: item,
+                                    cardWidth: metrics.cardWidth,
+                                    imageQuality: settings.resolvedImageQuality()
+                                )
+                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .onTapGesture {
+                                    openLiveItem(item)
+                                }
+                                .onAppear {
+                                    if !vm.isEnd, index >= max(0, vm.items.count - 4) {
+                                        Task { await vm.loadMore() }
+                                    }
+                                }
+                            }
+
+                            if vm.isLoading && !vm.items.isEmpty {
+                                ProgressView()
+                                    .gridCellColumns(max(1, cols))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                            } else if vm.isEnd && !vm.items.isEmpty {
+                                Text("已经到底了")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .gridCellColumns(max(1, cols))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                            }
+                        }
+                        .padding(.horizontal, metrics.horizontalPadding)
+                        .padding(.top, 8)
+                        .padding(.bottom, 32)
+                    }
                 }
             }
             .transaction { $0.animation = nil }
@@ -502,10 +615,17 @@ private struct HomeLiveFeedPage: View {
         }
     }
 
-    private func handleLiveScrollOffset(_ rawOffset: CGFloat) {
-        let next = collapseState.update(rawOffset: rawOffset)
-        lastScrollOffset = next.offset
-        collapseProgress = next.headerProgress
-        switcherProgress = next.switcherProgress
+}
+
+private struct HomeSwiftUIGridMetrics {
+    let horizontalPadding: CGFloat = 12
+    let spacing: CGFloat = 12
+    let rowSpacing: CGFloat = 14
+    let cardWidth: CGFloat
+
+    init(containerWidth: CGFloat, columns: Int) {
+        let clampedColumns = max(1, columns)
+        let totalSpacing = spacing * CGFloat(clampedColumns - 1) + horizontalPadding * 2
+        cardWidth = max(1, floor((containerWidth - totalSpacing) / CGFloat(clampedColumns)))
     }
 }

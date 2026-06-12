@@ -212,6 +212,20 @@ struct VideoDetailContent: View {
         return resolved.isEmpty ? item.bvid : resolved
     }
 
+    private var mediaScrollIdentity: String {
+        [
+            item.isPGC ? "pgc" : "ugc",
+            String(item.aid),
+            item.bvid,
+            String(item.cid),
+            String(currentCid),
+            String(item.seasonID),
+            String(currentSeasonID),
+            String(item.epID),
+            String(currentEpisodeID),
+        ].joined(separator: ":")
+    }
+
     @ViewBuilder
     private func scrollContent(bottomContentInset: CGFloat) -> some View {
         ZStack(alignment: .top) {
@@ -230,46 +244,7 @@ struct VideoDetailContent: View {
 
     @ViewBuilder
     private func tabScrollContent(for targetTab: Tab, bottomContentInset: CGFloat) -> some View {
-        if targetTab == .replies {
-            CommentListView(
-                oid: item.isPGC ? pgcCommentOID : commentOID,
-                kind: item.isPGC ? pgcCommentKind : 1,
-                viewModel: commentListViewModel,
-                usesVirtualizedList: true,
-                bottomContentInset: bottomContentInset,
-                onScrollOffsetChange: { value in
-                    guard tab == targetTab else { return }
-                    handleDetailScrollOffsetChange(value)
-                }
-            )
-            .refreshable {
-                if item.isPGC {
-                    await commentListViewModel.refresh(oid: pgcCommentOID, kind: pgcCommentKind)
-                } else {
-                    await commentListViewModel.refresh(oid: commentOID)
-                }
-            }
-        } else if targetTab == .related, !item.isPGC {
-            RelatedVideoList(
-                items: vm.related,
-                isLoadingMore: vm.isLoadingMoreRelated,
-                isEnd: vm.relatedIsEnd,
-                bottomContentInset: bottomContentInset,
-                onTap: { feedItem in
-                    router.open(feedItem)
-                },
-                onReachEnd: {
-                    Task { await vm.loadMoreRelated() }
-                },
-                onScrollOffsetChange: { value in
-                    guard tab == targetTab else { return }
-                    handleDetailScrollOffsetChange(value)
-                }
-            )
-            .refreshable {
-                await refreshMetadata()
-            }
-        } else if #available(iOS 18.0, *) {
+        if #available(iOS 18.0, *) {
             ScrollView {
                 InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
                     .frame(width: 0, height: 0)
@@ -277,7 +252,7 @@ struct VideoDetailContent: View {
                 contentColumn(for: targetTab, bottomContentInset: bottomContentInset)
             }
             .refreshable {
-                await refreshMetadata()
+                await refreshTab(targetTab)
             }
             .scrollIndicators(.hidden)
             .onScrollGeometryChange(for: CGFloat.self) { geo in
@@ -286,6 +261,7 @@ struct VideoDetailContent: View {
                 guard tab == targetTab else { return }
                 handleDetailScrollOffsetChange(newValue)
             }
+            .id(tabInstanceID(for: targetTab))
         } else {
             ScrollView {
                 InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
@@ -308,7 +284,7 @@ struct VideoDetailContent: View {
                 contentColumn(for: targetTab, bottomContentInset: bottomContentInset)
             }
             .refreshable {
-                await refreshMetadata()
+                await refreshTab(targetTab)
             }
             .coordinateSpace(name: scrollCoordinateSpaceName(for: targetTab))
             .scrollIndicators(.hidden)
@@ -316,6 +292,20 @@ struct VideoDetailContent: View {
                 guard tab == targetTab else { return }
                 handleDetailScrollOffsetChange(value)
             }
+            .id(tabInstanceID(for: targetTab))
+        }
+    }
+
+    private func refreshTab(_ targetTab: Tab) async {
+        switch targetTab {
+        case .replies:
+            if item.isPGC {
+                await commentListViewModel.refresh(oid: pgcCommentOID, kind: pgcCommentKind)
+            } else {
+                await commentListViewModel.refresh(oid: commentOID)
+            }
+        case .intro, .related:
+            await refreshMetadata()
         }
     }
 
@@ -360,11 +350,15 @@ struct VideoDetailContent: View {
     }
 
     private func topAnchorID(for targetTab: Tab) -> String {
-        "\(topAnchorID)-\(targetTab.rawValue)"
+        "\(topAnchorID)-\(mediaScrollIdentity)-\(targetTab.rawValue)"
+    }
+
+    private func tabInstanceID(for targetTab: Tab) -> String {
+        "video-detail-tab-\(mediaScrollIdentity)-\(targetTab.rawValue)"
     }
 
     private func scrollCoordinateSpaceName(for targetTab: Tab) -> String {
-        "video-detail-scroll-\(targetTab.rawValue)"
+        "video-detail-scroll-\(mediaScrollIdentity)-\(targetTab.rawValue)"
     }
 
     @ViewBuilder
@@ -593,6 +587,13 @@ struct VideoDetailContent: View {
         let clampedOffset = max(0, newValue)
         detailScrollOffset = clampedOffset
         onScrollOffsetChange?(clampedOffset)
+
+        guard tab == .intro else {
+            if clampedOffset <= Self.upwardRefreshResetOffset {
+                didTriggerUpwardRefreshSinceTop = false
+            }
+            return
+        }
 
         if clampedOffset <= Self.upwardRefreshResetOffset {
             didTriggerUpwardRefreshSinceTop = false

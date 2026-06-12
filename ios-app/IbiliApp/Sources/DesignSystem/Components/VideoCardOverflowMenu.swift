@@ -110,7 +110,7 @@ private struct VideoDislikeReasonChoice: Identifiable, Hashable {
     }
 }
 
-enum VideoCardOverflowUIKitAction {
+enum VideoCardOverflowAction {
     case copyBVID
     case watchLater
     case visitOwner
@@ -137,7 +137,7 @@ enum VideoCardOverflowMenuBuilder {
         ownerMID: Int64,
         dislikeReasons: [FeedDislikeReasonDTO],
         feedbackReasons: [FeedDislikeReasonDTO],
-        actionHandler: @escaping (VideoCardOverflowUIKitAction) -> Void
+        actionHandler: @escaping (VideoCardOverflowAction) -> Void
     ) -> UIMenu {
         let trimmedBVID = bvid.trimmingCharacters(in: .whitespacesAndNewlines)
         let ownerName = author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -187,7 +187,7 @@ enum VideoCardOverflowMenuBuilder {
     private static func dislikeMenu(
         dislikeReasons: [FeedDislikeReasonDTO],
         feedbackReasons: [FeedDislikeReasonDTO],
-        actionHandler: @escaping (VideoCardOverflowUIKitAction) -> Void
+        actionHandler: @escaping (VideoCardOverflowAction) -> Void
     ) -> UIMenu {
         var elements: [UIMenuElement] = []
         elements.append(contentsOf: dislikeReasons.map { reason in

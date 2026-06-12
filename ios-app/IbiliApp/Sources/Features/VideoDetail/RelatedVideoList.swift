@@ -15,37 +15,54 @@ struct RelatedVideoList: View {
     var bottomContentInset: CGFloat = 24
     let onTap: (FeedItemDTO) -> Void
     let onReachEnd: () -> Void
-    var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
 
     var body: some View {
-        PagedCollectionSurface(
-            items: items,
-            layout: .list(
-                rowHeight: 92,
-                contentInsets: NSDirectionalEdgeInsets(
-                    top: 12,
-                    leading: 12,
-                    bottom: max(24, bottomContentInset),
-                    trailing: 12
-                )
-            ),
-            isLoadingMore: isLoadingMore,
-            isEnd: isEnd,
-            emptyState: .empty(title: "暂无相关视频", systemImage: "rectangle.stack.badge.minus"),
-            onTap: { item in
-                onTap(adapt(item))
-            },
-            onReachEnd: {
-                if !isEnd {
-                    onReachEnd()
+        LazyVStack(alignment: .leading, spacing: 0) {
+            if items.isEmpty, !isLoadingMore {
+                emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 32)
+            } else {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    Button {
+                        onTap(adapt(item))
+                    } label: {
+                        RelatedRow(item: item)
+                            .equatable()
+                    }
+                    .buttonStyle(.plain)
+                    .onAppear {
+                        if index >= max(0, items.count - 4), !isEnd {
+                            onReachEnd()
+                        }
+                        prefetchCovers(around: index)
+                    }
+
+                    if index < items.count - 1 {
+                        Divider()
+                    }
                 }
-            },
-            onPrefetch: prefetchCovers,
-            onScrollOffsetChange: onScrollOffsetChange
-        ) { item in
-            RelatedRow(item: item)
-                .equatable()
+            }
+
+            if isLoadingMore {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+                .padding(.vertical, 14)
+            } else if isEnd, !items.isEmpty {
+                HStack {
+                    Spacer()
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.vertical, 14)
+            }
         }
+        .padding(.bottom, max(24, bottomContentInset))
     }
 
     private func adapt(_ r: RelatedVideoItemDTO) -> FeedItemDTO {
@@ -63,8 +80,11 @@ struct RelatedVideoList: View {
         )
     }
 
-    private func prefetchCovers(_ items: [RelatedVideoItemDTO]) {
-        let urls = items.map(\.cover).filter { !$0.isEmpty }
+    private func prefetchCovers(around index: Int) {
+        guard items.indices.contains(index) else { return }
+        let lower = max(0, index - 2)
+        let upper = min(items.count, index + 8)
+        let urls = items[lower..<upper].map(\.cover).filter { !$0.isEmpty }
         guard !urls.isEmpty else { return }
         CoverImagePrefetcher.shared.prefetch(
             urls,
