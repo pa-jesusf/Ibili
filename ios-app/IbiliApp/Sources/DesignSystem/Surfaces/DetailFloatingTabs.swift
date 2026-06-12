@@ -20,6 +20,7 @@ struct DetailFloatingTabs<Tab: Hashable & Identifiable>: View {
     @Binding var selection: Tab
     var maxWidth: CGFloat? = nil
     var onReselectCurrentTab: () -> Void = {}
+    @State private var hasAppeared = false
 
     private var systemTabBarVisualLift: CGFloat {
         UIDevice.current.userInterfaceIdiom == .phone
@@ -28,6 +29,23 @@ struct DetailFloatingTabs<Tab: Hashable & Identifiable>: View {
     }
 
     var body: some View {
+        content
+            .opacity(hasAppeared ? 1 : 0)
+            .scaleEffect(hasAppeared ? 1 : 0.94, anchor: .bottom)
+            .offset(y: hasAppeared ? 0 : 22)
+            .onAppear {
+                guard !hasAppeared else { return }
+                withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.88, blendDuration: 0)) {
+                    hasAppeared = true
+                }
+            }
+            .onDisappear {
+                hasAppeared = false
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if #available(iOS 26.0, *) {
             GeometryReader { proxy in
                 let availableHeight = max(1, proxy.size.height)
