@@ -21,10 +21,11 @@ struct PlayerToolbarDanmaku: View {
             danmakuEnabled.toggle()
         } label: {
             Image(systemName: danmakuEnabled ? "text.bubble.fill" : "text.bubble")
+                .foregroundStyle(danmakuEnabled ? IbiliTheme.accent : .white)
         }
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.42)
-        .tint(IbiliTheme.accent)
+        .tint(danmakuEnabled ? IbiliTheme.accent : .white)
         .accessibilityLabel(danmakuEnabled ? "关闭弹幕" : "开启弹幕")
         .accessibilityHint("长按发送弹幕")
         // Toolbar items can't easily host both a tap-Button and a

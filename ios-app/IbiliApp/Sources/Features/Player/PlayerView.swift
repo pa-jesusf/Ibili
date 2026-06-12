@@ -2739,7 +2739,8 @@ struct PlayerView: View {
                 settings.danmakuEnabled.toggle()
             } label: {
                 chip(icon: settings.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble",
-                     text: settings.danmakuEnabled ? "弹幕" : "弹幕关")
+                     text: settings.danmakuEnabled ? "弹幕" : "弹幕关",
+                     tint: settings.danmakuEnabled ? IbiliTheme.accent : .white)
             }
 
             Spacer()
@@ -2748,11 +2749,12 @@ struct PlayerView: View {
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
 
-    private func chip(icon: String, text: String) -> some View {
+    private func chip(icon: String, text: String, tint: Color = .primary) -> some View {
         HStack(spacing: 4) {
             Image(systemName: icon)
             Text(text).font(.subheadline.weight(.medium))
         }
+        .foregroundStyle(tint)
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(.thinMaterial, in: Capsule())
         .contentShape(Capsule())

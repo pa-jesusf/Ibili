@@ -307,6 +307,10 @@ struct DynamicItemCard: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var preview: ImagePreviewState?
+    @State private var shareSheetURL: ShareSheetItem?
+    @State private var isLiked = false
+    @State private var likeCount: Int64?
+    @State private var likeBusy = false
 
     var body: some View {
         let resolvedContentWidth = contentWidth ?? DynamicLayout.contentWidth(containerWidth: UIScreen.main.bounds.width)
@@ -314,11 +318,14 @@ struct DynamicItemCard: View {
             .fullScreenCover(item: $preview) { state in
                 ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
             }
+            .sheet(item: $shareSheetURL) { item in
+                ActivityViewController(activityItems: [item.url])
+            }
     }
 
     private func cardContent(resolvedContentWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            DynamicHeader(author: item.author)
+            DynamicAuthorHeader(author: item.author)
 
             if !item.text.isEmpty {
                 Text(item.text)
@@ -351,7 +358,17 @@ struct DynamicItemCard: View {
                 )
             }
 
-            DynamicStatBar(stat: item.stat)
+            DynamicStatActionBar(
+                stat: item.stat,
+                isLiked: isLiked,
+                likeCountOverride: likeCount,
+                likeBusy: likeBusy,
+                onForward: shareDynamic,
+                onComment: openDynamicDetail,
+                onLike: {
+                    Task { await toggleLike() }
+                }
+            )
         }
         .padding(DynamicLayout.cardPad)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -465,6 +482,30 @@ struct DynamicItemCard: View {
         onOpenDetail?(item)
     }
 
+    private func openDynamicDetail() {
+        onOpenDetail?(item)
+    }
+
+    private func shareDynamic() {
+        guard !item.idStr.isEmpty else { return }
+        shareSheetURL = ShareSheetItem(url: "https://t.bilibili.com/\(item.idStr)")
+    }
+
+    private func toggleLike() async {
+        guard !likeBusy, !item.idStr.isEmpty else { return }
+        likeBusy = true
+        defer { likeBusy = false }
+        let next: Int32 = isLiked ? 2 : 1
+        let dynId = item.idStr
+        let ok: Bool = await Task.detached {
+            (try? CoreClient.shared.dynamicLike(dynamicId: dynId, action: next)) != nil
+        }.value
+        guard ok else { return }
+        let currentCount = likeCount ?? item.stat.like
+        isLiked.toggle()
+        likeCount = max(0, currentCount + (isLiked ? 1 : -1))
+    }
+
     private func convertToRef(_ item: DynamicItemDTO) -> DynamicItemRefDTO {
         DynamicItemRefDTO(
             idStr: item.idStr, kind: item.kind, author: item.author,
@@ -482,39 +523,15 @@ private struct ImagePreviewState: Identifiable {
 
 // MARK: - Header
 
-private struct DynamicHeader: View {
+struct DynamicAuthorHeader: View {
     let author: DynamicAuthorDTO
+    var avatarSize: CGFloat = 36
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
 
     var body: some View {
-        Group {
-            if isInPlayerHostNavigation {
-                Button {
-                    router.openUserSpace(mid: author.mid)
-                } label: {
-                    headerLabel
-                }
-            } else {
-                NavigationLink {
-                    UserSpaceView(mid: author.mid)
-                } label: {
-                    headerLabel
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(author.mid <= 0)
-    }
-
-    private var headerLabel: some View {
         HStack(spacing: 10) {
-            RemoteImage(url: author.face,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: 36, height: 36),
-                        quality: 75)
-                .frame(width: 36, height: 36)
-                .clipShape(Circle())
+            avatarButton
             VStack(alignment: .leading, spacing: 1) {
                 Text(author.name).font(.subheadline.weight(.medium))
                     .foregroundStyle(IbiliTheme.textPrimary)
@@ -529,7 +546,37 @@ private struct DynamicHeader: View {
             }
             Spacer(minLength: 0)
         }
-        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var avatarButton: some View {
+        Group {
+            if isInPlayerHostNavigation {
+                Button {
+                    router.openUserSpace(mid: author.mid)
+                } label: {
+                    avatar
+                }
+            } else {
+                NavigationLink {
+                    UserSpaceView(mid: author.mid)
+                } label: {
+                    avatar
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(author.mid <= 0)
+    }
+
+    private var avatar: some View {
+        RemoteImage(url: author.face,
+                    contentMode: .fill,
+                    targetPointSize: CGSize(width: avatarSize * 2, height: avatarSize * 2),
+                    quality: 75)
+            .frame(width: avatarSize, height: avatarSize)
+            .clipShape(Circle())
+            .contentShape(Circle())
     }
 }
 
@@ -841,27 +888,60 @@ private struct DynamicForwardPanel: View {
 
 // MARK: - Stat bar
 
-private struct DynamicStatBar: View {
+struct DynamicStatActionBar: View {
     let stat: DynamicStatDTO
+    var isLiked: Bool = false
+    var likeCountOverride: Int64? = nil
+    var likeBusy: Bool = false
+    var onForward: (() -> Void)? = nil
+    var onComment: (() -> Void)? = nil
+    var onLike: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 24) {
-            statItem(symbol: "arrowshape.turn.up.right", value: stat.forward)
-            statItem(symbol: "bubble.left", value: stat.comment)
-            statItem(symbol: "hand.thumbsup", value: stat.like)
-            Spacer(minLength: 0)
+        HStack(spacing: 6) {
+            statButton(symbol: "arrowshape.turn.up.right", value: stat.forward, fallback: "转发", action: onForward)
+            statButton(symbol: "bubble.left", value: stat.comment, fallback: "评论", action: onComment)
+            statButton(
+                symbol: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup",
+                value: likeCountOverride ?? stat.like,
+                fallback: "点赞",
+                tint: isLiked ? IbiliTheme.accent : IbiliTheme.textSecondary,
+                action: onLike
+            )
+            .disabled(likeBusy)
         }
-        .font(.caption)
-        .foregroundStyle(IbiliTheme.textSecondary)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
-    private func statItem(symbol: String, value: Int64) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: symbol)
-            Text(value > 0 ? BiliFormat.compactCount(value) : "—")
+    private func statButton(symbol: String,
+                            value: Int64,
+                            fallback: String,
+                            tint: Color = IbiliTheme.textSecondary,
+                            action: (() -> Void)?) -> some View {
+        Button {
+            action?()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 19)
+                Text(value > 0 ? BiliFormat.compactCount(value) : fallback)
+                    .font(.footnote.weight(.medium))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(tint)
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(tint.opacity(0.055))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
+        .buttonStyle(.plain)
     }
 }
+
+private typealias DynamicStatBar = DynamicStatActionBar
 
 // MARK: - VM
 

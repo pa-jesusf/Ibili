@@ -120,83 +120,26 @@ struct DynamicDetailView: View {
     }
 
     private var header: some View {
-        Group {
-            if isInPlayerHostNavigation {
-                Button {
-                    router.openUserSpace(mid: item.author.mid)
-                } label: {
-                    headerLabel
-                }
-            } else {
-                NavigationLink {
-                    UserSpaceView(mid: item.author.mid)
-                } label: {
-                    headerLabel
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(item.author.mid <= 0)
-    }
-
-    private var headerLabel: some View {
-        HStack(spacing: 10) {
-            RemoteImage(url: item.author.face,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: 44, height: 44),
-                        quality: 80)
-                .frame(width: 44, height: 44)
-                .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.author.name).font(.subheadline.weight(.semibold))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                let subtitle = DynamicLayout.authorSubtitle(pubLabel: item.author.pubLabel,
-                                                            pubTs: item.author.pubTs)
-                if !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .contentShape(Rectangle())
+        DynamicAuthorHeader(author: item.author, avatarSize: 44)
     }
 
     private var statBar: some View {
-        HStack(spacing: 0) {
-            statButton(symbol: "arrowshape.turn.up.right", value: item.stat.forward, label: "转发") {
+        DynamicStatActionBar(
+            stat: item.stat,
+            isLiked: isLiked,
+            likeCountOverride: likeCount,
+            likeBusy: likeBusy,
+            onForward: {
                 shareSheetURL = ShareSheetItem(url: "https://t.bilibili.com/\(item.idStr)")
-            }
-            statButton(symbol: "bubble.left", value: item.stat.comment, label: "评论") {
+            },
+            onComment: {
                 commentSendSheet = true
-            }
-            statButton(symbol: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup",
-                       value: likeCount, label: "点赞",
-                       tint: isLiked ? IbiliTheme.accent : IbiliTheme.textSecondary) {
+            },
+            onLike: {
                 Task { await toggleLike() }
             }
-            .disabled(likeBusy)
-            Spacer(minLength: 0)
-        }
+        )
         .padding(.top, 4)
-    }
-
-    private func statButton(symbol: String, value: Int64, label: String,
-                            tint: Color = IbiliTheme.textSecondary,
-                            action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: symbol)
-                Text(value > 0 ? BiliFormat.compactCount(value) : label)
-            }
-            .font(.footnote)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func toggleLike() async {

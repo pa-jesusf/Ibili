@@ -17,46 +17,65 @@ struct AnimeSubjectView: View {
     @State private var reviewErrorText: String?
     @State private var selectedTab: AnimeSubjectTab = .details
     @State private var peopleSheet: AnimePeopleSheet?
+    @State private var floatingTabsHeight: CGFloat = 0
 
     let subjectID: Int64
     let initialSubject: AnimeSubjectDTO?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                if let subject {
-                    subjectHero(subject)
-                    actionPanel(subject)
-                    episodeSection(subject)
-                    DetailFloatingTabs(
-                        tabs: AnimeSubjectTab.allCases,
-                        title: { $0.title },
-                        systemImage: { $0.systemImage },
-                        selection: $selectedTab,
-                        maxWidth: 260
-                    )
-                    .padding(.top, 2)
+        GeometryReader { proxy in
+            let bottomInset = max(32, floatingTabsHeight + proxy.safeAreaInsets.bottom + 12)
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let subject {
+                            subjectHero(subject)
+                            actionPanel(subject)
+                            episodeSection(subject)
 
-                    switch selectedTab {
-                    case .details:
-                        detailTab(subject)
-                    case .reviews:
-                        reviewTab
+                            switch selectedTab {
+                            case .details:
+                                detailTab(subject)
+                            case .reviews:
+                                reviewTab
+                            }
+                        } else if isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 96)
+                        } else {
+                            emptyState(title: "条目加载失败", symbol: "play.tv", message: errorText ?? "请稍后重试")
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 96)
+                        }
                     }
-                } else if isLoading {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 96)
-                } else {
-                    emptyState(title: "条目加载失败", symbol: "play.tv", message: errorText ?? "请稍后重试")
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 96)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, bottomInset)
+                }
+                .scrollContentBackground(.hidden)
+                .ignoresSafeArea(.container, edges: .bottom)
+
+                DetailFloatingTabs(
+                    tabs: AnimeSubjectTab.allCases,
+                    title: { $0.title },
+                    systemImage: { $0.systemImage },
+                    selection: $selectedTab,
+                    maxWidth: 260
+                )
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: AnimeSubjectFloatingTabsHeightPreferenceKey.self,
+                            value: geo.size.height
+                        )
+                    }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 32)
+            .background(IbiliTheme.background.ignoresSafeArea(.container, edges: .bottom))
+            .onPreferenceChange(AnimeSubjectFloatingTabsHeightPreferenceKey.self) { value in
+                floatingTabsHeight = value
+            }
         }
-        .background(IbiliTheme.background)
         .navigationTitle(subject?.displayTitle ?? initialSubject?.displayTitle ?? "追番")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: subjectID) {
@@ -596,6 +615,14 @@ struct AnimeSubjectView: View {
         if value >= star { return "star.fill" }
         if value >= star - 0.5 { return "star.leadinghalf.filled" }
         return "star"
+    }
+}
+
+private struct AnimeSubjectFloatingTabsHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
