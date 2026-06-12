@@ -710,6 +710,22 @@ private struct DeepLinkRouteContent {
     }
 }
 
+struct InlinePlayerRouteDestination: View {
+    let route: DeepLinkRouter.PlayerRoute
+
+    var body: some View {
+        PlayerView(
+            item: route.item,
+            offlineOnly: route.offlineOnly,
+            viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id)
+        )
+        .id(route.id)
+        .tint(.white)
+        .toolbar(.hidden, for: .tabBar)
+        .environment(\.isInPlayerHostNavigation, true)
+    }
+}
+
 private struct DeepLinkSplitHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
     let onRootDismiss: () -> Void

@@ -141,6 +141,7 @@ struct DynamicFeedView: View {
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var pendingDetail: DynamicItemDTO?
+    @State private var playerRoute: DeepLinkRouter.PlayerRoute?
 
     init() {
         _allVM = StateObject(wrappedValue: DynamicFeedViewModel(scope: .all))
@@ -169,6 +170,15 @@ struct DynamicFeedView: View {
                     } else {
                         pendingDetail = dyn
                     }
+                },
+                onOpenVideo: { item in
+                    if isInPlayerHostNavigation {
+                        router.open(item)
+                    } else if prefersSplitRootSelection {
+                        router.select(item)
+                    } else {
+                        playerRoute = DeepLinkRouter.PlayerRoute(item: item)
+                    }
                 }
             )
         }
@@ -181,6 +191,21 @@ struct DynamicFeedView: View {
                     ),
                     destination: {
                         if let detail = pendingDetail { DynamicDetailView(item: detail) }
+                    },
+                    label: { EmptyView() }
+                )
+                .opacity(0)
+                .allowsHitTesting(false)
+
+                NavigationLink(
+                    isActive: Binding(
+                        get: { playerRoute != nil },
+                        set: { if !$0 { playerRoute = nil } }
+                    ),
+                    destination: {
+                        if let route = playerRoute {
+                            InlinePlayerRouteDestination(route: route)
+                        }
                     },
                     label: { EmptyView() }
                 )
@@ -207,6 +232,7 @@ private struct DynamicFeedPage: View {
     let emptyMessage: String
     let scrollToTopSignal: Int
     let onOpenDetail: (DynamicItemDTO) -> Void
+    let onOpenVideo: (FeedItemDTO) -> Void
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitRootIsActive) private var splitRootIsActive
     @Environment(\.splitPreviewLeftWidth) private var splitPreviewLeftWidth
@@ -245,6 +271,7 @@ private struct DynamicFeedPage: View {
                                 DynamicItemCard(
                                     item: item,
                                     contentWidth: contentWidth,
+                                    onOpenVideo: onOpenVideo,
                                     onOpenDetail: onOpenDetail
                                 )
                                 .onAppear {

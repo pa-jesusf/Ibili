@@ -14,6 +14,7 @@ struct SearchResultsView: View {
     @State private var isPageInputPresented: Bool = false
     @State private var scrollID: UUID = UUID()
     @State private var userSpaceMID: Int64?
+    @State private var playerRoute: DeepLinkRouter.PlayerRoute?
     @State private var resolvingPgcSeasonID: Int64?
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
@@ -62,6 +63,21 @@ struct SearchResultsView: View {
                     destination: {
                         if let mid = userSpaceMID {
                             UserSpaceView(mid: mid)
+                        }
+                    },
+                    label: { EmptyView() }
+                )
+                .opacity(0)
+                .allowsHitTesting(false)
+
+                NavigationLink(
+                    isActive: Binding(
+                        get: { playerRoute != nil },
+                        set: { if !$0 { playerRoute = nil } }
+                    ),
+                    destination: {
+                        if let route = playerRoute {
+                            InlinePlayerRouteDestination(route: route)
                         }
                     },
                     label: { EmptyView() }
@@ -202,10 +218,12 @@ struct SearchResultsView: View {
             ZStack(alignment: .bottomTrailing) {
                 Button {
                     let item = feedItem(from: video)
-                    if prefersSplitRootSelection {
+                    if isInPlayerHostNavigation {
+                        router.open(item)
+                    } else if prefersSplitRootSelection {
                         router.select(item)
                     } else {
-                        router.open(item)
+                        playerRoute = DeepLinkRouter.PlayerRoute(item: item)
                     }
                 } label: {
                     SearchResultCardView(
