@@ -141,7 +141,7 @@ struct DynamicFeedView: View {
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var pendingDetail: DynamicItemDTO?
-    @State private var playerRoute: DeepLinkRouter.PlayerRoute?
+    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     init() {
         _allVM = StateObject(wrappedValue: DynamicFeedViewModel(scope: .all))
@@ -177,7 +177,7 @@ struct DynamicFeedView: View {
                     } else if prefersSplitRootSelection {
                         router.select(item)
                     } else {
-                        playerRoute = DeepLinkRouter.PlayerRoute(item: item)
+                        inlinePlayerRoute.open(item)
                     }
                 }
             )
@@ -197,20 +197,7 @@ struct DynamicFeedView: View {
                 .opacity(0)
                 .allowsHitTesting(false)
 
-                NavigationLink(
-                    isActive: Binding(
-                        get: { playerRoute != nil },
-                        set: { if !$0 { playerRoute = nil } }
-                    ),
-                    destination: {
-                        if let route = playerRoute {
-                            InlinePlayerRouteDestination(route: route)
-                        }
-                    },
-                    label: { EmptyView() }
-                )
-                .opacity(0)
-                .allowsHitTesting(false)
+                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
             }
         }
     }

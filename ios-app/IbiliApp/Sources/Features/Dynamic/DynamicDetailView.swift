@@ -17,6 +17,7 @@ struct DynamicDetailView: View {
     @State private var shareSheetURL: ShareSheetItem?
     @State private var commentSendSheet = false
     @State private var toast: String?
+    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     var body: some View {
         GeometryReader { proxy in
@@ -80,6 +81,11 @@ struct DynamicDetailView: View {
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("动态")
         .navigationBarTitleDisplayMode(.inline)
+        .background {
+            if !isInPlayerHostNavigation {
+                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
+            }
+        }
         .fullScreenCover(item: $preview) { state in
             ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
         }
@@ -181,7 +187,7 @@ struct DynamicDetailView: View {
             }
             return
         }
-        router.open(FeedItemDTO(
+        openFeedItem(FeedItemDTO(
             aid: v.aid, bvid: v.bvid, cid: v.cid,
             title: v.title, cover: v.cover, author: item.author.name,
             durationSec: 0, play: 0, danmaku: 0
@@ -198,11 +204,19 @@ struct DynamicDetailView: View {
             }
             return
         }
-        router.open(FeedItemDTO(
+        openFeedItem(FeedItemDTO(
             aid: v.aid, bvid: v.bvid, cid: v.cid,
             title: v.title, cover: v.cover, author: item.orig?.author.name ?? "",
             durationSec: 0, play: 0, danmaku: 0
         ))
+    }
+
+    private func openFeedItem(_ feedItem: FeedItemDTO) {
+        if isInPlayerHostNavigation {
+            router.open(feedItem)
+        } else {
+            inlinePlayerRoute.open(feedItem)
+        }
     }
 
     private func openLive() {

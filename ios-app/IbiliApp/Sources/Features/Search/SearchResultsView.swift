@@ -14,7 +14,7 @@ struct SearchResultsView: View {
     @State private var isPageInputPresented: Bool = false
     @State private var scrollID: UUID = UUID()
     @State private var userSpaceMID: Int64?
-    @State private var playerRoute: DeepLinkRouter.PlayerRoute?
+    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var resolvingPgcSeasonID: Int64?
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
@@ -70,20 +70,7 @@ struct SearchResultsView: View {
                 .opacity(0)
                 .allowsHitTesting(false)
 
-                NavigationLink(
-                    isActive: Binding(
-                        get: { playerRoute != nil },
-                        set: { if !$0 { playerRoute = nil } }
-                    ),
-                    destination: {
-                        if let route = playerRoute {
-                            InlinePlayerRouteDestination(route: route)
-                        }
-                    },
-                    label: { EmptyView() }
-                )
-                .opacity(0)
-                .allowsHitTesting(false)
+                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
             }
         }
     }
@@ -223,7 +210,7 @@ struct SearchResultsView: View {
                     } else if prefersSplitRootSelection {
                         router.select(item)
                     } else {
-                        playerRoute = DeepLinkRouter.PlayerRoute(item: item)
+                        inlinePlayerRoute.open(item)
                     }
                 } label: {
                     SearchResultCardView(
@@ -489,10 +476,12 @@ struct SearchResultsView: View {
                 )
                 await MainActor.run {
                     resolvingPgcSeasonID = nil
-                    if prefersSplitRootSelection {
+                    if isInPlayerHostNavigation {
+                        router.open(feedItem)
+                    } else if prefersSplitRootSelection {
                         router.select(feedItem)
                     } else {
-                        router.open(feedItem)
+                        inlinePlayerRoute.open(feedItem)
                     }
                 }
             } catch {

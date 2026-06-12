@@ -18,10 +18,10 @@ import UIKit
 /// so the floating Liquid-Glass tab bar of `MainTabView` doesn't
 /// peek through.
 ///
-/// Dynamic-detail pushes stay on the enclosing navigation stack so the
-/// user-space page itself keeps its local back stack, while video opens
-/// go through the global player router to reuse the app-wide player
-/// session lifecycle and PiP restore path.
+/// Dynamic-detail and video pushes stay on the enclosing navigation stack
+/// so the user-space page keeps the same system transition behavior as
+/// other local destinations. Inside an active player host we still route
+/// through `DeepLinkRouter` so related-player stacks remain intact.
 struct UserSpaceView: View {
     let mid: Int64
 
@@ -41,6 +41,7 @@ struct UserSpaceView: View {
     /// the cell is recycled, which collapses the entire push above
     /// it — manifesting as "tap dynamic → back jumps to home".
     @State private var pushDynamic: DynamicItemDTO?
+    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     enum Tab: Hashable, Identifiable, CaseIterable {
         case dynamics, archives
@@ -117,6 +118,8 @@ struct UserSpaceView: View {
                 )
                 .opacity(0)
                 .allowsHitTesting(false)
+
+                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
             }
         }
         // `task` runs once per view-identity. It does *not* re-run on
@@ -254,10 +257,12 @@ struct UserSpaceView: View {
                         author: item.author, durationSec: 0,
                         play: item.play, danmaku: item.danmaku
                     )
-                    if prefersSplitRootSelection {
+                    if isInPlayerHostNavigation {
+                        router.open(feedItem)
+                    } else if prefersSplitRootSelection {
                         router.select(feedItem)
                     } else {
-                        router.open(feedItem)
+                        inlinePlayerRoute.open(feedItem)
                     }
                 } label: {
                     CompactVideoRow(
@@ -302,10 +307,12 @@ struct UserSpaceView: View {
                     item: item,
                     contentWidth: contentWidth,
                     onOpenVideo: { feedItem in
-                        if prefersSplitRootSelection {
+                        if isInPlayerHostNavigation {
+                            router.open(feedItem)
+                        } else if prefersSplitRootSelection {
                             router.select(feedItem)
                         } else {
-                            router.open(feedItem)
+                            inlinePlayerRoute.open(feedItem)
                         }
                     },
                     onOpenDetail: { dyn in

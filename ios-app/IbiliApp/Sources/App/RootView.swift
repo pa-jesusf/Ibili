@@ -726,6 +726,36 @@ struct InlinePlayerRouteDestination: View {
     }
 }
 
+@MainActor
+final class InlinePlayerRouteState: ObservableObject {
+    @Published var route: DeepLinkRouter.PlayerRoute?
+
+    func open(_ item: FeedItemDTO, offlineOnly: Bool = false) {
+        route = DeepLinkRouter.PlayerRoute(item: item, offlineOnly: offlineOnly)
+    }
+}
+
+struct InlinePlayerRouteLinkHost: View {
+    @ObservedObject var state: InlinePlayerRouteState
+
+    var body: some View {
+        NavigationLink(
+            isActive: Binding(
+                get: { state.route != nil },
+                set: { if !$0 { state.route = nil } }
+            ),
+            destination: {
+                if let route = state.route {
+                    InlinePlayerRouteDestination(route: route)
+                }
+            },
+            label: { EmptyView() }
+        )
+        .opacity(0)
+        .allowsHitTesting(false)
+    }
+}
+
 private struct DeepLinkSplitHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
     let onRootDismiss: () -> Void

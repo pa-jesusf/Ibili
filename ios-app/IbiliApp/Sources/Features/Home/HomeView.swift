@@ -67,7 +67,7 @@ private struct HomeFeedPage: View {
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
     @State private var userSpaceMID: Int64?
-    @State private var playerRoute: DeepLinkRouter.PlayerRoute?
+    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
 
@@ -91,20 +91,7 @@ private struct HomeFeedPage: View {
                 .opacity(0)
                 .allowsHitTesting(false)
 
-                NavigationLink(
-                    isActive: Binding(
-                        get: { playerRoute != nil },
-                        set: { if !$0 { playerRoute = nil } }
-                    ),
-                    destination: {
-                        if let route = playerRoute {
-                            InlinePlayerRouteDestination(route: route)
-                        }
-                    },
-                    label: { EmptyView() }
-                )
-                .opacity(0)
-                .allowsHitTesting(false)
+                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
             }
         }
         .overlay(alignment: .bottom) {
@@ -187,7 +174,7 @@ private struct HomeFeedPage: View {
         } else if prefersSplitRootSelection {
             router.select(item)
         } else {
-            playerRoute = DeepLinkRouter.PlayerRoute(item: item)
+            inlinePlayerRoute.open(item)
         }
     }
 
