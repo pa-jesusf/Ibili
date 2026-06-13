@@ -382,7 +382,7 @@ func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> 
 enum PlayerFullscreenTransitionShield {
     private static weak var shieldView: UIView?
     private static var pendingHideWork: DispatchWorkItem?
-    private static let fallbackDuration: TimeInterval = 1.4
+    private static let fallbackDuration: TimeInterval = 1.55
 
     static func show(reason: String,
                      sessionID: PlayerSessionID,
@@ -399,16 +399,14 @@ enum PlayerFullscreenTransitionShield {
             return
         }
         let snapshotRect = clippedSnapshotRect(in: sourceView, rect: sourceRect)
-        let videoFrameImage = videoFrameImage(from: player)
-        let snapshotView = videoFrameImage == nil ? snapshotView(from: sourceView, rect: snapshotRect) : nil
-        let snapshotImage = videoFrameImage ?? (snapshotView == nil ? snapshotImage(from: sourceView, rect: snapshotRect) : nil)
-        guard snapshotView != nil || snapshotImage != nil else {
-            AppLog.debug("player", "跳过全屏转场遮罩：播放器快照不可用", metadata: [
+        guard let player else {
+            AppLog.debug("player", "跳过全屏转场遮罩：播放器不可用", metadata: [
                 "reason": reason,
                 "sessionID": sessionID.uuidString,
             ])
             return
         }
+        let sourceFrame = sourceView.convert(snapshotRect, to: window)
         let shield: PlayerFullscreenTransitionShieldView
         if let existing = shieldView as? PlayerFullscreenTransitionShieldView, existing.window === window {
             shield = existing
@@ -423,13 +421,16 @@ enum PlayerFullscreenTransitionShield {
             shieldView = view
             shield = view
         }
-        shield.update(snapshotView: snapshotView, fallbackImage: snapshotImage, aspectSize: snapshotRect.size)
+        shield.update(
+            player: player,
+            aspectSize: snapshotRect.size,
+            sourceFrame: sourceFrame
+        )
         shield.alpha = 1
         window.bringSubviewToFront(shield)
+        shield.animateEntry()
         AppLog.debug("player", "显示全屏转场遮罩", metadata: [
-            "hasVideoFrameImage": String(videoFrameImage != nil),
-            "hasSnapshotView": String(snapshotView != nil),
-            "hasFallbackImage": String(snapshotImage != nil),
+            "usesPlayerLayer": "true",
             "reason": reason,
             "sessionID": sessionID.uuidString,
         ])
@@ -453,7 +454,7 @@ enum PlayerFullscreenTransitionShield {
             ])
             if animated {
                 UIView.animate(
-                    withDuration: 0.16,
+                    withDuration: 0.18,
                     delay: 0,
                     options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction],
                     animations: { shield.alpha = 0 },
@@ -492,50 +493,13 @@ enum PlayerFullscreenTransitionShield {
         return rect
     }
 
-    private static func snapshotView(from sourceView: UIView, rect: CGRect) -> UIView? {
-        guard rect.width > 0, rect.height > 0 else { return nil }
-        return sourceView.resizableSnapshotView(
-            from: rect,
-            afterScreenUpdates: false,
-            withCapInsets: .zero
-        )
-    }
-
-    private static func videoFrameImage(from player: AVPlayer?) -> UIImage? {
-        guard let item = player?.currentItem else { return nil }
-        let asset = item.asset
-        let time = item.currentTime()
-        guard time.isValid, !time.isIndefinite else { return nil }
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
-        let maxSide = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale
-        generator.maximumSize = CGSize(width: maxSide, height: maxSide)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
-        return UIImage(cgImage: cgImage)
-    }
-
-    private static func snapshotImage(from sourceView: UIView, rect: CGRect) -> UIImage? {
-        let bounds = sourceView.bounds
-        guard bounds.width > 0, bounds.height > 0, rect.width > 0, rect.height > 0 else { return nil }
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = UIScreen.main.scale
-        format.opaque = true
-        let renderer = UIGraphicsImageRenderer(size: rect.size, format: format)
-        return renderer.image { context in
-            UIColor.black.setFill()
-            context.fill(CGRect(origin: .zero, size: rect.size))
-            context.cgContext.translateBy(x: -rect.minX, y: -rect.minY)
-            sourceView.drawHierarchy(in: bounds, afterScreenUpdates: false)
-        }
-    }
 }
 
 private final class PlayerFullscreenTransitionShieldView: UIView {
-    private let imageView = UIImageView()
-    private weak var currentSnapshotView: UIView?
+    private let playerContainerView = UIView()
+    private let playerLayer = AVPlayerLayer()
     private var aspectSize: CGSize = CGSize(width: 16, height: 9)
+    private var entryAnimationCompleted = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -549,31 +513,89 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
 
     private func setup() {
         clipsToBounds = true
-        backgroundColor = .black
-        imageView.contentMode = .scaleAspectFill
-        imageView.clipsToBounds = true
+        backgroundColor = .clear
+        playerContainerView.clipsToBounds = true
+        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "transform": NSNull(),
+            "contents": NSNull(),
+        ]
+        playerContainerView.layer.addSublayer(playerLayer)
     }
 
-    func update(snapshotView: UIView?, fallbackImage: UIImage?, aspectSize: CGSize) {
-        currentSnapshotView?.removeFromSuperview()
-        imageView.removeFromSuperview()
+    func update(player: AVPlayer,
+                aspectSize: CGSize,
+                sourceFrame: CGRect) {
+        entryAnimationCompleted = false
+        playerContainerView.removeFromSuperview()
         self.aspectSize = aspectSize.width > 0 && aspectSize.height > 0 ? aspectSize : CGSize(width: 16, height: 9)
-        if let snapshotView {
-            snapshotView.clipsToBounds = true
-            addSubview(snapshotView)
-            currentSnapshotView = snapshotView
-        } else {
-            imageView.image = fallbackImage
-            addSubview(imageView)
-            currentSnapshotView = imageView
-        }
-        setNeedsLayout()
+        playerLayer.player = player
+        addSubview(playerContainerView)
+        playerContainerView.transform = .identity
+        playerContainerView.frame = sourceFrame.width > 1 && sourceFrame.height > 1 ? sourceFrame : aspectFillRect(aspectRatio: self.aspectSize, insideRect: bounds)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = playerContainerView.bounds
+        CATransaction.commit()
+    }
+
+    func animateEntry() {
         layoutIfNeeded()
+        let target = expandedContentFrame()
+        UIView.animate(
+            withDuration: 0.26,
+            delay: 0,
+            options: [.curveEaseInOut, .beginFromCurrentState, .allowUserInteraction],
+            animations: {
+                self.playerContainerView.bounds = CGRect(origin: .zero, size: target.size)
+                self.playerContainerView.center = CGPoint(x: target.midX, y: target.midY)
+                self.playerContainerView.transform = .identity
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.playerLayer.frame = self.playerContainerView.bounds
+                CATransaction.commit()
+            },
+            completion: { _ in
+                self.entryAnimationCompleted = true
+                self.applyExpandedState()
+            }
+        )
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        currentSnapshotView?.frame = aspectFillRect(aspectRatio: aspectSize, insideRect: bounds)
+        if entryAnimationCompleted {
+            applyExpandedState()
+        }
+    }
+
+    private func applyExpandedState() {
+        let target = expandedContentFrame()
+        playerContainerView.bounds = CGRect(origin: .zero, size: target.size)
+        playerContainerView.center = CGPoint(x: target.midX, y: target.midY)
+        playerContainerView.transform = .identity
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = playerContainerView.bounds
+        CATransaction.commit()
+    }
+
+    override func removeFromSuperview() {
+        playerLayer.player = nil
+        super.removeFromSuperview()
+    }
+
+    private func expandedContentFrame() -> CGRect {
+        let diagonal = hypot(max(bounds.width, 1), max(bounds.height, 1))
+        let coverRect = CGRect(
+            x: bounds.midX - diagonal / 2,
+            y: bounds.midY - diagonal / 2,
+            width: diagonal,
+            height: diagonal
+        )
+        return aspectFillRect(aspectRatio: aspectSize, insideRect: coverRect)
     }
 
     private func aspectFillRect(aspectRatio: CGSize, insideRect rect: CGRect) -> CGRect {

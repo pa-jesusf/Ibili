@@ -440,12 +440,13 @@ struct PlayerContainer: UIViewControllerRepresentable {
             let requestedFullscreenMask = requestedPhoneFullscreenMask(for: currentDeviceOrientation)
             let shouldShieldTransition = requestedFullscreenMask != nil
             if shouldShieldTransition {
+                let sourceRect = videoSnapshotRect(for: vc)
                 PlayerFullscreenTransitionShield.show(
                     reason: "avkit-will-enter",
                     sessionID: parent.sessionID,
                     player: vc.player,
                     sourceView: vc.view,
-                    sourceRect: videoSnapshotRect(for: vc)
+                    sourceRect: sourceRect
                 )
             }
             AppLog.info("player", "AVKit 即将进入全屏", metadata: [
@@ -492,7 +493,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 }
                 self.restorePlaybackState(on: vc, source: "enter-completion")
                 if shouldShieldTransition {
-                    PlayerFullscreenTransitionShield.hide(animated: true, delay: 0.08, reason: "enter-completion", sessionID: self.parent.sessionID)
+                    PlayerFullscreenTransitionShield.hide(animated: true, delay: 0.09, reason: "enter-completion", sessionID: self.parent.sessionID)
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
                     guard let self, let vc else { return }
