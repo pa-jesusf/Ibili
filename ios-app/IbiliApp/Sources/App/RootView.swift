@@ -68,6 +68,7 @@ struct InlinePlayerNavigation {
     let openUserSpace: (Int64) -> Void
     let openDynamicDetail: (DynamicItemDTO) -> Void
     let openArticleRoute: (String, String) -> Void
+    let openSearchRoute: (String) -> Void
 
     func open(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
         openPlayer(item, mode)
@@ -94,6 +95,12 @@ struct InlinePlayerNavigation {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         openArticleRoute(trimmed, kind)
+    }
+
+    func openSearch(keyword: String) {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        openSearchRoute(trimmed)
     }
 }
 
@@ -415,6 +422,9 @@ private struct DeepLinkPlayerHost: View {
         }
         .tint(.white)
         .environment(\.isInPlayerHostNavigation, true)
+        .environment(\.openURL, OpenURLAction { url in
+            handleLocalDeepLink(url)
+        })
         .background(IbiliTheme.background)
         .offset(x: offsetX)
         .allowsHitTesting(!isRootDismissInFlight)
@@ -574,6 +584,26 @@ private struct DeepLinkPlayerHost: View {
         case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
             break
         }
+    }
+
+    private func handleLocalDeepLink(_ url: URL) -> OpenURLAction.Result {
+        PlayerHostDeepLinkHandler.handle(
+            url,
+            navigation: InlinePlayerNavigation(
+                openPlayer: { item, mode in router.open(item, mode: mode) },
+                openLiveRoute: { route, mode in router.openLive(
+                    roomID: route.roomID,
+                    title: route.title,
+                    cover: route.cover,
+                    anchorName: route.anchorName,
+                    mode: mode
+                ) },
+                openUserSpace: { mid in router.openUserSpace(mid: mid) },
+                openDynamicDetail: { item in router.openDynamicDetail(item) },
+                openArticleRoute: { id, kind in router.openArticle(id: id, kind: kind) },
+                openSearchRoute: { keyword in router.openSearch(keyword: keyword) }
+            )
+        )
     }
 
     @ViewBuilder
@@ -754,6 +784,97 @@ private struct DeepLinkRouteContent {
     }
 }
 
+private enum PlayerHostDeepLinkHandler {
+    static func handle(_ url: URL, navigation: InlinePlayerNavigation) -> OpenURLAction.Result {
+        guard url.scheme?.lowercased() == "ibili" else { return .systemAction }
+        let host = (url.host ?? "").lowercased()
+        let path = url.lastPathComponent
+
+        switch host {
+        case "bv":
+            guard !path.isEmpty else { return .handled }
+            navigation.open(DeepLinkRouter.makeShell(bvid: path))
+        case "av":
+            if let aid = Int64(path) {
+                navigation.open(DeepLinkRouter.makeShell(aid: aid))
+            }
+        case "live":
+            if let roomID = Int64(path) {
+                navigation.openLive(roomID: roomID)
+            }
+        case "pgc", "bangumi":
+            openPgc(url: url, host: host, path: path, navigation: navigation)
+        case "article":
+            let components = url.pathComponents.filter { $0 != "/" }
+            if components.count >= 2 {
+                navigation.openArticle(id: components[1], kind: components[0])
+            }
+        case "space", "user":
+            if let mid = Int64(path) {
+                navigation.openUser(mid: mid)
+            }
+        case "cv", "read":
+            if let cvid = DeepLinkRouter.extractFirstNumber(from: path) {
+                navigation.openArticle(id: cvid, kind: "read")
+            }
+        case "opus":
+            if let opusID = DeepLinkRouter.extractFirstNumber(from: path) {
+                navigation.openArticle(id: opusID, kind: "opus")
+            }
+        case "search":
+            let keyword = url.queryParameters["keyword"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let keyword, !keyword.isEmpty {
+                navigation.openSearch(keyword: keyword)
+            }
+        default:
+            break
+        }
+        return .handled
+    }
+
+    private static func openPgc(
+        url: URL,
+        host: String,
+        path: String,
+        navigation: InlinePlayerNavigation
+    ) {
+        let components = url.pathComponents.filter { $0 != "/" }
+        var seasonID: Int64 = 0
+        var epID: Int64 = 0
+
+        if components.count >= 2 {
+            switch components[0] {
+            case "ep":
+                epID = Int64(components[1]) ?? 0
+            case "ss", "season":
+                seasonID = Int64(components[1]) ?? 0
+            default:
+                break
+            }
+        } else if host == "pgc",
+                  let extracted = DeepLinkRouter.extractFirstNumber(from: path) {
+            epID = Int64(extracted) ?? 0
+        }
+
+        guard seasonID > 0 || epID > 0 else { return }
+        Task { @MainActor in
+            do {
+                let season = try await Task.detached(priority: .userInitiated) {
+                    try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
+                }.value
+                guard let episode = DeepLinkRouter.selectEpisode(from: season, epID: epID) else { return }
+                navigation.open(DeepLinkRouter.makePgcFeedItem(season: season, episode: episode))
+            } catch {
+                AppLog.error("router", "播放器栈内 PGC 路由解析失败", error: error, metadata: [
+                    "seasonID": String(seasonID),
+                    "epID": String(epID),
+                ])
+            }
+        }
+    }
+}
+
 @MainActor
 final class InlinePlayerRouteState: ObservableObject {
     private static let maxPathDepth = 12
@@ -806,6 +927,13 @@ final class InlinePlayerRouteState: ObservableObject {
         guard !trimmed.isEmpty else { return }
         let normalizedKind = kind == "opus" ? "opus" : "read"
         path.append(.article(DeepLinkRouter.ArticleRoute(articleID: trimmed, kind: normalizedKind)))
+        prunePathForPerformance()
+    }
+
+    func openSearch(keyword: String) {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        path.append(.search(DeepLinkRouter.SearchRoute(keyword: trimmed)))
         prunePathForPerformance()
     }
 
@@ -894,17 +1022,25 @@ private struct InlinePlayerNavigationHost: View {
 
     var body: some View {
         InlinePlayerDestination(state: state, depth: -1)
-        .environment(\.inlinePlayerNavigation, InlinePlayerNavigation(
-            openPlayer: { item, mode in state.open(item, mode: mode) },
-            openLiveRoute: { route, mode in state.openLive(route, mode: mode) },
-            openUserSpace: { mid in state.openUserSpace(mid: mid) },
-            openDynamicDetail: { item in state.openDynamicDetail(item) },
-            openArticleRoute: { id, kind in state.openArticle(id: id, kind: kind) }
-        ))
+        .environment(\.inlinePlayerNavigation, inlineNavigation)
+        .environment(\.openURL, OpenURLAction { url in
+            PlayerHostDeepLinkHandler.handle(url, navigation: inlineNavigation)
+        })
         .environment(\.isInPlayerHostNavigation, true)
         .environment(\.dismissPlayerHost, { state.close() })
         .toolbar(.hidden, for: .tabBar)
         .tint(.white)
+    }
+
+    private var inlineNavigation: InlinePlayerNavigation {
+        InlinePlayerNavigation(
+            openPlayer: { item, mode in state.open(item, mode: mode) },
+            openLiveRoute: { route, mode in state.openLive(route, mode: mode) },
+            openUserSpace: { mid in state.openUserSpace(mid: mid) },
+            openDynamicDetail: { item in state.openDynamicDetail(item) },
+            openArticleRoute: { id, kind in state.openArticle(id: id, kind: kind) },
+            openSearchRoute: { keyword in state.openSearch(keyword: keyword) }
+        )
     }
 }
 
@@ -940,17 +1076,25 @@ private struct InlinePlayerDestination: View {
         .background {
             InlinePlayerChildRouteLink(state: state, depth: depth + 1)
         }
-        .environment(\.inlinePlayerNavigation, InlinePlayerNavigation(
-            openPlayer: { item, mode in state.open(item, mode: mode) },
-            openLiveRoute: { route, mode in state.openLive(route, mode: mode) },
-            openUserSpace: { mid in state.openUserSpace(mid: mid) },
-            openDynamicDetail: { item in state.openDynamicDetail(item) },
-            openArticleRoute: { id, kind in state.openArticle(id: id, kind: kind) }
-        ))
+        .environment(\.inlinePlayerNavigation, inlineNavigation)
+        .environment(\.openURL, OpenURLAction { url in
+            PlayerHostDeepLinkHandler.handle(url, navigation: inlineNavigation)
+        })
         .environment(\.isInPlayerHostNavigation, true)
         .environment(\.dismissPlayerHost, { state.close() })
         .toolbar(.hidden, for: .tabBar)
         .tint(.white)
+    }
+
+    private var inlineNavigation: InlinePlayerNavigation {
+        InlinePlayerNavigation(
+            openPlayer: { item, mode in state.open(item, mode: mode) },
+            openLiveRoute: { route, mode in state.openLive(route, mode: mode) },
+            openUserSpace: { mid in state.openUserSpace(mid: mid) },
+            openDynamicDetail: { item in state.openDynamicDetail(item) },
+            openArticleRoute: { id, kind in state.openArticle(id: id, kind: kind) },
+            openSearchRoute: { keyword in state.openSearch(keyword: keyword) }
+        )
     }
 
     private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {

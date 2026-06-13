@@ -536,9 +536,9 @@ final class DeepLinkRouter: ObservableObject {
                 let season = try await Task.detached(priority: .userInitiated) {
                     try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
                 }.value
-                let episode = selectEpisode(from: season, epID: epID)
+                let episode = Self.selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
-                open(makePgcFeedItem(season: season, episode: episode), mode: mode)
+                open(Self.makePgcFeedItem(season: season, episode: episode), mode: mode)
             } catch {
                 AppLog.error("router", "PGC 路由解析失败", error: error, metadata: [
                     "seasonID": String(seasonID),
@@ -555,9 +555,9 @@ final class DeepLinkRouter: ObservableObject {
                 let season = try await Task.detached(priority: .userInitiated) {
                     try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
                 }.value
-                let episode = selectEpisode(from: season, epID: epID)
+                let episode = Self.selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
-                select(makePgcFeedItem(season: season, episode: episode))
+                select(Self.makePgcFeedItem(season: season, episode: episode))
             } catch {
                 AppLog.error("router", "PGC 路由解析失败", error: error, metadata: [
                     "seasonID": String(seasonID),
@@ -602,11 +602,11 @@ final class DeepLinkRouter: ObservableObject {
         switch host {
         case "bv":
             guard !path.isEmpty else { return .handled }
-            open(makeShell(bvid: path))
+            open(Self.makeShell(bvid: path))
             return .handled
         case "av":
             if let aid = Int64(path) {
-                open(makeShell(aid: aid))
+                open(Self.makeShell(aid: aid))
             }
             return .handled
         case "live":
@@ -667,12 +667,12 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
-    private static func extractFirstNumber(from raw: String) -> String? {
+    nonisolated static func extractFirstNumber(from raw: String) -> String? {
         guard let range = raw.range(of: #"\d+"#, options: .regularExpression) else { return nil }
         return String(raw[range])
     }
 
-    private func makeShell(aid: Int64 = 0, bvid: String = "") -> FeedItemDTO {
+    nonisolated static func makeShell(aid: Int64 = 0, bvid: String = "") -> FeedItemDTO {
         FeedItemDTO(
             aid: aid,
             bvid: bvid,
@@ -686,14 +686,14 @@ final class DeepLinkRouter: ObservableObject {
         )
     }
 
-    private func selectEpisode(from season: PgcSeasonDTO, epID: Int64) -> PgcEpisodeDTO? {
+    nonisolated static func selectEpisode(from season: PgcSeasonDTO, epID: Int64) -> PgcEpisodeDTO? {
         if epID > 0, let matched = season.episodes.first(where: { $0.epID == epID }) {
             return matched
         }
         return season.episodes.first
     }
 
-    private func makePgcFeedItem(season: PgcSeasonDTO, episode: PgcEpisodeDTO) -> FeedItemDTO {
+    nonisolated static func makePgcFeedItem(season: PgcSeasonDTO, episode: PgcEpisodeDTO) -> FeedItemDTO {
         let seasonTitle = season.seasonTitle.isEmpty ? season.title : season.seasonTitle
         let epTitle = episode.longTitle.isEmpty ? episode.title : episode.longTitle
         let title = [seasonTitle, epTitle].filter { !$0.isEmpty }.joined(separator: " · ")

@@ -14,10 +14,18 @@ struct PlayerToolbarDanmaku: View {
     var isEnabled: Bool = true
     /// Long-press handler — typically opens the danmaku-send sheet.
     var onLongPress: (() -> Void)? = nil
+    @State private var suppressTapAfterLongPress = false
+    @State private var recognizedLongPressDuringTouch = false
+    @State private var suppressTapResetWork: DispatchWorkItem?
+    @GestureState private var isTouchingButton = false
 
     var body: some View {
         Button {
             guard isEnabled else { return }
+            if suppressTapAfterLongPress {
+                clearSuppressedTap(cancelScheduledReset: true)
+                return
+            }
             danmakuEnabled.toggle()
         } label: {
             Image(systemName: danmakuEnabled ? "text.bubble.fill" : "text.bubble")
@@ -35,9 +43,48 @@ struct PlayerToolbarDanmaku: View {
             LongPressGesture(minimumDuration: 0.4)
                 .onEnded { _ in
                     guard isEnabled else { return }
+                    suppressTapAfterLongPress = true
+                    recognizedLongPressDuringTouch = true
+                    suppressTapResetWork?.cancel()
                     onLongPress?()
                 }
         )
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .updating($isTouchingButton) { _, state, _ in
+                    state = true
+                }
+        )
+        .onChange(of: isTouchingButton) { isTouching in
+            guard isEnabled else { return }
+            if isTouching {
+                suppressTapResetWork?.cancel()
+                recognizedLongPressDuringTouch = false
+            } else if recognizedLongPressDuringTouch {
+                scheduleSuppressedTapReset()
+            }
+        }
+        .onDisappear {
+            clearSuppressedTap(cancelScheduledReset: true)
+        }
+    }
+
+    private func scheduleSuppressedTapReset() {
+        suppressTapResetWork?.cancel()
+        let work = DispatchWorkItem {
+            clearSuppressedTap()
+        }
+        suppressTapResetWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func clearSuppressedTap(cancelScheduledReset: Bool = false) {
+        if cancelScheduledReset {
+            suppressTapResetWork?.cancel()
+        }
+        suppressTapAfterLongPress = false
+        recognizedLongPressDuringTouch = false
+        suppressTapResetWork = nil
     }
 }
 
