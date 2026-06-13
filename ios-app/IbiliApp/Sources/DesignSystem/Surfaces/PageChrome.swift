@@ -142,6 +142,7 @@ struct FeedScrollPage<Content: View>: View {
     var onRefresh: (() async -> Void)?
     let content: Content
     @Environment(\.feedChromeShowsInlineSystemHeader) private var showsInlineSystemHeader
+    @State private var scrollOffset: CGFloat = 0
 
     init(
         title: String,
@@ -168,21 +169,25 @@ struct FeedScrollPage<Content: View>: View {
                 if #unavailable(iOS 18.0) {
                     ScrollHeaderOffsetReader(coordinateSpace: coordinateSpace)
                 }
-                if showsInlineSystemHeader {
-                    FeedChromeScrollableTitleHeader(
-                        title: title,
-                        collapseProgress: headerCollapseProgress
-                    )
-                } else {
+                if !showsInlineSystemHeader {
                     FeedTitleHeader(title: title, collapseProgress: headerCollapseProgress, showsBackground: false)
                 }
                 content
+            }
+            .overlay(alignment: .topLeading) {
+                if showsInlineSystemHeader {
+                    FeedChromeFloatingTitle(
+                        title: title,
+                        scrollOffset: scrollOffset
+                    )
+                }
             }
             .onChange(of: scrollToTopSignal) { _ in
                 withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                     scrollProxy.scrollTo(topAnchorID, anchor: .top)
                 }
                 headerCollapseProgress = 0
+                scrollOffset = 0
             }
         }
     }
@@ -197,7 +202,10 @@ struct FeedScrollPage<Content: View>: View {
             content()
         }
         .coordinateSpace(name: coordinateSpace)
-        .modifier(ScrollOffsetCollapseDriver(progress: $headerCollapseProgress))
+        .modifier(ScrollOffsetCollapseDriver(
+            progress: $headerCollapseProgress,
+            offset: $scrollOffset
+        ))
         .modifier(ProMotionScrollHint())
         .scrollContentBackground(.hidden)
 
@@ -211,32 +219,25 @@ struct FeedScrollPage<Content: View>: View {
     }
 }
 
-private struct FeedChromeScrollableTitleHeader: View {
+private struct FeedChromeFloatingTitle: View {
     let title: String
-    let collapseProgress: CGFloat
+    let scrollOffset: CGFloat
 
     var body: some View {
-        let p = min(1, max(0, collapseProgress))
-        let titleSize: CGFloat = 34 - p * 12
-        let titleWeight: Font.Weight = p > 0.65 ? .semibold : .bold
-        let topPad: CGFloat = 10 - p * 4
-        let bottomPad: CGFloat = 8 - p * 4
-        let height: CGFloat = 62 - p * 10
+        let progress = min(max(scrollOffset / 44, 0), 1)
+        let baseYOffset: CGFloat = -32
+        let yOffset = baseYOffset - scrollOffset
+        let opacity = Double(1 - progress)
 
-        HStack(alignment: .center, spacing: 12) {
-            Text(title)
-                .font(.system(size: titleSize, weight: titleWeight))
-                .foregroundStyle(IbiliTheme.textPrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-                .layoutPriority(1)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, topPad)
-        .padding(.bottom, bottomPad)
-        .frame(height: height, alignment: .top)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(title)
+            .font(.largeTitle.bold())
+            .foregroundStyle(IbiliTheme.textPrimary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.68)
+            .padding(.leading, 16)
+            .padding(.top, 0)
+            .offset(y: yOffset)
+            .opacity(opacity)
         .allowsHitTesting(false)
     }
 }

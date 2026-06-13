@@ -130,6 +130,7 @@ enum FeedSegmentedHeaderMetrics {
 /// versions keep the existing `GeometryReader`/`PreferenceKey` path.
 struct ScrollOffsetCollapseDriver: ViewModifier {
     @Binding var progress: CGFloat
+    var offset: Binding<CGFloat>?
 
     @State private var collapseState = FeedScrollCollapseState()
 
@@ -151,6 +152,7 @@ struct ScrollOffsetCollapseDriver: ViewModifier {
     private func updateProgress(offset rawOffset: CGFloat) {
         let next = collapseState.update(rawOffset: rawOffset)
         progress = next.headerProgress
+        offset?.wrappedValue = next.offset
     }
 }
 
