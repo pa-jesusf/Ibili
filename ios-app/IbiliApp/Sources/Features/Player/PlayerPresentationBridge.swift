@@ -348,7 +348,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func syncActivePresentationPreference() {
             if isPresentationRouteActive {
-                Orientation.setActivePlayerFullscreenPreference(parent.prefersLandscapeFullscreen, for: parent.sessionID)
+                Orientation.setActivePlayerFullscreenPreference(shouldManageLandscapeFullscreen(), for: parent.sessionID)
             } else {
                 Orientation.clearActivePlayerFullscreenPreference(for: parent.sessionID)
             }
@@ -411,12 +411,12 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            isPresentationRouteActive && parent.canBeginTemporarySpeedBoost()
+            return isPresentationRouteActive && parent.canBeginTemporarySpeedBoost()
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            false
+            return false
         }
 
         // MARK: AVPlayerViewControllerDelegate
@@ -434,12 +434,25 @@ struct PlayerContainer: UIViewControllerRepresentable {
             if transitionSnapshot?.wasPlaying == true {
                 parent.onPresentationEvent(.suppressTransientPauseObservation(identity, .fullscreenEnter))
             }
+            let managesLandscapeFullscreen = shouldManageLandscapeFullscreen(controller: vc)
+            Orientation.setActivePlayerFullscreenPreference(managesLandscapeFullscreen, for: parent.sessionID)
             let currentDeviceOrientation = UIDevice.current.orientation
             let requestedFullscreenMask = requestedPhoneFullscreenMask(for: currentDeviceOrientation)
+            let shouldShieldTransition = requestedFullscreenMask != nil
+            if shouldShieldTransition {
+                PlayerFullscreenTransitionShield.show(
+                    reason: "avkit-will-enter",
+                    sessionID: parent.sessionID,
+                    player: vc.player,
+                    sourceView: vc.view,
+                    sourceRect: videoSnapshotRect(for: vc)
+                )
+            }
             AppLog.info("player", "AVKit 即将进入全屏", metadata: [
                 "deviceOrientation": deviceOrientationDescription(currentDeviceOrientation),
                 "supportedMask": interfaceOrientationMaskDescription(Orientation.supportedMask()),
                 "prefersLandscapeFullscreen": String(parent.prefersLandscapeFullscreen),
+                "managesLandscapeFullscreen": String(managesLandscapeFullscreen),
                 "rate": String(transitionSnapshot?.playbackRate ?? 1.0),
                 "playing": String(transitionSnapshot?.wasPlaying ?? false),
                 "requestedMask": requestedFullscreenMask.map(interfaceOrientationMaskDescription) ?? "none",
@@ -461,6 +474,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
             coordinator.animate(alongsideTransition: nil) { [weak self, weak vc] context in
                 guard let self, let vc else { return }
                 if context.isCancelled {
+                    if shouldShieldTransition {
+                        PlayerFullscreenTransitionShield.hide(animated: true, reason: "enter-cancelled", sessionID: self.parent.sessionID)
+                    }
                     self.parent.onPresentationEvent(.fullscreenChanged(false, identity))
                     if requestedFullscreenMask != nil {
                         self.fullscreenOrientationPhase = .inline
@@ -475,6 +491,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
                     Orientation.requestWithoutMaskChange(requestedFullscreenMask)
                 }
                 self.restorePlaybackState(on: vc, source: "enter-completion")
+                if shouldShieldTransition {
+                    PlayerFullscreenTransitionShield.hide(animated: true, delay: 0.08, reason: "enter-completion", sessionID: self.parent.sessionID)
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak vc] in
                     guard let self, let vc else { return }
                     if let requestedFullscreenMask,
@@ -572,23 +591,19 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func requestedPhoneFullscreenMask(for deviceOrientation: UIDeviceOrientation) -> UIInterfaceOrientationMask? {
-            guard UIDevice.current.userInterfaceIdiom == .phone,
-                  isPresentationRouteActive,
-                  parent.prefersLandscapeFullscreen else { return nil }
+            guard shouldManageLandscapeFullscreen() else { return nil }
             switch deviceOrientation {
             case .landscapeLeft:
                 return .landscapeRight
             case .landscapeRight:
                 return .landscapeLeft
             default:
-                return .landscape
+                return .landscapeRight
             }
         }
 
         func syncDeviceOrientationMonitoring(controller: AVPlayerViewController) {
-            guard isPresentationRouteActive,
-                  UIDevice.current.userInterfaceIdiom == .phone,
-                  parent.prefersLandscapeFullscreen else {
+            guard shouldManageLandscapeFullscreen(controller: controller) else {
                 stopDeviceOrientationMonitoring()
                 return
             }
@@ -606,10 +621,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func stopDeviceOrientationMonitoring() {
-            guard let observer = deviceOrientationObserver else { return }
-            NotificationCenter.default.removeObserver(observer)
-            deviceOrientationObserver = nil
-            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+            if let observer = deviceOrientationObserver {
+                NotificationCenter.default.removeObserver(observer)
+                deviceOrientationObserver = nil
+                UIDevice.current.endGeneratingDeviceOrientationNotifications()
+            }
             playerController = nil
             fullscreenOrientationPhase = .inline
             lastPortraitAutoExitAt = nil
@@ -617,9 +633,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         private func handleDeviceOrientationChange() {
-            guard isPresentationRouteActive,
-                  UIDevice.current.userInterfaceIdiom == .phone,
-                  parent.prefersLandscapeFullscreen else { return }
+            guard shouldManageLandscapeFullscreen(controller: playerController) else { return }
             let orientation = UIDevice.current.orientation
             if orientation.isLandscapeForFullscreen {
                 handleLandscapeDeviceOrientation(orientation)
@@ -703,6 +717,40 @@ struct PlayerContainer: UIViewControllerRepresentable {
             let mask = requestedPhoneFullscreenMask(for: orientation) ?? .landscapeRight
             Orientation.preparePhoneFullscreenLandscape()
             Orientation.requestWithoutMaskChange(mask)
+        }
+
+        private func shouldManageLandscapeFullscreen(controller: AVPlayerViewController? = nil) -> Bool {
+            guard UIDevice.current.userInterfaceIdiom == .phone,
+                  isPresentationRouteActive,
+                  parent.prefersLandscapeFullscreen else {
+                return false
+            }
+            let player = controller?.player ?? playerController?.player ?? parent.player
+            return !isPortraitVideo(player: player)
+        }
+
+        private func isPortraitVideo(player: AVPlayer?) -> Bool {
+            guard let size = player?.currentItem?.presentationSize else { return false }
+            let width = abs(size.width)
+            let height = abs(size.height)
+            guard width > 0, height > 0 else { return false }
+            return height > width
+        }
+
+        private func videoSnapshotRect(for vc: AVPlayerViewController) -> CGRect? {
+            let bounds = vc.view.bounds
+            guard bounds.width > 0,
+                  bounds.height > 0,
+                  let size = vc.player?.currentItem?.presentationSize else {
+                return nil
+            }
+            let width = abs(size.width)
+            let height = abs(size.height)
+            guard width > 0, height > 0 else { return nil }
+            return AVMakeRect(
+                aspectRatio: CGSize(width: width, height: height),
+                insideRect: bounds
+            )
         }
 
         private func requestNativeFullscreen(controller: AVPlayerViewController,

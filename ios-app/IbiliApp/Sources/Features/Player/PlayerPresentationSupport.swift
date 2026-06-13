@@ -378,6 +378,222 @@ func interfaceOrientationMaskDescription(_ mask: UIInterfaceOrientationMask) -> 
     return "raw(\(mask.rawValue))"
 }
 
+@MainActor
+enum PlayerFullscreenTransitionShield {
+    private static weak var shieldView: UIView?
+    private static var pendingHideWork: DispatchWorkItem?
+    private static let fallbackDuration: TimeInterval = 1.4
+
+    static func show(reason: String,
+                     sessionID: PlayerSessionID,
+                     player: AVPlayer?,
+                     sourceView: UIView,
+                     sourceRect: CGRect? = nil) {
+        pendingHideWork?.cancel()
+        pendingHideWork = nil
+        guard let window = activeKeyWindow() else {
+            AppLog.debug("player", "跳过全屏转场遮罩：未找到窗口", metadata: [
+                "reason": reason,
+                "sessionID": sessionID.uuidString,
+            ])
+            return
+        }
+        let snapshotRect = clippedSnapshotRect(in: sourceView, rect: sourceRect)
+        let videoFrameImage = videoFrameImage(from: player)
+        let snapshotView = videoFrameImage == nil ? snapshotView(from: sourceView, rect: snapshotRect) : nil
+        let snapshotImage = videoFrameImage ?? (snapshotView == nil ? snapshotImage(from: sourceView, rect: snapshotRect) : nil)
+        guard snapshotView != nil || snapshotImage != nil else {
+            AppLog.debug("player", "跳过全屏转场遮罩：播放器快照不可用", metadata: [
+                "reason": reason,
+                "sessionID": sessionID.uuidString,
+            ])
+            return
+        }
+        let shield: PlayerFullscreenTransitionShieldView
+        if let existing = shieldView as? PlayerFullscreenTransitionShieldView, existing.window === window {
+            shield = existing
+        } else {
+            shieldView?.removeFromSuperview()
+            let view = PlayerFullscreenTransitionShieldView(frame: window.bounds)
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            view.isUserInteractionEnabled = false
+            view.accessibilityIdentifier = "IbiliPlayerFullscreenTransitionShield"
+            view.layer.zPosition = CGFloat(Float.greatestFiniteMagnitude)
+            window.addSubview(view)
+            shieldView = view
+            shield = view
+        }
+        shield.update(snapshotView: snapshotView, fallbackImage: snapshotImage, aspectSize: snapshotRect.size)
+        shield.alpha = 1
+        window.bringSubviewToFront(shield)
+        AppLog.debug("player", "显示全屏转场遮罩", metadata: [
+            "hasVideoFrameImage": String(videoFrameImage != nil),
+            "hasSnapshotView": String(snapshotView != nil),
+            "hasFallbackImage": String(snapshotImage != nil),
+            "reason": reason,
+            "sessionID": sessionID.uuidString,
+        ])
+        scheduleFallbackHide(sessionID: sessionID)
+    }
+
+    static func hide(animated: Bool, delay: TimeInterval = 0, reason: String, sessionID: PlayerSessionID) {
+        pendingHideWork?.cancel()
+        let work = DispatchWorkItem {
+            guard let shield = shieldView else { return }
+            let remove = {
+                shield.removeFromSuperview()
+                if shieldView === shield {
+                    shieldView = nil
+                }
+            }
+            AppLog.debug("player", "隐藏全屏转场遮罩", metadata: [
+                "animated": String(animated),
+                "reason": reason,
+                "sessionID": sessionID.uuidString,
+            ])
+            if animated {
+                UIView.animate(
+                    withDuration: 0.16,
+                    delay: 0,
+                    options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction],
+                    animations: { shield.alpha = 0 },
+                    completion: { _ in remove() }
+                )
+            } else {
+                remove()
+            }
+        }
+        pendingHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private static func scheduleFallbackHide(sessionID: PlayerSessionID) {
+        pendingHideWork?.cancel()
+        let work = DispatchWorkItem {
+            pendingHideWork = nil
+            hide(animated: true, reason: "fallback", sessionID: sessionID)
+        }
+        pendingHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + fallbackDuration, execute: work)
+    }
+
+    private static func activeKeyWindow() -> UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)
+    }
+
+    private static func clippedSnapshotRect(in sourceView: UIView, rect sourceRect: CGRect?) -> CGRect {
+        let bounds = sourceView.bounds
+        let rect = sourceRect?.intersection(bounds) ?? bounds
+        guard rect.width > 0, rect.height > 0, !rect.isNull else { return bounds }
+        return rect
+    }
+
+    private static func snapshotView(from sourceView: UIView, rect: CGRect) -> UIView? {
+        guard rect.width > 0, rect.height > 0 else { return nil }
+        return sourceView.resizableSnapshotView(
+            from: rect,
+            afterScreenUpdates: false,
+            withCapInsets: .zero
+        )
+    }
+
+    private static func videoFrameImage(from player: AVPlayer?) -> UIImage? {
+        guard let item = player?.currentItem else { return nil }
+        let asset = item.asset
+        let time = item.currentTime()
+        guard time.isValid, !time.isIndefinite else { return nil }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
+        let maxSide = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale
+        generator.maximumSize = CGSize(width: maxSide, height: maxSide)
+        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
+    private static func snapshotImage(from sourceView: UIView, rect: CGRect) -> UIImage? {
+        let bounds = sourceView.bounds
+        guard bounds.width > 0, bounds.height > 0, rect.width > 0, rect.height > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = UIScreen.main.scale
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: rect.size, format: format)
+        return renderer.image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: rect.size))
+            context.cgContext.translateBy(x: -rect.minX, y: -rect.minY)
+            sourceView.drawHierarchy(in: bounds, afterScreenUpdates: false)
+        }
+    }
+}
+
+private final class PlayerFullscreenTransitionShieldView: UIView {
+    private let imageView = UIImageView()
+    private weak var currentSnapshotView: UIView?
+    private var aspectSize: CGSize = CGSize(width: 16, height: 9)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        clipsToBounds = true
+        backgroundColor = .black
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+    }
+
+    func update(snapshotView: UIView?, fallbackImage: UIImage?, aspectSize: CGSize) {
+        currentSnapshotView?.removeFromSuperview()
+        imageView.removeFromSuperview()
+        self.aspectSize = aspectSize.width > 0 && aspectSize.height > 0 ? aspectSize : CGSize(width: 16, height: 9)
+        if let snapshotView {
+            snapshotView.clipsToBounds = true
+            addSubview(snapshotView)
+            currentSnapshotView = snapshotView
+        } else {
+            imageView.image = fallbackImage
+            addSubview(imageView)
+            currentSnapshotView = imageView
+        }
+        setNeedsLayout()
+        layoutIfNeeded()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        currentSnapshotView?.frame = aspectFillRect(aspectRatio: aspectSize, insideRect: bounds)
+    }
+
+    private func aspectFillRect(aspectRatio: CGSize, insideRect rect: CGRect) -> CGRect {
+        guard aspectRatio.width > 0,
+              aspectRatio.height > 0,
+              rect.width > 0,
+              rect.height > 0 else {
+            return rect
+        }
+        let scale = max(rect.width / aspectRatio.width, rect.height / aspectRatio.height)
+        let size = CGSize(width: aspectRatio.width * scale, height: aspectRatio.height * scale)
+        return CGRect(
+            x: rect.midX - size.width / 2,
+            y: rect.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+}
+
 private extension UIInterfaceOrientationMask {
     var isLandscapeOnly: Bool {
         self == .landscape || self == .landscapeLeft || self == .landscapeRight
