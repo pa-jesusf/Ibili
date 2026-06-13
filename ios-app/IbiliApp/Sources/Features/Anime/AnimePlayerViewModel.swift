@@ -297,6 +297,7 @@ final class AnimePlayerViewModel: ObservableObject {
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
+        PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
         if !keepState {
             currentPlay = nil
             currentCandidateID = nil

@@ -25,6 +25,7 @@ struct VideoDetailContent: View {
     private let viewPoints: [VideoViewPointDTO]
     private let currentPlaybackSeconds: Double
     private let onSeekToTime: ((Int64) -> Void)?
+    private let onNextPartCandidateChange: ((PlayerNextPartCandidate?) -> Void)?
     @EnvironmentObject private var router: DeepLinkRouter
     @State private var tab: Tab = .intro
     @State private var mountedTabs: Set<Tab> = [.intro]
@@ -56,6 +57,7 @@ struct VideoDetailContent: View {
          viewPoints: [VideoViewPointDTO] = [],
          currentPlaybackSeconds: Double = 0,
          onSeekToTime: ((Int64) -> Void)? = nil,
+         onNextPartCandidateChange: ((PlayerNextPartCandidate?) -> Void)? = nil,
          onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.item = item
         self.currentCid = currentCid
@@ -67,6 +69,7 @@ struct VideoDetailContent: View {
         self.viewPoints = viewPoints
         self.currentPlaybackSeconds = currentPlaybackSeconds
         self.onSeekToTime = onSeekToTime
+        self.onNextPartCandidateChange = onNextPartCandidateChange
         self.onScrollOffsetChange = onScrollOffsetChange
     }
 
@@ -202,6 +205,15 @@ struct VideoDetailContent: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: toast)
+        .onAppear {
+            publishNextPartCandidate()
+        }
+        .onDisappear {
+            onNextPartCandidateChange?(nil)
+        }
+        .onChange(of: nextPartCandidateKey) { _ in
+            publishNextPartCandidate()
+        }
     }
 
     private var commentOID: Int64 {
@@ -225,6 +237,98 @@ struct VideoDetailContent: View {
             String(item.epID),
             String(currentEpisodeID),
         ].joined(separator: ":")
+    }
+
+    private var nextPartCandidateKey: String {
+        nextPartCandidate.map { "\($0.item.aid):\($0.item.bvid):\($0.item.cid):\($0.item.epID):\($0.item.seasonID)" } ?? "none"
+    }
+
+    private func publishNextPartCandidate() {
+        onNextPartCandidateChange?(nextPartCandidate)
+    }
+
+    private var nextPartCandidate: PlayerNextPartCandidate? {
+        if item.isPGC, let season = pgcSeason {
+            return nextPgcEpisodeCandidate(in: season)
+        }
+        guard let view = vm.view else { return nil }
+        let activeCid = currentCid > 0 ? currentCid : view.cid
+        if let season = view.ugcSeason, season.id > 0,
+           let candidate = nextUgcSeasonCandidate(in: season, after: activeCid) {
+            return candidate
+        }
+        return nextVideoPageCandidate(in: view, after: activeCid)
+    }
+
+    private func nextPgcEpisodeCandidate(in season: PgcSeasonDTO) -> PlayerNextPartCandidate? {
+        let currentEpID = effectivePgcEpisodeID
+        let activeCid = currentCid
+        guard let currentIndex = season.episodes.firstIndex(where: { episode in
+            if currentEpID > 0 { return episode.epID == currentEpID }
+            return activeCid > 0 && episode.cid == activeCid
+        }) else { return nil }
+        let nextIndex = season.episodes.index(after: currentIndex)
+        guard season.episodes.indices.contains(nextIndex) else { return nil }
+        let episode = season.episodes[nextIndex]
+        let label = episode.longTitle.isEmpty ? episode.title : episode.longTitle
+        return PlayerNextPartCandidate(
+            item: makePgcFeedItem(season: season, episode: episode),
+            label: label.isEmpty ? "第 \(nextIndex + 1) 集" : label
+        )
+    }
+
+    private func nextUgcSeasonCandidate(in season: UgcSeasonDTO, after currentCid: Int64) -> PlayerNextPartCandidate? {
+        let episodes = season.sections.flatMap(\.episodes)
+        guard let currentIndex = episodes.firstIndex(where: { $0.cid == currentCid }) else { return nil }
+        let nextIndex = episodes.index(after: currentIndex)
+        guard episodes.indices.contains(nextIndex) else { return nil }
+        let episode = episodes[nextIndex]
+        let title = episode.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextItem = FeedItemDTO(
+            aid: episode.aid,
+            bvid: episode.bvid,
+            cid: episode.cid,
+            title: title.isEmpty ? item.title : title,
+            cover: episode.cover.isEmpty ? item.cover : episode.cover,
+            author: vm.view?.owner.name ?? item.author,
+            durationSec: episode.durationSec,
+            play: vm.view?.stat.view ?? item.play,
+            danmaku: vm.view?.stat.danmaku ?? item.danmaku,
+            ownerMID: vm.view?.owner.mid ?? item.ownerMID
+        )
+        return PlayerNextPartCandidate(
+            item: nextItem,
+            label: title.isEmpty ? "第 \(nextIndex + 1) 集" : title
+        )
+    }
+
+    private func nextVideoPageCandidate(in view: VideoViewDTO, after currentCid: Int64) -> PlayerNextPartCandidate? {
+        guard view.pages.count > 1,
+              let currentIndex = view.pages.firstIndex(where: { $0.cid == currentCid }) else { return nil }
+        let nextIndex = view.pages.index(after: currentIndex)
+        guard view.pages.indices.contains(nextIndex) else { return nil }
+        let page = view.pages[nextIndex]
+        let title = view.title.isEmpty ? item.title : view.title
+        let cover = view.cover.isEmpty ? item.cover : view.cover
+        let bvid = view.bvid.isEmpty ? item.bvid : view.bvid
+        let nextItem = FeedItemDTO(
+            aid: view.aid,
+            bvid: bvid,
+            cid: page.cid,
+            title: title,
+            cover: cover,
+            author: view.owner.name,
+            durationSec: page.durationSec,
+            play: view.stat.view,
+            danmaku: view.stat.danmaku,
+            pubdate: view.pubdate,
+            ownerMID: view.owner.mid
+        )
+        let part = page.part.trimmingCharacters(in: .whitespacesAndNewlines)
+        return PlayerNextPartCandidate(
+            item: nextItem,
+            label: part.isEmpty ? "P\(page.page)" : "P\(page.page) · \(part)"
+        )
     }
 
     @ViewBuilder

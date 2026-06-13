@@ -38,15 +38,19 @@ final class PlayerPlaybackCoordinator {
 final class PlayerAudioSessionCoordinator {
     static let shared = PlayerAudioSessionCoordinator()
 
+    private static let releaseGraceSeconds: TimeInterval = 0.75
+
     private var activeOwners: Set<ObjectIdentifier> = []
     private var playerHandoffDepth = 0
     private var sessionIsActive = false
     private let sessionQueue = DispatchQueue(label: "ibili.player.audio-session", qos: .userInitiated)
     private var pendingHandoffEndWorkItem: DispatchWorkItem?
+    private var pendingDeactivationWorkItem: DispatchWorkItem?
 
     func beginPlayerHandoff() {
         pendingHandoffEndWorkItem?.cancel()
         pendingHandoffEndWorkItem = nil
+        cancelPendingDeactivation()
         playerHandoffDepth += 1
         reconcileSessionState()
     }
@@ -70,6 +74,7 @@ final class PlayerAudioSessionCoordinator {
     func setSessionNeeded(_ needed: Bool, by owner: AnyObject) {
         let ownerID = ObjectIdentifier(owner)
         if needed {
+            cancelPendingDeactivation()
             _ = activeOwners.insert(ownerID).inserted
             if playerHandoffDepth > 0 {
                 pendingHandoffEndWorkItem?.cancel()
@@ -84,13 +89,44 @@ final class PlayerAudioSessionCoordinator {
 
     private func reconcileSessionState() {
         let shouldKeepSessionActive = !activeOwners.isEmpty || playerHandoffDepth > 0
-        guard shouldKeepSessionActive != sessionIsActive else { return }
-        sessionIsActive = shouldKeepSessionActive
         if shouldKeepSessionActive {
+            cancelPendingDeactivation()
+            guard !sessionIsActive else { return }
+            sessionIsActive = true
             activateAudioSession()
         } else {
-            deactivateAudioSession()
+            guard sessionIsActive else {
+                cancelPendingDeactivation()
+                return
+            }
+            scheduleAudioSessionDeactivation()
         }
+    }
+
+    private func scheduleAudioSessionDeactivation() {
+        guard pendingDeactivationWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingDeactivationWorkItem = nil
+            guard self.activeOwners.isEmpty,
+                  self.playerHandoffDepth == 0,
+                  self.sessionIsActive else {
+                self.reconcileSessionState()
+                return
+            }
+            self.sessionIsActive = false
+            self.deactivateAudioSession()
+        }
+        pendingDeactivationWorkItem = workItem
+        AppLog.debug("player", "延迟释放音频会话", metadata: [
+            "delayMs": String(Int(Self.releaseGraceSeconds * 1000)),
+        ])
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.releaseGraceSeconds, execute: workItem)
+    }
+
+    private func cancelPendingDeactivation() {
+        pendingDeactivationWorkItem?.cancel()
+        pendingDeactivationWorkItem = nil
     }
 
     private func activateAudioSession() {

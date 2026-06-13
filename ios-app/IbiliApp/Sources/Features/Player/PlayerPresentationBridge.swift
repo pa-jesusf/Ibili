@@ -8,6 +8,7 @@ typealias PlayerPresentationRestoreCompletion = (Bool) -> Void
 enum PlayerTransientPauseSuppressionContext: String {
     case fullscreenEnter
     case fullscreenExit
+    case playbackLoopRestart
 
     var window: TimeInterval {
         switch self {
@@ -15,6 +16,8 @@ enum PlayerTransientPauseSuppressionContext: String {
             return 1.0
         case .fullscreenExit:
             return 2.0
+        case .playbackLoopRestart:
+            return 0.75
         }
     }
 }

@@ -53,6 +53,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
     @Published private(set) var isTemporarySpeedBoostActive = false
     @Published private(set) var isPausedForDetailCollapse = false
+    @Published private(set) var playbackCompletionSignal = 0
     private let holdSpeedRate: Float = 2.0
     private var temporaryPlaybackRateOverride: Float?
     /// Linear `AVPlayer.volume` value derived from the user's
@@ -82,7 +83,9 @@ final class PlayerViewModel: ObservableObject {
     /// Periodic time observer token driving heartbeat reports.
     private var heartbeatObserverToken: Any?
     /// End-of-item observer token that sends the terminal heartbeat.
-    private var playbackEndObserverToken: NSObjectProtocol?
+    private var heartbeatEndObserverToken: NSObjectProtocol?
+    /// End-of-item observer token driving local completion behavior.
+    private var playbackCompletionObserverToken: NSObjectProtocol?
     /// Last reported playhead second — heartbeat skips repeats so we
     /// don't spam the API when paused.
     private var lastHeartbeatSec: Int64 = -1
@@ -141,6 +144,7 @@ final class PlayerViewModel: ObservableObject {
             fullscreenPlaybackRecoveryWork?.cancel()
             dismissalFadeTask?.cancel()
             stopHeartbeat()
+            clearPlaybackCompletionObserver()
             itemStatusObservation = nil
             playerTimeControlObservation?.invalidate()
             playerTimeControlObservation = nil
@@ -420,11 +424,13 @@ final class PlayerViewModel: ObservableObject {
         // currently-loaded coordinates and tearing down the player.
         let priorAttempts = autoReloadAttempts
         stopHeartbeat()
+        clearPlaybackCompletionObserver()
         suppressNextObservedPlaybackIntent(.pause)
         itemStatusObservation = nil
         if let player {
             player.pause()
             endTemporarySpeedBoost(on: player)
+            clearPlaybackCompletionObserver()
             player.replaceCurrentItem(with: nil)
         }
         setPlayer(nil)
@@ -587,6 +593,28 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    func pauseForPlaybackCompletion() {
+        guard !isClosing else { return }
+        isPlaybackCompleted = true
+        handle(.playbackIntentChanged(.pause))
+        refreshSystemMediaSession()
+    }
+
+    func restartCurrentItem() {
+        guard !isClosing, let player else { return }
+        Task { @MainActor in
+            guard !self.isClosing, self.player === player else { return }
+            self.isPlaybackCompleted = false
+            self.armTransientPauseSuppression(for: .playbackLoopRestart)
+            self.suppressNextObservedPlaybackIntent(.pause)
+            await player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard !self.isClosing, self.player === player else { return }
+            self.handle(.playbackIntentChanged(.play))
+            self.applyPlaybackIntent(to: player)
+            self.refreshSystemMediaSession()
+        }
+    }
+
     func recoverFromInactiveEngineIfNeeded(trigger: String) async {
         guard !isClosing else { return }
         guard !isEngineAlive else { return }
@@ -677,6 +705,7 @@ final class PlayerViewModel: ObservableObject {
             suppressNextObservedPlaybackIntent(.pause)
             player.pause()
             endTemporarySpeedBoost(on: player)
+            clearPlaybackCompletionObserver()
             player.replaceCurrentItem(with: nil)
             activePreparation?.release()
             activePreparation = nil
@@ -717,6 +746,7 @@ final class PlayerViewModel: ObservableObject {
             rememberActivePlayURL(info)
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
+            observePlaybackCompletion(for: player)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             applyRate(to: player)
             applyPlaybackIntent(to: player)
@@ -768,6 +798,7 @@ final class PlayerViewModel: ObservableObject {
             "cid": String(cid),
         ])
         stopHeartbeat()
+        clearPlaybackCompletionObserver()
         suppressNextObservedPlaybackIntent(.pause)
         itemStatusObservation = nil
         if let player {
@@ -798,6 +829,7 @@ final class PlayerViewModel: ObservableObject {
         cancelFullscreenPlaybackRecovery()
         itemStatusObservation = nil
         stopHeartbeat()
+        clearPlaybackCompletionObserver()
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         fadeOutAndPauseForDismissal()
@@ -837,6 +869,7 @@ final class PlayerViewModel: ObservableObject {
         suppressNextObservedPlaybackIntent(.pause)
         player.pause()
         endTemporarySpeedBoost(on: player)
+        clearPlaybackCompletionObserver()
         // Match the proven-safe quality-switch ordering: detach the
         // old AVPlayerItem before releasing the proxy/source behind
         // it, otherwise the still-bound item can observe a torn-down
@@ -849,6 +882,7 @@ final class PlayerViewModel: ObservableObject {
     private func setPlayer(_ newPlayer: AVPlayer?) {
         playerTimeControlObservation?.invalidate()
         playerTimeControlObservation = nil
+        clearPlaybackCompletionObserver()
         cancelSuppressedObservedPauseConfirmation()
         clearPausedForDetailCollapse()
         if newPlayer == nil {
@@ -862,12 +896,42 @@ final class PlayerViewModel: ObservableObject {
         if let newPlayer {
             newPlayer.volume = audioVolumeLinear
             observePlayerTimeControl(newPlayer)
+            observePlaybackCompletion(for: newPlayer)
             applyRate(to: newPlayer)
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
         } else {
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
         }
+    }
+
+    private func observePlaybackCompletion(for player: AVPlayer) {
+        clearPlaybackCompletionObserver()
+        guard let item = player.currentItem else { return }
+        playbackCompletionObserverToken = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self, weak player] _ in
+            guard let self,
+                  let player,
+                  !self.isClosing,
+                  self.player === player else { return }
+            self.handlePlaybackCompleted()
+        }
+    }
+
+    private func clearPlaybackCompletionObserver() {
+        if let token = playbackCompletionObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            playbackCompletionObserverToken = nil
+        }
+    }
+
+    private func handlePlaybackCompleted() {
+        isPlaybackCompleted = true
+        refreshSystemMediaSession()
+        playbackCompletionSignal &+= 1
     }
 
     private func fadeOutAndPauseForDismissal() {
@@ -1147,19 +1211,17 @@ final class PlayerViewModel: ObservableObject {
         // Also send a final heartbeat when the item finishes naturally
         // — keeps the cloud history in sync with "watched to end" so
         // the user doesn't get re-prompted to resume next time.
-        if let token = playbackEndObserverToken {
+        if let token = heartbeatEndObserverToken {
             NotificationCenter.default.removeObserver(token)
-            playbackEndObserverToken = nil
+            heartbeatEndObserverToken = nil
         }
         if let item = player.currentItem {
-            playbackEndObserverToken = NotificationCenter.default.addObserver(
+            heartbeatEndObserverToken = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: item,
                 queue: .main
             ) { [weak self] _ in
                 guard let self else { return }
-                self.isPlaybackCompleted = true
-                self.refreshSystemMediaSession()
                 let sec = Int64(CMTimeGetSeconds(item.duration))
                 Task.detached(priority: .background) {
                     try? CoreClient.shared.archiveHeartbeat(
@@ -1178,9 +1240,9 @@ final class PlayerViewModel: ObservableObject {
             player?.removeTimeObserver(token)
             heartbeatObserverToken = nil
         }
-        if let token = playbackEndObserverToken {
+        if let token = heartbeatEndObserverToken {
             NotificationCenter.default.removeObserver(token)
-            playbackEndObserverToken = nil
+            heartbeatEndObserverToken = nil
         }
         // Best-effort terminal beat for the *just-stopped* video so the
         // cloud history matches the actual stop position even if the
@@ -1554,6 +1616,7 @@ final class PlayerViewModel: ObservableObject {
                 suppressNextObservedPlaybackIntent(.pause)
                 existingPlayer.pause()
                 endTemporarySpeedBoost(on: existingPlayer)
+                clearPlaybackCompletionObserver()
                 existingPlayer.replaceCurrentItem(with: nil)
                 targetPlayer = existingPlayer
             } else {
@@ -1569,6 +1632,7 @@ final class PlayerViewModel: ObservableObject {
                 setPlayer(targetPlayer)
             } else {
                 targetPlayer.replaceCurrentItem(with: prep.item)
+                observePlaybackCompletion(for: targetPlayer)
             }
 
             await targetPlayer.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -1742,6 +1806,7 @@ final class PlayerViewModel: ObservableObject {
             suppressNextObservedPlaybackIntent(.pause)
             player.pause()
             endTemporarySpeedBoost(on: player)
+            clearPlaybackCompletionObserver()
             player.replaceCurrentItem(with: nil)
             activePreparation?.release()
             activePreparation = nil
@@ -1779,6 +1844,7 @@ final class PlayerViewModel: ObservableObject {
             rememberActivePlayURL(info)
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
+            observePlaybackCompletion(for: player)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             applyRate(to: player)
             applyPlaybackIntent(to: player)
@@ -1891,6 +1957,11 @@ actor PlayerArtworkStore {
 
 // MARK: - Player view
 
+struct PlayerNextPartCandidate: Equatable {
+    let item: FeedItemDTO
+    let label: String
+}
+
 struct PlayerView: View {
     private static let deferredDetailMountDelay: TimeInterval = 0.24
     private static let danmakuSegmentLengthSec: Double = 6 * 60
@@ -1939,10 +2010,13 @@ struct PlayerView: View {
     @State private var detailTimelineObserverPlayer: AVPlayer?
     @State private var detailTimelineSeconds: Double = 0
     @State private var lastDetailTimelineWholeSecond: Int64 = -1
+    @State private var nextPartCandidate: PlayerNextPartCandidate?
     @State private var detailScrollOffsetForPlayerCollapse: CGFloat = 0
     @State private var isPlayerCollapseArmed = false
     @State private var playerCollapseAnchorOffset: CGFloat = 0
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.scenePhase) private var scenePhase
 
     init(item: FeedItemDTO,
@@ -2177,6 +2251,34 @@ struct PlayerView: View {
         subtitle.setVisible(false)
     }
 
+    private func handlePlaybackCompleted() {
+        switch settings.completionBehavior {
+        case .pause:
+            vm.pauseForPlaybackCompletion()
+        case .loop:
+            vm.restartCurrentItem()
+            flashPlayerAction("已循环播放")
+        case .nextPart:
+            guard let candidate = nextPartCandidate else {
+                vm.pauseForPlaybackCompletion()
+                flashPlayerAction("已是最后一 P")
+                return
+            }
+            vm.handle(.prepareAutoplayForMediaReplacement)
+            nextPartCandidate = nil
+            openPlayer(candidate.item, mode: .replaceCurrent)
+            flashPlayerAction("自动播放 \(candidate.label)")
+        }
+    }
+
+    private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
+        if let inlinePlayerNavigation {
+            inlinePlayerNavigation.open(item, mode: mode)
+        } else {
+            router.open(item, mode: mode)
+        }
+    }
+
     private func disableSubtitle() {
         resetSubtitleState()
     }
@@ -2366,6 +2468,9 @@ struct PlayerView: View {
                                    viewPoints: vm.viewPoints,
                                    currentPlaybackSeconds: detailTimelineSeconds,
                                    onSeekToTime: { seconds in seekTo(seconds: seconds) },
+                                   onNextPartCandidateChange: { candidate in
+                                       nextPartCandidate = candidate
+                                   },
                                    onScrollOffsetChange: handleDetailScrollOffsetForPlayerCollapse)
                         .transition(.opacity)
                 } else {
@@ -2443,6 +2548,17 @@ struct PlayerView: View {
                         } label: {
                             Label("弹幕样式", systemImage: "textformat.size")
                         }
+                        Picker(selection: Binding(
+                            get: { settings.completionBehavior },
+                            set: { settings.completionBehavior = $0 }
+                        )) {
+                            ForEach(PlayerCompletionBehavior.allCases) { behavior in
+                                Label(behavior.label, systemImage: behavior.systemImage)
+                                    .tag(behavior)
+                            }
+                        } label: {
+                            Label("播放完行为", systemImage: settings.completionBehavior.systemImage)
+                        }
                         Button {
                             saveCurrentCover()
                         } label: {
@@ -2480,6 +2596,7 @@ struct PlayerView: View {
             }
 
             loadedMediaKey = mediaLoadKey
+            nextPartCandidate = nil
             loadedDanmakuKey = nil
             pendingDanmakuLoadKey = mediaLoadKey
             resetSubtitleState()
@@ -2529,6 +2646,9 @@ struct PlayerView: View {
             } else {
                 resetPlayerCollapseAnchor()
             }
+        }
+        .onChange(of: vm.playbackCompletionSignal) { _ in
+            handlePlaybackCompleted()
         }
         .onChange(of: settings.cdnService.rawValue) { _ in
             PlayUrlPrefetcher.shared.clear()

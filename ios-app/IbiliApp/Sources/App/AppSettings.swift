@@ -114,6 +114,30 @@ enum MediaCDNService: String, CaseIterable, Identifiable, Sendable {
 
 }
 
+enum PlayerCompletionBehavior: String, CaseIterable, Identifiable {
+    case pause
+    case loop
+    case nextPart
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .pause: return "播放完暂停"
+        case .loop: return "循环播放"
+        case .nextPart: return "自动下一 P"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .pause: return "pause.circle"
+        case .loop: return "repeat"
+        case .nextPart: return "forward.end"
+        }
+    }
+}
+
 /// Per-screen visibility config for video card meta. Pure value type so
 /// it can be diffed cheaply by SwiftUI when passed into card views.
 struct FeedCardMetaConfig: Equatable, Hashable {
@@ -195,6 +219,7 @@ final class AppSettings: ObservableObject {
     /// (≈ 40 dB SPL at min system volume), which the user reported
     /// is otherwise ~15 dB louder than peers.
     @AppStorage("ibili.player.audioGainDb") var audioGainDb: Double = -15
+    @AppStorage("ibili.player.completionBehavior") private var completionBehaviorRaw: String = PlayerCompletionBehavior.pause.rawValue
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
     @AppStorage("ibili.home.recommendSource") private var homeRecommendSourceRaw: String = HomeRecommendSource.web.rawValue
     @AppStorage("ibili.anime.trackingEnabled") var animeTrackingEnabled: Bool = true
@@ -218,6 +243,11 @@ final class AppSettings: ObservableObject {
     var homeRecommendSource: HomeRecommendSource {
         get { HomeRecommendSource(rawValue: homeRecommendSourceRaw) ?? .web }
         set { homeRecommendSourceRaw = newValue.rawValue }
+    }
+
+    var completionBehavior: PlayerCompletionBehavior {
+        get { PlayerCompletionBehavior(rawValue: completionBehaviorRaw) ?? .pause }
+        set { completionBehaviorRaw = newValue.rawValue }
     }
 
     var animeSourceSubscriptionURLs: [String] {
