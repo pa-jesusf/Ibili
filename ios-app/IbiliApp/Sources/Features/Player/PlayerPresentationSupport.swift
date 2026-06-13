@@ -515,7 +515,7 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
         clipsToBounds = true
         backgroundColor = .clear
         playerContainerView.clipsToBounds = true
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
         playerLayer.actions = [
             "bounds": NSNull(),
             "position": NSNull(),
@@ -534,7 +534,7 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
         playerLayer.player = player
         addSubview(playerContainerView)
         playerContainerView.transform = .identity
-        playerContainerView.frame = sourceFrame.width > 1 && sourceFrame.height > 1 ? sourceFrame : aspectFillRect(aspectRatio: self.aspectSize, insideRect: bounds)
+        playerContainerView.frame = sourceFrame.width > 1 && sourceFrame.height > 1 ? sourceFrame : aspectFitRect(aspectRatio: self.aspectSize, insideRect: bounds)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         playerLayer.frame = playerContainerView.bounds
@@ -543,7 +543,7 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
 
     func animateEntry() {
         layoutIfNeeded()
-        let target = expandedContentFrame()
+        let target = fullscreenContentFrame()
         UIView.animate(
             withDuration: 0.26,
             delay: 0,
@@ -572,7 +572,7 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
     }
 
     private func applyExpandedState() {
-        let target = expandedContentFrame()
+        let target = fullscreenContentFrame()
         playerContainerView.bounds = CGRect(origin: .zero, size: target.size)
         playerContainerView.center = CGPoint(x: target.midX, y: target.midY)
         playerContainerView.transform = .identity
@@ -587,25 +587,31 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
         super.removeFromSuperview()
     }
 
-    private func expandedContentFrame() -> CGRect {
-        let diagonal = hypot(max(bounds.width, 1), max(bounds.height, 1))
-        let coverRect = CGRect(
-            x: bounds.midX - diagonal / 2,
-            y: bounds.midY - diagonal / 2,
-            width: diagonal,
-            height: diagonal
+    private func fullscreenContentFrame() -> CGRect {
+        guard bounds.width > 0, bounds.height > 0 else { return bounds }
+        let targetViewportSize: CGSize
+        if bounds.height > bounds.width {
+            targetViewportSize = CGSize(width: bounds.height, height: bounds.width)
+        } else {
+            targetViewportSize = bounds.size
+        }
+        let targetSize = aspectFitSize(aspectRatio: aspectSize, insideSize: targetViewportSize)
+        return CGRect(
+            x: bounds.midX - targetSize.width / 2,
+            y: bounds.midY - targetSize.height / 2,
+            width: targetSize.width,
+            height: targetSize.height
         )
-        return aspectFillRect(aspectRatio: aspectSize, insideRect: coverRect)
     }
 
-    private func aspectFillRect(aspectRatio: CGSize, insideRect rect: CGRect) -> CGRect {
+    private func aspectFitRect(aspectRatio: CGSize, insideRect rect: CGRect) -> CGRect {
         guard aspectRatio.width > 0,
               aspectRatio.height > 0,
               rect.width > 0,
               rect.height > 0 else {
             return rect
         }
-        let scale = max(rect.width / aspectRatio.width, rect.height / aspectRatio.height)
+        let scale = min(rect.width / aspectRatio.width, rect.height / aspectRatio.height)
         let size = CGSize(width: aspectRatio.width * scale, height: aspectRatio.height * scale)
         return CGRect(
             x: rect.midX - size.width / 2,
@@ -613,6 +619,17 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
             width: size.width,
             height: size.height
         )
+    }
+
+    private func aspectFitSize(aspectRatio: CGSize, insideSize size: CGSize) -> CGSize {
+        guard aspectRatio.width > 0,
+              aspectRatio.height > 0,
+              size.width > 0,
+              size.height > 0 else {
+            return size
+        }
+        let scale = min(size.width / aspectRatio.width, size.height / aspectRatio.height)
+        return CGSize(width: aspectRatio.width * scale, height: aspectRatio.height * scale)
     }
 }
 
