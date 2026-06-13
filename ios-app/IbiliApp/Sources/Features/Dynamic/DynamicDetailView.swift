@@ -10,6 +10,7 @@ struct DynamicDetailView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var session: AppSession
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @State private var preview: DynamicDetailPreviewState?
     @State private var isLiked = false
     @State private var likeCount: Int64 = 0
@@ -213,7 +214,11 @@ struct DynamicDetailView: View {
 
     private func openFeedItem(_ feedItem: FeedItemDTO) {
         if isInPlayerHostNavigation {
-            router.open(feedItem)
+            if let inlinePlayerNavigation {
+                inlinePlayerNavigation.open(feedItem)
+            } else {
+                router.open(feedItem)
+            }
         } else {
             inlinePlayerRoute.open(feedItem)
         }
@@ -221,7 +226,7 @@ struct DynamicDetailView: View {
 
     private func openLive() {
         guard let live = item.live, live.isOpenable else { return }
-        router.openLive(
+        openLiveRoute(
             roomID: live.roomID,
             title: live.title,
             cover: live.cover,
@@ -231,7 +236,7 @@ struct DynamicDetailView: View {
 
     private func openOrigLive() {
         guard let orig = item.orig, let live = orig.live, live.isOpenable else { return }
-        router.openLive(
+        openLiveRoute(
             roomID: live.roomID,
             title: live.title,
             cover: live.cover,
@@ -241,12 +246,38 @@ struct DynamicDetailView: View {
 
     private func openArticle() {
         guard let article = item.article, !article.id.isEmpty else { return }
-        router.openArticle(id: article.id, kind: article.kind)
+        openArticleRoute(id: article.id, kind: article.kind)
     }
 
     private func openOrigArticle() {
         guard let article = item.orig?.article, !article.id.isEmpty else { return }
-        router.openArticle(id: article.id, kind: article.kind)
+        openArticleRoute(id: article.id, kind: article.kind)
+    }
+
+    private func openLiveRoute(roomID: Int64, title: String, cover: String, anchorName: String) {
+        if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.openLive(
+                roomID: roomID,
+                title: title,
+                cover: cover,
+                anchorName: anchorName
+            )
+        } else {
+            router.openLive(
+                roomID: roomID,
+                title: title,
+                cover: cover,
+                anchorName: anchorName
+            )
+        }
+    }
+
+    private func openArticleRoute(id: String, kind: String) {
+        if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.openArticle(id: id, kind: kind)
+        } else {
+            router.openArticle(id: id, kind: kind)
+        }
     }
 }
 

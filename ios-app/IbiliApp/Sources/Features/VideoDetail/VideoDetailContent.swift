@@ -39,6 +39,7 @@ struct VideoDetailContent: View {
     @State private var pgcLoading = false
     @State private var pgcErrorText: String?
     @State private var floatingControlsHeight: CGFloat = 0
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     private let topAnchorID = "videoDetailTop"
     private static let upwardRefreshTriggerOffset: CGFloat = 72
@@ -333,7 +334,7 @@ struct VideoDetailContent: View {
                             isLoadingMore: vm.isLoadingMoreRelated,
                             isEnd: vm.relatedIsEnd,
                             onTap: { feedItem in
-                                router.open(feedItem)
+                                openPlayer(feedItem)
                             },
                             onReachEnd: {
                                 Task { await vm.loadMoreRelated() }
@@ -427,7 +428,7 @@ struct VideoDetailContent: View {
                             title: "", cover: "", author: "",
                             durationSec: 0, play: 0, danmaku: 0
                         )
-                        router.open(next, mode: .replaceCurrent)
+                        openPlayer(next, mode: .replaceCurrent)
                     }
                     .padding(.horizontal, 16)
                 } else if v.pages.count > 1 {
@@ -440,7 +441,7 @@ struct VideoDetailContent: View {
                             title: "", cover: "", author: "",
                             durationSec: 0, play: 0, danmaku: 0
                         )
-                        router.open(next, mode: .replaceCurrent)
+                        openPlayer(next, mode: .replaceCurrent)
                     }
                         .padding(.horizontal, 16)
                 }
@@ -475,7 +476,7 @@ struct VideoDetailContent: View {
                 season: season,
                 currentEpID: effectivePgcEpisodeID,
                 onPickEpisode: { episode in
-                    router.open(makePgcFeedItem(season: season, episode: episode), mode: .replaceCurrent)
+                    openPlayer(makePgcFeedItem(season: season, episode: episode), mode: .replaceCurrent)
                 }
             )
             .padding(.horizontal, 16)
@@ -517,6 +518,14 @@ struct VideoDetailContent: View {
         )
         async let commentsTask: Void = commentListViewModel.refresh(oid: resolvedAid)
         _ = await (hydrateTask, commentsTask)
+    }
+
+    private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
+        if let inlinePlayerNavigation {
+            inlinePlayerNavigation.open(item, mode: mode)
+        } else {
+            router.open(item, mode: mode)
+        }
     }
 
     private var effectivePgcSeasonID: Int64 {

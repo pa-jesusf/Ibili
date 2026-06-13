@@ -28,6 +28,7 @@ struct UserSpaceView: View {
     @StateObject private var vm = UserSpaceViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
@@ -158,7 +159,14 @@ struct UserSpaceView: View {
                 .contentShape(Circle())
                 .onTapGesture {
                     guard let live = vm.userLive, live.isLive else { return }
-                    if prefersSplitRootSelection {
+                    if isInPlayerHostNavigation, let inlinePlayerNavigation {
+                        inlinePlayerNavigation.openLive(
+                            roomID: live.roomID,
+                            title: live.title,
+                            cover: live.cover,
+                            anchorName: vm.card?.name ?? ""
+                        )
+                    } else if prefersSplitRootSelection {
                         router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
                     } else {
                         router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
@@ -258,7 +266,7 @@ struct UserSpaceView: View {
                         play: item.play, danmaku: item.danmaku
                     )
                     if isInPlayerHostNavigation {
-                        router.open(feedItem)
+                        openPlayer(feedItem)
                     } else if prefersSplitRootSelection {
                         router.select(feedItem)
                     } else {
@@ -308,7 +316,7 @@ struct UserSpaceView: View {
                     contentWidth: contentWidth,
                     onOpenVideo: { feedItem in
                         if isInPlayerHostNavigation {
-                            router.open(feedItem)
+                            openPlayer(feedItem)
                         } else if prefersSplitRootSelection {
                             router.select(feedItem)
                         } else {
@@ -317,7 +325,11 @@ struct UserSpaceView: View {
                     },
                     onOpenDetail: { dyn in
                         if isInPlayerHostNavigation {
-                            router.openDynamicDetail(dyn)
+                            if let inlinePlayerNavigation {
+                                inlinePlayerNavigation.openDynamic(dyn)
+                            } else {
+                                router.openDynamicDetail(dyn)
+                            }
                         } else if prefersSplitRootSelection {
                             router.selectDynamicDetail(dyn)
                         } else {
@@ -351,6 +363,14 @@ struct UserSpaceView: View {
                     .onAppear { dynamicsContainerWidth = proxy.size.width }
                     .onChange(of: proxy.size.width) { dynamicsContainerWidth = $0 }
             }
+        }
+    }
+
+    private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
+        if let inlinePlayerNavigation {
+            inlinePlayerNavigation.open(item, mode: mode)
+        } else {
+            router.open(item, mode: mode)
         }
     }
 

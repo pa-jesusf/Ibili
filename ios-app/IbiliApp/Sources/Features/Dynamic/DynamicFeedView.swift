@@ -139,6 +139,7 @@ struct DynamicFeedView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var tabReselect: TabReselectSignals
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var pendingDetail: DynamicItemDTO?
     @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
@@ -164,7 +165,11 @@ struct DynamicFeedView: View {
                 scrollToTopSignal: tabReselect.dynamic,
                 onOpenDetail: { dyn in
                     if isInPlayerHostNavigation {
-                        router.openDynamicDetail(dyn)
+                        if let inlinePlayerNavigation {
+                            inlinePlayerNavigation.openDynamic(dyn)
+                        } else {
+                            router.openDynamicDetail(dyn)
+                        }
                     } else if prefersSplitRootSelection {
                         router.selectDynamicDetail(dyn)
                     } else {
@@ -173,7 +178,11 @@ struct DynamicFeedView: View {
                 },
                 onOpenVideo: { item in
                     if isInPlayerHostNavigation {
-                        router.open(item)
+                        if let inlinePlayerNavigation {
+                            inlinePlayerNavigation.open(item)
+                        } else {
+                            router.open(item)
+                        }
                     } else if prefersSplitRootSelection {
                         router.select(item)
                     } else {
@@ -537,6 +546,7 @@ struct DynamicAuthorHeader: View {
     var avatarSize: CGFloat = 36
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     var body: some View {
         HStack(spacing: 10) {
@@ -562,7 +572,11 @@ struct DynamicAuthorHeader: View {
         Group {
             if isInPlayerHostNavigation {
                 Button {
-                    router.openUserSpace(mid: author.mid)
+                    if let inlinePlayerNavigation {
+                        inlinePlayerNavigation.openUser(mid: author.mid)
+                    } else {
+                        router.openUserSpace(mid: author.mid)
+                    }
                 } label: {
                     avatar
                 }

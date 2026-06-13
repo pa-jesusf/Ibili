@@ -31,6 +31,11 @@ extension EnvironmentValues {
         get { self[DismissPlayerHostKey.self] }
         set { self[DismissPlayerHostKey.self] = newValue }
     }
+
+    var inlinePlayerNavigation: InlinePlayerNavigation? {
+        get { self[InlinePlayerNavigationKey.self] }
+        set { self[InlinePlayerNavigationKey.self] = newValue }
+    }
 }
 
 private struct IsInPlayerHostNavigationKey: EnvironmentKey {
@@ -55,6 +60,45 @@ private struct SplitPreviewLeftWidthKey: EnvironmentKey {
 
 private struct DismissPlayerHostKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
+}
+
+struct InlinePlayerNavigation {
+    let openPlayer: (FeedItemDTO, DeepLinkRouter.OpenMode) -> Void
+    let openLiveRoute: (DeepLinkRouter.LiveRoute, DeepLinkRouter.OpenMode) -> Void
+    let openUserSpace: (Int64) -> Void
+    let openDynamicDetail: (DynamicItemDTO) -> Void
+    let openArticleRoute: (String, String) -> Void
+
+    func open(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
+        openPlayer(item, mode)
+    }
+
+    func openLive(roomID: Int64,
+                  title: String = "",
+                  cover: String = "",
+                  anchorName: String = "",
+                  mode: DeepLinkRouter.OpenMode = .push) {
+        guard roomID > 0 else { return }
+        openLiveRoute(DeepLinkRouter.LiveRoute(roomID: roomID, title: title, cover: cover, anchorName: anchorName), mode)
+    }
+
+    func openUser(mid: Int64) {
+        openUserSpace(mid)
+    }
+
+    func openDynamic(_ item: DynamicItemDTO) {
+        openDynamicDetail(item)
+    }
+
+    func openArticle(id: String, kind: String = "read") {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        openArticleRoute(trimmed, kind)
+    }
+}
+
+private struct InlinePlayerNavigationKey: EnvironmentKey {
+    static let defaultValue: InlinePlayerNavigation? = nil
 }
 
 /// Top-level shell. Switches between login and main tab interface.
@@ -710,28 +754,239 @@ private struct DeepLinkRouteContent {
     }
 }
 
-struct InlinePlayerRouteDestination: View {
-    let route: DeepLinkRouter.PlayerRoute
+@MainActor
+final class InlinePlayerRouteState: ObservableObject {
+    private static let maxPathDepth = 12
+    private static let maxPlayerRouteCount = 3
 
-    var body: some View {
-        PlayerView(
-            item: route.item,
-            offlineOnly: route.offlineOnly,
-            viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id)
-        )
-        .id(route.id)
-        .tint(.white)
-        .toolbar(.hidden, for: .tabBar)
-        .environment(\.isInPlayerHostNavigation, true)
+    @Published var route: DeepLinkRouter.PlayerRoute?
+    @Published var path: [DeepLinkRouter.SessionRoute] = []
+
+    func open(_ item: FeedItemDTO,
+              offlineOnly: Bool = false,
+              mode: DeepLinkRouter.OpenMode = .push) {
+        if route == nil {
+            route = DeepLinkRouter.PlayerRoute(item: item, offlineOnly: offlineOnly)
+            path.removeAll()
+            return
+        }
+
+        switch mode {
+        case .push:
+            path.append(.player(DeepLinkRouter.PlayerRoute(item: item, offlineOnly: offlineOnly)))
+            prunePathForPerformance()
+        case .replaceCurrent:
+            replaceCurrentPlayer(with: item, offlineOnly: offlineOnly)
+        }
+    }
+
+    func openUserSpace(mid: Int64) {
+        guard mid > 0 else { return }
+        path.append(.userSpace(DeepLinkRouter.UserSpaceRoute(mid: mid)))
+        prunePathForPerformance()
+    }
+
+    func openLive(_ route: DeepLinkRouter.LiveRoute, mode: DeepLinkRouter.OpenMode = .push) {
+        switch mode {
+        case .push:
+            path.append(.live(route))
+            prunePathForPerformance()
+        case .replaceCurrent:
+            replaceCurrentGeneric(with: .live(route))
+        }
+    }
+
+    func openDynamicDetail(_ item: DynamicItemDTO) {
+        path.append(.dynamicDetail(DeepLinkRouter.DynamicDetailRoute(item: item)))
+        prunePathForPerformance()
+    }
+
+    func openArticle(id: String, kind: String = "read") {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let normalizedKind = kind == "opus" ? "opus" : "read"
+        path.append(.article(DeepLinkRouter.ArticleRoute(articleID: trimmed, kind: normalizedKind)))
+        prunePathForPerformance()
+    }
+
+    func close() {
+        prepareForClose()
+        route = nil
+        path.removeAll()
+    }
+
+    func popToPathDepth(_ depth: Int) {
+        guard depth >= 0 else {
+            close()
+            return
+        }
+        guard depth < path.count else { return }
+        prepareForDismissal(path.suffix(from: depth))
+        path.removeSubrange(depth..<path.endIndex)
+    }
+
+    private func replaceCurrentPlayer(with item: FeedItemDTO, offlineOnly: Bool) {
+        if let lastPlayerIndex = path.lastIndex(where: { $0.playerRoute != nil }),
+           case .player(let current) = path[lastPlayerIndex] {
+            path[lastPlayerIndex] = .player(current.replacingItem(item).replacingOfflineOnly(offlineOnly))
+        } else if let current = route {
+            route = current.replacingItem(item).replacingOfflineOnly(offlineOnly)
+        } else {
+            route = DeepLinkRouter.PlayerRoute(item: item, offlineOnly: offlineOnly)
+        }
+    }
+
+    private func replaceCurrentGeneric(with route: DeepLinkRouter.SessionRoute) {
+        if !path.isEmpty {
+            path[path.index(before: path.endIndex)] = route
+        }
+    }
+
+    private func prepareForClose() {
+        if let route {
+            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: route.id)
+        }
+        prepareForDismissal(path)
+    }
+
+    private func prepareForDismissal<S: Sequence>(_ routes: S) where S.Element == DeepLinkRouter.SessionRoute {
+        for route in routes {
+            switch route {
+            case .player(let playerRoute):
+                PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
+            case .live(let liveRoute):
+                LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
+            case .animePlayer(let animeRoute):
+                AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
+            case .userSpace, .dynamicDetail, .article, .search, .animeSubject:
+                break
+            }
+        }
+    }
+
+    private func prunePathForPerformance() {
+        let playerIndices = path.indices.filter { path[$0].playerRoute != nil }
+        let playerOverflow = playerIndices.count - Self.maxPlayerRouteCount
+        if playerOverflow > 0 {
+            removePathIndices(Set(playerIndices.prefix(playerOverflow)))
+        }
+
+        if path.count > Self.maxPathDepth {
+            let overflow = path.count - Self.maxPathDepth
+            removePathIndices(Set(path.indices.prefix(overflow)))
+        }
+    }
+
+    private func removePathIndices(_ indices: Set<Int>) {
+        guard !indices.isEmpty else { return }
+        let removed = path.enumerated()
+            .filter { indices.contains($0.offset) }
+            .map(\.element)
+        prepareForDismissal(removed)
+        path = path.enumerated()
+            .filter { !indices.contains($0.offset) }
+            .map(\.element)
     }
 }
 
-@MainActor
-final class InlinePlayerRouteState: ObservableObject {
-    @Published var route: DeepLinkRouter.PlayerRoute?
+private struct InlinePlayerNavigationHost: View {
+    @ObservedObject var state: InlinePlayerRouteState
 
-    func open(_ item: FeedItemDTO, offlineOnly: Bool = false) {
-        route = DeepLinkRouter.PlayerRoute(item: item, offlineOnly: offlineOnly)
+    var body: some View {
+        InlinePlayerDestination(state: state, depth: -1)
+        .environment(\.inlinePlayerNavigation, InlinePlayerNavigation(
+            openPlayer: { item, mode in state.open(item, mode: mode) },
+            openLiveRoute: { route, mode in state.openLive(route, mode: mode) },
+            openUserSpace: { mid in state.openUserSpace(mid: mid) },
+            openDynamicDetail: { item in state.openDynamicDetail(item) },
+            openArticleRoute: { id, kind in state.openArticle(id: id, kind: kind) }
+        ))
+        .environment(\.isInPlayerHostNavigation, true)
+        .environment(\.dismissPlayerHost, { state.close() })
+        .toolbar(.hidden, for: .tabBar)
+        .tint(.white)
+    }
+}
+
+private struct InlinePlayerDestination: View {
+    @ObservedObject var state: InlinePlayerRouteState
+    let depth: Int
+
+    private var route: DeepLinkRouter.SessionRoute? {
+        if depth < 0 {
+            return state.route.map { .player($0) }
+        }
+        guard state.path.indices.contains(depth) else { return nil }
+        return state.path[depth]
+    }
+
+    var body: some View {
+        Group {
+            if let route {
+                DeepLinkRouteContent.destinationView(
+                    for: route,
+                    onPictureInPictureActiveChange: { isActive, routeID in
+                        handlePictureInPictureChange(isActive, routeID: routeID)
+                    },
+                    onPictureInPictureRestore: { routeID, completion in
+                        restorePictureInPicture(routeID: routeID, completion: completion)
+                    }
+                )
+                .id(route.id)
+            } else {
+                Color.clear
+            }
+        }
+        .background {
+            InlinePlayerChildRouteLink(state: state, depth: depth + 1)
+        }
+        .environment(\.inlinePlayerNavigation, InlinePlayerNavigation(
+            openPlayer: { item, mode in state.open(item, mode: mode) },
+            openLiveRoute: { route, mode in state.openLive(route, mode: mode) },
+            openUserSpace: { mid in state.openUserSpace(mid: mid) },
+            openDynamicDetail: { item in state.openDynamicDetail(item) },
+            openArticleRoute: { id, kind in state.openArticle(id: id, kind: kind) }
+        ))
+        .environment(\.isInPlayerHostNavigation, true)
+        .environment(\.dismissPlayerHost, { state.close() })
+        .toolbar(.hidden, for: .tabBar)
+        .tint(.white)
+    }
+
+    private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
+        PlayerRuntimeCoordinator.shared.handle(.pictureInPictureChanged(isActive), for: routeID)
+        PlayerRuntimeCoordinator.shared.setPictureInPictureActive(isActive, for: routeID, snapshot: nil)
+    }
+
+    private func restorePictureInPicture(routeID: UUID, completion: @escaping (Bool) -> Void) {
+        let routeIDs = Set(([state.route?.id].compactMap { $0 }) + state.path.map(\.id))
+        completion(routeIDs.contains(routeID))
+    }
+}
+
+private struct InlinePlayerChildRouteLink: View {
+    @ObservedObject var state: InlinePlayerRouteState
+    let depth: Int
+
+    private var hasRoute: Bool {
+        state.path.indices.contains(depth)
+    }
+
+    var body: some View {
+        NavigationLink(
+            isActive: Binding(
+                get: { hasRoute },
+                set: { if !$0 { state.popToPathDepth(depth) } }
+            ),
+            destination: {
+                if hasRoute {
+                    InlinePlayerDestination(state: state, depth: depth)
+                }
+            },
+            label: { EmptyView() }
+        )
+        .opacity(0)
+        .allowsHitTesting(false)
     }
 }
 
@@ -742,11 +997,11 @@ struct InlinePlayerRouteLinkHost: View {
         NavigationLink(
             isActive: Binding(
                 get: { state.route != nil },
-                set: { if !$0 { state.route = nil } }
+                set: { if !$0 { state.close() } }
             ),
             destination: {
-                if let route = state.route {
-                    InlinePlayerRouteDestination(route: route)
+                if state.route != nil {
+                    InlinePlayerNavigationHost(state: state)
                 }
             },
             label: { EmptyView() }

@@ -64,6 +64,7 @@ private struct HomeFeedPage: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
     @State private var userSpaceMID: Int64?
@@ -170,7 +171,11 @@ private struct HomeFeedPage: View {
 
     private func openFeedItem(_ item: FeedItemDTO) {
         if isInPlayerHostNavigation {
-            router.open(item)
+            if let inlinePlayerNavigation {
+                inlinePlayerNavigation.open(item)
+            } else {
+                router.open(item)
+            }
         } else if prefersSplitRootSelection {
             router.select(item)
         } else {
@@ -317,7 +322,11 @@ private struct HomeFeedPage: View {
             return
         }
         if isInPlayerHostNavigation {
-            router.openUserSpace(mid: mid)
+            if let inlinePlayerNavigation {
+                inlinePlayerNavigation.openUser(mid: mid)
+            } else {
+                router.openUserSpace(mid: mid)
+            }
         } else if prefersSplitRootSelection {
             router.selectUserSpace(mid: mid)
         } else {
@@ -495,6 +504,8 @@ private struct HomeLiveFeedPage: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
 
@@ -576,7 +587,14 @@ private struct HomeLiveFeedPage: View {
 
     private func openLiveItem(_ item: LiveFeedItemDTO) {
         let cover = item.systemCover.isEmpty ? item.cover : item.systemCover
-        if prefersSplitRootSelection {
+        if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.openLive(
+                roomID: item.roomID,
+                title: item.title,
+                cover: cover,
+                anchorName: item.uname
+            )
+        } else if prefersSplitRootSelection {
             router.selectLive(
                 roomID: item.roomID,
                 title: item.title,
