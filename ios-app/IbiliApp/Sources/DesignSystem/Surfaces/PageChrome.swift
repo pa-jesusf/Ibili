@@ -279,7 +279,7 @@ private struct FeedChromeFloatingTitle: View {
 
     var body: some View {
         let progress = min(max(scrollOffset / 44, 0), 1)
-        let baseYOffset: CGFloat = -45
+        let baseYOffset: CGFloat = -50
         let yOffset = baseYOffset - scrollOffset
         let opacity = Double(1 - progress)
 
