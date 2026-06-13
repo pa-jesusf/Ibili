@@ -27,7 +27,8 @@ struct ProfileRoot: View {
         TitlePageChrome(
             headerCollapseProgress: $headerCollapseProgress,
             hidesNavigationBar: false,
-            usesInlineSystemHeader: true
+            usesInlineSystemHeader: true,
+            reservesInlineAccessoryFootprint: true
         ) {
             FeedScrollPage(
                 title: "我的",

@@ -43,10 +43,19 @@ private struct FeedChromeShowsInlineSystemHeaderKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct FeedChromeReservesInlineAccessoryFootprintKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var feedChromeShowsInlineSystemHeader: Bool {
         get { self[FeedChromeShowsInlineSystemHeaderKey.self] }
         set { self[FeedChromeShowsInlineSystemHeaderKey.self] = newValue }
+    }
+
+    var feedChromeReservesInlineAccessoryFootprint: Bool {
+        get { self[FeedChromeReservesInlineAccessoryFootprintKey.self] }
+        set { self[FeedChromeReservesInlineAccessoryFootprintKey.self] = newValue }
     }
 }
 
@@ -54,23 +63,27 @@ struct TitlePageChrome<Content: View>: View {
     @Binding var headerCollapseProgress: CGFloat
     var hidesNavigationBar: Bool = true
     var usesInlineSystemHeader: Bool = false
+    var reservesInlineAccessoryFootprint: Bool = false
     let content: Content
 
     init(
         headerCollapseProgress: Binding<CGFloat>,
         hidesNavigationBar: Bool = true,
         usesInlineSystemHeader: Bool = false,
+        reservesInlineAccessoryFootprint: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self._headerCollapseProgress = headerCollapseProgress
         self.hidesNavigationBar = hidesNavigationBar
         self.usesInlineSystemHeader = usesInlineSystemHeader
+        self.reservesInlineAccessoryFootprint = reservesInlineAccessoryFootprint
         self.content = content()
     }
 
     var body: some View {
         content
             .environment(\.feedChromeShowsInlineSystemHeader, usesInlineSystemHeader)
+            .environment(\.feedChromeReservesInlineAccessoryFootprint, reservesInlineAccessoryFootprint)
             .background(IbiliTheme.background.ignoresSafeArea())
             .overlay(alignment: .top) {
                 FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
@@ -140,6 +153,25 @@ private struct FeedToolbarTabButton: View {
     }
 }
 
+private struct FeedChromeAccessoryFootprint: View {
+    private let titles = ["推荐", "热门", "直播"]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(titles, id: \.self) { title in
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.horizontal, 16)
+    }
+}
+
 struct FeedScrollPage<Content: View>: View {
     let title: String
     let coordinateSpace: String
@@ -149,6 +181,7 @@ struct FeedScrollPage<Content: View>: View {
     var onRefresh: (() async -> Void)?
     let content: Content
     @Environment(\.feedChromeShowsInlineSystemHeader) private var showsInlineSystemHeader
+    @Environment(\.feedChromeReservesInlineAccessoryFootprint) private var reservesInlineAccessoryFootprint
     @State private var scrollOffset: CGFloat = 0
 
     init(
@@ -176,6 +209,12 @@ struct FeedScrollPage<Content: View>: View {
                 if #unavailable(iOS 18.0) {
                     ScrollHeaderOffsetReader(coordinateSpace: coordinateSpace)
                 }
+                if showsInlineSystemHeader, reservesInlineAccessoryFootprint {
+                    FeedChromeAccessoryFootprint()
+                        .opacity(0)
+                        .accessibilityHidden(true)
+                        .allowsHitTesting(false)
+                }
                 if !showsInlineSystemHeader {
                     FeedTitleHeader(title: title, collapseProgress: headerCollapseProgress, showsBackground: false)
                 }
@@ -183,10 +222,18 @@ struct FeedScrollPage<Content: View>: View {
             }
             .overlay(alignment: .topLeading) {
                 if showsInlineSystemHeader {
-                    FeedChromeFloatingTitle(
-                        title: title,
-                        scrollOffset: scrollOffset
-                    )
+                    VStack(alignment: .leading, spacing: 0) {
+                        if reservesInlineAccessoryFootprint {
+                            FeedChromeAccessoryFootprint()
+                                .opacity(0)
+                                .accessibilityHidden(true)
+                        }
+                        FeedChromeFloatingTitle(
+                            title: title,
+                            scrollOffset: scrollOffset
+                        )
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .onChange(of: scrollToTopSignal) { _ in
