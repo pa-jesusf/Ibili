@@ -153,6 +153,11 @@ private struct FeedToolbarTabButton: View {
     }
 }
 
+private enum FeedChromeInlineAccessoryMetrics {
+    // Matches the system inline navigation row reserved by real toolbar items.
+    static let rowHeight: CGFloat = 50
+}
+
 private struct FeedChromeAccessoryFootprint: View {
     private let titles = ["推荐", "热门", "直播"]
 
@@ -167,6 +172,7 @@ private struct FeedChromeAccessoryFootprint: View {
                     .padding(.vertical, 7)
             }
         }
+        .frame(height: FeedChromeInlineAccessoryMetrics.rowHeight, alignment: .center)
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, 16)
     }
