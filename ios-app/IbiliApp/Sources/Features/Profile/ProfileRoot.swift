@@ -24,7 +24,11 @@ struct ProfileRoot: View {
     @State private var headerCollapseProgress: CGFloat = 0
 
     var body: some View {
-        TitlePageChrome(headerCollapseProgress: $headerCollapseProgress) {
+        TitlePageChrome(
+            headerCollapseProgress: $headerCollapseProgress,
+            hidesNavigationBar: false,
+            usesInlineSystemHeader: true
+        ) {
             FeedScrollPage(
                 title: "我的",
                 coordinateSpace: "profile-scroll",

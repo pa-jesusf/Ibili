@@ -324,6 +324,8 @@ struct DynamicItemCard: View {
     var onOpenDetail: ((DynamicItemDTO) -> Void)? = nil
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @State private var preview: ImagePreviewState?
     @State private var shareSheetURL: ShareSheetItem?
     @State private var isLiked = false
@@ -411,17 +413,25 @@ struct DynamicItemCard: View {
                 )
                 if let onOpenVideo { onOpenVideo(dto) }
                 else if prefersSplitRootSelection { router.select(dto) }
-                else { router.open(dto) }
+                else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+                    inlinePlayerNavigation.open(dto)
+                } else {
+                    router.open(dto)
+                }
             }
         case .openLive(let roomID, let title, let cover, let anchorName):
             if prefersSplitRootSelection {
                 router.selectLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
+            } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+                inlinePlayerNavigation.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
             } else {
                 router.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
             }
         case .openArticle(let id, let kind):
             if prefersSplitRootSelection {
                 router.selectArticle(id: id, kind: kind)
+            } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+                inlinePlayerNavigation.openArticle(id: id, kind: kind)
             } else {
                 router.openArticle(id: id, kind: kind)
             }
@@ -441,7 +451,7 @@ struct DynamicItemCard: View {
                                         durationSec: 0, play: 0, danmaku: 0))
             }
         } else {
-            openVideo(router, video: v, authorName: item.author.name, prefersSplitRootSelection: prefersSplitRootSelection)
+            openCardVideoFallback(v, authorName: item.author.name)
         }
     }
 
@@ -456,7 +466,32 @@ struct DynamicItemCard: View {
                                         durationSec: 0, play: 0, danmaku: 0))
             }
         } else {
-            openVideo(router, video: v, authorName: item.orig?.author.name ?? "", prefersSplitRootSelection: prefersSplitRootSelection)
+            openCardVideoFallback(v, authorName: item.orig?.author.name ?? "")
+        }
+    }
+
+    private func openCardVideoFallback(_ video: DynamicVideoDTO, authorName: String) {
+        if video.isPGC {
+            openVideo(router, video: video, authorName: authorName, prefersSplitRootSelection: prefersSplitRootSelection)
+            return
+        }
+        let dto = FeedItemDTO(
+            aid: video.aid,
+            bvid: video.bvid,
+            cid: video.cid,
+            title: video.title,
+            cover: video.cover,
+            author: authorName,
+            durationSec: 0,
+            play: 0,
+            danmaku: 0
+        )
+        if prefersSplitRootSelection {
+            router.select(dto)
+        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.open(dto)
+        } else {
+            router.open(dto)
         }
     }
 
@@ -464,6 +499,8 @@ struct DynamicItemCard: View {
         guard let live = item.live, live.isOpenable else { return }
         if prefersSplitRootSelection {
             router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
+        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
         } else {
             router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
         }
@@ -473,6 +510,8 @@ struct DynamicItemCard: View {
         guard let orig = item.orig, let live = orig.live, live.isOpenable else { return }
         if prefersSplitRootSelection {
             router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
+        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
         } else {
             router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
         }
@@ -482,6 +521,8 @@ struct DynamicItemCard: View {
         guard let article = item.article, !article.id.isEmpty else { return }
         if prefersSplitRootSelection {
             router.selectArticle(id: article.id, kind: article.kind)
+        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.openArticle(id: article.id, kind: article.kind)
         } else {
             router.openArticle(id: article.id, kind: article.kind)
         }
@@ -491,6 +532,8 @@ struct DynamicItemCard: View {
         guard let article = item.orig?.article, !article.id.isEmpty else { return }
         if prefersSplitRootSelection {
             router.selectArticle(id: article.id, kind: article.kind)
+        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
+            inlinePlayerNavigation.openArticle(id: article.id, kind: article.kind)
         } else {
             router.openArticle(id: article.id, kind: article.kind)
         }

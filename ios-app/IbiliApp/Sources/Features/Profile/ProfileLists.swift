@@ -10,6 +10,7 @@ import SwiftUI
 private func pushVideo(
     _ router: DeepLinkRouter,
     inlinePlayerRoute: InlinePlayerRouteState? = nil,
+    inlinePlayerNavigation: InlinePlayerNavigation? = nil,
     isInPlayerHostNavigation: Bool = false,
     aid: Int64, bvid: String, cid: Int64,
     title: String, cover: String, author: String,
@@ -22,7 +23,11 @@ private func pushVideo(
         durationSec: durationSec, play: play, danmaku: danmaku
     )
     if isInPlayerHostNavigation {
-        router.open(item)
+        if let inlinePlayerNavigation {
+            inlinePlayerNavigation.open(item)
+        } else {
+            router.open(item)
+        }
     } else if prefersSplitRootSelection {
         router.select(item)
     } else if let inlinePlayerRoute {
@@ -143,6 +148,7 @@ struct HistoryListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = HistoryListViewModel()
     @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var searchText = ""
@@ -191,6 +197,7 @@ struct HistoryListView: View {
                         Button {
                             pushVideo(router,
                                       inlinePlayerRoute: inlinePlayerRoute,
+                                      inlinePlayerNavigation: inlinePlayerNavigation,
                                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                                       title: item.title, cover: item.cover,
@@ -353,6 +360,7 @@ struct WatchLaterListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = WatchLaterListViewModel()
     @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var searchText = ""
@@ -386,6 +394,7 @@ struct WatchLaterListView: View {
                         Button {
                             pushVideo(router,
                                       inlinePlayerRoute: inlinePlayerRoute,
+                                      inlinePlayerNavigation: inlinePlayerNavigation,
                                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                                       title: item.title, cover: item.cover,
@@ -466,6 +475,7 @@ struct FavoritesFolderListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @State private var folders: [FavFolderInfoDTO] = []
     @State private var isLoading = false
     @State private var searchText = ""
@@ -499,6 +509,7 @@ struct FavoritesFolderListView: View {
                         isPreparing: defaultSearchFolderID == 0 && isLoading,
                         router: router,
                         inlinePlayerRoute: inlinePlayerRoute,
+                        inlinePlayerNavigation: inlinePlayerNavigation,
                         isInPlayerHostNavigation: isInPlayerHostNavigation,
                         prefersSplitRootSelection: prefersSplitRootSelection
                     )
@@ -583,6 +594,7 @@ private struct FavoriteRootSearchResultsView: View {
     let isPreparing: Bool
     let router: DeepLinkRouter
     let inlinePlayerRoute: InlinePlayerRouteState?
+    let inlinePlayerNavigation: InlinePlayerNavigation?
     let isInPlayerHostNavigation: Bool
     let prefersSplitRootSelection: Bool
 
@@ -612,6 +624,7 @@ private struct FavoriteRootSearchResultsView: View {
         Button {
             pushVideo(router,
                       inlinePlayerRoute: inlinePlayerRoute,
+                      inlinePlayerNavigation: inlinePlayerNavigation,
                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                       title: item.title, cover: item.cover,
@@ -633,6 +646,7 @@ struct FavoriteResourcesView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = FavoriteResourcesViewModel()
     @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var searchText = ""
@@ -700,6 +714,7 @@ struct FavoriteResourcesView: View {
         Button {
             pushVideo(router,
                       inlinePlayerRoute: inlinePlayerRoute,
+                      inlinePlayerNavigation: inlinePlayerNavigation,
                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                       title: item.title, cover: item.cover,
@@ -938,6 +953,7 @@ struct SubscriptionResourcesView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = SubscriptionResourcesViewModel()
     @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
@@ -960,6 +976,7 @@ struct SubscriptionResourcesView: View {
                     Button {
                         pushVideo(router,
                                   inlinePlayerRoute: inlinePlayerRoute,
+                                  inlinePlayerNavigation: inlinePlayerNavigation,
                                   isInPlayerHostNavigation: isInPlayerHostNavigation,
                                   aid: item.aid, bvid: item.bvid, cid: item.cid,
                                   title: item.title, cover: item.cover,
@@ -1205,6 +1222,7 @@ struct RelationListView: View {
     @StateObject private var vm = RelationListViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     var body: some View {
         Group {
@@ -1220,7 +1238,11 @@ struct RelationListView: View {
                         Group {
                             if isInPlayerHostNavigation {
                                 Button {
-                                    router.openUserSpace(mid: user.mid)
+                                    if let inlinePlayerNavigation {
+                                        inlinePlayerNavigation.openUser(mid: user.mid)
+                                    } else {
+                                        router.openUserSpace(mid: user.mid)
+                                    }
                                 } label: {
                                     RelationRow(user: user)
                                 }

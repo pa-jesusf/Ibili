@@ -53,29 +53,33 @@ extension EnvironmentValues {
 struct TitlePageChrome<Content: View>: View {
     @Binding var headerCollapseProgress: CGFloat
     var hidesNavigationBar: Bool = true
+    var usesInlineSystemHeader: Bool = false
     let content: Content
 
     init(
         headerCollapseProgress: Binding<CGFloat>,
         hidesNavigationBar: Bool = true,
+        usesInlineSystemHeader: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self._headerCollapseProgress = headerCollapseProgress
         self.hidesNavigationBar = hidesNavigationBar
+        self.usesInlineSystemHeader = usesInlineSystemHeader
         self.content = content()
     }
 
     var body: some View {
         content
+            .environment(\.feedChromeShowsInlineSystemHeader, usesInlineSystemHeader)
             .background(IbiliTheme.background.ignoresSafeArea())
             .overlay(alignment: .top) {
                 FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
             }
-            .modifier(HiddenNavigationBarModifier(isHidden: hidesNavigationBar))
+            .modifier(TitlePageChromeNavigationModifier(isHidden: hidesNavigationBar))
     }
 }
 
-private struct HiddenNavigationBarModifier: ViewModifier {
+private struct TitlePageChromeNavigationModifier: ViewModifier {
     let isHidden: Bool
 
     func body(content: Content) -> some View {
@@ -83,6 +87,9 @@ private struct HiddenNavigationBarModifier: ViewModifier {
             content.toolbar(.hidden, for: .navigationBar)
         } else {
             content
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
         }
     }
 }
@@ -225,7 +232,7 @@ private struct FeedChromeFloatingTitle: View {
 
     var body: some View {
         let progress = min(max(scrollOffset / 44, 0), 1)
-        let baseYOffset: CGFloat = -32
+        let baseYOffset: CGFloat = -45
         let yOffset = baseYOffset - scrollOffset
         let opacity = Double(1 - progress)
 
