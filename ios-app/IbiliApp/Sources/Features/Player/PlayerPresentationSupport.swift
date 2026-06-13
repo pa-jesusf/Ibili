@@ -387,6 +387,7 @@ enum PlayerFullscreenTransitionShield {
     static func show(reason: String,
                      sessionID: PlayerSessionID,
                      player: AVPlayer?,
+                     contentRotation: CGFloat = 0,
                      sourceView: UIView,
                      sourceRect: CGRect? = nil) {
         pendingHideWork?.cancel()
@@ -424,6 +425,7 @@ enum PlayerFullscreenTransitionShield {
         shield.update(
             player: player,
             aspectSize: snapshotRect.size,
+            contentRotation: contentRotation,
             sourceFrame: sourceFrame
         )
         shield.alpha = 1
@@ -431,6 +433,7 @@ enum PlayerFullscreenTransitionShield {
         shield.animateEntry()
         AppLog.debug("player", "显示全屏转场遮罩", metadata: [
             "usesPlayerLayer": "true",
+            "contentRotation": String(format: "%.3f", contentRotation),
             "reason": reason,
             "sessionID": sessionID.uuidString,
         ])
@@ -499,6 +502,7 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
     private let playerContainerView = UIView()
     private let playerLayer = AVPlayerLayer()
     private var aspectSize: CGSize = CGSize(width: 16, height: 9)
+    private var contentRotation: CGFloat = 0
     private var entryAnimationCompleted = false
 
     override init(frame: CGRect) {
@@ -527,18 +531,17 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
 
     func update(player: AVPlayer,
                 aspectSize: CGSize,
+                contentRotation: CGFloat,
                 sourceFrame: CGRect) {
         entryAnimationCompleted = false
         playerContainerView.removeFromSuperview()
         self.aspectSize = aspectSize.width > 0 && aspectSize.height > 0 ? aspectSize : CGSize(width: 16, height: 9)
+        self.contentRotation = contentRotation
         playerLayer.player = player
         addSubview(playerContainerView)
         playerContainerView.transform = .identity
         playerContainerView.frame = sourceFrame.width > 1 && sourceFrame.height > 1 ? sourceFrame : aspectFitRect(aspectRatio: self.aspectSize, insideRect: bounds)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        playerLayer.frame = playerContainerView.bounds
-        CATransaction.commit()
+        applyPlayerLayerGeometry()
     }
 
     func animateEntry() {
@@ -552,10 +555,7 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
                 self.playerContainerView.bounds = CGRect(origin: .zero, size: target.size)
                 self.playerContainerView.center = CGPoint(x: target.midX, y: target.midY)
                 self.playerContainerView.transform = .identity
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                self.playerLayer.frame = self.playerContainerView.bounds
-                CATransaction.commit()
+                self.applyPlayerLayerGeometry()
             },
             completion: { _ in
                 self.entryAnimationCompleted = true
@@ -576,10 +576,7 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
         playerContainerView.bounds = CGRect(origin: .zero, size: target.size)
         playerContainerView.center = CGPoint(x: target.midX, y: target.midY)
         playerContainerView.transform = .identity
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        playerLayer.frame = playerContainerView.bounds
-        CATransaction.commit()
+        applyPlayerLayerGeometry()
     }
 
     override func removeFromSuperview() {
@@ -602,6 +599,15 @@ private final class PlayerFullscreenTransitionShieldView: UIView {
             width: targetSize.width,
             height: targetSize.height
         )
+    }
+
+    private func applyPlayerLayerGeometry() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.bounds = CGRect(origin: .zero, size: playerContainerView.bounds.size)
+        playerLayer.position = CGPoint(x: playerContainerView.bounds.midX, y: playerContainerView.bounds.midY)
+        playerLayer.setAffineTransform(CGAffineTransform(rotationAngle: contentRotation))
+        CATransaction.commit()
     }
 
     private func aspectFitRect(aspectRatio: CGSize, insideRect rect: CGRect) -> CGRect {
