@@ -26,6 +26,7 @@ struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
 
     var body: some View {
         content
+            .environment(\.feedChromeShowsInlineSystemHeader, true)
             .background(IbiliTheme.background.ignoresSafeArea())
             .overlay(alignment: .top) {
                 FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
@@ -35,6 +36,17 @@ struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
                 tabTitle: tabTitle,
                 selection: $selection
             ))
+    }
+}
+
+private struct FeedChromeShowsInlineSystemHeaderKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var feedChromeShowsInlineSystemHeader: Bool {
+        get { self[FeedChromeShowsInlineSystemHeaderKey.self] }
+        set { self[FeedChromeShowsInlineSystemHeaderKey.self] = newValue }
     }
 }
 
@@ -129,6 +141,7 @@ struct FeedScrollPage<Content: View>: View {
     var showsRefresh: Bool = false
     var onRefresh: (() async -> Void)?
     let content: Content
+    @Environment(\.feedChromeShowsInlineSystemHeader) private var showsInlineSystemHeader
 
     init(
         title: String,
@@ -155,7 +168,14 @@ struct FeedScrollPage<Content: View>: View {
                 if #unavailable(iOS 18.0) {
                     ScrollHeaderOffsetReader(coordinateSpace: coordinateSpace)
                 }
-                FeedTitleHeader(title: title, collapseProgress: headerCollapseProgress, showsBackground: false)
+                if showsInlineSystemHeader {
+                    FeedChromeScrollableTitleHeader(
+                        title: title,
+                        collapseProgress: headerCollapseProgress
+                    )
+                } else {
+                    FeedTitleHeader(title: title, collapseProgress: headerCollapseProgress, showsBackground: false)
+                }
                 content
             }
             .onChange(of: scrollToTopSignal) { _ in
@@ -188,5 +208,35 @@ struct FeedScrollPage<Content: View>: View {
         } else {
             scroll
         }
+    }
+}
+
+private struct FeedChromeScrollableTitleHeader: View {
+    let title: String
+    let collapseProgress: CGFloat
+
+    var body: some View {
+        let p = min(1, max(0, collapseProgress))
+        let titleSize: CGFloat = 34 - p * 12
+        let titleWeight: Font.Weight = p > 0.65 ? .semibold : .bold
+        let topPad: CGFloat = 10 - p * 4
+        let bottomPad: CGFloat = 8 - p * 4
+        let height: CGFloat = 62 - p * 10
+
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .font(.system(size: titleSize, weight: titleWeight))
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+                .layoutPriority(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, topPad)
+        .padding(.bottom, bottomPad)
+        .frame(height: height, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .allowsHitTesting(false)
     }
 }
