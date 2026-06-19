@@ -441,12 +441,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
             let shouldShieldTransition = requestedFullscreenMask != nil
             if shouldShieldTransition {
                 let sourceRect = videoSnapshotRect(for: vc)
-                let shieldContentRotation: CGFloat = requestedFullscreenMask == .landscapeLeft ? .pi : 0
                 PlayerFullscreenTransitionShield.show(
                     reason: "avkit-will-enter",
                     sessionID: parent.sessionID,
                     player: vc.player,
-                    contentRotation: shieldContentRotation,
+                    contentRotation: 0,
                     sourceView: vc.view,
                     sourceRect: sourceRect
                 )
