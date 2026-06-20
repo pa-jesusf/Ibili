@@ -5,7 +5,6 @@ import UIKit
 final class TabReselectSignals: ObservableObject {
     @Published private(set) var home = 0
     @Published private(set) var dynamic = 0
-    @Published private(set) var anime = 0
     @Published private(set) var search = 0
     @Published private(set) var profile = 0
 
@@ -15,10 +14,6 @@ final class TabReselectSignals: ObservableObject {
 
     func triggerDynamic() {
         dynamic &+= 1
-    }
-
-    func triggerAnime() {
-        anime &+= 1
     }
 
     func triggerSearch() {

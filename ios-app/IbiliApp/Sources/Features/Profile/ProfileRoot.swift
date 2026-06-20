@@ -5,7 +5,7 @@ import SwiftUI
 /// Layout (top → bottom):
 ///   1. Profile header card: avatar, name, sign, fans/following pill row.
 ///      Tap fans / following → push the `RelationListView` for that scope.
-///   2. Quick-action grid (2×2): 历史 / 收藏 / 追番 / 稍后再看. We mirror
+///   2. Quick-action grid: 历史 / 收藏 / 订阅 / 稍后再看. We mirror
 ///      upstream PiliPlus's "我的" surface but render as a grid of large
 ///      iconic cards rather than a list of system rows — closer in feel
 ///      to Apple's own Music / TV "Library" hubs.
@@ -180,11 +180,6 @@ private struct ProfileQuickActions: View {
                 FavoritesFolderListView(mid: mid)
             } label: {
                 ActionTile(symbol: "star.fill", title: "我的收藏")
-            }
-            NavigationLink {
-                BangumiFollowListView(mid: mid)
-            } label: {
-                ActionTile(symbol: "tv", title: "我的追番")
             }
             NavigationLink {
                 SubscriptionFolderListView(mid: mid)

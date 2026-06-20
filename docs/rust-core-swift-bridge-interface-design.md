@@ -185,7 +185,6 @@ Swift 必须用 `ibili_string_free` 释放返回的字符串。
 - `user.card`
 - `user.history`
 - `user.fav_resources`
-- `user.bangumi_follow`
 - `user.watchlater_list`
 - `user.followings`
 - `user.followers`

@@ -12,7 +12,6 @@ import Combine
 final class DeepLinkRouter: ObservableObject {
     private static let maxPushedPlayerRoutes = 3
     private static let maxPushedLiveRoutes = 2
-    private static let maxPushedAnimePlayerRoutes = 3
     private static let maxSessionPathDepth = 12
 
     struct PlayerRoute: Hashable, Identifiable {
@@ -125,32 +124,6 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
-    struct AnimeSubjectRoute: Hashable, Identifiable {
-        let id: UUID
-        let subjectID: Int64
-        let initialSubject: AnimeSubjectDTO?
-
-        init(id: UUID = UUID(), subjectID: Int64, initialSubject: AnimeSubjectDTO? = nil) {
-            self.id = id
-            self.subjectID = subjectID
-            self.initialSubject = initialSubject
-        }
-    }
-
-    struct AnimePlayerRoute: Hashable, Identifiable {
-        let id: UUID
-        let subject: AnimeSubjectDTO
-        let episode: AnimeEpisodeDTO
-        let initialPlay: AnimePlayUrlDTO?
-
-        init(id: UUID = UUID(), subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO, initialPlay: AnimePlayUrlDTO? = nil) {
-            self.id = id
-            self.subject = subject
-            self.episode = episode
-            self.initialPlay = initialPlay
-        }
-    }
-
     enum SessionRoute: Hashable, Identifiable {
         case player(PlayerRoute)
         case live(LiveRoute)
@@ -158,8 +131,6 @@ final class DeepLinkRouter: ObservableObject {
         case dynamicDetail(DynamicDetailRoute)
         case article(ArticleRoute)
         case search(SearchRoute)
-        case animeSubject(AnimeSubjectRoute)
-        case animePlayer(AnimePlayerRoute)
 
         var id: UUID {
             switch self {
@@ -175,10 +146,6 @@ final class DeepLinkRouter: ObservableObject {
                 return route.id
             case .search(let route):
                 return route.id
-            case .animeSubject(let route):
-                return route.id
-            case .animePlayer(let route):
-                return route.id
             }
         }
 
@@ -192,10 +159,6 @@ final class DeepLinkRouter: ObservableObject {
             return route
         }
 
-        var animePlayerRoute: AnimePlayerRoute? {
-            guard case .animePlayer(let route) = self else { return nil }
-            return route
-        }
     }
 
     enum RootRoute: Hashable, Identifiable {
@@ -205,8 +168,6 @@ final class DeepLinkRouter: ObservableObject {
         case userSpace(UserSpaceRoute)
         case article(ArticleRoute)
         case search(SearchRoute)
-        case animeSubject(AnimeSubjectRoute)
-        case animePlayer(AnimePlayerRoute)
 
         var id: UUID {
             switch self {
@@ -222,10 +183,6 @@ final class DeepLinkRouter: ObservableObject {
                 return route.id
             case .search(let route):
                 return route.id
-            case .animeSubject(let route):
-                return route.id
-            case .animePlayer(let route):
-                return route.id
             }
         }
 
@@ -239,18 +196,8 @@ final class DeepLinkRouter: ObservableObject {
             return route
         }
 
-        var animePlayerRoute: AnimePlayerRoute? {
-            guard case .animePlayer(let route) = self else { return nil }
-            return route
-        }
-
         var usesOwnPlayerHostToolbar: Bool {
-            switch self {
-            case .animePlayer:
-                return true
-            case .player, .live, .dynamicDetail, .userSpace, .article, .search, .animeSubject:
-                return false
-            }
+            false
         }
     }
 
@@ -291,10 +238,6 @@ final class DeepLinkRouter: ObservableObject {
 
     var livePath: [LiveRoute] {
         path.compactMap(\.liveRoute)
-    }
-
-    var animePlayerPath: [AnimePlayerRoute] {
-        path.compactMap(\.animePlayerRoute)
     }
 
     var snapshot: SessionSnapshot {
@@ -454,81 +397,6 @@ final class DeepLinkRouter: ObservableObject {
         pending = .search(SearchRoute(keyword: trimmed))
     }
 
-    func openAnimeSubject(_ subject: AnimeSubjectDTO, mode: OpenMode = .push) {
-        openAnimeSubject(subjectID: subject.id, initialSubject: subject, mode: mode)
-    }
-
-    func openAnimeSubject(subjectID: Int64, initialSubject: AnimeSubjectDTO? = nil, mode: OpenMode = .push) {
-        guard subjectID > 0 else { return }
-        let route = AnimeSubjectRoute(subjectID: subjectID, initialSubject: initialSubject)
-        guard pending != nil, !isClosingRootSession else {
-            path.removeAll()
-            isClosingRootSession = false
-            pending = .animeSubject(route)
-            return
-        }
-        switch mode {
-        case .push:
-            appendRoute(.animeSubject(route))
-        case .replaceCurrent:
-            replaceCurrentGeneric(with: .animeSubject(route), root: .animeSubject(route))
-        }
-    }
-
-    func selectAnimeSubject(_ subject: AnimeSubjectDTO) {
-        guard subject.id > 0 else { return }
-        prepareCurrentRootForReplacement()
-        path.removeAll()
-        isClosingRootSession = false
-        pending = .animeSubject(AnimeSubjectRoute(subjectID: subject.id, initialSubject: subject))
-    }
-
-    func openAnimePlayer(play: AnimePlayUrlDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO, mode: OpenMode = .push) {
-        let route = AnimePlayerRoute(subject: subject, episode: episode, initialPlay: play)
-        guard pending != nil, !isClosingRootSession else {
-            path.removeAll()
-            isClosingRootSession = false
-            pending = .animePlayer(route)
-            return
-        }
-        switch mode {
-        case .push:
-            appendRoute(.animePlayer(route))
-        case .replaceCurrent:
-            replaceCurrentGeneric(with: .animePlayer(route), root: .animePlayer(route))
-        }
-    }
-
-    func selectAnimePlayer(play: AnimePlayUrlDTO, subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO) {
-        prepareCurrentRootForReplacement()
-        path.removeAll()
-        isClosingRootSession = false
-        pending = .animePlayer(AnimePlayerRoute(subject: subject, episode: episode, initialPlay: play))
-    }
-
-    func openAnimeEpisode(subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO, mode: OpenMode = .push) {
-        let route = AnimePlayerRoute(subject: subject, episode: episode)
-        guard pending != nil, !isClosingRootSession else {
-            path.removeAll()
-            isClosingRootSession = false
-            pending = .animePlayer(route)
-            return
-        }
-        switch mode {
-        case .push:
-            appendRoute(.animePlayer(route))
-        case .replaceCurrent:
-            replaceCurrentGeneric(with: .animePlayer(route), root: .animePlayer(route))
-        }
-    }
-
-    func selectAnimeEpisode(subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO) {
-        prepareCurrentRootForReplacement()
-        path.removeAll()
-        isClosingRootSession = false
-        pending = .animePlayer(AnimePlayerRoute(subject: subject, episode: episode))
-    }
-
     func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, mode: OpenMode = .push) {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
@@ -655,11 +523,6 @@ final class DeepLinkRouter: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let keyword, !keyword.isEmpty {
                 openSearch(keyword: keyword)
-            }
-            return .handled
-        case "anime", "subject":
-            if let subjectID = Int64(path) {
-                openAnimeSubject(subjectID: subjectID)
             }
             return .handled
         default:
@@ -793,9 +656,7 @@ final class DeepLinkRouter: ObservableObject {
                 PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
             case .live(let liveRoute):
                 LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-            case .animePlayer(let animeRoute):
-                AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
-            case .userSpace, .dynamicDetail, .article, .search, .animeSubject:
+            case .userSpace, .dynamicDetail, .article, .search:
                 break
             }
         }
@@ -804,9 +665,7 @@ final class DeepLinkRouter: ObservableObject {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .animePlayer(let animeRoute):
-            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
+        case .dynamicDetail, .userSpace, .article, .search, nil:
             break
         }
     }
@@ -836,12 +695,6 @@ final class DeepLinkRouter: ObservableObject {
             maximum: Self.maxPushedLiveRoutes,
             routeID: { $0.liveRoute?.id }
         )
-        pruneExcessRoutes(
-            label: "animePlayer",
-            maximum: Self.maxPushedAnimePlayerRoutes,
-            routeID: { $0.animePlayerRoute?.id }
-        )
-
         guard path.count > Self.maxSessionPathDepth else { return }
         let removeCount = path.count - Self.maxSessionPathDepth
         let removedIDs = path.prefix(removeCount).map(\.id.uuidString).joined(separator: ",")

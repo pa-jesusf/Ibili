@@ -49,8 +49,6 @@ if command -v xcpretty >/dev/null 2>&1; then
     -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
     -destination "generic/platform=iOS" -archivePath "$ARCHIVE" \
     -skipMacroValidation \
-    DANDANPLAY_APP_ID="${DANDANPLAY_APP_ID:-}" DANDANPLAY_APP_SECRET="${DANDANPLAY_APP_SECRET:-}" \
-    DANDANPLAY_CALLBACK_URL="${DANDANPLAY_CALLBACK_URL:-}" \
     CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_ENTITLEMENTS="" EXPANDED_CODE_SIGN_IDENTITY="" \
     archive | tee "$XCB_LOG" | xcpretty --color
@@ -60,8 +58,6 @@ else
     -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
     -destination "generic/platform=iOS" -archivePath "$ARCHIVE" \
     -skipMacroValidation \
-    DANDANPLAY_APP_ID="${DANDANPLAY_APP_ID:-}" DANDANPLAY_APP_SECRET="${DANDANPLAY_APP_SECRET:-}" \
-    DANDANPLAY_CALLBACK_URL="${DANDANPLAY_CALLBACK_URL:-}" \
     CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_ENTITLEMENTS="" EXPANDED_CODE_SIGN_IDENTITY="" \
     archive 2>&1 | tee "$XCB_LOG" | grep -E "^(=== |\\*\\* |error:|warning:|note:|/.*: error:|.*\\.swift:.*error)" || true

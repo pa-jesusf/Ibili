@@ -1,5 +1,5 @@
-//! User-space endpoints: account card, history, favourites, bangumi
-//! follow list, watch-later list, followings/followers. Each method
+//! User-space endpoints: account card, history, favourites,
+//! watch-later list, followings/followers. Each method
 //! is a thin wrapper around the matching Bilibili web endpoint that
 //! returns a flat, FFI-friendly DTO so the iOS layer can render it
 //! directly without re-modelling.
@@ -22,7 +22,6 @@ const URL_SPACE_APP: &str = "https://app.bilibili.com/x/v2/space";
 const URL_HISTORY_CURSOR: &str = "https://api.bilibili.com/x/web-interface/history/cursor";
 const URL_HISTORY_SEARCH: &str = "https://api.bilibili.com/x/web-interface/history/search";
 const URL_FAV_RESOURCE_LIST: &str = "https://api.bilibili.com/x/v3/fav/resource/list";
-const URL_FAV_PGC_LIST: &str = "https://api.bilibili.com/x/space/bangumi/follow/list";
 const URL_SUBSCRIPTION_FOLDER_LIST: &str =
     "https://api.bilibili.com/x/v3/fav/folder/collected/list";
 const URL_SUBSCRIPTION_RESOURCE_LIST: &str = "https://api.bilibili.com/x/space/fav/season/list";
@@ -156,28 +155,6 @@ pub struct SubscriptionResource {
 pub struct SubscriptionResourcePage {
     pub info: Option<SubscriptionFolder>,
     pub items: Vec<SubscriptionResource>,
-    pub has_more: bool,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct BangumiFollowItem {
-    pub season_id: i64,
-    pub media_id: i64,
-    pub title: String,
-    pub cover: String,
-    pub badge: String,
-    pub renewal_time: String,
-    /// e.g. "看到第 5 话"
-    pub progress: String,
-    pub evaluate: String,
-    pub total_count: i64,
-    pub is_finish: i64,
-    pub new_ep_index_show: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct BangumiFollowPage {
-    pub items: Vec<BangumiFollowItem>,
     pub has_more: bool,
 }
 
@@ -523,53 +500,6 @@ impl Core {
             URL_UNFAV_SEASON
         };
         self.http.post_form_web_empty(url, &form)
-    }
-
-    /// `/x/space/bangumi/follow/list`. `kind` 1 = bangumi, 2 = cinema.
-    /// `status` 0 = all, 1 = watching, 2 = finished, 3 = planned.
-    pub fn bangumi_follow_list(
-        &self,
-        vmid: i64,
-        kind: i32,
-        status: i32,
-        pn: i64,
-    ) -> CoreResult<BangumiFollowPage> {
-        if vmid <= 0 || self.session.read().access_key().is_none() {
-            return Ok(BangumiFollowPage {
-                items: vec![],
-                has_more: false,
-            });
-        }
-        let params: Vec<(String, String)> = vec![
-            ("vmid".into(), vmid.to_string()),
-            ("type".into(), kind.to_string()),
-            ("follow_status".into(), status.to_string()),
-            ("pn".into(), pn.max(1).to_string()),
-            ("ps".into(), "20".into()),
-        ];
-        let raw: BangumiListWire = self.http.get_web(URL_FAV_PGC_LIST, &params)?;
-        let items: Vec<BangumiFollowItem> = raw
-            .list
-            .into_iter()
-            .map(|b| BangumiFollowItem {
-                season_id: b.season_id.unwrap_or(0),
-                media_id: b.media_id.unwrap_or(0),
-                title: b.title.unwrap_or_default(),
-                cover: b.cover.unwrap_or_default(),
-                badge: b.badge.unwrap_or_default(),
-                renewal_time: b.renewal_time.unwrap_or_default(),
-                progress: b.progress.unwrap_or_default(),
-                evaluate: b.evaluate.unwrap_or_default(),
-                total_count: b.total_count.unwrap_or(0),
-                is_finish: b.is_finish.unwrap_or(0),
-                new_ep_index_show: b.new_ep.and_then(|ep| ep.index_show).unwrap_or_default(),
-            })
-            .collect();
-        // The endpoint's `total` is total entries across all pages;
-        // `has_more` isn't returned, so we infer.
-        let total = raw.total.unwrap_or(0);
-        let has_more = (pn.max(1) as i64) * 20 < total;
-        Ok(BangumiFollowPage { items, has_more })
     }
 
     /// Fetch the rich watch-later list (not just aids). Cookie-auth.
@@ -957,46 +887,6 @@ struct SubscriptionResourceWire {
     pubtime: Option<i64>,
     #[serde(default)]
     cnt_info: Option<FavCntWire>,
-}
-
-#[derive(Default, Deserialize)]
-struct BangumiListWire {
-    #[serde(default, deserialize_with = "null_as_empty_vec")]
-    list: Vec<BangumiItemWire>,
-    #[serde(default)]
-    total: Option<i64>,
-}
-
-#[derive(Default, Deserialize)]
-struct BangumiItemWire {
-    #[serde(default)]
-    season_id: Option<i64>,
-    #[serde(default)]
-    media_id: Option<i64>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    cover: Option<String>,
-    #[serde(default)]
-    badge: Option<String>,
-    #[serde(default)]
-    renewal_time: Option<String>,
-    #[serde(default)]
-    progress: Option<String>,
-    #[serde(default)]
-    evaluate: Option<String>,
-    #[serde(default)]
-    total_count: Option<i64>,
-    #[serde(default)]
-    is_finish: Option<i64>,
-    #[serde(default)]
-    new_ep: Option<BangumiNewEpWire>,
-}
-
-#[derive(Default, Deserialize)]
-struct BangumiNewEpWire {
-    #[serde(default)]
-    index_show: Option<String>,
 }
 
 #[derive(Default, Deserialize)]

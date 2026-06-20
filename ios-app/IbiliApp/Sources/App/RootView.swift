@@ -570,7 +570,6 @@ private struct DeepLinkPlayerHost: View {
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
         LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
-        AnimePlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.animePlayerRoute, stack: router.animePlayerPath)
     }
 
     private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
@@ -579,9 +578,7 @@ private struct DeepLinkPlayerHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .animePlayer(let animeRoute):
-            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
+        case .dynamicDetail, .userSpace, .article, .search, nil:
             break
         }
     }
@@ -630,7 +627,6 @@ private struct DeepLinkPlayerHost: View {
         return router.path.isEmpty
             || router.path.last?.playerRoute != nil
             || router.path.last?.liveRoute != nil
-            || router.path.last?.animePlayerRoute != nil
     }
 
     private func handleAnyAreaSwipeBackChanged(_ translationX: CGFloat) {
@@ -707,10 +703,6 @@ private struct DeepLinkRouteContent {
             ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
         case .search(let searchRoute):
             SearchRouteView(keyword: searchRoute.keyword)
-        case .animeSubject(let animeRoute):
-            AnimeSubjectView(subjectID: animeRoute.subjectID, initialSubject: animeRoute.initialSubject)
-        case .animePlayer(let animeRoute):
-            animeDestination(for: animeRoute)
         }
     }
 
@@ -738,10 +730,6 @@ private struct DeepLinkRouteContent {
             ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
         case .search(let searchRoute):
             SearchRouteView(keyword: searchRoute.keyword)
-        case .animeSubject(let animeRoute):
-            AnimeSubjectView(subjectID: animeRoute.subjectID, initialSubject: animeRoute.initialSubject)
-        case .animePlayer(let animeRoute):
-            animeDestination(for: animeRoute)
         }
     }
 
@@ -774,14 +762,6 @@ private struct DeepLinkRouteContent {
         .tint(.white)
     }
 
-    @MainActor
-    static func animeDestination(for route: DeepLinkRouter.AnimePlayerRoute) -> some View {
-        AnimePlayerView(
-            route: route,
-            viewModel: AnimePlayerRuntimeCoordinator.shared.viewModel(for: route.id)
-        )
-        .tint(.white)
-    }
 }
 
 private enum PlayerHostDeepLinkHandler {
@@ -984,9 +964,7 @@ final class InlinePlayerRouteState: ObservableObject {
                 PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
             case .live(let liveRoute):
                 LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-            case .animePlayer(let animeRoute):
-                AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
-            case .userSpace, .dynamicDetail, .article, .search, .animeSubject:
+            case .userSpace, .dynamicDetail, .article, .search:
                 break
             }
         }
@@ -1243,7 +1221,6 @@ private struct DeepLinkSplitHost: View {
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
         LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
-        AnimePlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.animePlayerRoute, stack: router.animePlayerPath)
     }
 
     private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
@@ -1252,9 +1229,7 @@ private struct DeepLinkSplitHost: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .animePlayer(let animeRoute):
-            AnimePlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: animeRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, .animeSubject, nil:
+        case .dynamicDetail, .userSpace, .article, .search, nil:
             break
         }
     }
@@ -1463,7 +1438,6 @@ private extension UIView {
 struct MainTabView: View {
     @State private var selectedTab: MainTab = .home
     @StateObject private var tabReselect = TabReselectSignals()
-    @EnvironmentObject private var settings: AppSettings
 
     var body: some View {
         // On iOS 18+ we use the new `Tab(role: .search)` initializer
@@ -1485,13 +1459,6 @@ struct MainTabView: View {
                         DynamicFeedView()
                     }
                 }
-                if settings.animeTrackingEnabled {
-                    Tab("追番", systemImage: "play.tv.fill", value: MainTab.anime) {
-                        NavigationStack {
-                            AnimeHomeView()
-                        }
-                    }
-                }
                 Tab("我的", systemImage: "person.crop.circle", value: MainTab.profile) {
                     NavigationStack {
                         ProfileView()
@@ -1505,7 +1472,7 @@ struct MainTabView: View {
             .tabViewStyle(.tabBarOnly)
             .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
-            .background(tabReselectObserver(order: [.home, .dynamic] + (settings.animeTrackingEnabled ? [.anime] : []) + [.profile, .search]))
+            .background(tabReselectObserver(order: [.home, .dynamic, .profile, .search]))
         } else {
             TabView(selection: $selectedTab) {
                 NavigationStack {
@@ -1520,14 +1487,6 @@ struct MainTabView: View {
                 .tabItem { Label("动态", systemImage: "sparkles") }
                 .tag(MainTab.dynamic)
 
-                if settings.animeTrackingEnabled {
-                    NavigationStack {
-                        AnimeHomeView()
-                    }
-                    .tabItem { Label("追番", systemImage: "play.tv.fill") }
-                    .tag(MainTab.anime)
-                }
-
                 SearchView()
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                     .tag(MainTab.search)
@@ -1541,7 +1500,7 @@ struct MainTabView: View {
             .tint(IbiliTheme.accent)
             .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
-            .background(tabReselectObserver(order: [.home, .dynamic] + (settings.animeTrackingEnabled ? [.anime] : []) + [.search, .profile]))
+            .background(tabReselectObserver(order: [.home, .dynamic, .search, .profile]))
         }
     }
 
@@ -1555,8 +1514,6 @@ struct MainTabView: View {
                     tabReselect.triggerHome()
                 case .dynamic:
                     tabReselect.triggerDynamic()
-                case .anime:
-                    tabReselect.triggerAnime()
                 case .search:
                     tabReselect.triggerSearch()
                 case .profile:
@@ -1571,7 +1528,6 @@ struct MainTabView: View {
     private enum MainTab: Hashable {
         case home
         case dynamic
-        case anime
         case profile
         case search
     }

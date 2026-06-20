@@ -14,25 +14,6 @@ rustup target add aarch64-apple-ios
 
 Xcode 16+ recommended. iOS deployment target: 16.0.
 
-## Local secrets
-
-Some optional integrations are injected through build settings instead of being
-committed to the repository. Copy the example file and fill in your local values:
-
-```bash
-cp .env.example .env.local
-```
-
-`.env.local` is ignored by git. It is read by `tools/build_unsigned_ipa.sh`.
-
-Supported keys:
-
-```bash
-DANDANPLAY_APP_ID=
-DANDANPLAY_APP_SECRET=
-DANDANPLAY_CALLBACK_URL=
-```
-
 ## Build an unsigned IPA
 
 ```bash
@@ -72,10 +53,6 @@ cd ios-app && xcodegen generate && open Ibili.xcodeproj
 | Native AVPlayer playback | ✅ |
 | DASH / HLS proxy playback | ✅ |
 | Danmaku / CC subtitles / timeline | ✅ |
-| Bangumi anime tracking | ✅ |
-| Anime source rules and WebView sniffing | ✅ |
-| Dandanplay anime danmaku | ✅ when credentials are configured |
-| Built-in Bilibili anime source | ✅ |
 | WBI signing | ✅ implemented (not yet used; reserved for web endpoints) |
 
 ## Source layout
@@ -94,11 +71,10 @@ ios-app/
     App/                           (entry, RootView, AppSession)
     Bridge/                        (CoreClient, CoreDTOs, SessionStore)
     DesignSystem/                  (Theme, GlassSurface, RemoteImage, QR)
-    Features/Anime/                (Bangumi tracking, source rules, anime player)
     Features/Auth/                 (LoginView + ViewModel)
     Features/Home/                 (HomeView + ViewModel + VideoCardView)
     Features/Player/               (PlayerView + ViewModel)
-    Features/Settings/             (settings and source management)
+    Features/Settings/             (app settings)
   IbiliApp/Info.plist
   Frameworks/IbiliCore.xcframework (generated)
 

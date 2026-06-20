@@ -41,26 +41,6 @@ struct IbiliApp: App {
                 .environmentObject(session)
                 .environmentObject(settings)
                 .preferredColorScheme(.dark)
-                .onOpenURL { url in
-                    guard url.scheme?.lowercased() == "ibili",
-                          url.host?.lowercased() == "bangumi-oauth",
-                          let code = url.queryParameters["code"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-                          !code.isEmpty else {
-                        return
-                    }
-                    Task {
-                        do {
-                            try await session.completeBangumiOAuth(
-                                clientID: BangumiOAuthConfig.clientID,
-                                clientSecret: BangumiOAuthConfig.clientSecret,
-                                redirectURI: BangumiOAuthConfig.redirectURI,
-                                code: code
-                            )
-                        } catch {
-                            AppLog.error("session", "Bangumi OAuth 回调处理失败", error: error)
-                        }
-                    }
-                }
         }
     }
 }

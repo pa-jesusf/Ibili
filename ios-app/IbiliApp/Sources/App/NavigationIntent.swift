@@ -6,8 +6,6 @@ enum NavigationIntent {
     case user(mid: Int64)
     case dynamic(DynamicItemDTO)
     case live(roomID: Int64, title: String, cover: String, anchorName: String)
-    case animeSubject(id: Int64)
-    case animeEpisode(subject: AnimeSubjectDTO, episode: AnimeEpisodeDTO)
 }
 
 extension DeepLinkRouter {
@@ -32,10 +30,6 @@ extension DeepLinkRouter {
             } else {
                 openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
             }
-        case .animeSubject(let id):
-            openAnimeSubject(subjectID: id)
-        case .animeEpisode(let subject, let episode):
-            openAnimeEpisode(subject: subject, episode: episode)
         }
     }
 }

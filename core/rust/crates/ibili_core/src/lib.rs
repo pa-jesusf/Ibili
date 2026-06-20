@@ -4,7 +4,6 @@
 //! session state, and exposes high-level service methods that return
 //! plain DTOs serializable to JSON.
 
-pub mod anime;
 pub mod article;
 pub mod auth;
 pub mod cdn;

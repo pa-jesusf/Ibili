@@ -4,7 +4,6 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @StateObject private var cacheVM = ImageCacheViewModel()
     @StateObject private var cdnSpeedVM = CDNSpeedTestViewModel()
-    @StateObject private var animeSourceStore = AnimeSourceStore.shared
     @State private var showsCDNSpeedSheet = false
 
     private let columnOptions: [(label: String, value: Int)] = [
@@ -279,23 +278,6 @@ struct SettingsView: View {
                 Text("评论区")
             } footer: {
                 Text("这些开关会影响视频、动态、专栏等评论列表的附加信息展示；回复功能始终可用。")
-            }
-
-            Section {
-                Toggle("启用追番 Tab", isOn: $settings.animeTrackingEnabled)
-                Toggle("启用 B站数据源", isOn: $settings.animeBiliSourceEnabled)
-                NavigationLink {
-                    AnimeSourceSettingsView(store: animeSourceStore)
-                } label: {
-                    HStack {
-                        Text("数据源")
-                        Spacer()
-                        Text("\(animeSourceStore.sources.filter(\.enabled).count)/\(animeSourceStore.sources.count)")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("追番")
             }
 
             cardMetaSection(
