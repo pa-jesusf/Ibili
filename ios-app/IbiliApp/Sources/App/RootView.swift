@@ -1436,7 +1436,8 @@ private extension UIView {
 }
 
 struct MainTabView: View {
-    @State private var selectedTab: MainTab = .home
+    @SceneStorage("Ibili.MainTabView.selectedTab")
+    private var selectedTabRawValue: String = MainTab.home.rawValue
     @StateObject private var tabReselect = TabReselectSignals()
 
     var body: some View {
@@ -1448,7 +1449,7 @@ struct MainTabView: View {
         // On iOS 16/17 we fall back to a plain extra `.tabItem`,
         // which still works but doesn't get the floating split look.
         if #available(iOS 18.0, *) {
-            TabView(selection: $selectedTab) {
+            TabView(selection: selectedTab) {
                 Tab("首页", systemImage: "house.fill", value: MainTab.home) {
                     NavigationStack {
                         HomeView()
@@ -1474,7 +1475,7 @@ struct MainTabView: View {
             .environmentObject(tabReselect)
             .background(tabReselectObserver(order: [.home, .dynamic, .profile, .search]))
         } else {
-            TabView(selection: $selectedTab) {
+            TabView(selection: selectedTab) {
                 NavigationStack {
                     HomeView()
                 }
@@ -1506,7 +1507,7 @@ struct MainTabView: View {
 
     private func tabReselectObserver(order: [MainTab]) -> some View {
         TabBarReselectObserver(
-            selectedTab: selectedTab,
+            selectedTab: selectedTabValue,
             orderedTabs: order,
             onReselect: { tab in
                 switch tab {
@@ -1525,7 +1526,18 @@ struct MainTabView: View {
         .allowsHitTesting(false)
     }
 
-    private enum MainTab: Hashable {
+    private var selectedTab: Binding<MainTab> {
+        Binding(
+            get: { selectedTabValue },
+            set: { selectedTabRawValue = $0.rawValue }
+        )
+    }
+
+    private var selectedTabValue: MainTab {
+        MainTab(rawValue: selectedTabRawValue) ?? .home
+    }
+
+    private enum MainTab: String, Hashable {
         case home
         case dynamic
         case profile
