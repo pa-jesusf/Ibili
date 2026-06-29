@@ -749,8 +749,6 @@ struct UserCardInner {
 struct UserCardRelation {
     #[serde(default)]
     attribute: Option<i64>,
-    #[serde(default)]
-    status: Option<i64>,
     #[serde(default, deserialize_with = "deser_optional_loose_bool")]
     is_follow: Option<bool>,
 }
@@ -773,7 +771,7 @@ struct UserCardVipLabel {
 
 fn user_card_relation_is_followed(
     relation: Option<i64>,
-    rel_special: Option<i64>,
+    _rel_special: Option<i64>,
     card_relation: Option<&UserCardRelation>,
 ) -> bool {
     if relation == Some(-1) {
@@ -784,21 +782,12 @@ fn user_card_relation_is_followed(
     };
 
     // Match PiliPlus' member page semantics: `is_follow` is the
-    // authoritative "I follow this user" flag. `status` is only the
-    // display relation state after `is_follow == 1`; treating every
-    // non-zero status as followed makes unfollowed users appear as 已关注.
+    // authoritative "I follow this user" flag. `status` is only a
+    // display relation state after `is_follow == 1`. When `is_follow`
+    // is absent, do not promote `status`/`rel_special` into a follow
+    // state; that makes unrelated users appear as 已关注.
     if let Some(is_follow) = relation.is_follow {
         return is_follow;
-    }
-
-    if rel_special == Some(1) {
-        return true;
-    }
-
-    if let Some(status) = relation.status {
-        if matches!(status, 1 | 2 | 4 | 6) {
-            return true;
-        }
     }
 
     relation
@@ -1267,6 +1256,19 @@ mod tests {
             }"#,
         );
         assert!(special.is_followed);
+
+        let not_special = parse_card(
+            r#"{
+                "card": {
+                    "mid": "42",
+                    "name": "not-special",
+                    "relation": { "status": 2, "is_follow": 0, "is_followed": 0 }
+                },
+                "relation": 0,
+                "rel_special": 1
+            }"#,
+        );
+        assert!(!not_special.is_followed);
     }
 
     #[test]
@@ -1287,10 +1289,9 @@ mod tests {
     }
 
     #[test]
-    fn user_card_relation_falls_back_when_is_follow_is_absent() {
+    fn user_card_relation_falls_back_to_attribute_when_is_follow_is_absent() {
         let by_attribute = UserCardRelation {
             attribute: Some(2),
-            status: None,
             is_follow: None,
         };
         assert!(user_card_relation_is_followed(
@@ -1299,20 +1300,28 @@ mod tests {
             Some(&by_attribute)
         ));
 
-        let by_status = UserCardRelation {
+        let without_follow_signal = UserCardRelation {
             attribute: None,
-            status: Some(2),
             is_follow: None,
         };
-        assert!(user_card_relation_is_followed(
+        assert!(!user_card_relation_is_followed(
             Some(0),
             Some(0),
-            Some(&by_status)
+            Some(&without_follow_signal)
+        ));
+
+        let by_rel_special = UserCardRelation {
+            attribute: None,
+            is_follow: None,
+        };
+        assert!(!user_card_relation_is_followed(
+            Some(0),
+            Some(1),
+            Some(&by_rel_special)
         ));
 
         let blocked = UserCardRelation {
             attribute: Some(2),
-            status: Some(2),
             is_follow: None,
         };
         assert!(!user_card_relation_is_followed(
