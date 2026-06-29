@@ -461,7 +461,14 @@ final class UserSpaceViewModel: ObservableObject {
         async let liveResult: UserLiveRoomDTO? = Task.detached {
             try? CoreClient.shared.userLive(mid: mid)
         }.value
-        self.card = await cardResult
+        let loadedCard = await cardResult
+        self.card = loadedCard
+        self.isFollowed = loadedCard?.isFollowed ?? false
+        AppLog.debug("profile", "用户空间关注态加载完成", metadata: [
+            "mid": String(mid),
+            "hasCard": String(loadedCard != nil),
+            "isFollowed": String(self.isFollowed),
+        ])
         self.userLive = await liveResult
     }
 

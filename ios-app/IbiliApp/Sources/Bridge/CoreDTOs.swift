@@ -1532,6 +1532,7 @@ public struct UserCardDTO: Decodable, Hashable {
     public let follower: Int64
     public let following: Int64
     public let archiveCount: Int64
+    public let isFollowed: Bool
     public let vipType: Int64
     public let vipStatus: Int64
     public let vipLabel: String
@@ -1539,9 +1540,25 @@ public struct UserCardDTO: Decodable, Hashable {
     enum CodingKeys: String, CodingKey {
         case mid, name, face, sign, follower, following
         case archiveCount = "archive_count"
+        case isFollowed = "is_followed"
         case vipType = "vip_type"
         case vipStatus = "vip_status"
         case vipLabel = "vip_label"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mid = try c.decode(Int64.self, forKey: .mid)
+        name = try c.decode(String.self, forKey: .name)
+        face = try c.decode(String.self, forKey: .face)
+        sign = try c.decode(String.self, forKey: .sign)
+        follower = try c.decode(Int64.self, forKey: .follower)
+        following = try c.decode(Int64.self, forKey: .following)
+        archiveCount = try c.decode(Int64.self, forKey: .archiveCount)
+        isFollowed = try c.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
+        vipType = try c.decode(Int64.self, forKey: .vipType)
+        vipStatus = try c.decode(Int64.self, forKey: .vipStatus)
+        vipLabel = try c.decode(String.self, forKey: .vipLabel)
     }
 }
 

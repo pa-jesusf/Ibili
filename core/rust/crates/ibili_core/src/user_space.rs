@@ -50,6 +50,8 @@ pub struct UserCard {
     pub following: i64,
     /// 视频投稿数
     pub archive_count: i64,
+    /// 当前登录用户是否已关注该 UP。
+    pub is_followed: bool,
     /// 0 = 普通; 1+ = 大会员等级 (vip.type)
     pub vip_type: i64,
     /// VIP 状态：0 = 非会员; 1 = 大会员
@@ -215,59 +217,44 @@ pub struct SpaceArcSearchPage {
 // MARK: - Implementation
 
 impl Core {
-    /// `/x/web-interface/card?mid=&photo=false`. Public endpoint —
-    /// works for any mid, even when the caller is anonymous, which is
-    /// what we want for the player's uploader chip.
+    /// User profile card. Prefer the Android app space endpoint here:
+    /// it carries the same relation fields PiliPlus uses for member
+    /// pages (`card.relation.is_follow/status` + `rel_special`). The
+    /// web card endpoint is kept as a public fallback for anonymous or
+    /// degraded cases.
     pub fn user_card(&self, mid: i64) -> CoreResult<UserCard> {
         if mid <= 0 {
             return Err(CoreError::InvalidArgument("mid required".into()));
         }
+        let has_access_key = self.session.read().access_key().is_some();
+        match self.user_card_from_space(mid) {
+            Ok(card) => Ok(card),
+            Err(err) if has_access_key => Err(err),
+            Err(_) => self.user_card_from_web(mid),
+        }
+    }
+
+    fn user_card_from_space(&self, mid: i64) -> CoreResult<UserCard> {
+        let params = space_app_params(mid, self.session.read().access_key());
+        let raw: UserCardWire = self.http.get_signed_android_app(URL_SPACE_APP, params)?;
+        Ok(user_card_from_wire(mid, raw))
+    }
+
+    fn user_card_from_web(&self, mid: i64) -> CoreResult<UserCard> {
         let params: Vec<(String, String)> = vec![
             ("mid".into(), mid.to_string()),
             ("photo".into(), "false".into()),
         ];
         let raw: UserCardWire = self.http.get_web(URL_USER_CARD, &params)?;
-        let card = raw.card.unwrap_or_default();
-        let parsed_mid = card
-            .mid
-            .as_deref()
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(mid);
-        let following = card.attention.unwrap_or(0);
-        let vip = card.vip.unwrap_or_default();
-        Ok(UserCard {
-            mid: parsed_mid,
-            name: card.name.unwrap_or_default(),
-            face: card.face.unwrap_or_default(),
-            sign: card.sign.unwrap_or_default(),
-            follower: raw.follower.unwrap_or(card.fans.unwrap_or(0)),
-            following,
-            archive_count: raw.archive_count.unwrap_or(0),
-            vip_type: vip.kind.unwrap_or(0),
-            vip_status: vip.status.unwrap_or(0),
-            vip_label: vip.label.and_then(|l| l.text).unwrap_or_default(),
-        })
+        Ok(user_card_from_wire(mid, raw))
     }
 
     pub fn user_live(&self, mid: i64) -> CoreResult<UserLiveRoom> {
         if mid <= 0 {
             return Err(CoreError::InvalidArgument("mid required".into()));
         }
-        let params: Vec<(String, String)> = vec![
-            ("build".into(), "8430300".into()),
-            ("version".into(), "8.43.0".into()),
-            ("c_locale".into(), "zh_CN".into()),
-            ("channel".into(), "master".into()),
-            ("mobi_app".into(), "android".into()),
-            ("platform".into(), "android".into()),
-            ("s_locale".into(), "zh_CN".into()),
-            (
-                "statistics".into(),
-                r#"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#.into(),
-            ),
-            ("vmid".into(), mid.to_string()),
-        ];
-        let raw: SpaceLiveWire = self.http.get_android_app(URL_SPACE_APP, &params)?;
+        let params = space_app_params(mid, self.session.read().access_key());
+        let raw: SpaceLiveWire = self.http.get_signed_android_app(URL_SPACE_APP, params)?;
         let live = raw.live.unwrap_or_default();
         Ok(UserLiveRoom {
             room_id: live.roomid.unwrap_or(0),
@@ -660,6 +647,57 @@ impl Core {
 
 // MARK: - Wire (Bilibili JSON) shapes
 
+fn space_app_params(mid: i64, access_key: Option<String>) -> Vec<(String, String)> {
+    let mut params = vec![
+        ("build".into(), "8430300".into()),
+        ("version".into(), "8.43.0".into()),
+        ("c_locale".into(), "zh_CN".into()),
+        ("channel".into(), "master".into()),
+        ("mobi_app".into(), "android".into()),
+        ("platform".into(), "android".into()),
+        ("s_locale".into(), "zh_CN".into()),
+        (
+            "statistics".into(),
+            r#"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#.into(),
+        ),
+        ("vmid".into(), mid.to_string()),
+    ];
+    if let Some(access_key) = access_key {
+        params.push(("access_key".into(), access_key));
+    }
+    params
+}
+
+fn user_card_from_wire(mid: i64, raw: UserCardWire) -> UserCard {
+    let card = raw.card.unwrap_or_default();
+    let parsed_mid = card
+        .mid
+        .as_deref()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(mid);
+    let following = card.attention.unwrap_or(0);
+    let archive_count = raw
+        .archive_count
+        .or_else(|| raw.archive.and_then(|archive| archive.count))
+        .unwrap_or(0);
+    let is_followed =
+        user_card_relation_is_followed(raw.relation, raw.rel_special, card.relation.as_ref());
+    let vip = card.vip.unwrap_or_default();
+    UserCard {
+        mid: parsed_mid,
+        name: card.name.unwrap_or_default(),
+        face: card.face.unwrap_or_default(),
+        sign: card.sign.unwrap_or_default(),
+        follower: raw.follower.unwrap_or(card.fans.unwrap_or(0)),
+        following,
+        archive_count,
+        is_followed,
+        vip_type: vip.kind.unwrap_or(0),
+        vip_status: vip.status.unwrap_or(0),
+        vip_label: vip.label.and_then(|l| l.text).unwrap_or_default(),
+    }
+}
+
 #[derive(Default, Deserialize)]
 struct UserCardWire {
     #[serde(default)]
@@ -668,11 +706,23 @@ struct UserCardWire {
     follower: Option<i64>,
     #[serde(default)]
     archive_count: Option<i64>,
+    #[serde(default)]
+    archive: Option<SpaceArchiveSummaryWire>,
+    #[serde(default)]
+    relation: Option<i64>,
+    #[serde(default)]
+    rel_special: Option<i64>,
+}
+
+#[derive(Default, Deserialize)]
+struct SpaceArchiveSummaryWire {
+    #[serde(default)]
+    count: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]
 struct UserCardInner {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_optional_loose_string")]
     mid: Option<String>,
     #[serde(default)]
     name: Option<String>,
@@ -690,7 +740,19 @@ struct UserCardInner {
     #[serde(default)]
     attention: Option<i64>,
     #[serde(default)]
+    relation: Option<UserCardRelation>,
+    #[serde(default)]
     vip: Option<UserCardVip>,
+}
+
+#[derive(Default, Deserialize)]
+struct UserCardRelation {
+    #[serde(default)]
+    attribute: Option<i64>,
+    #[serde(default)]
+    status: Option<i64>,
+    #[serde(default, deserialize_with = "deser_optional_loose_bool")]
+    is_follow: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
@@ -707,6 +769,66 @@ struct UserCardVip {
 struct UserCardVipLabel {
     #[serde(default)]
     text: Option<String>,
+}
+
+fn user_card_relation_is_followed(
+    relation: Option<i64>,
+    rel_special: Option<i64>,
+    card_relation: Option<&UserCardRelation>,
+) -> bool {
+    if relation == Some(-1) {
+        return false;
+    }
+    if rel_special == Some(1) {
+        return true;
+    }
+    let Some(relation) = card_relation else {
+        return false;
+    };
+    if relation.is_follow == Some(true) {
+        return true;
+    }
+    if let Some(status) = relation.status {
+        if status != 0 && status != 128 {
+            return true;
+        }
+    }
+    relation
+        .attribute
+        .map(|attribute| attribute & 2 != 0)
+        .unwrap_or(false)
+}
+
+fn deser_optional_loose_bool<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(match v {
+        Some(Value::Bool(b)) => Some(b),
+        Some(Value::Number(n)) => n.as_i64().map(|x| x != 0),
+        Some(Value::Null) | None => None,
+        Some(other) => return Err(D::Error::custom(format!("expected bool|int, got {other}"))),
+    })
+}
+
+fn deser_optional_loose_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(match v {
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::Null) | None => None,
+        Some(other) => {
+            return Err(D::Error::custom(format!(
+                "expected string|number, got {other}"
+            )))
+        }
+    })
 }
 
 #[derive(Default, Deserialize)]

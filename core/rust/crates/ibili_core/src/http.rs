@@ -56,7 +56,7 @@ fn android_app_headers() -> reqwest::header::HeaderMap {
     let pairs: &[(&str, &str)] = &[
         ("User-Agent", UA_ANDROID_APP),
         ("env", "prod"),
-        ("app-key", "android"),
+        ("app-key", "android64"),
         (
             "x-bili-trace-id",
             "11111111111111111111111111111111:1111111111111111:0:0",
