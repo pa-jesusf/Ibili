@@ -779,20 +779,28 @@ fn user_card_relation_is_followed(
     if relation == Some(-1) {
         return false;
     }
-    if rel_special == Some(1) {
-        return true;
-    }
     let Some(relation) = card_relation else {
         return false;
     };
-    if relation.is_follow == Some(true) {
+
+    // Match PiliPlus' member page semantics: `is_follow` is the
+    // authoritative "I follow this user" flag. `status` is only the
+    // display relation state after `is_follow == 1`; treating every
+    // non-zero status as followed makes unfollowed users appear as 已关注.
+    if let Some(is_follow) = relation.is_follow {
+        return is_follow;
+    }
+
+    if rel_special == Some(1) {
         return true;
     }
+
     if let Some(status) = relation.status {
-        if status != 0 && status != 128 {
+        if matches!(status, 1 | 2 | 4 | 6) {
             return true;
         }
     }
+
     relation
         .attribute
         .map(|attribute| attribute & 2 != 0)
@@ -1204,4 +1212,113 @@ where
             .and_then(|x| x.as_i64()),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_card(data: &str) -> UserCard {
+        let raw: UserCardWire = serde_json::from_str(data).expect("valid user card wire");
+        user_card_from_wire(42, raw)
+    }
+
+    #[test]
+    fn user_card_relation_does_not_treat_status_as_followed_when_is_follow_is_false() {
+        let card = parse_card(
+            r#"{
+                "card": {
+                    "mid": "42",
+                    "name": "not-followed",
+                    "relation": { "status": 1, "is_follow": 0, "is_followed": 0 }
+                },
+                "relation": 0,
+                "rel_special": 0
+            }"#,
+        );
+
+        assert!(!card.is_followed);
+    }
+
+    #[test]
+    fn user_card_relation_uses_is_follow_as_authoritative_follow_state() {
+        let followed = parse_card(
+            r#"{
+                "card": {
+                    "mid": "42",
+                    "name": "followed",
+                    "relation": { "status": 2, "is_follow": 1, "is_followed": 0 }
+                },
+                "relation": 0,
+                "rel_special": 0
+            }"#,
+        );
+        assert!(followed.is_followed);
+
+        let special = parse_card(
+            r#"{
+                "card": {
+                    "mid": "42",
+                    "name": "special",
+                    "relation": { "status": 2, "is_follow": 1, "is_followed": 0 }
+                },
+                "relation": 0,
+                "rel_special": 1
+            }"#,
+        );
+        assert!(special.is_followed);
+    }
+
+    #[test]
+    fn user_card_relation_does_not_confuse_is_followed_with_my_follow_state() {
+        let card = parse_card(
+            r#"{
+                "card": {
+                    "mid": "42",
+                    "name": "follows-me",
+                    "relation": { "status": 0, "is_follow": 0, "is_followed": 1 }
+                },
+                "relation": 0,
+                "rel_special": 0
+            }"#,
+        );
+
+        assert!(!card.is_followed);
+    }
+
+    #[test]
+    fn user_card_relation_falls_back_when_is_follow_is_absent() {
+        let by_attribute = UserCardRelation {
+            attribute: Some(2),
+            status: None,
+            is_follow: None,
+        };
+        assert!(user_card_relation_is_followed(
+            Some(0),
+            Some(0),
+            Some(&by_attribute)
+        ));
+
+        let by_status = UserCardRelation {
+            attribute: None,
+            status: Some(2),
+            is_follow: None,
+        };
+        assert!(user_card_relation_is_followed(
+            Some(0),
+            Some(0),
+            Some(&by_status)
+        ));
+
+        let blocked = UserCardRelation {
+            attribute: Some(2),
+            status: Some(2),
+            is_follow: None,
+        };
+        assert!(!user_card_relation_is_followed(
+            Some(-1),
+            Some(0),
+            Some(&blocked)
+        ));
+    }
 }
