@@ -154,7 +154,7 @@ impl Core {
     pub fn dynamic_feed(
         &self,
         feed_type: &str,
-        page: i64,
+        _page: i64,
         offset: &str,
     ) -> CoreResult<DynamicFeedPage> {
         if self.session.read().access_key().is_none() {
@@ -170,14 +170,13 @@ impl Core {
             "video" | "pgc" | "article" => feed_type,
             _ => "all",
         };
-        let params: Vec<(String, String)> = vec![
-            ("timezone_offset".into(), "-480".into()),
+        let mut params: Vec<(String, String)> = vec![
             ("type".into(), kind.into()),
-            ("page".into(), page.max(1).to_string()),
-            ("offset".into(), offset.into()),
             ("features".into(), "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,decorationCard,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,editable".into()),
-            ("web_location".into(), "333.1365".into()),
         ];
+        if !offset.is_empty() {
+            params.push(("offset".into(), offset.into()));
+        }
         let raw: DynamicFeedWire = self.http.get_web(URL_DYNAMIC_FEED, &params)?;
         let items = raw
             .items
