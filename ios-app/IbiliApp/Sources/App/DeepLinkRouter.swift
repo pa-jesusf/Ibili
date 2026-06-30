@@ -240,6 +240,20 @@ final class DeepLinkRouter: ObservableObject {
         path.compactMap(\.liveRoute)
     }
 
+    var foregroundPlayerRouteID: PlayerSessionID? {
+        if case .player(let route)? = path.last {
+            return route.id
+        }
+        return path.isEmpty ? pending?.playerRoute?.id : nil
+    }
+
+    var foregroundLiveRouteID: PlayerSessionID? {
+        if case .live(let route)? = path.last {
+            return route.id
+        }
+        return path.isEmpty ? pending?.liveRoute?.id : nil
+    }
+
     var snapshot: SessionSnapshot {
         SessionSnapshot(pending: pending, path: path)
     }

@@ -51,18 +51,20 @@ final class PlayerRuntimeCoordinator {
         viewModel.prepareForDismissal()
     }
 
-    func retainSessions(root: DeepLinkRouter.PlayerRoute?, stack: [DeepLinkRouter.PlayerRoute]) {
+    func retainSessions(root: DeepLinkRouter.PlayerRoute?,
+                        stack: [DeepLinkRouter.PlayerRoute],
+                        foregroundRouteID: PlayerSessionID? = nil) {
         var retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
         if let pictureInPictureRouteID {
             retainedIDs.insert(pictureInPictureRouteID)
         }
-        let foregroundRouteID = stack.last?.id ?? root?.id
+        let activeForegroundRouteID = foregroundRouteID ?? stack.last?.id ?? root?.id
         for routeID in retainedIDs {
             cancelPendingTeardown(for: routeID)
         }
         for (routeID, viewModel) in viewModels
         where retainedIDs.contains(routeID)
-            && routeID != foregroundRouteID
+            && routeID != activeForegroundRouteID
             && routeID != pictureInPictureRouteID {
             viewModel.prepareForStackBackground()
         }

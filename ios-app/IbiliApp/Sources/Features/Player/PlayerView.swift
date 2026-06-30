@@ -49,7 +49,6 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentAudioQn: Int64 = 0
     @Published private(set) var availableSubtitles: [VideoSubtitleDTO] = []
     @Published private(set) var viewPoints: [VideoViewPointDTO] = []
-    @Published private(set) var prefersLandscapeFullscreen = true
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
     @Published private(set) var isTemporarySpeedBoostActive = false
     @Published private(set) var isPausedForDetailCollapse = false
@@ -124,8 +123,6 @@ final class PlayerViewModel: ObservableObject {
     private var isRecoveringPlaybackFromPageCache = false
     private var transientPauseSuppressionDeadline = Date.distantPast
     private var transientPauseSuppressionContext: PlayerTransientPauseSuppressionContext?
-    private var fullscreenPlaybackRecoveryWork: DispatchWorkItem?
-    private var suppressedObservedPauseConfirmationWork: DispatchWorkItem?
     private var pausedForDetailCollapseConfirmationWork: DispatchWorkItem?
     private var isClosing = false
     private var dismissalFadeTask: Task<Void, Never>?
@@ -139,9 +136,8 @@ final class PlayerViewModel: ObservableObject {
             PlayerPlaybackCoordinator.shared.unregister(self)
             PlayerNowPlayingCoordinator.shared.unregister(self)
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
-            cancelSuppressedObservedPauseConfirmation()
+            clearTransientPauseSuppression()
             clearPausedForDetailCollapse()
-            fullscreenPlaybackRecoveryWork?.cancel()
             dismissalFadeTask?.cancel()
             stopHeartbeat()
             clearPlaybackCompletionObserver()
@@ -364,7 +360,6 @@ final class PlayerViewModel: ObservableObject {
             applyPresentationMetadata(to: prep.item, for: item)
             rememberActivePlayURL(info)
             self.currentQn = info.quality
-            self.prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
             let player = AVPlayer(playerItem: prep.item)
             configureExternalPlayback(for: player)
             // Leave `automaticallyWaitsToMinimizeStalling` at its
@@ -630,10 +625,6 @@ final class PlayerViewModel: ObservableObject {
     /// (only the originating session has this set).
     var isPictureInPictureActive: Bool { behaviorState.pictureInPictureIsActive }
 
-    var canRestorePlaybackAfterPresentation: Bool {
-        !isClosing
-    }
-
     private func configureExternalPlayback(for player: AVPlayer) {
         player.allowsExternalPlayback = true
         player.usesExternalPlaybackWhileExternalScreenIsActive = true
@@ -754,7 +745,6 @@ final class PlayerViewModel: ObservableObject {
             self.currentQn = info.quality
             self.availableAudioQualities = normalizedAudioQualities(from: info)
             self.currentAudioQn = info.audioQuality
-            self.prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
             var meta = prep.logSummary
             meta["aid"] = String(aid)
             meta["cid"] = String(cid)
@@ -790,9 +780,8 @@ final class PlayerViewModel: ObservableObject {
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
-        cancelSuppressedObservedPauseConfirmation()
+        clearTransientPauseSuppression()
         clearPausedForDetailCollapse()
-        cancelFullscreenPlaybackRecovery()
         AppLog.debug("player", "销毁播放器", metadata: [
             "aid": String(aid),
             "cid": String(cid),
@@ -824,9 +813,8 @@ final class PlayerViewModel: ObservableObject {
         guard !isClosing else { return }
         isClosing = true
         loadGeneration &+= 1
-        cancelSuppressedObservedPauseConfirmation()
+        clearTransientPauseSuppression()
         clearPausedForDetailCollapse()
-        cancelFullscreenPlaybackRecovery()
         itemStatusObservation = nil
         stopHeartbeat()
         clearPlaybackCompletionObserver()
@@ -845,16 +833,6 @@ final class PlayerViewModel: ObservableObject {
             "reason": "route-not-foreground",
         ]))
         handle(.interfaceDeactivated)
-    }
-
-    private static func prefersLandscapeFullscreen(for source: PlayUrlDTO) -> Bool {
-        guard let width = source.videoWidth,
-              let height = source.videoHeight,
-              width > 0,
-              height > 0 else {
-            return true
-        }
-        return width >= height
     }
 
     private var shouldHoldAudioSession: Bool {
@@ -883,7 +861,7 @@ final class PlayerViewModel: ObservableObject {
         playerTimeControlObservation?.invalidate()
         playerTimeControlObservation = nil
         clearPlaybackCompletionObserver()
-        cancelSuppressedObservedPauseConfirmation()
+        clearTransientPauseSuppression()
         clearPausedForDetailCollapse()
         if newPlayer == nil {
             temporaryPlaybackRateOverride = nil
@@ -978,20 +956,16 @@ final class PlayerViewModel: ObservableObject {
         ]))
         if status == .paused,
            suppressionActive {
-            AppLog.debug("player", "忽略 fullscreen 过渡中的瞬时暂停回调", metadata: [
+            AppLog.debug("player", "忽略短暂播放切换中的瞬时暂停回调", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
                 "observedStatus": timeControlStatusDescription(status),
             ])
-            if transientPauseSuppressionContext == .fullscreenExit {
-                scheduleSuppressedObservedPauseConfirmationIfNeeded()
-                scheduleFullscreenPlaybackRecovery(delay: 0.08)
-            }
             return
         }
         updatePausedForDetailCollapse(from: observedPlayer)
         if status == .playing || status == .waitingToPlayAtSpecifiedRate {
-            cancelSuppressedObservedPauseConfirmation()
+            clearTransientPauseSuppression()
         }
         handle(.observedTimeControlStatus(status))
     }
@@ -1044,106 +1018,14 @@ final class PlayerViewModel: ObservableObject {
     func armTransientPauseSuppression(for context: PlayerTransientPauseSuppressionContext) {
         transientPauseSuppressionContext = context
         transientPauseSuppressionDeadline = Date().addingTimeInterval(context.window)
-        cancelSuppressedObservedPauseConfirmation()
-        AppLog.debug("player", "启用 fullscreen 瞬时暂停抑制窗口", metadata: playbackDebugMetadata(extra: [
+        AppLog.debug("player", "启用短暂暂停抑制窗口", metadata: playbackDebugMetadata(extra: [
             "windowMs": String(Int(context.window * 1000)),
         ]))
     }
 
-    private func scheduleSuppressedObservedPauseConfirmationIfNeeded() {
-        guard transientPauseSuppressionContext == .fullscreenExit else { return }
-        cancelSuppressedObservedPauseConfirmation()
-        let remainingDelay = max(0, transientPauseSuppressionDeadline.timeIntervalSinceNow)
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.confirmSuppressedObservedPauseIfNeeded()
-        }
-        suppressedObservedPauseConfirmationWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + remainingDelay, execute: work)
-    }
-
-    private func cancelSuppressedObservedPauseConfirmation() {
-        suppressedObservedPauseConfirmationWork?.cancel()
-        suppressedObservedPauseConfirmationWork = nil
-    }
-
-    private func confirmSuppressedObservedPauseIfNeeded() {
-        suppressedObservedPauseConfirmationWork = nil
-        guard !isClosing else { return }
-        guard transientPauseSuppressionContext == .fullscreenExit else { return }
-        guard Date() >= transientPauseSuppressionDeadline else {
-            scheduleSuppressedObservedPauseConfirmationIfNeeded()
-            return
-        }
-        guard let player else {
-            AppLog.debug("player", "跳过 fullscreen 退出后的暂停确认", metadata: playbackDebugMetadata(extra: [
-                "reason": "player-nil",
-            ]))
-            return
-        }
-        guard player.timeControlStatus == .paused, player.rate == 0 else {
-            AppLog.debug("player", "跳过 fullscreen 退出后的暂停确认", metadata: playbackDebugMetadata(for: player, extra: [
-                "reason": "player-resumed-before-confirmation",
-            ]))
-            return
-        }
-        AppLog.debug("player", "确认 fullscreen 退出后的暂停状态", metadata: playbackDebugMetadata(for: player))
-        handle(.observedTimeControlStatus(.paused))
-    }
-
-    private func scheduleFullscreenPlaybackRecovery(delay: TimeInterval) {
-        guard !isClosing else { return }
-        cancelFullscreenPlaybackRecovery()
-        AppLog.debug("player", "安排 fullscreen 退出后的播放恢复检查", metadata: playbackDebugMetadata(extra: [
-            "delayMs": String(Int(delay * 1000)),
-        ]))
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.recoverPlaybackAfterFullscreenTransitionIfNeeded()
-        }
-        fullscreenPlaybackRecoveryWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func cancelFullscreenPlaybackRecovery() {
-        fullscreenPlaybackRecoveryWork?.cancel()
-        fullscreenPlaybackRecoveryWork = nil
-    }
-
-    private func recoverPlaybackAfterFullscreenTransitionIfNeeded() {
-        fullscreenPlaybackRecoveryWork = nil
-        guard !isClosing else { return }
-        guard Date() < transientPauseSuppressionDeadline else {
-            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(extra: [
-                "reason": "suppression-window-expired",
-            ]))
-            return
-        }
-        guard let player else {
-            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(extra: [
-                "reason": "player-nil",
-            ]))
-            return
-        }
-        guard case .play(let rate) = behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) else {
-            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(for: player, extra: [
-                "reason": "desired-command-not-play",
-            ]))
-            return
-        }
-        guard player.timeControlStatus == .paused, player.rate == 0 else {
-            AppLog.debug("player", "跳过 fullscreen 播放恢复检查", metadata: playbackDebugMetadata(for: player, extra: [
-                "reason": "player-not-paused",
-            ]))
-            return
-        }
-        AppLog.info("player", "恢复 fullscreen 退出后的意外暂停", metadata: [
-            "aid": String(aid),
-            "cid": String(cid),
-            "rate": String(rate),
-        ])
-        suppressNextObservedPlaybackIntent(.play)
-        player.playImmediately(atRate: rate)
+    private func clearTransientPauseSuppression() {
+        transientPauseSuppressionContext = nil
+        transientPauseSuppressionDeadline = .distantPast
     }
 
     private func applyPlaybackIntent(to targetPlayer: AVPlayer? = nil) {
@@ -1296,7 +1178,6 @@ final class PlayerViewModel: ObservableObject {
         applyPresentationMetadata(to: prep.item, for: item)
         rememberActivePlayURL(info)
         currentQn = info.quality
-        prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
         let player = AVPlayer(playerItem: prep.item)
         configureExternalPlayback(for: player)
         activePreparation = prep
@@ -1850,7 +1731,6 @@ final class PlayerViewModel: ObservableObject {
             applyPlaybackIntent(to: player)
             self.currentAudioQn = info.audioQuality
             self.availableAudioQualities = normalizedAudioQualities(from: info)
-            self.prefersLandscapeFullscreen = Self.prefersLandscapeFullscreen(for: info)
             AppLog.info("player", "音质切换成功", metadata: [
                 "audioQuality": String(info.audioQuality),
                 "audioQualityLabel": info.audioQualityLabel,
@@ -1977,10 +1857,7 @@ struct PlayerView: View {
     @State private var subtitle = SubtitleController()
     @State private var didBootstrap = false
     @State private var loadedMediaKey: String?
-    @State private var isFullscreen = false
-    @State private var presentationState = PlayerPresentationState()
-    @State private var isInlineHostVisible = false
-    /// Weak handle to the AVPlayerViewController so we can drive native FS.
+    /// Weak handle to the AVPlayerViewController for PiP and background audio handling.
     @State private var playerVCRef = PlayerVCBox()
     /// Long-press on the danmaku toggle opens this sheet for sending.
     @State private var showDanmakuSheet = false
@@ -2037,35 +1914,6 @@ struct PlayerView: View {
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
-        case .fullscreenChanged(let isFullscreen, let identity):
-            guard presentationIdentityMatchesCurrentRoute(identity) else {
-                AppLog.debug("player", "忽略旧播放器 fullscreen 回调", metadata: [
-                    "eventSessionID": identity.sessionID.uuidString,
-                    "currentSessionID": vm.currentSessionID.uuidString,
-                ])
-                return
-            }
-            AppLog.debug("player", "处理 fullscreen 展示状态变化", metadata: [
-                "aid": String(vm.currentAid),
-                "cid": String(vm.currentCid),
-                "isFullscreen": String(isFullscreen),
-                "isInlineHostVisible": String(isInlineHostVisible),
-                "sessionID": identity.sessionID.uuidString,
-            ])
-            self.isFullscreen = isFullscreen
-            if isFullscreen {
-                _ = presentationState.beginFullscreen(identity)
-            } else {
-                _ = presentationState.endFullscreen(identity)
-                if isInlineHostVisible {
-                    _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
-                }
-            }
-        case .suppressTransientPauseObservation(let identity, let context):
-            guard presentationIdentityMatchesCurrentRoute(identity) else {
-                return
-            }
-            vm.armTransientPauseSuppression(for: context)
         case .pictureInPictureChanged(let isActive, let identity):
             guard presentationIdentityMatchesCurrentRoute(identity) else {
                 AppLog.debug("player", "忽略旧播放器 PiP 回调", metadata: [
@@ -2094,47 +1942,9 @@ struct PlayerView: View {
 
     private func presentationIdentityMatchesCurrentRoute(_ identity: PlayerPresentationIdentity) -> Bool {
         guard identity.sessionID == vm.currentSessionID else { return false }
-        if presentationState.accepts(identity) { return true }
         guard let currentPlayerID = vm.player.map(ObjectIdentifier.init),
               let incomingPlayerID = identity.playerID else { return true }
         return currentPlayerID == incomingPlayerID
-    }
-
-    private var currentPresentationIdentity: PlayerPresentationIdentity {
-        PlayerPresentationIdentity(
-            sessionID: vm.currentSessionID,
-            playerID: vm.player.map(ObjectIdentifier.init)
-        )
-    }
-
-    private var isPresentationRouteActive: Bool {
-        isInlineHostVisible
-            || isFullscreen
-            || presentationState.isFullscreenPresentationActive
-            || presentationState.isAwaitingInlineFullscreenReturn
-    }
-
-    private func collapseInterruptedFullscreenIfNeeded(reason: String) {
-        let hasManagedFullscreen = isFullscreen
-            || presentationState.isFullscreenPresentationActive
-            || presentationState.isAwaitingInlineFullscreenReturn
-            || Orientation.isPhoneFullscreenLandscapeLocked(for: vm.currentSessionID)
-            || Orientation.isAVKitFullscreenVisible()
-        guard hasManagedFullscreen else { return }
-        let dismissedFullscreen = Orientation.dismissAVKitFullscreen(animated: false)
-        AppLog.info("player", "收敛被系统中断的全屏状态", metadata: [
-            "aid": String(vm.currentAid),
-            "cid": String(vm.currentCid),
-            "reason": reason,
-            "dismissedFullscreen": String(dismissedFullscreen),
-            "wasFullscreen": String(isFullscreen),
-            "wasPresentationActive": String(presentationState.isFullscreenPresentationActive),
-            "wasAwaitingInlineReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
-        ])
-        isFullscreen = false
-        presentationState = PlayerPresentationState()
-        Orientation.endPhoneFullscreenLandscapeLock(for: vm.currentSessionID)
-        Orientation.request(.portrait)
     }
 
     private var canCollapsePlayerForDetailScroll: Bool {
@@ -2142,9 +1952,6 @@ struct PlayerView: View {
             && shouldMountDetailContent
             && vm.isPausedForDetailCollapse
             && isPlayerCollapseArmed
-            && !isFullscreen
-            && !presentationState.isFullscreenPresentationActive
-            && !presentationState.isAwaitingInlineFullscreenReturn
     }
 
     private func collapsedPlayerHeight(expandedHeight: CGFloat) -> CGFloat {
@@ -2407,8 +2214,6 @@ struct PlayerView: View {
                                 player: p,
                                 sessionID: vm.currentSessionID,
                                 title: item.title,
-                                prefersLandscapeFullscreen: vm.prefersLandscapeFullscreen,
-                                isPresentationRouteActive: isPresentationRouteActive,
                                 danmaku: danmaku,
                                 subtitle: subtitle,
                                 subtitleEnabled: subtitleEnabled,
@@ -2423,7 +2228,6 @@ struct PlayerView: View {
                                 canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
                                 beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
                                 endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
-                                canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
                                 onCreated: { vc in playerVCRef.vc = vc },
                                 onPresentationEvent: handlePresentationEvent
                             )
@@ -2490,87 +2294,85 @@ struct PlayerView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isFullscreen {
-                ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarDanmaku(
-                        danmakuEnabled: $settings.danmakuEnabled,
-                        isEnabled: vm.player != nil,
-                        onLongPress: { showDanmakuSheet = true }
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarSubtitle(
-                        subtitles: vm.availableSubtitles,
-                        selectedID: selectedSubtitleID,
-                        isEnabled: vm.player != nil,
-                        isLoadingID: subtitleLoadingID,
-                        onPick: { track in
-                            Task { await selectSubtitle(track) }
-                        },
-                        onDisable: {
-                            disableSubtitle()
-                        }
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarVideoQuality(
-                        qualities: vm.availableQualities,
-                        currentQn: vm.currentQn,
-                        onPick: { qn in Task { await vm.switchQuality(to: qn) } }
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        if !vm.availableAudioQualities.isEmpty {
-                            Menu {
-                                ForEach(vm.availableAudioQualities, id: \.qn) { q in
-                                    Button {
-                                        Task { await vm.switchAudioQuality(to: q.qn) }
-                                    } label: {
-                                        if q.qn == vm.currentAudioQn {
-                                            Label(q.label, systemImage: "checkmark")
-                                        } else {
-                                            Text(q.label)
-                                        }
+            ToolbarItem(placement: .topBarTrailing) {
+                PlayerToolbarDanmaku(
+                    danmakuEnabled: $settings.danmakuEnabled,
+                    isEnabled: vm.player != nil,
+                    onLongPress: { showDanmakuSheet = true }
+                )
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                PlayerToolbarSubtitle(
+                    subtitles: vm.availableSubtitles,
+                    selectedID: selectedSubtitleID,
+                    isEnabled: vm.player != nil,
+                    isLoadingID: subtitleLoadingID,
+                    onPick: { track in
+                        Task { await selectSubtitle(track) }
+                    },
+                    onDisable: {
+                        disableSubtitle()
+                    }
+                )
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                PlayerToolbarVideoQuality(
+                    qualities: vm.availableQualities,
+                    currentQn: vm.currentQn,
+                    onPick: { qn in Task { await vm.switchQuality(to: qn) } }
+                )
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    if !vm.availableAudioQualities.isEmpty {
+                        Menu {
+                            ForEach(vm.availableAudioQualities, id: \.qn) { q in
+                                Button {
+                                    Task { await vm.switchAudioQuality(to: q.qn) }
+                                } label: {
+                                    if q.qn == vm.currentAudioQn {
+                                        Label(q.label, systemImage: "checkmark")
+                                    } else {
+                                        Text(q.label)
                                     }
                                 }
-                            } label: {
-                                Label("音质", systemImage: "hifispeaker")
-                            }
-                        }
-                        Button {
-                            showOfflineDownloadSheet = true
-                        } label: {
-                            Label("离线缓存", systemImage: "square.and.arrow.down")
-                        }
-                        Button {
-                            showDanmakuStyleSheet = true
-                        } label: {
-                            Label("弹幕样式", systemImage: "textformat.size")
-                        }
-                        Picker(selection: Binding(
-                            get: { settings.completionBehavior },
-                            set: { settings.completionBehavior = $0 }
-                        )) {
-                            ForEach(PlayerCompletionBehavior.allCases) { behavior in
-                                Label(behavior.label, systemImage: behavior.systemImage)
-                                    .tag(behavior)
                             }
                         } label: {
-                            Label("播放完行为", systemImage: settings.completionBehavior.systemImage)
+                            Label("音质", systemImage: "hifispeaker")
                         }
-                        Button {
-                            saveCurrentCover()
-                        } label: {
-                            Label("保存封面", systemImage: "photo")
+                    }
+                    Button {
+                        showOfflineDownloadSheet = true
+                    } label: {
+                        Label("离线缓存", systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        showDanmakuStyleSheet = true
+                    } label: {
+                        Label("弹幕样式", systemImage: "textformat.size")
+                    }
+                    Picker(selection: Binding(
+                        get: { settings.completionBehavior },
+                        set: { settings.completionBehavior = $0 }
+                    )) {
+                        ForEach(PlayerCompletionBehavior.allCases) { behavior in
+                            Label(behavior.label, systemImage: behavior.systemImage)
+                                .tag(behavior)
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.white)
+                        Label("播放完行为", systemImage: settings.completionBehavior.systemImage)
                     }
-                    .disabled(vm.player == nil)
+                    Button {
+                        saveCurrentCover()
+                    } label: {
+                        Label("保存封面", systemImage: "photo")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
                 }
+                .disabled(vm.player == nil)
             }
         }
         .task(id: mediaLoadKey) {
@@ -2657,9 +2459,6 @@ struct PlayerView: View {
             vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
         }
         .onChange(of: scenePhase) { phase in
-            if phase == .background {
-                collapseInterruptedFullscreenIfNeeded(reason: "scene-background")
-            }
             PlayerViewLifecycleController.handleScenePhaseChange(
                 phase,
                 didBootstrap: didBootstrap,
@@ -2667,25 +2466,12 @@ struct PlayerView: View {
                 playerBox: playerVCRef,
                 reloadPlayer: { await vm.recoverFromInactiveEngineIfNeeded(trigger: "foreground-active") }
             )
-            if phase == .active,
-               Orientation.isPhoneFullscreenLandscapeLocked(for: vm.currentSessionID),
-               !Orientation.isAVKitFullscreenVisible() {
-                collapseInterruptedFullscreenIfNeeded(reason: "scene-active-stale-landscape-lock")
-            }
         }
         .onAppear {
             AppLog.debug("player", "播放器页面 onAppear", metadata: [
                 "aid": String(vm.currentAid),
                 "cid": String(vm.currentCid),
-                "isFullscreen": String(isFullscreen),
-                "isFullscreenPresentationActive": String(presentationState.isFullscreenPresentationActive),
-                "isAwaitingInlineFullscreenReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
             ])
-            Orientation.activatePlayerPresentationRoute(vm.currentSessionID)
-            isInlineHostVisible = true
-            if presentationState.isAwaitingInlineFullscreenReturn {
-                _ = presentationState.finishFullscreenReturn(currentPresentationIdentity)
-            }
             PlayerViewLifecycleController.handleAppear(
                 didBootstrap: didBootstrap,
                 viewModel: vm,
@@ -2697,24 +2483,10 @@ struct PlayerView: View {
             AppLog.debug("player", "播放器页面 onDisappear", metadata: [
                 "aid": String(vm.currentAid),
                 "cid": String(vm.currentCid),
-                "isFullscreen": String(isFullscreen),
-                "isFullscreenPresentationActive": String(presentationState.isFullscreenPresentationActive),
-                "isAwaitingInlineFullscreenReturn": String(presentationState.isAwaitingInlineFullscreenReturn),
             ])
-            isInlineHostVisible = false
             deferredDetailMountWork?.cancel()
             deferredDetailMountWork = nil
-            PlayerViewLifecycleController.handleDisappear(
-                isPlayerPresentationActive: presentationState.isFullscreenPresentationActive,
-                viewModel: vm,
-                danmaku: danmaku
-            )
-            if !presentationState.isFullscreenPresentationActive {
-                Orientation.deactivatePlayerPresentationRoute(vm.currentSessionID)
-                clearDanmakuTimeObserver()
-                clearDetailTimelineObserver()
-                cancelDanmakuSegmentTasks()
-            }
+            PlayerViewLifecycleController.handleDisappear(viewModel: vm)
         }
         .onChange(of: settings.danmakuEnabled) { newValue in
             // Surface a one-shot reminder the first few times the user

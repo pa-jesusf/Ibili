@@ -576,8 +576,16 @@ private struct DeepLinkPlayerHost: View {
     }
 
     private func syncPlayerSessions() {
-        PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
-        LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
+        PlayerRuntimeCoordinator.shared.retainSessions(
+            root: router.pending?.playerRoute,
+            stack: router.playerPath,
+            foregroundRouteID: router.foregroundPlayerRouteID
+        )
+        LiveRuntimeCoordinator.shared.retainSessions(
+            root: router.pending?.liveRoute,
+            stack: router.livePath,
+            foregroundRouteID: router.foregroundLiveRouteID
+        )
     }
 
     private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
@@ -631,7 +639,6 @@ private struct DeepLinkPlayerHost: View {
 
     private var isAnyAreaPlayerSwipeBackEnabled: Bool {
         guard router.pending != nil, !isRootDismissInFlight else { return false }
-        guard !Orientation.isAVKitFullscreenVisible() else { return false }
         return router.path.isEmpty
             || router.path.last?.playerRoute != nil
             || router.path.last?.liveRoute != nil
@@ -1227,8 +1234,16 @@ private struct DeepLinkSplitHost: View {
     }
 
     private func syncPlayerSessions() {
-        PlayerRuntimeCoordinator.shared.retainSessions(root: router.pending?.playerRoute, stack: router.playerPath)
-        LiveRuntimeCoordinator.shared.retainSessions(root: router.pending?.liveRoute, stack: router.livePath)
+        PlayerRuntimeCoordinator.shared.retainSessions(
+            root: router.pending?.playerRoute,
+            stack: router.playerPath,
+            foregroundRouteID: router.foregroundPlayerRouteID
+        )
+        LiveRuntimeCoordinator.shared.retainSessions(
+            root: router.pending?.liveRoute,
+            stack: router.livePath,
+            foregroundRouteID: router.foregroundLiveRouteID
+        )
     }
 
     private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
@@ -1328,13 +1343,8 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         }
 
         func updateEnabled(_ isEnabled: Bool) {
-            // Keep the recognizer itself alive while AVKit fullscreen or
-            // modal shields are active. Toggling `isEnabled` off here can
-            // leave the window-level recognizer disabled if fullscreen exits
-            // without a SwiftUI update pass; the delegate below performs the
-            // transient gating at gesture-begin time instead.
             pan?.isEnabled = isEnabled
-            if !isEnabled || ModalGestureShield.isActive || Orientation.isAVKitFullscreenVisible() {
+            if !isEnabled || ModalGestureShield.isActive {
                 hasBegunSwipe = false
             }
         }
@@ -1371,7 +1381,6 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard parent.isEnabled,
                   !ModalGestureShield.isActive,
-                  !Orientation.isAVKitFullscreenVisible(),
                   let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
             guard !hasActivePresentedController(from: pan.view) else { return false }
             guard !PlayerSwipeBackGestureExclusions.contains(
@@ -1387,8 +1396,7 @@ private struct PlayerHostAnyAreaSwipeBackInstaller: UIViewRepresentable {
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldReceive touch: UITouch) -> Bool {
             guard parent.isEnabled,
-                  !ModalGestureShield.isActive,
-                  !Orientation.isAVKitFullscreenVisible() else { return false }
+                  !ModalGestureShield.isActive else { return false }
             if PlayerSwipeBackGestureExclusions.contains(touch, in: gestureRecognizer.view) {
                 return false
             }

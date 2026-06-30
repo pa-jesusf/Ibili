@@ -28,10 +28,18 @@ final class LiveRuntimeCoordinator {
         viewModel.prepareForDismissal()
     }
 
-    func retainSessions(root: DeepLinkRouter.LiveRoute?, stack: [DeepLinkRouter.LiveRoute]) {
+    func retainSessions(root: DeepLinkRouter.LiveRoute?,
+                        stack: [DeepLinkRouter.LiveRoute],
+                        foregroundRouteID: PlayerSessionID? = nil) {
         let retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
+        let activeForegroundRouteID = foregroundRouteID ?? stack.last?.id ?? root?.id
         for routeID in retainedIDs {
             cancelPendingTeardown(for: routeID)
+        }
+        for (routeID, viewModel) in viewModels
+        where retainedIDs.contains(routeID)
+            && routeID != activeForegroundRouteID {
+            viewModel.prepareForStackBackground()
         }
         let staleSessions = viewModels.filter { !retainedIDs.contains($0.key) }
         for (routeID, viewModel) in staleSessions {
@@ -199,8 +207,8 @@ final class LiveRoomViewModel: ObservableObject {
         PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
     }
 
-    var canRestorePlaybackAfterPresentation: Bool {
-        !isClosing
+    func prepareForStackBackground() {
+        suspendPlayback()
     }
 
     private func configurePlayer(with play: LivePlayUrlDTO, roomID: Int64) {
@@ -299,8 +307,6 @@ struct LiveRoomView: View {
     @State private var loadedDanmakuListRoomID: Int64 = 0
     @State private var loadingDanmakuHistoryRoomID: Int64 = 0
     @State private var isLoadingDanmakuHistory = false
-    @State private var isFullscreen = false
-    @State private var isInlineHostVisible = false
     @State private var lifecycleGeneration: UInt64 = 0
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var settings: AppSettings
@@ -335,18 +341,16 @@ struct LiveRoomView: View {
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isFullscreen {
+            ToolbarItem(placement: .topBarTrailing) {
+                PlayerToolbarDanmaku(
+                    danmakuEnabled: $danmakuEnabled,
+                    isEnabled: vm.player != nil,
+                    onLongPress: { showDanmakuSheet = true }
+                )
+            }
+            if !vm.availableQualities.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PlayerToolbarDanmaku(
-                        danmakuEnabled: $danmakuEnabled,
-                        isEnabled: vm.player != nil,
-                        onLongPress: { showDanmakuSheet = true }
-                    )
-                }
-                if !vm.availableQualities.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        qualityMenu
-                    }
+                    qualityMenu
                 }
             }
         }
@@ -363,8 +367,6 @@ struct LiveRoomView: View {
             }
         }
         .onAppear {
-            Orientation.activatePlayerPresentationRoute(vm.sessionID)
-            isInlineHostVisible = true
             if let player = vm.player {
                 danmaku.attach(player)
                 startDanmakuStreamIfNeeded()
@@ -374,12 +376,7 @@ struct LiveRoomView: View {
             }
         }
         .onDisappear {
-            isInlineHostVisible = false
-            guard !isFullscreen else { return }
-            Orientation.deactivatePlayerPresentationRoute(vm.sessionID)
             lifecycleGeneration &+= 1
-            stopDanmakuPipeline()
-            vm.suspendPlayback()
         }
         .sheet(isPresented: $showDanmakuSheet) {
             LiveDanmakuSendSheet(roomID: route.roomID)
@@ -395,8 +392,6 @@ struct LiveRoomView: View {
                     player: player,
                     sessionID: vm.sessionID,
                     title: resolvedTitle,
-                    prefersLandscapeFullscreen: true,
-                    isPresentationRouteActive: isPresentationRouteActive,
                     danmaku: danmaku,
                     subtitle: nil,
                     subtitleEnabled: false,
@@ -411,7 +406,6 @@ struct LiveRoomView: View {
                     canBeginTemporarySpeedBoost: { false },
                     beginTemporarySpeedBoost: { false },
                     endTemporarySpeedBoost: {},
-                    canRestorePlaybackAfterPresentation: { isPresentationRouteActive && vm.canRestorePlaybackAfterPresentation },
                     onCreated: { _ in },
                     onPresentationEvent: handlePresentationEvent
                 )
@@ -672,17 +666,11 @@ struct LiveRoomView: View {
         .accessibilityLabel("直播清晰度")
     }
 
-    private var isPresentationRouteActive: Bool {
-        isInlineHostVisible || isFullscreen
-    }
-
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
-        case .fullscreenChanged(let value, _):
-            isFullscreen = value
         case .pictureInPictureRestoreRequested(_, let completion):
             completion(false)
-        case .suppressTransientPauseObservation, .pictureInPictureChanged:
+        case .pictureInPictureChanged:
             break
         }
     }
