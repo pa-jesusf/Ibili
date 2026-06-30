@@ -108,11 +108,19 @@ private struct InlinePlayerNavigationKey: EnvironmentKey {
     static let defaultValue: InlinePlayerNavigation? = nil
 }
 
+private enum MainTab: Hashable {
+    case home
+    case dynamic
+    case profile
+    case search
+}
+
 /// Top-level shell. Switches between login and main tab interface.
 struct RootView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject var session: AppSession
     @StateObject private var router = DeepLinkRouter()
+    @State private var selectedMainTab: MainTab = .home
     @State private var retainsDismissedPlayerHost = false
     @State private var releaseDismissedPlayerHostWork: DispatchWorkItem?
     @State private var splitDetailProgress: CGFloat = 0
@@ -190,7 +198,7 @@ struct RootView: View {
         if canSplit {
             let splitMetrics = splitLayoutMetrics(size: size, usesSplit: usesSplit)
             ZStack(alignment: .leading) {
-                MainTabView()
+                MainTabView(selectedTab: $selectedMainTab)
                     .environment(\.prefersSplitRootSelection, true)
                     .environment(\.splitRootIsActive, usesSplit)
                     .environment(\.splitFeedColumnLimit, splitMetrics.feedColumnLimit)
@@ -218,7 +226,7 @@ struct RootView: View {
             .frame(width: size.width, height: size.height, alignment: .leading)
             .background(IbiliTheme.background.ignoresSafeArea())
         } else {
-            MainTabView()
+            MainTabView(selectedTab: $selectedMainTab)
                 .environment(\.prefersSplitRootSelection, false)
                 .environment(\.splitRootIsActive, false)
                 .environment(\.splitFeedColumnLimit, nil)
@@ -1435,8 +1443,8 @@ private extension UIView {
     }
 }
 
-struct MainTabView: View {
-    @State private var selectedTab: MainTab = .home
+private struct MainTabView: View {
+    @Binding var selectedTab: MainTab
     @StateObject private var tabReselect = TabReselectSignals()
 
     var body: some View {
@@ -1523,13 +1531,6 @@ struct MainTabView: View {
         )
         .frame(width: 0, height: 0)
         .allowsHitTesting(false)
-    }
-
-    private enum MainTab: Hashable {
-        case home
-        case dynamic
-        case profile
-        case search
     }
 }
 
