@@ -664,7 +664,9 @@ struct LiveRoomView: View {
         switch event {
         case .pictureInPictureRestoreRequested(_, let completion):
             completion(false)
-        case .pictureInPictureChanged:
+        case .pictureInPictureChanged,
+             .nativeFullscreenExitWillBegin,
+             .nativeFullscreenExitDidEnd:
             break
         }
     }

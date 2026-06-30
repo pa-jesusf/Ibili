@@ -7,11 +7,14 @@ typealias PlayerPresentationRestoreCompletion = (Bool) -> Void
 
 enum PlayerTransientPauseSuppressionContext: String {
     case playbackLoopRestart
+    case nativeFullscreenExit
 
     var window: TimeInterval {
         switch self {
         case .playbackLoopRestart:
             return 0.75
+        case .nativeFullscreenExit:
+            return 1.25
         }
     }
 }
@@ -19,6 +22,8 @@ enum PlayerTransientPauseSuppressionContext: String {
 enum PlayerPresentationEvent {
     case pictureInPictureChanged(Bool, PlayerPresentationIdentity)
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
+    case nativeFullscreenExitWillBegin(PlayerPresentationIdentity, shouldResumePlayback: Bool)
+    case nativeFullscreenExitDidEnd(PlayerPresentationIdentity, shouldResumePlayback: Bool)
 }
 
 private final class PlayerHoldSpeedGestureMaskView: UIView {
@@ -121,6 +126,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let canBeginTemporarySpeedBoost: () -> Bool
     let beginTemporarySpeedBoost: () -> Bool
     let endTemporarySpeedBoost: () -> Void
+    var shouldResumePlaybackAfterNativeFullscreenExit: () -> Bool = { false }
     let onCreated: (AVPlayerViewController) -> Void
     let onPresentationEvent: (PlayerPresentationEvent) -> Void
 
@@ -345,6 +351,22 @@ struct PlayerContainer: UIViewControllerRepresentable {
             }
             AppLog.info("player", "PiP 请求恢复原播放器界面")
             parent.onPresentationEvent(.pictureInPictureRestoreRequested(presentationIdentity(for: playerViewController), completionHandler))
+        }
+
+        func playerViewController(_ playerViewController: AVPlayerViewController,
+                                  willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
+            guard !isDismantled else { return }
+            let identity = presentationIdentity(for: playerViewController)
+            let shouldResumePlayback = parent.shouldResumePlaybackAfterNativeFullscreenExit()
+            AppLog.debug("player", "AVKit 原生全屏即将退出", metadata: [
+                "sessionID": identity.sessionID.uuidString,
+                "shouldResumePlayback": String(shouldResumePlayback),
+            ])
+            parent.onPresentationEvent(.nativeFullscreenExitWillBegin(identity, shouldResumePlayback: shouldResumePlayback))
+            coordinator.animate(alongsideTransition: nil) { [weak self] context in
+                guard let self, !self.isDismantled, !context.isCancelled else { return }
+                self.parent.onPresentationEvent(.nativeFullscreenExitDidEnd(identity, shouldResumePlayback: shouldResumePlayback))
+            }
         }
 
         private func presentationIdentity(for vc: AVPlayerViewController) -> PlayerPresentationIdentity {

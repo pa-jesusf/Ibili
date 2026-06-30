@@ -564,6 +564,10 @@ final class PlayerViewModel: ObservableObject {
         return resolvedRate > 0 ? resolvedRate : 1.0
     }
 
+    var shouldResumePlaybackAfterNativeFullscreenExit: Bool {
+        shouldHoldAudioSession
+    }
+
     func refreshSystemMediaSession() {
         guard !isClosing else { return }
         PlayerNowPlayingCoordinator.shared.refresh(for: self)
@@ -1021,6 +1025,21 @@ final class PlayerViewModel: ObservableObject {
         AppLog.debug("player", "启用短暂暂停抑制窗口", metadata: playbackDebugMetadata(extra: [
             "windowMs": String(Int(context.window * 1000)),
         ]))
+    }
+
+    func prepareForNativeFullscreenExit(shouldResumePlayback: Bool) {
+        guard !isClosing, shouldResumePlayback else { return }
+        armTransientPauseSuppression(for: .nativeFullscreenExit)
+        suppressNextObservedPlaybackIntent(.pause)
+    }
+
+    func completeNativeFullscreenExit(shouldResumePlayback: Bool) {
+        guard !isClosing, shouldResumePlayback else { return }
+        handle(.playbackIntentChanged(.play))
+        armTransientPauseSuppression(for: .nativeFullscreenExit)
+        suppressNextObservedPlaybackIntent(.pause)
+        guard let player else { return }
+        applyPlaybackIntent(to: player)
     }
 
     private func clearTransientPauseSuppression() {
@@ -1936,6 +1955,12 @@ struct PlayerView: View {
                 return
             }
             onPictureInPictureRestore?(completion) ?? completion(false)
+        case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            vm.prepareForNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
+        case .nativeFullscreenExitDidEnd(let identity, let shouldResumePlayback):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
         }
     }
 
@@ -2223,6 +2248,7 @@ struct PlayerView: View {
                                 canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
                                 beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
                                 endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
+                                shouldResumePlaybackAfterNativeFullscreenExit: { vm.shouldResumePlaybackAfterNativeFullscreenExit },
                                 onCreated: { vc in playerVCRef.vc = vc },
                                 onPresentationEvent: handlePresentationEvent
                             )
