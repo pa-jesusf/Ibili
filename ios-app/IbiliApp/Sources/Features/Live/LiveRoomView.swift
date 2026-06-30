@@ -106,6 +106,7 @@ final class LiveRoomViewModel: ObservableObject {
     private var loadGeneration: UInt64 = 0
     private var isClosing = false
     private var dismissalFadeTask: Task<Void, Never>?
+    private var fullscreenExitPauseSuppressionDeadline = Date.distantPast
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -201,6 +202,22 @@ final class LiveRoomViewModel: ObservableObject {
         player.play()
     }
 
+    var shouldResumePlaybackAfterNativeFullscreenExit: Bool {
+        guard !isClosing, let player else { return false }
+        return player.timeControlStatus == .playing || player.rate > 0
+    }
+
+    func prepareForNativeFullscreenExit(shouldResumePlayback: Bool) {
+        guard !isClosing, shouldResumePlayback else { return }
+        armFullscreenExitPauseSuppression()
+    }
+
+    func completeNativeFullscreenExit(shouldResumePlayback: Bool) {
+        guard !isClosing, shouldResumePlayback else { return }
+        armFullscreenExitPauseSuppression()
+        activatePlayback()
+    }
+
     func suspendPlayback() {
         guard !isClosing else { return }
         player?.pause()
@@ -285,9 +302,17 @@ final class LiveRoomViewModel: ObservableObject {
                       let observedPlayer,
                       !self.isClosing,
                       self.player === observedPlayer else { return }
+                if player.timeControlStatus == .paused,
+                   Date() < self.fullscreenExitPauseSuppressionDeadline {
+                    return
+                }
                 PlayerAudioSessionCoordinator.shared.setSessionNeeded(player.timeControlStatus != .paused, by: self)
             }
         }
+    }
+
+    private func armFullscreenExitPauseSuppression() {
+        fullscreenExitPauseSuppressionDeadline = Date().addingTimeInterval(PlayerTransientPauseSuppressionContext.nativeFullscreenExit.window)
     }
 
     private func isCurrentLoad(_ generation: UInt64, roomID: Int64) -> Bool {
@@ -404,6 +429,7 @@ struct LiveRoomView: View {
                     canBeginTemporarySpeedBoost: { false },
                     beginTemporarySpeedBoost: { false },
                     endTemporarySpeedBoost: {},
+                    shouldResumePlaybackAfterNativeFullscreenExit: { vm.shouldResumePlaybackAfterNativeFullscreenExit },
                     onCreated: { _ in },
                     onPresentationEvent: handlePresentationEvent
                 )
@@ -664,10 +690,14 @@ struct LiveRoomView: View {
         switch event {
         case .pictureInPictureRestoreRequested(_, let completion):
             completion(false)
-        case .pictureInPictureChanged,
-             .nativeFullscreenExitWillBegin,
-             .nativeFullscreenExitDidEnd:
+        case .pictureInPictureChanged:
             break
+        case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
+            guard identity.sessionID == vm.sessionID else { return }
+            vm.prepareForNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
+        case .nativeFullscreenExitDidEnd(let identity, let shouldResumePlayback):
+            guard identity.sessionID == vm.sessionID else { return }
+            vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
         }
     }
 
