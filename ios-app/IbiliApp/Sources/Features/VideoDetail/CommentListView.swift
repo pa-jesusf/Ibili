@@ -57,7 +57,6 @@ struct CommentListView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     init(oid: Int64,
          kind: Int32 = 1,
@@ -152,11 +151,7 @@ struct CommentListView: View {
     private func openUserSpace(mid: Int64) {
         guard mid > 0 else { return }
         if isInPlayerHostNavigation {
-            if let inlinePlayerNavigation {
-                inlinePlayerNavigation.openUser(mid: mid)
-            } else {
-                router.openUserSpace(mid: mid)
-            }
+            router.openUserSpace(mid: mid)
         } else {
             userSpaceMID = mid
         }

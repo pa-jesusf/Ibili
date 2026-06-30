@@ -14,7 +14,6 @@ struct UploaderCardView: View {
     @StateObject private var loader = UploaderCardLoader()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     var body: some View {
         HStack(spacing: 12) {
@@ -28,11 +27,7 @@ struct UploaderCardView: View {
             Group {
                 if isInPlayerHostNavigation {
                     Button {
-                        if let inlinePlayerNavigation {
-                            inlinePlayerNavigation.openUser(mid: owner.mid)
-                        } else {
-                            router.openUserSpace(mid: owner.mid)
-                        }
+                        router.openUserSpace(mid: owner.mid)
                     } label: {
                         headerLabel
                     }

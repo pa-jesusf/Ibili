@@ -40,7 +40,6 @@ struct VideoDetailContent: View {
     @State private var pgcLoading = false
     @State private var pgcErrorText: String?
     @State private var floatingControlsHeight: CGFloat = 0
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     private let topAnchorID = "videoDetailTop"
     private static let upwardRefreshTriggerOffset: CGFloat = 72
@@ -625,11 +624,7 @@ struct VideoDetailContent: View {
     }
 
     private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
-        if let inlinePlayerNavigation {
-            inlinePlayerNavigation.open(item, mode: mode)
-        } else {
-            router.open(item, mode: mode)
-        }
+        router.open(item, mode: mode)
     }
 
     private var effectivePgcSeasonID: Int64 {

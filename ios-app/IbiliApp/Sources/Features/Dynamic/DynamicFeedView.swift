@@ -139,10 +139,8 @@ struct DynamicFeedView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var tabReselect: TabReselectSignals
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var pendingDetail: DynamicItemDTO?
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     init() {
         _allVM = StateObject(wrappedValue: DynamicFeedViewModel(scope: .all))
@@ -165,11 +163,7 @@ struct DynamicFeedView: View {
                 scrollToTopSignal: tabReselect.dynamic,
                 onOpenDetail: { dyn in
                     if isInPlayerHostNavigation {
-                        if let inlinePlayerNavigation {
-                            inlinePlayerNavigation.openDynamic(dyn)
-                        } else {
-                            router.openDynamicDetail(dyn)
-                        }
+                        router.openDynamicDetail(dyn)
                     } else if prefersSplitRootSelection {
                         router.selectDynamicDetail(dyn)
                     } else {
@@ -177,16 +171,10 @@ struct DynamicFeedView: View {
                     }
                 },
                 onOpenVideo: { item in
-                    if isInPlayerHostNavigation {
-                        if let inlinePlayerNavigation {
-                            inlinePlayerNavigation.open(item)
-                        } else {
-                            router.open(item)
-                        }
-                    } else if prefersSplitRootSelection {
+                    if prefersSplitRootSelection && !isInPlayerHostNavigation {
                         router.select(item)
                     } else {
-                        inlinePlayerRoute.open(item)
+                        router.open(item)
                     }
                 }
             )
@@ -205,8 +193,6 @@ struct DynamicFeedView: View {
                 )
                 .opacity(0)
                 .allowsHitTesting(false)
-
-                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
             }
         }
     }
@@ -324,8 +310,6 @@ struct DynamicItemCard: View {
     var onOpenDetail: ((DynamicItemDTO) -> Void)? = nil
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
-    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @State private var preview: ImagePreviewState?
     @State private var shareSheetURL: ShareSheetItem?
     @State private var isLiked = false
@@ -413,25 +397,17 @@ struct DynamicItemCard: View {
                 )
                 if let onOpenVideo { onOpenVideo(dto) }
                 else if prefersSplitRootSelection { router.select(dto) }
-                else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-                    inlinePlayerNavigation.open(dto)
-                } else {
-                    router.open(dto)
-                }
+                else { router.open(dto) }
             }
         case .openLive(let roomID, let title, let cover, let anchorName):
             if prefersSplitRootSelection {
                 router.selectLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
-            } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-                inlinePlayerNavigation.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
             } else {
                 router.openLive(roomID: roomID, title: title, cover: cover, anchorName: anchorName)
             }
         case .openArticle(let id, let kind):
             if prefersSplitRootSelection {
                 router.selectArticle(id: id, kind: kind)
-            } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-                inlinePlayerNavigation.openArticle(id: id, kind: kind)
             } else {
                 router.openArticle(id: id, kind: kind)
             }
@@ -488,8 +464,6 @@ struct DynamicItemCard: View {
         )
         if prefersSplitRootSelection {
             router.select(dto)
-        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.open(dto)
         } else {
             router.open(dto)
         }
@@ -499,8 +473,6 @@ struct DynamicItemCard: View {
         guard let live = item.live, live.isOpenable else { return }
         if prefersSplitRootSelection {
             router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
-        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
         } else {
             router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: item.author.name)
         }
@@ -510,8 +482,6 @@ struct DynamicItemCard: View {
         guard let orig = item.orig, let live = orig.live, live.isOpenable else { return }
         if prefersSplitRootSelection {
             router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
-        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
         } else {
             router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: orig.author.name)
         }
@@ -521,8 +491,6 @@ struct DynamicItemCard: View {
         guard let article = item.article, !article.id.isEmpty else { return }
         if prefersSplitRootSelection {
             router.selectArticle(id: article.id, kind: article.kind)
-        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.openArticle(id: article.id, kind: article.kind)
         } else {
             router.openArticle(id: article.id, kind: article.kind)
         }
@@ -532,8 +500,6 @@ struct DynamicItemCard: View {
         guard let article = item.orig?.article, !article.id.isEmpty else { return }
         if prefersSplitRootSelection {
             router.selectArticle(id: article.id, kind: article.kind)
-        } else if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.openArticle(id: article.id, kind: article.kind)
         } else {
             router.openArticle(id: article.id, kind: article.kind)
         }
@@ -589,7 +555,6 @@ struct DynamicAuthorHeader: View {
     var avatarSize: CGFloat = 36
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     var body: some View {
         HStack(spacing: 10) {
@@ -615,11 +580,7 @@ struct DynamicAuthorHeader: View {
         Group {
             if isInPlayerHostNavigation {
                 Button {
-                    if let inlinePlayerNavigation {
-                        inlinePlayerNavigation.openUser(mid: author.mid)
-                    } else {
-                        router.openUserSpace(mid: author.mid)
-                    }
+                    router.openUserSpace(mid: author.mid)
                 } label: {
                     avatar
                 }

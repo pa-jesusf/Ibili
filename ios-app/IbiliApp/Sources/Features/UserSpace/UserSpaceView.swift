@@ -18,17 +18,15 @@ import UIKit
 /// so the floating Liquid-Glass tab bar of `MainTabView` doesn't
 /// peek through.
 ///
-/// Dynamic-detail and video pushes stay on the enclosing navigation stack
-/// so the user-space page keeps the same system transition behavior as
-/// other local destinations. Inside an active player host we still route
-/// through `DeepLinkRouter` so related-player stacks remain intact.
+/// Dynamic details keep a page-level local push. Video/live entries use the
+/// root player router so AVKit fullscreen dismissal cannot expose a stale root
+/// tab while the playback page is still alive behind it.
 struct UserSpaceView: View {
     let mid: Int64
 
     @StateObject private var vm = UserSpaceViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
@@ -42,7 +40,6 @@ struct UserSpaceView: View {
     /// the cell is recycled, which collapses the entire push above
     /// it — manifesting as "tap dynamic → back jumps to home".
     @State private var pushDynamic: DynamicItemDTO?
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     enum Tab: Hashable, Identifiable, CaseIterable {
         case dynamics, archives
@@ -119,8 +116,6 @@ struct UserSpaceView: View {
                 )
                 .opacity(0)
                 .allowsHitTesting(false)
-
-                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
             }
         }
         // `task` runs once per view-identity. It does *not* re-run on
@@ -159,14 +154,7 @@ struct UserSpaceView: View {
                 .contentShape(Circle())
                 .onTapGesture {
                     guard let live = vm.userLive, live.isLive else { return }
-                    if isInPlayerHostNavigation, let inlinePlayerNavigation {
-                        inlinePlayerNavigation.openLive(
-                            roomID: live.roomID,
-                            title: live.title,
-                            cover: live.cover,
-                            anchorName: vm.card?.name ?? ""
-                        )
-                    } else if prefersSplitRootSelection {
+                    if prefersSplitRootSelection && !isInPlayerHostNavigation {
                         router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
                     } else {
                         router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
@@ -265,12 +253,10 @@ struct UserSpaceView: View {
                         author: item.author, durationSec: 0,
                         play: item.play, danmaku: item.danmaku
                     )
-                    if isInPlayerHostNavigation {
-                        openPlayer(feedItem)
-                    } else if prefersSplitRootSelection {
+                    if prefersSplitRootSelection && !isInPlayerHostNavigation {
                         router.select(feedItem)
                     } else {
-                        inlinePlayerRoute.open(feedItem)
+                        router.open(feedItem)
                     }
                 } label: {
                     CompactVideoRow(
@@ -315,21 +301,15 @@ struct UserSpaceView: View {
                     item: item,
                     contentWidth: contentWidth,
                     onOpenVideo: { feedItem in
-                        if isInPlayerHostNavigation {
-                            openPlayer(feedItem)
-                        } else if prefersSplitRootSelection {
+                        if prefersSplitRootSelection && !isInPlayerHostNavigation {
                             router.select(feedItem)
                         } else {
-                            inlinePlayerRoute.open(feedItem)
+                            router.open(feedItem)
                         }
                     },
                     onOpenDetail: { dyn in
                         if isInPlayerHostNavigation {
-                            if let inlinePlayerNavigation {
-                                inlinePlayerNavigation.openDynamic(dyn)
-                            } else {
-                                router.openDynamicDetail(dyn)
-                            }
+                            router.openDynamicDetail(dyn)
                         } else if prefersSplitRootSelection {
                             router.selectDynamicDetail(dyn)
                         } else {
@@ -365,15 +345,6 @@ struct UserSpaceView: View {
             }
         }
     }
-
-    private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
-        if let inlinePlayerNavigation {
-            inlinePlayerNavigation.open(item, mode: mode)
-        } else {
-            router.open(item, mode: mode)
-        }
-    }
-
     // MARK: Search bar
 
     private var searchBar: some View {

@@ -7,7 +7,6 @@ struct ArticleView: View {
     @StateObject private var vm = ArticleViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @State private var preview: ArticleImagePreview?
     @State private var shareSheet: ShareSheetItem?
     @State private var userSpaceMID: Int64?
@@ -152,11 +151,7 @@ struct ArticleView: View {
     private func openUser(mid: Int64) {
         guard mid > 0 else { return }
         if isInPlayerHostNavigation {
-            if let inlinePlayerNavigation {
-                inlinePlayerNavigation.openUser(mid: mid)
-            } else {
-                router.openUserSpace(mid: mid)
-            }
+            router.openUserSpace(mid: mid)
         } else {
             userSpaceMID = mid
         }

@@ -1893,7 +1893,6 @@ struct PlayerView: View {
     @State private var playerCollapseAnchorOffset: CGFloat = 0
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.scenePhase) private var scenePhase
 
     init(item: FeedItemDTO,
@@ -2079,11 +2078,7 @@ struct PlayerView: View {
     }
 
     private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
-        if let inlinePlayerNavigation {
-            inlinePlayerNavigation.open(item, mode: mode)
-        } else {
-            router.open(item, mode: mode)
-        }
+        router.open(item, mode: mode)
     }
 
     private func disableSubtitle() {

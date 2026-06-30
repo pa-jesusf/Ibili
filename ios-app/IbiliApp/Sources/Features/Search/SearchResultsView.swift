@@ -14,13 +14,11 @@ struct SearchResultsView: View {
     @State private var isPageInputPresented: Bool = false
     @State private var scrollID: UUID = UUID()
     @State private var userSpaceMID: Int64?
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var resolvingPgcSeasonID: Int64?
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
     @StateObject private var scrollContext = InterruptibleScrollContext()
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
 
@@ -70,8 +68,6 @@ struct SearchResultsView: View {
                 )
                 .opacity(0)
                 .allowsHitTesting(false)
-
-                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
             }
         }
     }
@@ -206,12 +202,10 @@ struct SearchResultsView: View {
             ZStack(alignment: .bottomTrailing) {
                 Button {
                     let item = feedItem(from: video)
-                    if isInPlayerHostNavigation {
-                        openPlayer(item)
-                    } else if prefersSplitRootSelection {
+                    if prefersSplitRootSelection && !isInPlayerHostNavigation {
                         router.select(item)
                     } else {
-                        inlinePlayerRoute.open(item)
+                        router.open(item)
                     }
                 } label: {
                     SearchResultCardView(
@@ -244,14 +238,7 @@ struct SearchResultsView: View {
             .frame(width: cardWidth, alignment: .topLeading)
         case .live(let live):
             Button {
-                if isInPlayerHostNavigation, let inlinePlayerNavigation {
-                    inlinePlayerNavigation.openLive(
-                        roomID: live.roomID,
-                        title: live.title,
-                        cover: live.cover,
-                        anchorName: live.uname
-                    )
-                } else if prefersSplitRootSelection {
+                if prefersSplitRootSelection && !isInPlayerHostNavigation {
                     router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
                 } else {
                     router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
@@ -273,9 +260,7 @@ struct SearchResultsView: View {
             .buttonStyle(.plain)
         case .article(let article):
             Button {
-                if isInPlayerHostNavigation, let inlinePlayerNavigation {
-                    inlinePlayerNavigation.openArticle(id: String(article.id), kind: "read")
-                } else if prefersSplitRootSelection {
+                if prefersSplitRootSelection && !isInPlayerHostNavigation {
                     router.selectArticle(id: String(article.id), kind: "read")
                 } else {
                     router.openArticle(id: String(article.id), kind: "read")
@@ -486,12 +471,10 @@ struct SearchResultsView: View {
                 )
                 await MainActor.run {
                     resolvingPgcSeasonID = nil
-                    if isInPlayerHostNavigation {
-                        openPlayer(feedItem)
-                    } else if prefersSplitRootSelection {
+                    if prefersSplitRootSelection && !isInPlayerHostNavigation {
                         router.select(feedItem)
                     } else {
-                        inlinePlayerRoute.open(feedItem)
+                        router.open(feedItem)
                     }
                 }
             } catch {
@@ -517,23 +500,11 @@ struct SearchResultsView: View {
     private func openUserSpace(mid: Int64) {
         guard mid > 0 else { return }
         if isInPlayerHostNavigation {
-            if let inlinePlayerNavigation {
-                inlinePlayerNavigation.openUser(mid: mid)
-            } else {
-                router.openUserSpace(mid: mid)
-            }
+            router.openUserSpace(mid: mid)
         } else if prefersSplitRootSelection {
             router.selectUserSpace(mid: mid)
         } else {
             userSpaceMID = mid
-        }
-    }
-
-    private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
-        if let inlinePlayerNavigation {
-            inlinePlayerNavigation.open(item, mode: mode)
-        } else {
-            router.open(item, mode: mode)
         }
     }
 }

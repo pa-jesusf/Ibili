@@ -2,15 +2,12 @@ import SwiftUI
 
 // MARK: - Shared video-tap helper
 //
-// Ordinary profile pages should push videos in their local NavigationStack so
-// they get the same transition and tab-bar hiding behavior as other roots.
-// Player-hosted profile pages still use the player router to stay inside the
-// active playback stack.
+// Video entries use the root player router so AVKit fullscreen dismissal cannot
+// strand the detail page behind a tab-local NavigationStack. Split root still
+// selects into the secondary column.
 @MainActor
 private func pushVideo(
     _ router: DeepLinkRouter,
-    inlinePlayerRoute: InlinePlayerRouteState? = nil,
-    inlinePlayerNavigation: InlinePlayerNavigation? = nil,
     isInPlayerHostNavigation: Bool = false,
     aid: Int64, bvid: String, cid: Int64,
     title: String, cover: String, author: String,
@@ -22,16 +19,8 @@ private func pushVideo(
         title: title, cover: cover, author: author,
         durationSec: durationSec, play: play, danmaku: danmaku
     )
-    if isInPlayerHostNavigation {
-        if let inlinePlayerNavigation {
-            inlinePlayerNavigation.open(item)
-        } else {
-            router.open(item)
-        }
-    } else if prefersSplitRootSelection {
+    if prefersSplitRootSelection && !isInPlayerHostNavigation {
         router.select(item)
-    } else if let inlinePlayerRoute {
-        inlinePlayerRoute.open(item)
     } else {
         router.open(item)
     }
@@ -114,31 +103,6 @@ private struct ProfileInlineSearchBar: View {
     }
 }
 
-private struct ProfileInlinePlayerRouteHostModifier: ViewModifier {
-    @ObservedObject var state: InlinePlayerRouteState
-    let isInPlayerHostNavigation: Bool
-
-    func body(content: Content) -> some View {
-        content.background {
-            if !isInPlayerHostNavigation {
-                InlinePlayerRouteLinkHost(state: state)
-            }
-        }
-    }
-}
-
-private extension View {
-    func profileInlinePlayerRouteHost(
-        _ state: InlinePlayerRouteState,
-        isInPlayerHostNavigation: Bool
-    ) -> some View {
-        modifier(ProfileInlinePlayerRouteHostModifier(
-            state: state,
-            isInPlayerHostNavigation: isInPlayerHostNavigation
-        ))
-    }
-}
-
 // MARK: - History
 
 /// 历史记录: cursor-paged list backed by `/x/web-interface/history/cursor`.
@@ -148,9 +112,7 @@ struct HistoryListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = HistoryListViewModel()
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
 
@@ -196,8 +158,6 @@ struct HistoryListView: View {
                     ) { item in
                         Button {
                             pushVideo(router,
-                                      inlinePlayerRoute: inlinePlayerRoute,
-                                      inlinePlayerNavigation: inlinePlayerNavigation,
                                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                                       title: item.title, cover: item.cover,
@@ -216,10 +176,6 @@ struct HistoryListView: View {
             }
         }
         .background(IbiliTheme.background)
-        .profileInlinePlayerRouteHost(
-            inlinePlayerRoute,
-            isInPlayerHostNavigation: isInPlayerHostNavigation
-        )
         .navigationTitle("历史记录")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial() }
@@ -360,9 +316,7 @@ struct WatchLaterListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = WatchLaterListViewModel()
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
 
@@ -393,8 +347,6 @@ struct WatchLaterListView: View {
                     ) { item in
                         Button {
                             pushVideo(router,
-                                      inlinePlayerRoute: inlinePlayerRoute,
-                                      inlinePlayerNavigation: inlinePlayerNavigation,
                                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                                       title: item.title, cover: item.cover,
@@ -412,10 +364,6 @@ struct WatchLaterListView: View {
             }
         }
         .background(IbiliTheme.background)
-        .profileInlinePlayerRouteHost(
-            inlinePlayerRoute,
-            isInPlayerHostNavigation: isInPlayerHostNavigation
-        )
         .navigationTitle("稍后再看")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
@@ -475,13 +423,11 @@ struct FavoritesFolderListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @State private var folders: [FavFolderInfoDTO] = []
     @State private var isLoading = false
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @StateObject private var searchVM = FavoriteResourcesViewModel()
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     private var filteredFolders: [FavFolderInfoDTO] {
         let keyword = normalizedProfileSearchQuery(searchText)
@@ -508,8 +454,6 @@ struct FavoritesFolderListView: View {
                         folderId: defaultSearchFolderID,
                         isPreparing: defaultSearchFolderID == 0 && isLoading,
                         router: router,
-                        inlinePlayerRoute: inlinePlayerRoute,
-                        inlinePlayerNavigation: inlinePlayerNavigation,
                         isInPlayerHostNavigation: isInPlayerHostNavigation,
                         prefersSplitRootSelection: prefersSplitRootSelection
                     )
@@ -544,10 +488,6 @@ struct FavoritesFolderListView: View {
             }
         }
         .background(IbiliTheme.background)
-        .profileInlinePlayerRouteHost(
-            inlinePlayerRoute,
-            isInPlayerHostNavigation: isInPlayerHostNavigation
-        )
         .navigationTitle("我的收藏")
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -593,8 +533,6 @@ private struct FavoriteRootSearchResultsView: View {
     let folderId: Int64
     let isPreparing: Bool
     let router: DeepLinkRouter
-    let inlinePlayerRoute: InlinePlayerRouteState?
-    let inlinePlayerNavigation: InlinePlayerNavigation?
     let isInPlayerHostNavigation: Bool
     let prefersSplitRootSelection: Bool
 
@@ -623,8 +561,6 @@ private struct FavoriteRootSearchResultsView: View {
     private func favoriteResourceButton(_ item: FavResourceItemDTO) -> some View {
         Button {
             pushVideo(router,
-                      inlinePlayerRoute: inlinePlayerRoute,
-                      inlinePlayerNavigation: inlinePlayerNavigation,
                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                       title: item.title, cover: item.cover,
@@ -646,9 +582,7 @@ struct FavoriteResourcesView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = FavoriteResourcesViewModel()
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
 
@@ -685,10 +619,6 @@ struct FavoriteResourcesView: View {
             }
         }
         .background(IbiliTheme.background)
-        .profileInlinePlayerRouteHost(
-            inlinePlayerRoute,
-            isInPlayerHostNavigation: isInPlayerHostNavigation
-        )
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial(folderId: folderId) }
@@ -713,8 +643,6 @@ struct FavoriteResourcesView: View {
     private func favoriteResourceButton(_ item: FavResourceItemDTO) -> some View {
         Button {
             pushVideo(router,
-                      inlinePlayerRoute: inlinePlayerRoute,
-                      inlinePlayerNavigation: inlinePlayerNavigation,
                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                       title: item.title, cover: item.cover,
@@ -953,9 +881,7 @@ struct SubscriptionResourcesView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @StateObject private var vm = SubscriptionResourcesViewModel()
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     var body: some View {
         Group {
@@ -975,8 +901,6 @@ struct SubscriptionResourcesView: View {
                 ) { item in
                     Button {
                         pushVideo(router,
-                                  inlinePlayerRoute: inlinePlayerRoute,
-                                  inlinePlayerNavigation: inlinePlayerNavigation,
                                   isInPlayerHostNavigation: isInPlayerHostNavigation,
                                   aid: item.aid, bvid: item.bvid, cid: item.cid,
                                   title: item.title, cover: item.cover,
@@ -994,10 +918,6 @@ struct SubscriptionResourcesView: View {
             }
         }
         .background(IbiliTheme.background)
-        .profileInlinePlayerRouteHost(
-            inlinePlayerRoute,
-            isInPlayerHostNavigation: isInPlayerHostNavigation
-        )
         .navigationTitle(folder.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial(id: folder.folderID) }
@@ -1055,7 +975,6 @@ struct RelationListView: View {
     @StateObject private var vm = RelationListViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     var body: some View {
         Group {
@@ -1071,11 +990,7 @@ struct RelationListView: View {
                         Group {
                             if isInPlayerHostNavigation {
                                 Button {
-                                    if let inlinePlayerNavigation {
-                                        inlinePlayerNavigation.openUser(mid: user.mid)
-                                    } else {
-                                        router.openUserSpace(mid: user.mid)
-                                    }
+                                    router.openUserSpace(mid: user.mid)
                                 } label: {
                                     RelationRow(user: user)
                                 }

@@ -9,8 +9,6 @@ struct DynamicDetailView: View {
 
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var session: AppSession
-    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
     @State private var preview: DynamicDetailPreviewState?
     @State private var isLiked = false
     @State private var likeCount: Int64 = 0
@@ -18,7 +16,6 @@ struct DynamicDetailView: View {
     @State private var shareSheetURL: ShareSheetItem?
     @State private var commentSendSheet = false
     @State private var toast: String?
-    @StateObject private var inlinePlayerRoute = InlinePlayerRouteState()
 
     var body: some View {
         GeometryReader { proxy in
@@ -82,11 +79,6 @@ struct DynamicDetailView: View {
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("动态")
         .navigationBarTitleDisplayMode(.inline)
-        .background {
-            if !isInPlayerHostNavigation {
-                InlinePlayerRouteLinkHost(state: inlinePlayerRoute)
-            }
-        }
         .fullScreenCover(item: $preview) { state in
             ImagePreviewSheet(urls: state.urls, initialIndex: state.index)
         }
@@ -213,15 +205,7 @@ struct DynamicDetailView: View {
     }
 
     private func openFeedItem(_ feedItem: FeedItemDTO) {
-        if isInPlayerHostNavigation {
-            if let inlinePlayerNavigation {
-                inlinePlayerNavigation.open(feedItem)
-            } else {
-                router.open(feedItem)
-            }
-        } else {
-            inlinePlayerRoute.open(feedItem)
-        }
+        router.open(feedItem)
     }
 
     private func openLive() {
@@ -255,29 +239,16 @@ struct DynamicDetailView: View {
     }
 
     private func openLiveRoute(roomID: Int64, title: String, cover: String, anchorName: String) {
-        if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.openLive(
-                roomID: roomID,
-                title: title,
-                cover: cover,
-                anchorName: anchorName
-            )
-        } else {
-            router.openLive(
-                roomID: roomID,
-                title: title,
-                cover: cover,
-                anchorName: anchorName
-            )
-        }
+        router.openLive(
+            roomID: roomID,
+            title: title,
+            cover: cover,
+            anchorName: anchorName
+        )
     }
 
     private func openArticleRoute(id: String, kind: String) {
-        if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.openArticle(id: id, kind: kind)
-        } else {
-            router.openArticle(id: id, kind: kind)
-        }
+        router.openArticle(id: id, kind: kind)
     }
 }
 

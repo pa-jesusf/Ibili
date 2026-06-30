@@ -4,8 +4,6 @@ import SwiftUI
 struct VideoTagsView: View {
     let tags: [String]
     @EnvironmentObject private var router: DeepLinkRouter
-    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     var body: some View {
         FlowLayout(spacing: 6, lineSpacing: 6) {
@@ -28,10 +26,6 @@ struct VideoTagsView: View {
     }
 
     private func openSearch(keyword: String) {
-        if isInPlayerHostNavigation, let inlinePlayerNavigation {
-            inlinePlayerNavigation.openSearch(keyword: keyword)
-        } else {
-            router.openSearch(keyword: keyword)
-        }
+        router.openSearch(keyword: keyword)
     }
 }

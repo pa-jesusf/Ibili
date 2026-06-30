@@ -310,8 +310,6 @@ struct LiveRoomView: View {
     @State private var lifecycleGeneration: UInt64 = 0
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var settings: AppSettings
-    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
-    @Environment(\.inlinePlayerNavigation) private var inlinePlayerNavigation
 
     init(route: DeepLinkRouter.LiveRoute, vm: LiveRoomViewModel? = nil) {
         self.route = route
@@ -550,11 +548,7 @@ struct LiveRoomView: View {
     private var anchorRow: some View {
         Button {
             if let uid = vm.info?.uid, uid > 0 {
-                if isInPlayerHostNavigation, let inlinePlayerNavigation {
-                    inlinePlayerNavigation.openUser(mid: uid)
-                } else {
-                    router.openUserSpace(mid: uid)
-                }
+                router.openUserSpace(mid: uid)
             }
         } label: {
             HStack(spacing: 10) {
