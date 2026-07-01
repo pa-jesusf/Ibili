@@ -1959,6 +1959,12 @@ struct PlayerView: View {
                 return
             }
             onPictureInPictureRestore?(completion) ?? completion(false)
+        case .nativeFullscreenWillBegin(let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            beginNativePlayerFullscreenExit()
+        case .nativeFullscreenDidBegin(let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            endNativePlayerFullscreenExit()
         case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
             guard presentationIdentityMatchesCurrentRoute(identity) else { return }
             beginNativePlayerFullscreenExit()

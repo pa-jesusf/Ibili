@@ -258,12 +258,21 @@ extension EnvironmentValues {
 
 struct RootContentNavigationStack<Root: View>: View {
     @EnvironmentObject private var router: DeepLinkRouter
-    @State private var path: [RootContentRoute] = []
+    @EnvironmentObject private var presentationGuard: PlayerPresentationNavigationGuard
+    @Binding private var path: [RootContentRoute]
     private let name: String
+    private let onMediaRoutesChanged: () -> Void
     private let root: () -> Root
 
-    init(name: String = "unknown", @ViewBuilder root: @escaping () -> Root) {
+    init(
+        name: String = "unknown",
+        path: Binding<[RootContentRoute]>,
+        onMediaRoutesChanged: @escaping () -> Void = {},
+        @ViewBuilder root: @escaping () -> Root
+    ) {
         self.name = name
+        _path = path
+        self.onMediaRoutesChanged = onMediaRoutesChanged
         self.root = root
     }
 
@@ -285,6 +294,8 @@ struct RootContentNavigationStack<Root: View>: View {
         .environment(\.openURL, OpenURLAction { url in
             navigation.handle(url, router: router)
         })
+        .environment(\.beginNativePlayerFullscreenExit, presentationGuard.beginNativeFullscreenExitProtection)
+        .environment(\.endNativePlayerFullscreenExit, presentationGuard.endNativeFullscreenExitProtection)
         .onAppear {
             syncMediaSessions()
         }
@@ -306,6 +317,7 @@ struct RootContentNavigationStack<Root: View>: View {
                     "expectedToolbarMorph": "true",
                 ].merging(route.navigationTraceMetadata) { current, _ in current }, includeStack: true)
                 path.append(route)
+                syncMediaSessions()
             },
             replaceCurrent: { route in
                 replaceCurrentRoute(with: route)
@@ -318,13 +330,18 @@ struct RootContentNavigationStack<Root: View>: View {
             get: { path },
             set: { newPath in
                 let oldPath = path
-                NavigationTrace.log("根内容 NavigationStack path 写回", metadata: [
+                let accepted = presentationGuard.shouldAcceptPathChange(
+                    from: oldPath.map(\.sessionRoute),
+                    to: newPath.map(\.sessionRoute)
+                )
+                NavigationTrace.log(accepted ? "根内容 NavigationStack path 写回" : "根内容 NavigationStack path 写回被拒绝", metadata: [
                     "stack": name,
                     "oldDepth": String(path.count),
                     "newDepth": String(newPath.count),
                     "oldPath": NavigationTrace.rootContentPathSummary(path),
                     "newPath": NavigationTrace.rootContentPathSummary(newPath),
                 ], includeStack: true)
+                guard accepted else { return }
                 path = newPath
                 prepareRemovedMediaRoutes(from: oldPath, to: newPath)
                 syncMediaSessions()
@@ -392,26 +409,7 @@ struct RootContentNavigationStack<Root: View>: View {
     }
 
     private func syncMediaSessions() {
-        PlayerRuntimeCoordinator.shared.retainSessions(
-            root: nil,
-            stack: path.compactMap(\.playerRoute),
-            foregroundRouteID: foregroundPlayerRouteID
-        )
-        LiveRuntimeCoordinator.shared.retainSessions(
-            root: nil,
-            stack: path.compactMap(\.liveRoute),
-            foregroundRouteID: foregroundLiveRouteID
-        )
-    }
-
-    private var foregroundPlayerRouteID: UUID? {
-        guard case .player(let route)? = path.last else { return nil }
-        return route.id
-    }
-
-    private var foregroundLiveRouteID: UUID? {
-        guard case .live(let route)? = path.last else { return nil }
-        return route.id
+        onMediaRoutesChanged()
     }
 
     private func prepareRemovedMediaRoutes(from oldPath: [RootContentRoute], to newPath: [RootContentRoute]) {
@@ -477,7 +475,7 @@ struct RootContentNavigationStack<Root: View>: View {
     }
 }
 
-private extension RootContentRoute {
+extension RootContentRoute {
     var navigationIdentity: String {
         switch self {
         case .player(let route):

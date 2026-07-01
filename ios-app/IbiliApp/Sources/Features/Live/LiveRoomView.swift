@@ -695,6 +695,12 @@ struct LiveRoomView: View {
             completion(false)
         case .pictureInPictureChanged:
             break
+        case .nativeFullscreenWillBegin(let identity):
+            guard identity.sessionID == vm.sessionID else { return }
+            beginNativePlayerFullscreenExit()
+        case .nativeFullscreenDidBegin(let identity):
+            guard identity.sessionID == vm.sessionID else { return }
+            endNativePlayerFullscreenExit()
         case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
             guard identity.sessionID == vm.sessionID else { return }
             beginNativePlayerFullscreenExit()

@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Top-level search screen. Owns the `NavigationStack`, the system search
-/// field, and switches between the landing view (history + 分区) and the
-/// result grid.
+/// Top-level search screen. The root content host owns the `NavigationStack`;
+/// this view owns the system search field and switches between landing/results.
 struct SearchView: View {
     @StateObject private var vm = SearchViewModel()
     @StateObject private var history = SearchHistoryStore()
@@ -12,8 +11,7 @@ struct SearchView: View {
     @Environment(\.rootContentNavigation) private var rootContentNavigation
 
     var body: some View {
-        NavigationStack {
-            content
+        content
             .background(IbiliTheme.background)
             .navigationTitle("搜索")
             .navigationBarTitleDisplayMode(.inline)
@@ -21,7 +19,6 @@ struct SearchView: View {
             .navigationTracePage("SearchRoot", metadata: [
                 "transitionWorld": "root-content-child",
             ])
-        }
         .searchable(text: $vm.query, prompt: "搜索视频、UP主、番剧")
         .environment(\.openURL, OpenURLAction { url in
             rootContentNavigation.handle(url, router: router)

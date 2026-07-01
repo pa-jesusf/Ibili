@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 struct HomeView: View {
-    @State private var section: HomeFeedSection = .recommend
+    @Binding private var section: HomeFeedSection
     @State private var headerCollapseProgress: CGFloat = 0
     @StateObject private var recommendVM: HomeViewModel
     @StateObject private var hotVM: HomeViewModel
@@ -10,7 +10,8 @@ struct HomeView: View {
     @StateObject private var prefetch = FeedPrefetchCoordinator()
     @EnvironmentObject private var tabReselect: TabReselectSignals
 
-    init() {
+    init(section: Binding<HomeFeedSection>) {
+        _section = section
         _recommendVM = StateObject(wrappedValue: HomeViewModel(section: .recommend))
         _hotVM = StateObject(wrappedValue: HomeViewModel(section: .hot))
     }

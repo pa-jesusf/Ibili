@@ -92,6 +92,23 @@ final class DeepLinkNavigationTests: XCTestCase {
         XCTAssertEqual(router.foregroundPlayerRouteID, originalPath.last?.id)
     }
 
+    func testFullscreenExitRejectsRootContentForegroundPlayerPathShrink() {
+        let item = DeepLinkRouter.makeShell(aid: 3, bvid: "BV3")
+        let rootPath: [RootContentRoute] = [
+            .userSpace(mid: 100),
+            .player(DeepLinkRouter.PlayerRoute(item: item)),
+        ]
+        let shrunkenPath = Array(rootPath.dropLast())
+
+        let navigationGuard = PlayerPresentationNavigationGuard()
+        navigationGuard.beginNativeFullscreenExitProtection()
+
+        XCTAssertFalse(navigationGuard.shouldAcceptPathChange(
+            from: rootPath.map(\.sessionRoute),
+            to: shrunkenPath.map(\.sessionRoute)
+        ))
+    }
+
     func testNormalBackPopStillUpdatesRouterPath() {
         let router = DeepLinkRouter()
         router.selectUserSpace(mid: 100)

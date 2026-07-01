@@ -22,6 +22,8 @@ enum PlayerTransientPauseSuppressionContext: String {
 enum PlayerPresentationEvent {
     case pictureInPictureChanged(Bool, PlayerPresentationIdentity)
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
+    case nativeFullscreenWillBegin(PlayerPresentationIdentity)
+    case nativeFullscreenDidBegin(PlayerPresentationIdentity)
     case nativeFullscreenExitWillBegin(PlayerPresentationIdentity, shouldResumePlayback: Bool)
     case nativeFullscreenExitDidEnd(PlayerPresentationIdentity, shouldResumePlayback: Bool)
 }
@@ -351,6 +353,20 @@ struct PlayerContainer: UIViewControllerRepresentable {
             }
             AppLog.info("player", "PiP 请求恢复原播放器界面")
             parent.onPresentationEvent(.pictureInPictureRestoreRequested(presentationIdentity(for: playerViewController), completionHandler))
+        }
+
+        func playerViewController(_ playerViewController: AVPlayerViewController,
+                                  willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
+            guard !isDismantled else { return }
+            let identity = presentationIdentity(for: playerViewController)
+            AppLog.debug("player", "AVKit 原生全屏即将进入", metadata: [
+                "sessionID": identity.sessionID.uuidString,
+            ])
+            parent.onPresentationEvent(.nativeFullscreenWillBegin(identity))
+            coordinator.animate(alongsideTransition: nil) { [weak self] context in
+                guard let self, !self.isDismantled, !context.isCancelled else { return }
+                self.parent.onPresentationEvent(.nativeFullscreenDidBegin(identity))
+            }
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,

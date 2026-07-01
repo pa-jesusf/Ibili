@@ -47,6 +47,10 @@ private struct FeedChromeReservesInlineAccessoryFootprintKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct FeedChromeUsesExternalToolbarKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var feedChromeShowsInlineSystemHeader: Bool {
         get { self[FeedChromeShowsInlineSystemHeaderKey.self] }
@@ -56,6 +60,11 @@ extension EnvironmentValues {
     var feedChromeReservesInlineAccessoryFootprint: Bool {
         get { self[FeedChromeReservesInlineAccessoryFootprintKey.self] }
         set { self[FeedChromeReservesInlineAccessoryFootprintKey.self] = newValue }
+    }
+
+    var feedChromeUsesExternalToolbar: Bool {
+        get { self[FeedChromeUsesExternalToolbarKey.self] }
+        set { self[FeedChromeUsesExternalToolbarKey.self] = newValue }
     }
 }
 
@@ -111,27 +120,46 @@ private struct FeedChromeNavigationModifier<Tab: Hashable & Identifiable>: ViewM
     let tabs: [Tab]
     let tabTitle: (Tab) -> String
     @Binding var selection: Tab
+    @Environment(\.feedChromeUsesExternalToolbar) private var usesExternalToolbar
 
     func body(content: Content) -> some View {
-        content
+        let base = content
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    ForEach(tabs) { tab in
-                        FeedToolbarTabButton(
-                            title: tabTitle(tab),
-                            isSelected: tab == selection
-                        ) {
-                            guard tab != selection else { return }
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                                selection = tab
-                            }
-                        }
+        if usesExternalToolbar {
+            base
+        } else {
+            base.toolbar {
+                FeedChromeToolbarContent(
+                    tabs: tabs,
+                    tabTitle: tabTitle,
+                    selection: $selection
+                )
+            }
+        }
+    }
+}
+
+struct FeedChromeToolbarContent<Tab: Hashable & Identifiable>: ToolbarContent {
+    let tabs: [Tab]
+    let tabTitle: (Tab) -> String
+    @Binding var selection: Tab
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            ForEach(tabs) { tab in
+                FeedToolbarTabButton(
+                    title: tabTitle(tab),
+                    isSelected: tab == selection
+                ) {
+                    guard tab != selection else { return }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        selection = tab
                     }
                 }
             }
+        }
     }
 }
 

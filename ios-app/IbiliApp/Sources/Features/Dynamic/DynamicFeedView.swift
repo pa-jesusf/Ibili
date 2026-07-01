@@ -143,7 +143,7 @@ private func openVideo(_ router: DeepLinkRouter,
 // MARK: - Feed root
 
 struct DynamicFeedView: View {
-    @State private var scope: DynamicFeedScope = .all
+    @Binding private var scope: DynamicFeedScope
     @State private var headerCollapseProgress: CGFloat = 0
     @StateObject private var allVM: DynamicFeedViewModel
     @StateObject private var videoVM: DynamicFeedViewModel
@@ -153,7 +153,8 @@ struct DynamicFeedView: View {
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.rootContentNavigation) private var rootNavigation
 
-    init() {
+    init(scope: Binding<DynamicFeedScope>) {
+        _scope = scope
         _allVM = StateObject(wrappedValue: DynamicFeedViewModel(scope: .all))
         _videoVM = StateObject(wrappedValue: DynamicFeedViewModel(scope: .video))
     }

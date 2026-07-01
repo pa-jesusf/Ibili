@@ -108,6 +108,7 @@ struct RootView: View {
     @State private var splitRootDismissWork: DispatchWorkItem?
     @State private var splitLayoutBaseSize: CGSize?
     @State private var lastStableMainTab: MainTab = .home
+    @State private var rootContentPath: [RootContentRoute] = []
     @StateObject private var presentationGuard = PlayerPresentationNavigationGuard()
 
     var body: some View {
@@ -206,7 +207,14 @@ struct RootView: View {
         if canSplit {
             let splitMetrics = splitLayoutMetrics(size: size, usesSplit: usesSplit)
             ZStack(alignment: .leading) {
-                MainTabView(selectedTab: $selectedMainTab)
+                RootContentNavigationStack(
+                    name: "root-tabs",
+                    path: $rootContentPath,
+                    onMediaRoutesChanged: syncRootContentMediaSessions
+                ) {
+                    MainTabView(selectedTab: $selectedMainTab)
+                }
+                    .environmentObject(presentationGuard)
                     .environment(\.prefersSplitRootSelection, true)
                     .environment(\.splitRootIsActive, usesSplit)
                     .environment(\.splitFeedColumnLimit, splitMetrics.feedColumnLimit)
@@ -235,7 +243,14 @@ struct RootView: View {
             .frame(width: size.width, height: size.height, alignment: .leading)
             .background(IbiliTheme.background.ignoresSafeArea())
         } else {
-            MainTabView(selectedTab: $selectedMainTab)
+            RootContentNavigationStack(
+                name: "root-tabs",
+                path: $rootContentPath,
+                onMediaRoutesChanged: syncRootContentMediaSessions
+            ) {
+                MainTabView(selectedTab: $selectedMainTab)
+            }
+                .environmentObject(presentationGuard)
                 .environment(\.prefersSplitRootSelection, false)
                 .environment(\.splitRootIsActive, false)
                 .environment(\.splitFeedColumnLimit, nil)
@@ -392,6 +407,8 @@ struct RootView: View {
             "selectedTab": "\(newValue)",
             "lastStableTab": "\(lastStableMainTab)",
             "isProtectingNativeFullscreenExit": String(presentationGuard.isProtectingNativeFullscreenExit),
+            "rootContentDepth": String(rootContentPath.count),
+            "rootContentPath": NavigationTrace.rootContentPathSummary(rootContentPath),
             "pending": router.pending?.navigationTraceSummary ?? "nil",
             "pathDepth": String(router.path.count),
             "path": NavigationTrace.sessionPathSummary(router.path),
@@ -414,6 +431,29 @@ struct RootView: View {
         }
 
         lastStableMainTab = newValue
+    }
+
+    private var foregroundRootContentPlayerRouteID: UUID? {
+        guard case .player(let route)? = rootContentPath.last else { return nil }
+        return route.id
+    }
+
+    private var foregroundRootContentLiveRouteID: UUID? {
+        guard case .live(let route)? = rootContentPath.last else { return nil }
+        return route.id
+    }
+
+    private func syncRootContentMediaSessions() {
+        PlayerRuntimeCoordinator.shared.retainSessions(
+            root: nil,
+            stack: router.playerPath + rootContentPath.compactMap(\.playerRoute),
+            foregroundRouteID: foregroundRootContentPlayerRouteID ?? router.foregroundPlayerRouteID
+        )
+        LiveRuntimeCoordinator.shared.retainSessions(
+            root: nil,
+            stack: router.livePath + rootContentPath.compactMap(\.liveRoute),
+            foregroundRouteID: foregroundRootContentLiveRouteID ?? router.foregroundLiveRouteID
+        )
     }
 }
 
@@ -1372,6 +1412,8 @@ private extension UIView {
 private struct MainTabView: View {
     @Binding var selectedTab: MainTab
     @StateObject private var tabReselect = TabReselectSignals()
+    @State private var homeSection: HomeFeedSection = .recommend
+    @State private var dynamicScope: DynamicFeedScope = .all
 
     var body: some View {
         // On iOS 18+ we use the new `Tab(role: .search)` initializer
@@ -1384,19 +1426,13 @@ private struct MainTabView: View {
         if #available(iOS 18.0, *) {
             TabView(selection: $selectedTab) {
                 Tab("首页", systemImage: "house.fill", value: MainTab.home) {
-                    RootContentNavigationStack(name: "home") {
-                        HomeView()
-                    }
+                    HomeView(section: $homeSection)
                 }
                 Tab("动态", systemImage: "sparkles", value: MainTab.dynamic) {
-                    RootContentNavigationStack(name: "dynamic") {
-                        DynamicFeedView()
-                    }
+                    DynamicFeedView(scope: $dynamicScope)
                 }
                 Tab("我的", systemImage: "person.crop.circle", value: MainTab.profile) {
-                    RootContentNavigationStack(name: "profile") {
-                        ProfileView()
-                    }
+                    ProfileView()
                 }
                 Tab(value: MainTab.search, role: .search) {
                     SearchView()
@@ -1406,18 +1442,20 @@ private struct MainTabView: View {
             .tabViewStyle(.tabBarOnly)
             .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
+            .environment(\.feedChromeUsesExternalToolbar, true)
             .background(tabReselectObserver(order: [.home, .dynamic, .profile, .search]))
+            .modifier(RootTabToolbarModifier(
+                selectedTab: selectedTab,
+                homeSection: $homeSection,
+                dynamicScope: $dynamicScope
+            ))
         } else {
             TabView(selection: $selectedTab) {
-                RootContentNavigationStack(name: "home") {
-                    HomeView()
-                }
+                HomeView(section: $homeSection)
                 .tabItem { Label("首页", systemImage: "house.fill") }
                 .tag(MainTab.home)
 
-                RootContentNavigationStack(name: "dynamic") {
-                    DynamicFeedView()
-                }
+                DynamicFeedView(scope: $dynamicScope)
                 .tabItem { Label("动态", systemImage: "sparkles") }
                 .tag(MainTab.dynamic)
 
@@ -1425,16 +1463,20 @@ private struct MainTabView: View {
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                     .tag(MainTab.search)
 
-                RootContentNavigationStack(name: "profile") {
-                    ProfileView()
-                }
+                ProfileView()
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
                 .tag(MainTab.profile)
             }
             .tint(IbiliTheme.accent)
             .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
+            .environment(\.feedChromeUsesExternalToolbar, true)
             .background(tabReselectObserver(order: [.home, .dynamic, .search, .profile]))
+            .modifier(RootTabToolbarModifier(
+                selectedTab: selectedTab,
+                homeSection: $homeSection,
+                dynamicScope: $dynamicScope
+            ))
         }
     }
 
@@ -1464,6 +1506,35 @@ private struct MainTabView: View {
         )
         .frame(width: 0, height: 0)
         .allowsHitTesting(false)
+    }
+}
+
+private struct RootTabToolbarModifier: ViewModifier {
+    let selectedTab: MainTab
+    @Binding var homeSection: HomeFeedSection
+    @Binding var dynamicScope: DynamicFeedScope
+
+    func body(content: Content) -> some View {
+        content
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                if selectedTab == .home {
+                    FeedChromeToolbarContent(
+                        tabs: Array(HomeFeedSection.allCases),
+                        tabTitle: { $0.title },
+                        selection: $homeSection
+                    )
+                }
+                if selectedTab == .dynamic {
+                    FeedChromeToolbarContent(
+                        tabs: Array(DynamicFeedScope.allCases),
+                        tabTitle: { $0.title },
+                        selection: $dynamicScope
+                    )
+                }
+            }
     }
 }
 
