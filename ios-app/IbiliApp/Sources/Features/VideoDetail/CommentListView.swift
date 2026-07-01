@@ -53,10 +53,8 @@ struct CommentListView: View {
     private let providedViewModel: CommentListViewModel?
     @State private var thread: ReplyItemDTO?
     @State private var composer: CommentComposerContext?
-    @State private var userSpaceMID: Int64?
     @EnvironmentObject private var session: AppSession
-    @EnvironmentObject private var router: DeepLinkRouter
-    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
 
     init(oid: Int64,
          kind: Int32 = 1,
@@ -128,33 +126,11 @@ struct CommentListView: View {
                 }
             }
         }
-        .background {
-            if !isInPlayerHostNavigation {
-                NavigationLink(
-                    isActive: Binding(
-                        get: { userSpaceMID != nil },
-                        set: { if !$0 { userSpaceMID = nil } }
-                    ),
-                    destination: {
-                        if let mid = userSpaceMID {
-                            UserSpaceView(mid: mid)
-                        }
-                    },
-                    label: { EmptyView() }
-                )
-                .opacity(0)
-                .allowsHitTesting(false)
-            }
-        }
     }
 
     private func openUserSpace(mid: Int64) {
         guard mid > 0 else { return }
-        if isInPlayerHostNavigation {
-            router.openUserSpace(mid: mid)
-        } else {
-            userSpaceMID = mid
-        }
+        rootNavigation.openUserSpace(mid: mid)
     }
 }
 

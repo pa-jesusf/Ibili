@@ -9,6 +9,9 @@ struct DynamicDetailView: View {
 
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var session: AppSession
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @State private var preview: DynamicDetailPreviewState?
     @State private var isLiked = false
     @State private var likeCount: Int64 = 0
@@ -174,9 +177,9 @@ struct DynamicDetailView: View {
         guard let v = item.video else { return }
         if v.isPGC {
             if v.epID > 0 {
-                router.openPgc(epID: v.epID)
+                openPgc(epID: v.epID)
             } else if v.seasonID > 0 {
-                router.openPgc(seasonID: v.seasonID)
+                openPgc(seasonID: v.seasonID)
             }
             return
         }
@@ -191,9 +194,9 @@ struct DynamicDetailView: View {
         guard let v = item.orig?.video else { return }
         if v.isPGC {
             if v.epID > 0 {
-                router.openPgc(epID: v.epID)
+                openPgc(epID: v.epID)
             } else if v.seasonID > 0 {
-                router.openPgc(seasonID: v.seasonID)
+                openPgc(seasonID: v.seasonID)
             }
             return
         }
@@ -205,7 +208,13 @@ struct DynamicDetailView: View {
     }
 
     private func openFeedItem(_ feedItem: FeedItemDTO) {
-        router.open(feedItem)
+        if isInPlayerHostNavigation {
+            router.open(feedItem)
+        } else if prefersSplitRootSelection {
+            router.select(feedItem)
+        } else {
+            rootNavigation.openPlayer(feedItem)
+        }
     }
 
     private func openLive() {
@@ -239,16 +248,48 @@ struct DynamicDetailView: View {
     }
 
     private func openLiveRoute(roomID: Int64, title: String, cover: String, anchorName: String) {
-        router.openLive(
-            roomID: roomID,
-            title: title,
-            cover: cover,
-            anchorName: anchorName
-        )
+        if isInPlayerHostNavigation {
+            router.openLive(
+                roomID: roomID,
+                title: title,
+                cover: cover,
+                anchorName: anchorName
+            )
+        } else if prefersSplitRootSelection {
+            router.selectLive(
+                roomID: roomID,
+                title: title,
+                cover: cover,
+                anchorName: anchorName
+            )
+        } else {
+            rootNavigation.openLive(
+                roomID: roomID,
+                title: title,
+                cover: cover,
+                anchorName: anchorName
+            )
+        }
+    }
+
+    private func openPgc(seasonID: Int64 = 0, epID: Int64 = 0) {
+        if isInPlayerHostNavigation {
+            router.openPgc(seasonID: seasonID, epID: epID)
+        } else if prefersSplitRootSelection {
+            router.selectPgc(seasonID: seasonID, epID: epID)
+        } else {
+            rootNavigation.openPgc(seasonID: seasonID, epID: epID)
+        }
     }
 
     private func openArticleRoute(id: String, kind: String) {
-        router.openArticle(id: id, kind: kind)
+        if isInPlayerHostNavigation {
+            router.openArticle(id: id, kind: kind)
+        } else if prefersSplitRootSelection {
+            router.selectArticle(id: id, kind: kind)
+        } else {
+            rootNavigation.openArticle(id: id, kind: kind)
+        }
     }
 }
 

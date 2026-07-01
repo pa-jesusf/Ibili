@@ -2,12 +2,13 @@ import SwiftUI
 
 // MARK: - Shared video-tap helper
 //
-// Video entries use the root player router so AVKit fullscreen dismissal cannot
-// strand the detail page behind a tab-local NavigationStack. Split root still
-// selects into the secondary column.
+// Cross-content entries use the shared session router so AVKit fullscreen
+// dismissal cannot strand detail pages behind a tab-local NavigationStack.
+// Split root still selects into the secondary column.
 @MainActor
 private func pushVideo(
     _ router: DeepLinkRouter,
+    rootNavigation: RootContentNavigationActions,
     isInPlayerHostNavigation: Bool = false,
     aid: Int64, bvid: String, cid: Int64,
     title: String, cover: String, author: String,
@@ -21,8 +22,10 @@ private func pushVideo(
     )
     if prefersSplitRootSelection && !isInPlayerHostNavigation {
         router.select(item)
-    } else {
+    } else if isInPlayerHostNavigation {
         router.open(item)
+    } else {
+        rootNavigation.openPlayer(item)
     }
 }
 
@@ -112,6 +115,7 @@ struct HistoryListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @StateObject private var vm = HistoryListViewModel()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
@@ -158,6 +162,7 @@ struct HistoryListView: View {
                     ) { item in
                         Button {
                             pushVideo(router,
+                                      rootNavigation: rootNavigation,
                                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                                       title: item.title, cover: item.cover,
@@ -316,6 +321,7 @@ struct WatchLaterListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @StateObject private var vm = WatchLaterListViewModel()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
@@ -347,6 +353,7 @@ struct WatchLaterListView: View {
                     ) { item in
                         Button {
                             pushVideo(router,
+                                      rootNavigation: rootNavigation,
                                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                                       title: item.title, cover: item.cover,
@@ -423,6 +430,7 @@ struct FavoritesFolderListView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @State private var folders: [FavFolderInfoDTO] = []
     @State private var isLoading = false
     @State private var searchText = ""
@@ -454,6 +462,7 @@ struct FavoritesFolderListView: View {
                         folderId: defaultSearchFolderID,
                         isPreparing: defaultSearchFolderID == 0 && isLoading,
                         router: router,
+                        rootNavigation: rootNavigation,
                         isInPlayerHostNavigation: isInPlayerHostNavigation,
                         prefersSplitRootSelection: prefersSplitRootSelection
                     )
@@ -533,6 +542,7 @@ private struct FavoriteRootSearchResultsView: View {
     let folderId: Int64
     let isPreparing: Bool
     let router: DeepLinkRouter
+    let rootNavigation: RootContentNavigationActions
     let isInPlayerHostNavigation: Bool
     let prefersSplitRootSelection: Bool
 
@@ -561,6 +571,7 @@ private struct FavoriteRootSearchResultsView: View {
     private func favoriteResourceButton(_ item: FavResourceItemDTO) -> some View {
         Button {
             pushVideo(router,
+                      rootNavigation: rootNavigation,
                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                       title: item.title, cover: item.cover,
@@ -582,6 +593,7 @@ struct FavoriteResourcesView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @StateObject private var vm = FavoriteResourcesViewModel()
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
@@ -643,6 +655,7 @@ struct FavoriteResourcesView: View {
     private func favoriteResourceButton(_ item: FavResourceItemDTO) -> some View {
         Button {
             pushVideo(router,
+                      rootNavigation: rootNavigation,
                       isInPlayerHostNavigation: isInPlayerHostNavigation,
                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                       title: item.title, cover: item.cover,
@@ -881,6 +894,7 @@ struct SubscriptionResourcesView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @StateObject private var vm = SubscriptionResourcesViewModel()
 
     var body: some View {
@@ -901,6 +915,7 @@ struct SubscriptionResourcesView: View {
                 ) { item in
                     Button {
                         pushVideo(router,
+                                  rootNavigation: rootNavigation,
                                   isInPlayerHostNavigation: isInPlayerHostNavigation,
                                   aid: item.aid, bvid: item.bvid, cid: item.cid,
                                   title: item.title, cover: item.cover,
@@ -975,6 +990,8 @@ struct RelationListView: View {
     @StateObject private var vm = RelationListViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.rootContentNavigation) private var rootNavigation
 
     var body: some View {
         Group {
@@ -987,21 +1004,18 @@ struct RelationListView: View {
             } else {
                 List {
                     ForEach(vm.items) { user in
-                        Group {
+                        Button {
                             if isInPlayerHostNavigation {
-                                Button {
-                                    router.openUserSpace(mid: user.mid)
-                                } label: {
-                                    RelationRow(user: user)
-                                }
+                                router.openUserSpace(mid: user.mid)
+                            } else if prefersSplitRootSelection {
+                                router.selectUserSpace(mid: user.mid)
                             } else {
-                                NavigationLink {
-                                    UserSpaceView(mid: user.mid)
-                                } label: {
-                                    RelationRow(user: user)
-                                }
+                                rootNavigation.openUserSpace(mid: user.mid)
                             }
+                        } label: {
+                            RelationRow(user: user)
                         }
+                        .buttonStyle(.plain)
                         .listRowBackground(IbiliTheme.surface)
                     }
                     if !vm.isEnd {

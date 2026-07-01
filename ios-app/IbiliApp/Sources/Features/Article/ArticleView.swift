@@ -7,9 +7,10 @@ struct ArticleView: View {
     @StateObject private var vm = ArticleViewModel()
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @State private var preview: ArticleImagePreview?
     @State private var shareSheet: ShareSheetItem?
-    @State private var userSpaceMID: Int64?
 
     var body: some View {
         Group {
@@ -36,24 +37,6 @@ struct ArticleView: View {
         }
         .sheet(item: $shareSheet) { item in
             ActivityViewController(activityItems: [item.url])
-        }
-        .background {
-            if !isInPlayerHostNavigation {
-                NavigationLink(
-                    isActive: Binding(
-                        get: { userSpaceMID != nil },
-                        set: { if !$0 { userSpaceMID = nil } }
-                    ),
-                    destination: {
-                        if let mid = userSpaceMID {
-                            UserSpaceView(mid: mid)
-                        }
-                    },
-                    label: { EmptyView() }
-                )
-                .opacity(0)
-                .allowsHitTesting(false)
-            }
         }
     }
 
@@ -152,8 +135,10 @@ struct ArticleView: View {
         guard mid > 0 else { return }
         if isInPlayerHostNavigation {
             router.openUserSpace(mid: mid)
+        } else if prefersSplitRootSelection {
+            router.selectUserSpace(mid: mid)
         } else {
-            userSpaceMID = mid
+            rootNavigation.openUserSpace(mid: mid)
         }
     }
 

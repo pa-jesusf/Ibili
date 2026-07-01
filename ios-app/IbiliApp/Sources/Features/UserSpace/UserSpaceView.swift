@@ -18,9 +18,9 @@ import UIKit
 /// so the floating Liquid-Glass tab bar of `MainTabView` doesn't
 /// peek through.
 ///
-/// Dynamic details keep a page-level local push. Video/live entries use the
-/// root player router so AVKit fullscreen dismissal cannot expose a stale root
-/// tab while the playback page is still alive behind it.
+/// Dynamic details use the root content navigator when this page lives in a
+/// tab stack, and the media-session navigator when it lives inside the player
+/// host. Video/live entries always start or extend the media session.
 struct UserSpaceView: View {
     let mid: Int64
 
@@ -28,18 +28,11 @@ struct UserSpaceView: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
     @State private var dynamicsContainerWidth: CGFloat = 0
     @FocusState private var searchFocused: Bool
-    /// Hoisted nav state for "tap dynamic → push DynamicDetailView".
-    /// Keeping the destination state at this view (rather than inside
-    /// each lazy `DynamicItemCard`) is important: a
-    /// `NavigationLink(isActive:)` whose binding lives on a cell's
-    /// `@State` can have its `isActive` flipped back to `false` when
-    /// the cell is recycled, which collapses the entire push above
-    /// it — manifesting as "tap dynamic → back jumps to home".
-    @State private var pushDynamic: DynamicItemDTO?
 
     enum Tab: Hashable, Identifiable, CaseIterable {
         case dynamics, archives
@@ -98,26 +91,6 @@ struct UserSpaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: tab)
-        // Hidden NavigationLink at the page level for dynamics. Because
-        // it's declared on `UserSpaceView` itself (not inside a lazy
-        // cell), its binding is stable across cell recycling and across
-        // navigation pops.
-        .background {
-            if !isInPlayerHostNavigation {
-                NavigationLink(
-                    isActive: Binding(
-                        get: { pushDynamic != nil },
-                        set: { if !$0 { pushDynamic = nil } }
-                    ),
-                    destination: {
-                        if let d = pushDynamic { DynamicDetailView(item: d) }
-                    },
-                    label: { EmptyView() }
-                )
-                .opacity(0)
-                .allowsHitTesting(false)
-            }
-        }
         // `task` runs once per view-identity. It does *not* re-run on
         // navigation-pop (which is what we want — bouncing back from
         // dynamic detail must not refetch and rebuild the page from
@@ -154,10 +127,12 @@ struct UserSpaceView: View {
                 .contentShape(Circle())
                 .onTapGesture {
                     guard let live = vm.userLive, live.isLive else { return }
-                    if prefersSplitRootSelection && !isInPlayerHostNavigation {
+                    if isInPlayerHostNavigation {
+                        router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
+                    } else if prefersSplitRootSelection {
                         router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
                     } else {
-                        router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
+                        rootNavigation.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: vm.card?.name ?? "")
                     }
                 }
                 .padding(.top, 4)
@@ -253,10 +228,12 @@ struct UserSpaceView: View {
                         author: item.author, durationSec: 0,
                         play: item.play, danmaku: item.danmaku
                     )
-                    if prefersSplitRootSelection && !isInPlayerHostNavigation {
+                    if isInPlayerHostNavigation {
+                        router.open(feedItem)
+                    } else if prefersSplitRootSelection {
                         router.select(feedItem)
                     } else {
-                        router.open(feedItem)
+                        rootNavigation.openPlayer(feedItem)
                     }
                 } label: {
                     CompactVideoRow(
@@ -301,10 +278,12 @@ struct UserSpaceView: View {
                     item: item,
                     contentWidth: contentWidth,
                     onOpenVideo: { feedItem in
-                        if prefersSplitRootSelection && !isInPlayerHostNavigation {
+                        if isInPlayerHostNavigation {
+                            router.open(feedItem)
+                        } else if prefersSplitRootSelection {
                             router.select(feedItem)
                         } else {
-                            router.open(feedItem)
+                            rootNavigation.openPlayer(feedItem)
                         }
                     },
                     onOpenDetail: { dyn in
@@ -313,7 +292,7 @@ struct UserSpaceView: View {
                         } else if prefersSplitRootSelection {
                             router.selectDynamicDetail(dyn)
                         } else {
-                            pushDynamic = dyn
+                            rootNavigation.openDynamicDetail(dyn)
                         }
                     }
                 )

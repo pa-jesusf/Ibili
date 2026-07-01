@@ -3,7 +3,7 @@ import SwiftUI
 /// Tag chip cloud rendered with `IbiliPill` + the existing `FlowLayout`.
 struct VideoTagsView: View {
     let tags: [String]
-    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.rootContentNavigation) private var rootNavigation
 
     var body: some View {
         FlowLayout(spacing: 6, lineSpacing: 6) {
@@ -26,6 +26,6 @@ struct VideoTagsView: View {
     }
 
     private func openSearch(keyword: String) {
-        router.openSearch(keyword: keyword)
+        rootNavigation.openSearch(keyword: keyword)
     }
 }

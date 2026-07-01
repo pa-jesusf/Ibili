@@ -7,7 +7,9 @@ struct SearchView: View {
     @StateObject private var vm = SearchViewModel()
     @StateObject private var history = SearchHistoryStore()
     @State private var isFiltersSheetPresented: Bool = false
+    @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.dismissSearch) private var dismissSearch
+    @Environment(\.rootContentNavigation) private var rootContentNavigation
 
     var body: some View {
         NavigationStack {
@@ -16,8 +18,14 @@ struct SearchView: View {
             .navigationTitle("搜索")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            .navigationTracePage("SearchRoot", metadata: [
+                "transitionWorld": "root-content-child",
+            ])
         }
         .searchable(text: $vm.query, prompt: "搜索视频、UP主、番剧")
+        .environment(\.openURL, OpenURLAction { url in
+            rootContentNavigation.handle(url, router: router)
+        })
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .onSubmit(of: .search, submitCurrentQuery)
@@ -66,8 +74,12 @@ struct SearchView: View {
     }
 
     private func submitCurrentQuery() {
-        history.push(vm.query)
-        vm.submit()
-        dismissSearch()
+        NavigationTrace.withUserAction("search.submit", metadata: [
+            "query": vm.query,
+        ]) {
+            history.push(vm.query)
+            vm.submit()
+            dismissSearch()
+        }
     }
 }

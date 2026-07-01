@@ -12,32 +12,14 @@ struct UploaderCardView: View {
     let owner: VideoOwnerDTO
     @ObservedObject var interaction: VideoInteractionService
     @StateObject private var loader = UploaderCardLoader()
-    @EnvironmentObject private var router: DeepLinkRouter
-    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
 
     var body: some View {
         HStack(spacing: 12) {
-            // Avatar + name area is the "navigate to user space"
-            // affordance. We make it a real `NavigationLink` so the
-            // push state belongs to the parent NavigationStack — a
-            // hidden `NavigationLink(isActive:)` driven by per-cell
-            // @State has been observed to prematurely flip false
-            // when re-laid-out from a navigation pop, collapsing the
-            // back stack.
-            Group {
-                if isInPlayerHostNavigation {
-                    Button {
-                        router.openUserSpace(mid: owner.mid)
-                    } label: {
-                        headerLabel
-                    }
-                } else {
-                    NavigationLink {
-                        UserSpaceView(mid: owner.mid)
-                    } label: {
-                        headerLabel
-                    }
-                }
+            Button {
+                rootNavigation.openUserSpace(mid: owner.mid)
+            } label: {
+                headerLabel
             }
             .buttonStyle(.plain)
             .disabled(owner.mid <= 0)

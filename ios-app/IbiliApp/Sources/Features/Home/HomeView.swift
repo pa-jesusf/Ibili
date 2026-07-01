@@ -62,35 +62,17 @@ private struct HomeFeedPage: View {
 
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
-    @State private var userSpaceMID: Int64?
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
         feedGrid
-        .background {
-            if !isInPlayerHostNavigation {
-                NavigationLink(
-                    isActive: Binding(
-                        get: { userSpaceMID != nil },
-                        set: { if !$0 { userSpaceMID = nil } }
-                    ),
-                    destination: {
-                        if let mid = userSpaceMID {
-                            UserSpaceView(mid: mid)
-                        }
-                    },
-                    label: { EmptyView() }
-                )
-                .opacity(0)
-                .allowsHitTesting(false)
-            }
-        }
         .overlay(alignment: .bottom) {
             if let toast {
                 Text(toast)
@@ -166,10 +148,12 @@ private struct HomeFeedPage: View {
     }
 
     private func openFeedItem(_ item: FeedItemDTO) {
-        if prefersSplitRootSelection && !isInPlayerHostNavigation {
+        if isInPlayerHostNavigation {
+            router.open(item)
+        } else if prefersSplitRootSelection {
             router.select(item)
         } else {
-            router.open(item)
+            rootNavigation.openPlayer(item)
         }
     }
 
@@ -316,7 +300,7 @@ private struct HomeFeedPage: View {
         } else if prefersSplitRootSelection {
             router.selectUserSpace(mid: mid)
         } else {
-            userSpaceMID = mid
+            rootNavigation.openUserSpace(mid: mid)
         }
     }
 
@@ -489,6 +473,7 @@ private struct HomeLiveFeedPage: View {
 
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
@@ -572,7 +557,14 @@ private struct HomeLiveFeedPage: View {
 
     private func openLiveItem(_ item: LiveFeedItemDTO) {
         let cover = item.systemCover.isEmpty ? item.cover : item.systemCover
-        if prefersSplitRootSelection && !isInPlayerHostNavigation {
+        if isInPlayerHostNavigation {
+            router.openLive(
+                roomID: item.roomID,
+                title: item.title,
+                cover: cover,
+                anchorName: item.uname
+            )
+        } else if prefersSplitRootSelection {
             router.selectLive(
                 roomID: item.roomID,
                 title: item.title,
@@ -580,7 +572,7 @@ private struct HomeLiveFeedPage: View {
                 anchorName: item.uname
             )
         } else {
-            router.openLive(
+            rootNavigation.openLive(
                 roomID: item.roomID,
                 title: item.title,
                 cover: cover,

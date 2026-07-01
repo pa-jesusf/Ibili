@@ -46,6 +46,8 @@ enum AppLogCategoryCatalog {
             return AppLogCategoryDescriptor(key: key, title: "播放器", group: .playerBehavior)
         case "danmaku":
             return AppLogCategoryDescriptor(key: key, title: "弹幕", group: .playerBehavior)
+        case "navigation":
+            return AppLogCategoryDescriptor(key: key, title: "导航追踪", group: .content)
         case "auth":
             return AppLogCategoryDescriptor(key: key, title: "登录认证", group: .authSession)
         case "session":

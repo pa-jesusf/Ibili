@@ -335,6 +335,9 @@ struct LiveRoomView: View {
     @State private var lifecycleGeneration: UInt64 = 0
     @EnvironmentObject private var router: DeepLinkRouter
     @EnvironmentObject private var settings: AppSettings
+    @Environment(\.rootContentNavigation) private var rootNavigation
+    @Environment(\.beginNativePlayerFullscreenExit) private var beginNativePlayerFullscreenExit
+    @Environment(\.endNativePlayerFullscreenExit) private var endNativePlayerFullscreenExit
 
     init(route: DeepLinkRouter.LiveRoute, vm: LiveRoomViewModel? = nil) {
         self.route = route
@@ -574,7 +577,7 @@ struct LiveRoomView: View {
     private var anchorRow: some View {
         Button {
             if let uid = vm.info?.uid, uid > 0 {
-                router.openUserSpace(mid: uid)
+                rootNavigation.openUserSpace(mid: uid)
             }
         } label: {
             HStack(spacing: 10) {
@@ -694,10 +697,12 @@ struct LiveRoomView: View {
             break
         case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
             guard identity.sessionID == vm.sessionID else { return }
+            beginNativePlayerFullscreenExit()
             vm.prepareForNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
         case .nativeFullscreenExitDidEnd(let identity, let shouldResumePlayback):
             guard identity.sessionID == vm.sessionID else { return }
             vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
+            endNativePlayerFullscreenExit()
         }
     }
 

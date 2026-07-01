@@ -1912,7 +1912,11 @@ struct PlayerView: View {
     @State private var playerCollapseAnchorOffset: CGFloat = 0
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.beginNativePlayerFullscreenExit) private var beginNativePlayerFullscreenExit
+    @Environment(\.endNativePlayerFullscreenExit) private var endNativePlayerFullscreenExit
 
     init(item: FeedItemDTO,
          offlineOnly: Bool = false,
@@ -1957,10 +1961,12 @@ struct PlayerView: View {
             onPictureInPictureRestore?(completion) ?? completion(false)
         case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
             guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            beginNativePlayerFullscreenExit()
             vm.prepareForNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
         case .nativeFullscreenExitDidEnd(let identity, let shouldResumePlayback):
             guard presentationIdentityMatchesCurrentRoute(identity) else { return }
             vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
+            endNativePlayerFullscreenExit()
         }
     }
 
@@ -2103,7 +2109,11 @@ struct PlayerView: View {
     }
 
     private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
-        router.open(item, mode: mode)
+        if isInPlayerHostNavigation {
+            router.open(item, mode: mode)
+        } else {
+            rootNavigation.openPlayer(item, mode: mode)
+        }
     }
 
     private func disableSubtitle() {

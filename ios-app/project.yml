@@ -24,6 +24,17 @@ settings:
     DEVELOPMENT_LANGUAGE: "zh-Hans"
 
 schemes:
+  Ibili:
+    build:
+      targets:
+        Ibili: all
+        IbiliTests:
+          - test
+    test:
+      gatherCoverageData: false
+      targets:
+        - name: IbiliTests
+
   IbiliPlayerRuntime:
     build:
       targets:

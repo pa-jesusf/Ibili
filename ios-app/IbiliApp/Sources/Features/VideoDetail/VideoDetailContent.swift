@@ -27,6 +27,8 @@ struct VideoDetailContent: View {
     private let onSeekToTime: ((Int64) -> Void)?
     private let onNextPartCandidateChange: ((PlayerNextPartCandidate?) -> Void)?
     @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @State private var tab: Tab = .intro
     @State private var mountedTabs: Set<Tab> = [.intro]
     @StateObject private var scrollContexts = VideoDetailScrollContexts()
@@ -624,7 +626,11 @@ struct VideoDetailContent: View {
     }
 
     private func openPlayer(_ item: FeedItemDTO, mode: DeepLinkRouter.OpenMode = .push) {
-        router.open(item, mode: mode)
+        if isInPlayerHostNavigation {
+            router.open(item, mode: mode)
+        } else {
+            rootNavigation.openPlayer(item, mode: mode)
+        }
     }
 
     private var effectivePgcSeasonID: Int64 {

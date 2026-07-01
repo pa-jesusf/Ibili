@@ -78,6 +78,12 @@ struct TabBarReselectObserver<Tab: Hashable>: UIViewControllerRepresentable {
             let index = tabBarController.viewControllers?.firstIndex(of: viewController) ?? tabBarController.selectedIndex
             if orderedTabs.indices.contains(index) {
                 let tapped = orderedTabs[index]
+                NavigationTrace.log("UITabBar didSelect", metadata: [
+                    "index": String(index),
+                    "tab": "\(tapped)",
+                    "selectedBeforeDelegate": "\(selectedTab)",
+                    "viewController": String(describing: type(of: viewController)),
+                ], includeStack: true)
                 if tapped == selectedTab {
                     onReselect(tapped)
                 }

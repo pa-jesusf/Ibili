@@ -32,6 +32,16 @@ extension EnvironmentValues {
         set { self[DismissPlayerHostKey.self] = newValue }
     }
 
+    var beginNativePlayerFullscreenExit: () -> Void {
+        get { self[BeginNativePlayerFullscreenExitKey.self] }
+        set { self[BeginNativePlayerFullscreenExitKey.self] = newValue }
+    }
+
+    var endNativePlayerFullscreenExit: () -> Void {
+        get { self[EndNativePlayerFullscreenExitKey.self] }
+        set { self[EndNativePlayerFullscreenExitKey.self] = newValue }
+    }
+
 }
 
 private struct IsInPlayerHostNavigationKey: EnvironmentKey {
@@ -58,11 +68,32 @@ private struct DismissPlayerHostKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
 }
 
-private enum MainTab: Hashable {
+private struct BeginNativePlayerFullscreenExitKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+private struct EndNativePlayerFullscreenExitKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+private enum MainTab: Hashable, CustomStringConvertible {
     case home
     case dynamic
     case profile
     case search
+
+    var description: String {
+        switch self {
+        case .home:
+            return "home"
+        case .dynamic:
+            return "dynamic"
+        case .profile:
+            return "profile"
+        case .search:
+            return "search"
+        }
+    }
 }
 
 /// Top-level shell. Switches between login and main tab interface.
@@ -76,6 +107,8 @@ struct RootView: View {
     @State private var splitDetailProgress: CGFloat = 0
     @State private var splitRootDismissWork: DispatchWorkItem?
     @State private var splitLayoutBaseSize: CGSize?
+    @State private var lastStableMainTab: MainTab = .home
+    @StateObject private var presentationGuard = PlayerPresentationNavigationGuard()
 
     var body: some View {
         GeometryReader { proxy in
@@ -104,6 +137,7 @@ struct RootView: View {
                 if !usesSplit, router.pending != nil || retainsDismissedPlayerHost {
                     DeepLinkPlayerHost(onRootDismissed: retainDismissedPlayerHost)
                         .environmentObject(router)
+                        .environmentObject(presentationGuard)
                         .tint(IbiliTheme.accent)
                         .zIndex(1)
                 }
@@ -126,9 +160,26 @@ struct RootView: View {
         }
         .environmentObject(router)
         .environment(\.openURL, OpenURLAction { url in
-            router.handle(url)
+            NavigationTrace.log("Root openURL", metadata: [
+                "url": url.absoluteString,
+            ], includeStack: true)
+            return router.handle(url)
         })
+        .background(NavigationTraceTouchObserver())
+        .navigationTracePage("RootView", metadata: [
+            "selectedTab": "\(selectedMainTab)",
+            "isLoggedIn": String(session.isLoggedIn),
+            "pending": router.pending?.navigationTraceSummary ?? "nil",
+            "pathDepth": String(router.path.count),
+            "path": NavigationTrace.sessionPathSummary(router.path),
+        ])
         .onChange(of: router.pending?.id) { newValue in
+            NavigationTrace.log("Root 观察 pending 变化", metadata: [
+                "pendingID": newValue?.uuidString ?? "nil",
+                "pending": router.pending?.navigationTraceSummary ?? "nil",
+                "pathDepth": String(router.path.count),
+                "path": NavigationTrace.sessionPathSummary(router.path),
+            ], includeStack: true)
             guard newValue != nil else { return }
             splitRootDismissWork?.cancel()
             splitRootDismissWork = nil
@@ -137,7 +188,14 @@ struct RootView: View {
             releaseDismissedPlayerHostWork = nil
             retainsDismissedPlayerHost = false
         }
+        .onChange(of: selectedMainTab) { newValue in
+            handleMainTabSelectionChanged(newValue)
+        }
         .onChange(of: session.isLoggedIn) { _ in
+            NavigationTrace.log("Root 登录态变化", metadata: [
+                "isLoggedIn": String(session.isLoggedIn),
+                "selectedTab": "\(selectedMainTab)",
+            ], includeStack: true)
             splitDetailProgress = 0
             splitLayoutBaseSize = nil
         }
@@ -165,6 +223,7 @@ struct RootView: View {
 
                 DeepLinkSplitHost(onRootDismiss: dismissSplitRoot)
                     .environmentObject(router)
+                    .environmentObject(presentationGuard)
                     .tint(.white)
                     .frame(width: splitMetrics.rightWidth, height: size.height)
                     .clipped()
@@ -210,7 +269,7 @@ struct RootView: View {
         let dismissingRouteID = router.pending?.id
         let work = DispatchWorkItem {
             guard router.pending?.id == dismissingRouteID,
-                  router.path.isEmpty else { return }
+                  router.path.count <= 1 else { return }
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -327,13 +386,94 @@ struct RootView: View {
         releaseDismissedPlayerHostWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
     }
+
+    private func handleMainTabSelectionChanged(_ newValue: MainTab) {
+        NavigationTrace.log("主 tab selection 变化", metadata: [
+            "selectedTab": "\(newValue)",
+            "lastStableTab": "\(lastStableMainTab)",
+            "isProtectingNativeFullscreenExit": String(presentationGuard.isProtectingNativeFullscreenExit),
+            "pending": router.pending?.navigationTraceSummary ?? "nil",
+            "pathDepth": String(router.path.count),
+            "path": NavigationTrace.sessionPathSummary(router.path),
+        ], includeStack: true)
+
+        if presentationGuard.isProtectingNativeFullscreenExit,
+           newValue == .home,
+           lastStableMainTab != .home {
+            NavigationTrace.log("还原原生全屏退出期间的首页 tab 回写", metadata: [
+                "restoredTab": "\(lastStableMainTab)",
+                "pending": router.pending?.navigationTraceSummary ?? "nil",
+                "pathDepth": String(router.path.count),
+                "path": NavigationTrace.sessionPathSummary(router.path),
+            ], includeStack: true)
+            let restoreTab = lastStableMainTab
+            DispatchQueue.main.async {
+                selectedMainTab = restoreTab
+            }
+            return
+        }
+
+        lastStableMainTab = newValue
+    }
 }
 
-/// Wrapper that hosts the active player session. The router owns the
-/// decision of whether a navigation creates the root layer, pushes a
-/// new layer, or replaces the current layer.
+@MainActor
+final class PlayerPresentationNavigationGuard: ObservableObject {
+    private var fullscreenExitProtectionDeadline = Date.distantPast
+    private var releaseWork: DispatchWorkItem?
+
+    var isProtectingNativeFullscreenExit: Bool {
+        Date() < fullscreenExitProtectionDeadline
+    }
+
+    func beginNativeFullscreenExitProtection() {
+        armNativeFullscreenExitProtection()
+    }
+
+    func endNativeFullscreenExitProtection() {
+        armNativeFullscreenExitProtection()
+    }
+
+    func shouldAcceptPathChange(from oldPath: [DeepLinkRouter.SessionRoute],
+                                to newPath: [DeepLinkRouter.SessionRoute]) -> Bool {
+        guard isProtectingNativeFullscreenExit,
+              newPath.count < oldPath.count,
+              let oldForeground = oldPath.last,
+              oldForeground.playerRoute != nil || oldForeground.liveRoute != nil else {
+            return true
+        }
+        let newIDs = Set(newPath.map(\.id))
+        let removedForeground = !newIDs.contains(oldForeground.id)
+        if removedForeground {
+            NavigationTrace.log("忽略原生全屏退出期间的导航栈收缩", metadata: [
+                "oldDepth": String(oldPath.count),
+                "newDepth": String(newPath.count),
+                "foregroundRouteID": oldForeground.id.uuidString,
+                "oldPath": NavigationTrace.sessionPathSummary(oldPath),
+                "newPath": NavigationTrace.sessionPathSummary(newPath),
+            ], includeStack: true)
+        }
+        return !removedForeground
+    }
+
+    private func armNativeFullscreenExitProtection() {
+        fullscreenExitProtectionDeadline = Date().addingTimeInterval(PlayerTransientPauseSuppressionContext.nativeFullscreenExit.window)
+        releaseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.releaseWork = nil
+        }
+        releaseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + PlayerTransientPauseSuppressionContext.nativeFullscreenExit.window, execute: work)
+    }
+}
+
+/// Wrapper that hosts the active media/content session above the tab UI.
+/// The session itself is explicit (`router.pending`); SwiftUI's path binding
+/// is allowed to mirror user pops inside the session, but not to create or
+/// destroy the session by itself.
 private struct DeepLinkPlayerHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    @EnvironmentObject private var presentationGuard: PlayerPresentationNavigationGuard
     let onRootDismissed: (TimeInterval) -> Void
     /// Single source of truth for the host's horizontal position.
     /// Driven by:
@@ -348,6 +488,7 @@ private struct DeepLinkPlayerHost: View {
     @State private var pendingDismissWork: DispatchWorkItem?
     @State private var isRootDismissInFlight = false
     @State private var animatedInRouteID: UUID?
+    @State private var displayedPath: [DeepLinkRouter.SessionRoute] = []
     /// Native UIKit-style spring. `interpolatingSpring` produces a
     /// physics curve that SwiftUI drives via the underlying
     /// `CADisplayLink`, which on ProMotion devices ticks at 120 Hz
@@ -362,24 +503,22 @@ private struct DeepLinkPlayerHost: View {
     private static let hostReleaseGrace: TimeInterval = 0.85
 
     var body: some View {
-        NavigationStack(path: $router.path) {
-            Group {
-                if let route = router.pending {
-                    rootDestination(for: route)
-                        .id(route.id)
-                        .environment(\.dismissPlayerHost, dismiss)
-                        .toolbar { rootDismissToolbar(for: route) }
-                } else {
-                    Color.clear
-                }
-            }
+        NavigationStack(path: controlledNavigationPath) {
+            Color.clear
+                .background(IbiliTheme.background)
             .navigationDestination(for: DeepLinkRouter.SessionRoute.self) { route in
                 destinationView(for: route)
+                    .id(route.id)
                     .environment(\.dismissPlayerHost, dismiss)
+                    .navigationBarBackButtonHidden(router.path.count <= 1)
+                    .toolbar { rootDismissToolbar(for: route) }
             }
         }
         .tint(.white)
         .environment(\.isInPlayerHostNavigation, true)
+        .environment(\.rootContentNavigation, hostContentNavigation)
+        .environment(\.beginNativePlayerFullscreenExit, presentationGuard.beginNativeFullscreenExitProtection)
+        .environment(\.endNativePlayerFullscreenExit, presentationGuard.endNativeFullscreenExitProtection)
         .environment(\.openURL, OpenURLAction { url in
             handleLocalDeepLink(url)
         })
@@ -387,31 +526,40 @@ private struct DeepLinkPlayerHost: View {
         .offset(x: offsetX)
         .allowsHitTesting(!isRootDismissInFlight)
         .onAppear {
+            NavigationTrace.pageAppear("DeepLinkPlayerHost", metadata: hostTraceMetadata(reason: "appear"))
             cancelPendingDismiss(resetRouterDismissal: true)
             if router.pending != nil {
                 isRootDismissInFlight = false
             }
             syncPlayerSessions()
             animateHostInIfNeeded(for: router.pending?.id)
+            syncDisplayedPathFromRouter(animated: true, deferToNextRunLoop: true)
             revealHostIfNeeded(reason: "appear")
         }
         .onChange(of: router.pending?.id) { newRouteID in
+            NavigationTrace.log("播放器宿主观察 pending 变化", metadata: hostTraceMetadata(reason: "pending").merging([
+                "newPendingID": newRouteID?.uuidString ?? "nil",
+            ]) { current, _ in current }, includeStack: true)
             cancelPendingDismiss(resetRouterDismissal: true)
             if newRouteID != nil {
                 isRootDismissInFlight = false
                 router.cancelRootSessionDismissal()
                 animateHostInIfNeeded(for: newRouteID)
+                syncDisplayedPathFromRouter(animated: true, deferToNextRunLoop: true)
                 revealHostIfNeeded(reason: "pending")
             } else {
                 animatedInRouteID = nil
+                displayedPath = []
             }
             syncPlayerSessions()
         }
         .onChange(of: router.path.map(\.id)) { _ in
+            NavigationTrace.log("播放器宿主观察 router.path 变化", metadata: hostTraceMetadata(reason: "routerPath"), includeStack: true)
             cancelPendingDismiss(resetRouterDismissal: true)
             if router.pending != nil {
                 isRootDismissInFlight = false
                 router.cancelRootSessionDismissal()
+                syncDisplayedPathFromRouter(animated: true)
                 revealHostIfNeeded(reason: "path")
             }
             syncPlayerSessions()
@@ -432,6 +580,7 @@ private struct DeepLinkPlayerHost: View {
             .allowsHitTesting(false)
         }
         .onDisappear {
+            NavigationTrace.pageDisappear("DeepLinkPlayerHost", metadata: hostTraceMetadata(reason: "disappear"))
             cancelPendingDismiss(resetRouterDismissal: true)
             isRootDismissInFlight = false
         }
@@ -451,13 +600,13 @@ private struct DeepLinkPlayerHost: View {
     /// stall the spring's first frame and re-introduce the visible
     /// "frozen" lag the user complained about.
     private func dismiss() {
-        if !router.path.isEmpty {
-            router.path.removeLast()
+        NavigationTrace.log("播放器宿主 dismiss 请求", metadata: hostTraceMetadata(reason: "dismiss"), includeStack: true)
+        if router.path.count > 1 {
+            router.popLastRoute()
             return
         }
         let width = UIScreen.main.bounds.width
         isRootDismissInFlight = true
-        prepareRootRouteForDismissal(router.pending)
         router.beginRootSessionDismissal()
         withAnimation(Self.slideSpring) {
             offsetX = width
@@ -466,7 +615,8 @@ private struct DeepLinkPlayerHost: View {
         let dismissingRouteID = router.pending?.id
         let work = DispatchWorkItem {
             guard router.pending?.id == dismissingRouteID,
-                  router.path.isEmpty else { return }
+                  router.path.count <= 1 else { return }
+            NavigationTrace.log("播放器宿主 root dismiss 执行关闭", metadata: hostTraceMetadata(reason: "dismissWork"), includeStack: true)
             onRootDismissed(Self.hostReleaseGrace)
             router.closeSession()
         }
@@ -480,11 +630,13 @@ private struct DeepLinkPlayerHost: View {
     }
 
     @ToolbarContentBuilder
-    private func rootDismissToolbar(for route: DeepLinkRouter.RootRoute) -> some ToolbarContent {
-        if !route.usesOwnPlayerHostToolbar {
+    private func rootDismissToolbar(for route: DeepLinkRouter.SessionRoute) -> some ToolbarContent {
+        if router.path.count <= 1 {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    dismiss()
+                    NavigationTrace.withUserAction("playerHost.backButton", metadata: route.navigationTraceMetadata) {
+                        dismiss()
+                    }
                 } label: {
                     Image(systemName: "chevron.backward")
                         .fontWeight(.semibold)
@@ -505,6 +657,13 @@ private struct DeepLinkPlayerHost: View {
     private func animateHostInIfNeeded(for routeID: UUID?) {
         guard let routeID else { return }
         guard animatedInRouteID != routeID else { return }
+        NavigationTrace.log("播放器宿主执行自定义滑入转场", metadata: [
+            "routeID": routeID.uuidString,
+            "transitionWorld": "root-content-to-session-host",
+            "transitionMode": "custom-host-slide-in",
+            "transitionBoundary": "world-boundary",
+            "expectedToolbarMorph": "false",
+        ].merging(hostTraceMetadata(reason: "animateHostIn")) { current, _ in current }, includeStack: true)
         offsetX = UIScreen.main.bounds.width
         withAnimation(Self.slideSpring) {
             offsetX = 0
@@ -527,26 +686,15 @@ private struct DeepLinkPlayerHost: View {
 
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(
-            root: router.pending?.playerRoute,
+            root: nil,
             stack: router.playerPath,
             foregroundRouteID: router.foregroundPlayerRouteID
         )
         LiveRuntimeCoordinator.shared.retainSessions(
-            root: router.pending?.liveRoute,
+            root: nil,
             stack: router.livePath,
             foregroundRouteID: router.foregroundLiveRouteID
         )
-    }
-
-    private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
-        switch route {
-        case .player(let playerRoute):
-            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
-        case .live(let liveRoute):
-            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, nil:
-            break
-        }
     }
 
     private func handleLocalDeepLink(_ url: URL) -> OpenURLAction.Result {
@@ -562,25 +710,14 @@ private struct DeepLinkPlayerHost: View {
         )
     }
 
-    @ViewBuilder
-    private func rootDestination(for route: DeepLinkRouter.RootRoute) -> some View {
-        DeepLinkRouteContent.rootDestination(
-            for: route,
-            onPictureInPictureActiveChange: handlePictureInPictureChange,
-            onPictureInPictureRestore: restorePictureInPicture
-        )
-    }
-
     private var isAnyAreaPlayerSwipeBackEnabled: Bool {
         guard router.pending != nil, !isRootDismissInFlight else { return false }
-        return router.path.isEmpty
-            || router.path.last?.playerRoute != nil
-            || router.path.last?.liveRoute != nil
+        return router.path.count <= 1
+            && (router.path.last?.playerRoute != nil || router.path.last?.liveRoute != nil)
     }
 
     private func handleAnyAreaSwipeBackChanged(_ translationX: CGFloat) {
         guard isAnyAreaPlayerSwipeBackEnabled else { return }
-        guard router.path.isEmpty else { return }
         offsetX = min(max(translationX, 0), UIScreen.main.bounds.width)
     }
 
@@ -590,6 +727,10 @@ private struct DeepLinkPlayerHost: View {
             return
         }
         if translationX > 80 || velocityX > 650 {
+            NavigationTrace.log("播放器宿主任意区域滑动返回触发", metadata: [
+                "translationX": String(format: "%.1f", translationX),
+                "velocityX": String(format: "%.1f", velocityX),
+            ].merging(hostTraceMetadata(reason: "swipeBack")) { current, _ in current }, includeStack: true)
             dismiss()
         } else {
             handleAnyAreaSwipeBackCancelled()
@@ -597,7 +738,7 @@ private struct DeepLinkPlayerHost: View {
     }
 
     private func handleAnyAreaSwipeBackCancelled() {
-        guard router.path.isEmpty else { return }
+        guard router.path.count <= 1 else { return }
         withAnimation(Self.slideSpring) {
             offsetX = 0
         }
@@ -623,9 +764,121 @@ private struct DeepLinkPlayerHost: View {
         }
         completion(router.containsRoute(id: routeID))
     }
+
+    private var controlledNavigationPath: Binding<[DeepLinkRouter.SessionRoute]> {
+        Binding(
+            get: { displayedPath },
+            set: applyNavigationStackWrite
+        )
+    }
+
+    private var hostContentNavigation: RootContentNavigationActions {
+        RootContentNavigationActions(open: { route in
+            NavigationTrace.log("播放器宿主内容导航请求", metadata: [
+                "route": route.navigationTraceSummary,
+                "transitionWorld": "session-host-stack",
+                "transitionMode": "intent-native-navigation-stack-push",
+                "transitionBoundary": "same-world",
+                "expectedToolbarMorph": "true",
+            ].merging(route.navigationTraceMetadata) { current, _ in current }, includeStack: true)
+            switch route {
+            case .player(let playerRoute):
+                router.open(playerRoute.item)
+            case .live(let liveRoute):
+                router.openLive(
+                    roomID: liveRoute.roomID,
+                    title: liveRoute.title,
+                    cover: liveRoute.cover,
+                    anchorName: liveRoute.anchorName
+                )
+            case .userSpace(let mid):
+                router.openUserSpace(mid: mid)
+            case .dynamicDetail(let item):
+                router.openDynamicDetail(item)
+            case .article(let id, let kind):
+                router.openArticle(id: id, kind: kind)
+            case .search(let keyword):
+                router.openSearch(keyword: keyword)
+            }
+        })
+    }
+
+    private func applyNavigationStackWrite(_ newPath: [DeepLinkRouter.SessionRoute]) {
+        let accepted = DeepLinkNavigationPathCoordinator.shouldApply(
+            displayedPath: displayedPath,
+            routerPath: router.path,
+            newPath: newPath,
+            navigationGuard: presentationGuard
+        )
+        NavigationTrace.log(accepted ? "播放器宿主 NavigationStack path 写回" : "播放器宿主 NavigationStack path 写回被拒绝", metadata: [
+            "displayedDepth": String(displayedPath.count),
+            "routerDepth": String(router.path.count),
+            "newDepth": String(newPath.count),
+            "displayedPath": NavigationTrace.sessionPathSummary(displayedPath),
+            "routerPath": NavigationTrace.sessionPathSummary(router.path),
+            "newPath": NavigationTrace.sessionPathSummary(newPath),
+        ], includeStack: true)
+        guard accepted else { return }
+        displayedPath = newPath
+        router.replacePathFromNavigation(newPath)
+    }
+
+    private func syncDisplayedPathFromRouter(animated: Bool, deferToNextRunLoop: Bool = false) {
+        let targetPath = router.path
+        guard displayedPath.map(\.id) != targetPath.map(\.id) else { return }
+        NavigationTrace.log("播放器宿主同步 router.path 到 displayedPath", metadata: [
+            "animated": String(animated),
+            "deferToNextRunLoop": String(deferToNextRunLoop),
+            "oldDisplayedDepth": String(displayedPath.count),
+            "targetDepth": String(targetPath.count),
+            "oldDisplayedPath": NavigationTrace.sessionPathSummary(displayedPath),
+            "targetPath": NavigationTrace.sessionPathSummary(targetPath),
+            "transitionWorld": "session-host-stack",
+            "transitionMode": transitionMode(fromDepth: displayedPath.count, toDepth: targetPath.count),
+            "transitionBoundary": "same-world",
+            "expectedToolbarMorph": String(targetPath.count > displayedPath.count),
+        ], includeStack: true)
+        let apply = {
+            if animated {
+                withAnimation {
+                    displayedPath = targetPath
+                }
+            } else {
+                displayedPath = targetPath
+            }
+        }
+        if deferToNextRunLoop {
+            DispatchQueue.main.async(execute: apply)
+        } else {
+            apply()
+        }
+    }
+
+    private func hostTraceMetadata(reason: String) -> [String: String] {
+        [
+            "reason": reason,
+            "pending": router.pending?.navigationTraceSummary ?? "nil",
+            "routerDepth": String(router.path.count),
+            "displayedDepth": String(displayedPath.count),
+            "routerPath": NavigationTrace.sessionPathSummary(router.path),
+            "displayedPath": NavigationTrace.sessionPathSummary(displayedPath),
+            "offsetX": String(format: "%.1f", offsetX),
+            "isRootDismissInFlight": String(isRootDismissInFlight),
+        ]
+    }
+
+    private func transitionMode(fromDepth oldDepth: Int, toDepth newDepth: Int) -> String {
+        if newDepth > oldDepth {
+            return "native-navigation-stack-push-sync"
+        }
+        if newDepth < oldDepth {
+            return "native-navigation-stack-pop-sync"
+        }
+        return "navigation-stack-replace-sync"
+    }
 }
 
-private struct DeepLinkRouteContent {
+struct DeepLinkRouteContent {
     @ViewBuilder
     @MainActor
     static func destinationView(
@@ -641,44 +894,37 @@ private struct DeepLinkRouteContent {
                 onPictureInPictureRestore: onPictureInPictureRestore
             )
             .id(playerRoute.id)
+            .navigationTracePage("HostRoute:player", metadata: playerRoute.navigationTraceMetadata)
         case .live(let liveRoute):
             liveDestination(for: liveRoute)
                 .id(liveRoute.id)
+                .navigationTracePage("HostRoute:live", metadata: liveRoute.navigationTraceMetadata)
         case .userSpace(let userSpaceRoute):
             UserSpaceView(mid: userSpaceRoute.mid)
+                .navigationTracePage("HostRoute:user", metadata: [
+                    "routeID": userSpaceRoute.id.uuidString,
+                    "mid": String(userSpaceRoute.mid),
+                ])
         case .dynamicDetail(let detailRoute):
             DynamicDetailView(item: detailRoute.item)
+                .navigationTracePage("HostRoute:dynamic", metadata: [
+                    "routeID": detailRoute.id.uuidString,
+                    "dynamicID": detailRoute.item.id,
+                    "dynamicKind": "\(detailRoute.item.kind)",
+                ])
         case .article(let articleRoute):
             ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
+                .navigationTracePage("HostRoute:article", metadata: [
+                    "routeID": articleRoute.id.uuidString,
+                    "articleID": articleRoute.articleID,
+                    "kind": articleRoute.kind,
+                ])
         case .search(let searchRoute):
             SearchRouteView(keyword: searchRoute.keyword)
-        }
-    }
-
-    @ViewBuilder
-    @MainActor
-    static func rootDestination(
-        for route: DeepLinkRouter.RootRoute,
-        onPictureInPictureActiveChange: @escaping (Bool, UUID) -> Void,
-        onPictureInPictureRestore: @escaping (UUID, @escaping (Bool) -> Void) -> Void
-    ) -> some View {
-        switch route {
-        case .player(let playerRoute):
-            playerDestination(
-                for: playerRoute,
-                onPictureInPictureActiveChange: onPictureInPictureActiveChange,
-                onPictureInPictureRestore: onPictureInPictureRestore
-            )
-        case .live(let liveRoute):
-            liveDestination(for: liveRoute)
-        case .dynamicDetail(let detailRoute):
-            DynamicDetailView(item: detailRoute.item)
-        case .userSpace(let userSpaceRoute):
-            UserSpaceView(mid: userSpaceRoute.mid)
-        case .article(let articleRoute):
-            ArticleView(articleID: articleRoute.articleID, kind: articleRoute.kind)
-        case .search(let searchRoute):
-            SearchRouteView(keyword: searchRoute.keyword)
+                .navigationTracePage("HostRoute:search", metadata: [
+                    "routeID": searchRoute.id.uuidString,
+                    "keyword": searchRoute.keyword,
+                ])
         }
     }
 
@@ -715,48 +961,54 @@ private struct DeepLinkRouteContent {
 
 private struct DeepLinkSplitHost: View {
     @EnvironmentObject private var router: DeepLinkRouter
+    @EnvironmentObject private var presentationGuard: PlayerPresentationNavigationGuard
     let onRootDismiss: () -> Void
+    @State private var displayedPath: [DeepLinkRouter.SessionRoute] = []
 
     var body: some View {
-        NavigationStack(path: $router.path) {
-            Group {
-                if let route = router.pending {
-                    DeepLinkRouteContent.rootDestination(
-                        for: route,
-                        onPictureInPictureActiveChange: handlePictureInPictureChange,
-                        onPictureInPictureRestore: restorePictureInPicture
-                    )
-                    .id(route.id)
-                    .environment(\.dismissPlayerHost, dismiss)
-                    .toolbar { rootDismissToolbar(for: route) }
-                } else {
-                    splitEmptyState
-                }
-            }
+        NavigationStack(path: controlledNavigationPath) {
+            splitEmptyState
             .navigationDestination(for: DeepLinkRouter.SessionRoute.self) { route in
                 DeepLinkRouteContent.destinationView(
                     for: route,
                     onPictureInPictureActiveChange: handlePictureInPictureChange,
                     onPictureInPictureRestore: restorePictureInPicture
                 )
+                .id(route.id)
                 .environment(\.dismissPlayerHost, dismiss)
+                .navigationBarBackButtonHidden(router.path.count <= 1)
+                .toolbar { rootDismissToolbar(for: route) }
             }
         }
         .tint(.white)
         .environment(\.isInPlayerHostNavigation, true)
         .environment(\.prefersSplitRootSelection, false)
         .environment(\.splitRootIsActive, true)
+        .environment(\.rootContentNavigation, hostContentNavigation)
+        .environment(\.beginNativePlayerFullscreenExit, presentationGuard.beginNativeFullscreenExitProtection)
+        .environment(\.endNativePlayerFullscreenExit, presentationGuard.endNativeFullscreenExitProtection)
         .background(IbiliTheme.background)
-        .onAppear { syncPlayerSessions() }
-        .onChange(of: router.pending?.id) { _ in
+        .onAppear {
+            NavigationTrace.pageAppear("DeepLinkSplitHost", metadata: splitTraceMetadata(reason: "appear"))
+            syncDisplayedPathFromRouter(animated: true, deferToNextRunLoop: true)
+            syncPlayerSessions()
+        }
+        .onChange(of: router.pending?.id) { newRouteID in
+            NavigationTrace.log("Split 宿主观察 pending 变化", metadata: splitTraceMetadata(reason: "pending").merging([
+                "newPendingID": newRouteID?.uuidString ?? "nil",
+            ]) { current, _ in current }, includeStack: true)
             router.cancelRootSessionDismissal()
+            syncDisplayedPathFromRouter(animated: true, deferToNextRunLoop: true)
             syncPlayerSessions()
         }
         .onChange(of: router.path.map(\.id)) { _ in
+            NavigationTrace.log("Split 宿主观察 router.path 变化", metadata: splitTraceMetadata(reason: "routerPath"), includeStack: true)
             router.cancelRootSessionDismissal()
+            syncDisplayedPathFromRouter(animated: true)
             syncPlayerSessions()
         }
         .onDisappear {
+            NavigationTrace.pageDisappear("DeepLinkSplitHost", metadata: splitTraceMetadata(reason: "disappear"))
             syncPlayerSessions()
         }
     }
@@ -775,22 +1027,24 @@ private struct DeepLinkSplitHost: View {
     }
 
     private func dismiss() {
-        if !router.path.isEmpty {
-            router.path.removeLast()
+        NavigationTrace.log("Split 宿主 dismiss 请求", metadata: splitTraceMetadata(reason: "dismiss"), includeStack: true)
+        if router.path.count > 1 {
+            router.popLastRoute()
             return
         }
-        prepareRootRouteForDismissal(router.pending)
         onRootDismiss()
     }
 
     @ToolbarContentBuilder
-    private func rootDismissToolbar(for route: DeepLinkRouter.RootRoute) -> some ToolbarContent {
-        if !route.usesOwnPlayerHostToolbar {
+    private func rootDismissToolbar(for route: DeepLinkRouter.SessionRoute) -> some ToolbarContent {
+        if router.path.count <= 1 {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    dismiss()
+                    NavigationTrace.withUserAction("splitHost.backButton", metadata: route.navigationTraceMetadata) {
+                        dismiss()
+                    }
                 } label: {
-                    Image(systemName: router.path.isEmpty ? "xmark" : "chevron.backward")
+                    Image(systemName: "xmark")
                         .fontWeight(.semibold)
                 }
                 .tint(.white)
@@ -800,26 +1054,15 @@ private struct DeepLinkSplitHost: View {
 
     private func syncPlayerSessions() {
         PlayerRuntimeCoordinator.shared.retainSessions(
-            root: router.pending?.playerRoute,
+            root: nil,
             stack: router.playerPath,
             foregroundRouteID: router.foregroundPlayerRouteID
         )
         LiveRuntimeCoordinator.shared.retainSessions(
-            root: router.pending?.liveRoute,
+            root: nil,
             stack: router.livePath,
             foregroundRouteID: router.foregroundLiveRouteID
         )
-    }
-
-    private func prepareRootRouteForDismissal(_ route: DeepLinkRouter.RootRoute?) {
-        switch route {
-        case .player(let playerRoute):
-            PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
-        case .live(let liveRoute):
-            LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .dynamicDetail, .userSpace, .article, .search, nil:
-            break
-        }
     }
 
     private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
@@ -841,6 +1084,116 @@ private struct DeepLinkSplitHost: View {
             return
         }
         completion(router.containsRoute(id: routeID))
+    }
+
+    private var controlledNavigationPath: Binding<[DeepLinkRouter.SessionRoute]> {
+        Binding(
+            get: { displayedPath },
+            set: applyNavigationStackWrite
+        )
+    }
+
+    private var hostContentNavigation: RootContentNavigationActions {
+        RootContentNavigationActions(open: { route in
+            NavigationTrace.log("Split 宿主内容导航请求", metadata: [
+                "route": route.navigationTraceSummary,
+                "transitionWorld": "split-session-host-stack",
+                "transitionMode": "intent-native-navigation-stack-push",
+                "transitionBoundary": "same-world",
+                "expectedToolbarMorph": "true",
+            ].merging(route.navigationTraceMetadata) { current, _ in current }, includeStack: true)
+            switch route {
+            case .player(let playerRoute):
+                router.open(playerRoute.item)
+            case .live(let liveRoute):
+                router.openLive(
+                    roomID: liveRoute.roomID,
+                    title: liveRoute.title,
+                    cover: liveRoute.cover,
+                    anchorName: liveRoute.anchorName
+                )
+            case .userSpace(let mid):
+                router.openUserSpace(mid: mid)
+            case .dynamicDetail(let item):
+                router.openDynamicDetail(item)
+            case .article(let id, let kind):
+                router.openArticle(id: id, kind: kind)
+            case .search(let keyword):
+                router.openSearch(keyword: keyword)
+            }
+        })
+    }
+
+    private func applyNavigationStackWrite(_ newPath: [DeepLinkRouter.SessionRoute]) {
+        let accepted = DeepLinkNavigationPathCoordinator.shouldApply(
+            displayedPath: displayedPath,
+            routerPath: router.path,
+            newPath: newPath,
+            navigationGuard: presentationGuard
+        )
+        NavigationTrace.log(accepted ? "Split NavigationStack path 写回" : "Split NavigationStack path 写回被拒绝", metadata: [
+            "displayedDepth": String(displayedPath.count),
+            "routerDepth": String(router.path.count),
+            "newDepth": String(newPath.count),
+            "displayedPath": NavigationTrace.sessionPathSummary(displayedPath),
+            "routerPath": NavigationTrace.sessionPathSummary(router.path),
+            "newPath": NavigationTrace.sessionPathSummary(newPath),
+        ], includeStack: true)
+        guard accepted else { return }
+        displayedPath = newPath
+        router.replacePathFromNavigation(newPath)
+    }
+
+    private func syncDisplayedPathFromRouter(animated: Bool, deferToNextRunLoop: Bool = false) {
+        let targetPath = router.path
+        guard displayedPath.map(\.id) != targetPath.map(\.id) else { return }
+        NavigationTrace.log("Split 同步 router.path 到 displayedPath", metadata: [
+            "animated": String(animated),
+            "deferToNextRunLoop": String(deferToNextRunLoop),
+            "oldDisplayedDepth": String(displayedPath.count),
+            "targetDepth": String(targetPath.count),
+            "oldDisplayedPath": NavigationTrace.sessionPathSummary(displayedPath),
+            "targetPath": NavigationTrace.sessionPathSummary(targetPath),
+            "transitionWorld": "split-session-host-stack",
+            "transitionMode": transitionMode(fromDepth: displayedPath.count, toDepth: targetPath.count),
+            "transitionBoundary": "same-world",
+            "expectedToolbarMorph": String(targetPath.count > displayedPath.count),
+        ], includeStack: true)
+        let apply = {
+            if animated {
+                withAnimation {
+                    displayedPath = targetPath
+                }
+            } else {
+                displayedPath = targetPath
+            }
+        }
+        if deferToNextRunLoop {
+            DispatchQueue.main.async(execute: apply)
+        } else {
+            apply()
+        }
+    }
+
+    private func splitTraceMetadata(reason: String) -> [String: String] {
+        [
+            "reason": reason,
+            "pending": router.pending?.navigationTraceSummary ?? "nil",
+            "routerDepth": String(router.path.count),
+            "displayedDepth": String(displayedPath.count),
+            "routerPath": NavigationTrace.sessionPathSummary(router.path),
+            "displayedPath": NavigationTrace.sessionPathSummary(displayedPath),
+        ]
+    }
+
+    private func transitionMode(fromDepth oldDepth: Int, toDepth newDepth: Int) -> String {
+        if newDepth > oldDepth {
+            return "native-navigation-stack-push-sync"
+        }
+        if newDepth < oldDepth {
+            return "native-navigation-stack-pop-sync"
+        }
+        return "navigation-stack-replace-sync"
     }
 }
 
@@ -1031,17 +1384,17 @@ private struct MainTabView: View {
         if #available(iOS 18.0, *) {
             TabView(selection: $selectedTab) {
                 Tab("首页", systemImage: "house.fill", value: MainTab.home) {
-                    NavigationStack {
+                    RootContentNavigationStack(name: "home") {
                         HomeView()
                     }
                 }
                 Tab("动态", systemImage: "sparkles", value: MainTab.dynamic) {
-                    NavigationStack {
+                    RootContentNavigationStack(name: "dynamic") {
                         DynamicFeedView()
                     }
                 }
                 Tab("我的", systemImage: "person.crop.circle", value: MainTab.profile) {
-                    NavigationStack {
+                    RootContentNavigationStack(name: "profile") {
                         ProfileView()
                     }
                 }
@@ -1056,13 +1409,13 @@ private struct MainTabView: View {
             .background(tabReselectObserver(order: [.home, .dynamic, .profile, .search]))
         } else {
             TabView(selection: $selectedTab) {
-                NavigationStack {
+                RootContentNavigationStack(name: "home") {
                     HomeView()
                 }
                 .tabItem { Label("首页", systemImage: "house.fill") }
                 .tag(MainTab.home)
 
-                NavigationStack {
+                RootContentNavigationStack(name: "dynamic") {
                     DynamicFeedView()
                 }
                 .tabItem { Label("动态", systemImage: "sparkles") }
@@ -1072,7 +1425,7 @@ private struct MainTabView: View {
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                     .tag(MainTab.search)
 
-                NavigationStack {
+                RootContentNavigationStack(name: "profile") {
                     ProfileView()
                 }
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
@@ -1090,15 +1443,22 @@ private struct MainTabView: View {
             selectedTab: selectedTab,
             orderedTabs: order,
             onReselect: { tab in
-                switch tab {
-                case .home:
-                    tabReselect.triggerHome()
-                case .dynamic:
-                    tabReselect.triggerDynamic()
-                case .search:
-                    tabReselect.triggerSearch()
-                case .profile:
-                    tabReselect.triggerProfile()
+                NavigationTrace.withUserAction("tab.reselect", metadata: [
+                    "tab": "\(tab)",
+                ]) {
+                    NavigationTrace.log("根 tab 重复点击", metadata: [
+                        "tab": "\(tab)",
+                    ], includeStack: true)
+                    switch tab {
+                    case .home:
+                        tabReselect.triggerHome()
+                    case .dynamic:
+                        tabReselect.triggerDynamic()
+                    case .search:
+                        tabReselect.triggerSearch()
+                    case .profile:
+                        tabReselect.triggerProfile()
+                    }
                 }
             }
         )
