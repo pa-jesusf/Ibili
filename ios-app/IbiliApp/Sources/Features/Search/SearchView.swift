@@ -1,16 +1,56 @@
 import SwiftUI
 
 /// Top-level search screen. The root content host owns the `NavigationStack`;
-/// this view owns the system search field and switches between landing/results.
+/// this view owns the system search field only on legacy tabs.
 struct SearchView: View {
-    @StateObject private var vm = SearchViewModel()
-    @StateObject private var history = SearchHistoryStore()
-    @State private var isFiltersSheetPresented: Bool = false
+    @ObservedObject var vm: SearchViewModel
+    @ObservedObject var history: SearchHistoryStore
+    @Binding var isFiltersSheetPresented: Bool
+    let hostsSearchField: Bool
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.dismissSearch) private var dismissSearch
     @Environment(\.rootContentNavigation) private var rootContentNavigation
 
+    init(vm: SearchViewModel,
+         history: SearchHistoryStore,
+         isFiltersSheetPresented: Binding<Bool>,
+         hostsSearchField: Bool = true) {
+        self.vm = vm
+        self.history = history
+        _isFiltersSheetPresented = isFiltersSheetPresented
+        self.hostsSearchField = hostsSearchField
+    }
+
+    @ViewBuilder
     var body: some View {
+        baseContent
+    }
+
+    private var baseContent: some View {
+        searchFieldHostIfNeeded(navigationContent)
+            .environment(\.openURL, OpenURLAction { url in
+                rootContentNavigation.handle(url, router: router)
+            })
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .tint(IbiliTheme.accent)
+            .sheet(isPresented: $isFiltersSheetPresented) {
+                SearchFiltersSheet(vm: vm)
+            }
+    }
+
+    @ViewBuilder
+    private func searchFieldHostIfNeeded<Content: View>(_ content: Content) -> some View {
+        if hostsSearchField {
+            content
+                .searchable(text: $vm.query, prompt: "搜索视频、UP主、番剧")
+                .onSubmit(of: .search, submitCurrentQuery)
+        } else {
+            content
+        }
+    }
+
+    private var navigationContent: some View {
         content
             .background(IbiliTheme.background)
             .navigationTitle("搜索")
@@ -19,17 +59,7 @@ struct SearchView: View {
             .navigationTracePage("SearchRoot", metadata: [
                 "transitionWorld": "root-content-child",
             ])
-        .searchable(text: $vm.query, prompt: "搜索视频、UP主、番剧")
-        .environment(\.openURL, OpenURLAction { url in
-            rootContentNavigation.handle(url, router: router)
-        })
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .onSubmit(of: .search, submitCurrentQuery)
-        .tint(IbiliTheme.accent)
-        .sheet(isPresented: $isFiltersSheetPresented) {
-            SearchFiltersSheet(vm: vm)
-        }
+            .background(SearchPresentationTrace())
     }
 
     @ViewBuilder
@@ -78,5 +108,26 @@ struct SearchView: View {
             vm.submit()
             dismissSearch()
         }
+    }
+}
+
+private struct SearchPresentationTrace: View {
+    @Environment(\.isSearching) private var isSearching
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                NavigationTrace.log("搜索控件状态", metadata: [
+                    "isSearching": String(isSearching),
+                    "event": "appear",
+                ])
+            }
+            .onChange(of: isSearching) { value in
+                NavigationTrace.log("搜索控件状态", metadata: [
+                    "isSearching": String(value),
+                    "event": "change",
+                ])
+            }
     }
 }

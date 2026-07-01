@@ -108,7 +108,10 @@ struct RootView: View {
     @State private var splitRootDismissWork: DispatchWorkItem?
     @State private var splitLayoutBaseSize: CGSize?
     @State private var lastStableMainTab: MainTab = .home
-    @State private var rootContentPath: [RootContentRoute] = []
+    @State private var homeRootContentPath: [RootContentRoute] = []
+    @State private var dynamicRootContentPath: [RootContentRoute] = []
+    @State private var profileRootContentPath: [RootContentRoute] = []
+    @State private var searchRootContentPath: [RootContentRoute] = []
     @StateObject private var presentationGuard = PlayerPresentationNavigationGuard()
 
     var body: some View {
@@ -207,13 +210,14 @@ struct RootView: View {
         if canSplit {
             let splitMetrics = splitLayoutMetrics(size: size, usesSplit: usesSplit)
             ZStack(alignment: .leading) {
-                RootContentNavigationStack(
-                    name: "root-tabs",
-                    path: $rootContentPath,
+                MainTabView(
+                    selectedTab: $selectedMainTab,
+                    homeRootContentPath: $homeRootContentPath,
+                    dynamicRootContentPath: $dynamicRootContentPath,
+                    profileRootContentPath: $profileRootContentPath,
+                    searchRootContentPath: $searchRootContentPath,
                     onMediaRoutesChanged: syncRootContentMediaSessions
-                ) {
-                    MainTabView(selectedTab: $selectedMainTab)
-                }
+                )
                     .environmentObject(presentationGuard)
                     .environment(\.prefersSplitRootSelection, true)
                     .environment(\.splitRootIsActive, usesSplit)
@@ -243,13 +247,14 @@ struct RootView: View {
             .frame(width: size.width, height: size.height, alignment: .leading)
             .background(IbiliTheme.background.ignoresSafeArea())
         } else {
-            RootContentNavigationStack(
-                name: "root-tabs",
-                path: $rootContentPath,
+            MainTabView(
+                selectedTab: $selectedMainTab,
+                homeRootContentPath: $homeRootContentPath,
+                dynamicRootContentPath: $dynamicRootContentPath,
+                profileRootContentPath: $profileRootContentPath,
+                searchRootContentPath: $searchRootContentPath,
                 onMediaRoutesChanged: syncRootContentMediaSessions
-            ) {
-                MainTabView(selectedTab: $selectedMainTab)
-            }
+            )
                 .environmentObject(presentationGuard)
                 .environment(\.prefersSplitRootSelection, false)
                 .environment(\.splitRootIsActive, false)
@@ -407,8 +412,8 @@ struct RootView: View {
             "selectedTab": "\(newValue)",
             "lastStableTab": "\(lastStableMainTab)",
             "isProtectingNativeFullscreenExit": String(presentationGuard.isProtectingNativeFullscreenExit),
-            "rootContentDepth": String(rootContentPath.count),
-            "rootContentPath": NavigationTrace.rootContentPathSummary(rootContentPath),
+            "rootContentDepth": String(activeRootContentPath.count),
+            "rootContentPath": NavigationTrace.rootContentPathSummary(activeRootContentPath),
             "pending": router.pending?.navigationTraceSummary ?? "nil",
             "pathDepth": String(router.path.count),
             "path": NavigationTrace.sessionPathSummary(router.path),
@@ -433,25 +438,49 @@ struct RootView: View {
         lastStableMainTab = newValue
     }
 
+    private var activeRootContentPath: [RootContentRoute] {
+        switch selectedMainTab {
+        case .home:
+            return homeRootContentPath
+        case .dynamic:
+            return dynamicRootContentPath
+        case .profile:
+            return profileRootContentPath
+        case .search:
+            return searchRootContentPath
+        }
+    }
+
+    private var allRootContentPaths: [[RootContentRoute]] {
+        [
+            homeRootContentPath,
+            dynamicRootContentPath,
+            profileRootContentPath,
+            searchRootContentPath,
+        ]
+    }
+
     private var foregroundRootContentPlayerRouteID: UUID? {
-        guard case .player(let route)? = rootContentPath.last else { return nil }
+        guard case .player(let route)? = activeRootContentPath.last else { return nil }
         return route.id
     }
 
     private var foregroundRootContentLiveRouteID: UUID? {
-        guard case .live(let route)? = rootContentPath.last else { return nil }
+        guard case .live(let route)? = activeRootContentPath.last else { return nil }
         return route.id
     }
 
     private func syncRootContentMediaSessions() {
+        let rootContentPlayerRoutes = allRootContentPaths.flatMap { $0.compactMap(\.playerRoute) }
+        let rootContentLiveRoutes = allRootContentPaths.flatMap { $0.compactMap(\.liveRoute) }
         PlayerRuntimeCoordinator.shared.retainSessions(
             root: nil,
-            stack: router.playerPath + rootContentPath.compactMap(\.playerRoute),
+            stack: router.playerPath + rootContentPlayerRoutes,
             foregroundRouteID: foregroundRootContentPlayerRouteID ?? router.foregroundPlayerRouteID
         )
         LiveRuntimeCoordinator.shared.retainSessions(
             root: nil,
-            stack: router.livePath + rootContentPath.compactMap(\.liveRoute),
+            stack: router.livePath + rootContentLiveRoutes,
             foregroundRouteID: foregroundRootContentLiveRouteID ?? router.foregroundLiveRouteID
         )
     }
@@ -1429,9 +1458,18 @@ private extension UIView {
 
 private struct MainTabView: View {
     @Binding var selectedTab: MainTab
+    @Binding var homeRootContentPath: [RootContentRoute]
+    @Binding var dynamicRootContentPath: [RootContentRoute]
+    @Binding var profileRootContentPath: [RootContentRoute]
+    @Binding var searchRootContentPath: [RootContentRoute]
+    let onMediaRoutesChanged: () -> Void
     @StateObject private var tabReselect = TabReselectSignals()
+    @StateObject private var searchViewModel = SearchViewModel()
+    @StateObject private var searchHistory = SearchHistoryStore()
     @State private var homeSection: HomeFeedSection = .recommend
     @State private var dynamicScope: DynamicFeedScope = .all
+    @State private var isSearchFiltersSheetPresented = false
+    @State private var isSearchPresented = false
 
     var body: some View {
         // On iOS 18+ we use the new `Tab(role: .search)` initializer
@@ -1444,76 +1482,99 @@ private struct MainTabView: View {
         if #available(iOS 18.0, *) {
             TabView(selection: $selectedTab) {
                 Tab("首页", systemImage: "house.fill", value: MainTab.home) {
-                    HomeView(section: $homeSection)
-                        .onAppear { syncVisibleTab(.home, reason: "homeAppear") }
+                    rootContentStack(name: "root-home", path: $homeRootContentPath) {
+                        HomeView(section: $homeSection)
+                    }
                 }
                 Tab("动态", systemImage: "sparkles", value: MainTab.dynamic) {
-                    DynamicFeedView(scope: $dynamicScope)
-                        .onAppear { syncVisibleTab(.dynamic, reason: "dynamicAppear") }
+                    rootContentStack(name: "root-dynamic", path: $dynamicRootContentPath) {
+                        DynamicFeedView(scope: $dynamicScope)
+                    }
                 }
                 Tab("我的", systemImage: "person.crop.circle", value: MainTab.profile) {
-                    ProfileView()
-                        .onAppear { syncVisibleTab(.profile, reason: "profileAppear") }
+                    rootContentStack(name: "root-profile", path: $profileRootContentPath) {
+                        ProfileView()
+                    }
                 }
                 Tab(value: MainTab.search, role: .search) {
-                    SearchView()
-                        .onAppear { syncVisibleTab(.search, reason: "searchAppear") }
+                    rootContentStack(name: "root-search", path: $searchRootContentPath) {
+                        searchTabView
+                    }
+                    .searchable(text: $searchViewModel.query, isPresented: $isSearchPresented, prompt: "搜索视频、UP主、番剧")
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onSubmit(of: .search, submitCurrentQuery)
                 }
             }
             .tint(IbiliTheme.accent)
-            .tabViewStyle(.tabBarOnly)
+            .modifier(SearchTabActivationModifier())
             .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
-            .environment(\.feedChromeUsesExternalToolbar, true)
-            .background(tabReselectObserver(order: [.home, .dynamic, .profile, .search]))
-            .modifier(RootTabToolbarModifier(
-                selectedTab: selectedTab,
-                homeSection: $homeSection,
-                dynamicScope: $dynamicScope
-            ))
+            .onAppear {
+                updateSearchPresentation(for: selectedTab, reason: "appear")
+            }
+            .onChange(of: selectedTab) { tab in
+                updateSearchPresentation(for: tab, reason: "selectedTab")
+            }
         } else {
             TabView(selection: $selectedTab) {
-                HomeView(section: $homeSection)
-                    .onAppear { syncVisibleTab(.home, reason: "homeAppear") }
+                rootContentStack(name: "root-home", path: $homeRootContentPath) {
+                    HomeView(section: $homeSection)
+                }
                     .tabItem { Label("首页", systemImage: "house.fill") }
                     .tag(MainTab.home)
 
-                DynamicFeedView(scope: $dynamicScope)
-                    .onAppear { syncVisibleTab(.dynamic, reason: "dynamicAppear") }
+                rootContentStack(name: "root-dynamic", path: $dynamicRootContentPath) {
+                    DynamicFeedView(scope: $dynamicScope)
+                }
                     .tabItem { Label("动态", systemImage: "sparkles") }
                     .tag(MainTab.dynamic)
 
-                SearchView()
-                    .onAppear { syncVisibleTab(.search, reason: "searchAppear") }
+                rootContentStack(name: "root-search", path: $searchRootContentPath) {
+                    SearchView(
+                        vm: searchViewModel,
+                        history: searchHistory,
+                        isFiltersSheetPresented: $isSearchFiltersSheetPresented
+                    )
+                }
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                     .tag(MainTab.search)
 
-                ProfileView()
-                    .onAppear { syncVisibleTab(.profile, reason: "profileAppear") }
+                rootContentStack(name: "root-profile", path: $profileRootContentPath) {
+                    ProfileView()
+                }
                     .tabItem { Label("我的", systemImage: "person.crop.circle") }
                     .tag(MainTab.profile)
             }
             .tint(IbiliTheme.accent)
             .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
-            .environment(\.feedChromeUsesExternalToolbar, true)
             .background(tabReselectObserver(order: [.home, .dynamic, .search, .profile]))
-            .modifier(RootTabToolbarModifier(
-                selectedTab: selectedTab,
-                homeSection: $homeSection,
-                dynamicScope: $dynamicScope
-            ))
         }
     }
 
-    private func syncVisibleTab(_ tab: MainTab, reason: String) {
-        guard selectedTab != tab else { return }
-        NavigationTrace.log("根 tab 可见页面同步", metadata: [
-            "from": "\(selectedTab)",
-            "reason": reason,
-            "to": "\(tab)",
-        ], includeStack: true)
-        selectedTab = tab
+    private func rootContentStack<Content: View>(
+        name: String,
+        path: Binding<[RootContentRoute]>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        RootContentNavigationStack(
+            name: name,
+            path: path,
+            onMediaRoutesChanged: onMediaRoutesChanged
+        ) {
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private var searchTabView: some View {
+        SearchView(
+            vm: searchViewModel,
+            history: searchHistory,
+            isFiltersSheetPresented: $isSearchFiltersSheetPresented,
+            hostsSearchField: false
+        )
     }
 
     private func tabReselectObserver(order: [MainTab]) -> some View {
@@ -1556,34 +1617,35 @@ private struct MainTabView: View {
         .frame(width: 0, height: 0)
         .allowsHitTesting(false)
     }
+
+    private func submitCurrentQuery() {
+        NavigationTrace.withUserAction("search.submit", metadata: [
+            "query": searchViewModel.query,
+        ]) {
+            searchHistory.push(searchViewModel.query)
+            searchViewModel.submit()
+        }
+    }
+
+    private func updateSearchPresentation(for tab: MainTab, reason: String) {
+        let shouldPresent = tab == .search
+        guard isSearchPresented != shouldPresent else { return }
+        NavigationTrace.log("系统搜索呈现请求", metadata: [
+            "reason": reason,
+            "selectedTab": "\(tab)",
+            "isPresented": String(shouldPresent),
+        ])
+        isSearchPresented = shouldPresent
+    }
 }
 
-private struct RootTabToolbarModifier: ViewModifier {
-    let selectedTab: MainTab
-    @Binding var homeSection: HomeFeedSection
-    @Binding var dynamicScope: DynamicFeedScope
-
+private struct SearchTabActivationModifier: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar {
-                if selectedTab == .home {
-                    FeedChromeToolbarContent(
-                        tabs: Array(HomeFeedSection.allCases),
-                        tabTitle: { $0.title },
-                        selection: $homeSection
-                    )
-                }
-                if selectedTab == .dynamic {
-                    FeedChromeToolbarContent(
-                        tabs: Array(DynamicFeedScope.allCases),
-                        tabTitle: { $0.title },
-                        selection: $dynamicScope
-                    )
-                }
-            }
+        if #available(iOS 26.0, *) {
+            content.tabViewSearchActivation(.searchTabSelection)
+        } else {
+            content
+        }
     }
 }
 

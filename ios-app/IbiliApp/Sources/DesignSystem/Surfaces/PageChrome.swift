@@ -47,10 +47,6 @@ private struct FeedChromeReservesInlineAccessoryFootprintKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-private struct FeedChromeUsesExternalToolbarKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
 extension EnvironmentValues {
     var feedChromeShowsInlineSystemHeader: Bool {
         get { self[FeedChromeShowsInlineSystemHeaderKey.self] }
@@ -60,11 +56,6 @@ extension EnvironmentValues {
     var feedChromeReservesInlineAccessoryFootprint: Bool {
         get { self[FeedChromeReservesInlineAccessoryFootprintKey.self] }
         set { self[FeedChromeReservesInlineAccessoryFootprintKey.self] = newValue }
-    }
-
-    var feedChromeUsesExternalToolbar: Bool {
-        get { self[FeedChromeUsesExternalToolbarKey.self] }
-        set { self[FeedChromeUsesExternalToolbarKey.self] = newValue }
     }
 }
 
@@ -120,24 +111,19 @@ private struct FeedChromeNavigationModifier<Tab: Hashable & Identifiable>: ViewM
     let tabs: [Tab]
     let tabTitle: (Tab) -> String
     @Binding var selection: Tab
-    @Environment(\.feedChromeUsesExternalToolbar) private var usesExternalToolbar
 
     func body(content: Content) -> some View {
-        let base = content
+        content
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
-        if usesExternalToolbar {
-            base
-        } else {
-            base.toolbar {
+            .toolbar {
                 FeedChromeToolbarContent(
                     tabs: tabs,
                     tabTitle: tabTitle,
                     selection: $selection
                 )
             }
-        }
     }
 }
 
