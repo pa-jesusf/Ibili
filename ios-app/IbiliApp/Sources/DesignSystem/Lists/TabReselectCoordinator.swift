@@ -28,13 +28,14 @@ final class TabReselectSignals: ObservableObject {
 struct TabBarReselectObserver<Tab: Hashable>: UIViewControllerRepresentable {
     let selectedTab: Tab
     let orderedTabs: [Tab]
+    let onSelect: (Tab) -> Void
     let onReselect: (Tab) -> Void
 
     func makeUIViewController(context: Context) -> ObserverController {
         let controller = ObserverController()
-        controller.onResolve = { tabBarController in
-            guard let tabBarController else { return }
+        controller.onResolve = { tabBarController, tabBar in
             context.coordinator.attach(to: tabBarController)
+            context.coordinator.attach(to: tabBar)
         }
         return controller
     }
@@ -42,58 +43,126 @@ struct TabBarReselectObserver<Tab: Hashable>: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: ObserverController, context: Context) {
         context.coordinator.selectedTab = selectedTab
         context.coordinator.orderedTabs = orderedTabs
+        context.coordinator.onSelect = onSelect
         context.coordinator.onReselect = onReselect
-        uiViewController.onResolve = { tabBarController in
-            guard let tabBarController else { return }
+        uiViewController.onResolve = { tabBarController, tabBar in
             context.coordinator.attach(to: tabBarController)
+            context.coordinator.attach(to: tabBar)
         }
         uiViewController.resolve()
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(selectedTab: selectedTab, orderedTabs: orderedTabs, onReselect: onReselect)
+        Coordinator(
+            selectedTab: selectedTab,
+            orderedTabs: orderedTabs,
+            onSelect: onSelect,
+            onReselect: onReselect
+        )
     }
 
     final class Coordinator: NSObject, UITabBarControllerDelegate {
         var selectedTab: Tab
         var orderedTabs: [Tab]
+        var onSelect: (Tab) -> Void
         var onReselect: (Tab) -> Void
         private weak var tabBarController: UITabBarController?
+        private weak var tabBar: UITabBar?
+        private weak var tabBarTapRecognizer: UITapGestureRecognizer?
         private weak var previousDelegate: UITabBarControllerDelegate?
 
-        init(selectedTab: Tab, orderedTabs: [Tab], onReselect: @escaping (Tab) -> Void) {
+        init(selectedTab: Tab,
+             orderedTabs: [Tab],
+             onSelect: @escaping (Tab) -> Void,
+             onReselect: @escaping (Tab) -> Void) {
             self.selectedTab = selectedTab
             self.orderedTabs = orderedTabs
+            self.onSelect = onSelect
             self.onReselect = onReselect
         }
 
-        func attach(to tabBarController: UITabBarController) {
-            guard self.tabBarController !== tabBarController else { return }
+        func attach(to tabBarController: UITabBarController?) {
+            guard let tabBarController else { return }
+            if self.tabBarController === tabBarController {
+                syncSelectionFromUIKit(reason: "controller-resolve", allowsReselect: false)
+                return
+            }
             previousDelegate = tabBarController.delegate
             self.tabBarController = tabBarController
             tabBarController.delegate = self
+            attach(to: tabBarController.tabBar)
+            syncSelectionFromUIKit(reason: "controller-attach", allowsReselect: false)
+        }
+
+        func attach(to tabBar: UITabBar?) {
+            guard let tabBar else { return }
+            if self.tabBar === tabBar {
+                syncSelectionFromUIKit(reason: "tabbar-resolve", allowsReselect: false)
+                return
+            }
+            if let tabBarTapRecognizer, let oldTabBar = self.tabBar {
+                oldTabBar.removeGestureRecognizer(tabBarTapRecognizer)
+            }
+            let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTabBarTap(_:)))
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            tabBar.addGestureRecognizer(recognizer)
+            self.tabBar = tabBar
+            tabBarTapRecognizer = recognizer
+            syncSelectionFromUIKit(reason: "tabbar-attach", allowsReselect: false)
         }
 
         func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
             let index = tabBarController.viewControllers?.firstIndex(of: viewController) ?? tabBarController.selectedIndex
-            if orderedTabs.indices.contains(index) {
-                let tapped = orderedTabs[index]
-                NavigationTrace.log("UITabBar didSelect", metadata: [
-                    "index": String(index),
-                    "tab": "\(tapped)",
-                    "selectedBeforeDelegate": "\(selectedTab)",
-                    "viewController": String(describing: type(of: viewController)),
-                ], includeStack: true)
-                if tapped == selectedTab {
+            applySelection(index: index, reason: "delegate", allowsReselect: true, viewController: viewController)
+            previousDelegate?.tabBarController?(tabBarController, didSelect: viewController)
+        }
+
+        @objc
+        private func handleTabBarTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.syncSelectionFromUIKit(reason: "tap-gesture", allowsReselect: true)
+            }
+        }
+
+        private func syncSelectionFromUIKit(reason: String, allowsReselect: Bool) {
+            if let tabBarController {
+                applySelection(index: tabBarController.selectedIndex, reason: reason, allowsReselect: allowsReselect)
+                return
+            }
+            guard let tabBar,
+                  let selectedItem = tabBar.selectedItem,
+                  let index = tabBar.items?.firstIndex(of: selectedItem) else { return }
+            applySelection(index: index, reason: reason, allowsReselect: allowsReselect)
+        }
+
+        private func applySelection(index: Int,
+                                    reason: String,
+                                    allowsReselect: Bool,
+                                    viewController: UIViewController? = nil) {
+            guard orderedTabs.indices.contains(index) else { return }
+            let tapped = orderedTabs[index]
+            NavigationTrace.log("UITabBar selection sync", metadata: [
+                "index": String(index),
+                "reason": reason,
+                "tab": "\(tapped)",
+                "selectedBeforeSync": "\(selectedTab)",
+                "viewController": viewController.map { String(describing: type(of: $0)) } ?? "nil",
+            ], includeStack: reason == "delegate" || reason == "tap-gesture")
+            if tapped == selectedTab {
+                if allowsReselect {
                     onReselect(tapped)
                 }
+            } else {
+                onSelect(tapped)
             }
-            previousDelegate?.tabBarController?(tabBarController, didSelect: viewController)
         }
     }
 
     final class ObserverController: UIViewController {
-        var onResolve: ((UITabBarController?) -> Void)?
+        var onResolve: ((UITabBarController?, UITabBar?) -> Void)?
 
         override func didMove(toParent parent: UIViewController?) {
             super.didMove(toParent: parent)
@@ -108,7 +177,7 @@ struct TabBarReselectObserver<Tab: Hashable>: UIViewControllerRepresentable {
         func resolve() {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.onResolve?(self.findTabBarController())
+                self.onResolve?(self.findTabBarController(), self.findTabBar())
             }
         }
 
@@ -121,6 +190,13 @@ struct TabBarReselectObserver<Tab: Hashable>: UIViewControllerRepresentable {
                 current = node.parent
             }
             return view.window?.rootViewController?.findDescendantTabBarController()
+        }
+
+        private func findTabBar() -> UITabBar? {
+            if let tabBar = findTabBarController()?.tabBar {
+                return tabBar
+            }
+            return view.window?.rootViewController?.view.findDescendantTabBar()
         }
     }
 }
@@ -138,6 +214,20 @@ private extension UIViewController {
         if let presentedViewController,
            let found = presentedViewController.findDescendantTabBarController() {
             return found
+        }
+        return nil
+    }
+}
+
+private extension UIView {
+    func findDescendantTabBar() -> UITabBar? {
+        if let tabBar = self as? UITabBar {
+            return tabBar
+        }
+        for subview in subviews {
+            if let found = subview.findDescendantTabBar() {
+                return found
+            }
         }
         return nil
     }

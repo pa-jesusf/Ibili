@@ -1427,15 +1427,19 @@ private struct MainTabView: View {
             TabView(selection: $selectedTab) {
                 Tab("首页", systemImage: "house.fill", value: MainTab.home) {
                     HomeView(section: $homeSection)
+                        .onAppear { syncVisibleTab(.home, reason: "homeAppear") }
                 }
                 Tab("动态", systemImage: "sparkles", value: MainTab.dynamic) {
                     DynamicFeedView(scope: $dynamicScope)
+                        .onAppear { syncVisibleTab(.dynamic, reason: "dynamicAppear") }
                 }
                 Tab("我的", systemImage: "person.crop.circle", value: MainTab.profile) {
                     ProfileView()
+                        .onAppear { syncVisibleTab(.profile, reason: "profileAppear") }
                 }
                 Tab(value: MainTab.search, role: .search) {
                     SearchView()
+                        .onAppear { syncVisibleTab(.search, reason: "searchAppear") }
                 }
             }
             .tint(IbiliTheme.accent)
@@ -1452,20 +1456,24 @@ private struct MainTabView: View {
         } else {
             TabView(selection: $selectedTab) {
                 HomeView(section: $homeSection)
-                .tabItem { Label("首页", systemImage: "house.fill") }
-                .tag(MainTab.home)
+                    .onAppear { syncVisibleTab(.home, reason: "homeAppear") }
+                    .tabItem { Label("首页", systemImage: "house.fill") }
+                    .tag(MainTab.home)
 
                 DynamicFeedView(scope: $dynamicScope)
-                .tabItem { Label("动态", systemImage: "sparkles") }
-                .tag(MainTab.dynamic)
+                    .onAppear { syncVisibleTab(.dynamic, reason: "dynamicAppear") }
+                    .tabItem { Label("动态", systemImage: "sparkles") }
+                    .tag(MainTab.dynamic)
 
                 SearchView()
+                    .onAppear { syncVisibleTab(.search, reason: "searchAppear") }
                     .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                     .tag(MainTab.search)
 
                 ProfileView()
-                .tabItem { Label("我的", systemImage: "person.crop.circle") }
-                .tag(MainTab.profile)
+                    .onAppear { syncVisibleTab(.profile, reason: "profileAppear") }
+                    .tabItem { Label("我的", systemImage: "person.crop.circle") }
+                    .tag(MainTab.profile)
             }
             .tint(IbiliTheme.accent)
             .toolbarBackground(.hidden, for: .tabBar)
@@ -1480,10 +1488,33 @@ private struct MainTabView: View {
         }
     }
 
+    private func syncVisibleTab(_ tab: MainTab, reason: String) {
+        guard selectedTab != tab else { return }
+        NavigationTrace.log("根 tab 可见页面同步", metadata: [
+            "from": "\(selectedTab)",
+            "reason": reason,
+            "to": "\(tab)",
+        ], includeStack: true)
+        selectedTab = tab
+    }
+
     private func tabReselectObserver(order: [MainTab]) -> some View {
         TabBarReselectObserver(
             selectedTab: selectedTab,
             orderedTabs: order,
+            onSelect: { tab in
+                guard selectedTab != tab else { return }
+                NavigationTrace.withUserAction("tab.select", metadata: [
+                    "from": "\(selectedTab)",
+                    "to": "\(tab)",
+                ]) {
+                    NavigationTrace.log("根 tab 选择同步", metadata: [
+                        "from": "\(selectedTab)",
+                        "to": "\(tab)",
+                    ], includeStack: true)
+                    selectedTab = tab
+                }
+            },
             onReselect: { tab in
                 NavigationTrace.withUserAction("tab.reselect", metadata: [
                     "tab": "\(tab)",
