@@ -276,7 +276,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
             danmakuCanvas = nil
             vc.delegate = nil
             if playerWasAttached {
-                AppLog.debug("player", "AVKit 容器拆除时保留 player 绑定，等待会话延迟销毁", metadata: [
+                vc.player = nil
+                assignedPlayerID = nil
+                AppLog.debug("player", "AVKit 容器拆除时断开 player 绑定", metadata: [
                     "sessionID": parent.sessionID.uuidString,
                 ])
             }

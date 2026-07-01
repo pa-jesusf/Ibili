@@ -459,24 +459,33 @@ struct RootView: View {
 
 @MainActor
 final class PlayerPresentationNavigationGuard: ObservableObject {
-    private var fullscreenExitProtectionDeadline = Date.distantPast
+    private static let transitionFailSafeWindow: TimeInterval = PlayerTransientPauseSuppressionContext.nativeFullscreenExit.window
+    private static let postTransitionProtectionWindow: TimeInterval = 0.18
+
+    private var fullscreenTransitionIsActive = false
+    private var tabSelectionProtectionDeadline = Date.distantPast
+    private var pathShrinkProtectionDeadline = Date.distantPast
     private var releaseWork: DispatchWorkItem?
 
     var isProtectingNativeFullscreenExit: Bool {
-        Date() < fullscreenExitProtectionDeadline
+        fullscreenTransitionIsActive || Date() < tabSelectionProtectionDeadline
     }
 
     func beginNativeFullscreenExitProtection() {
-        armNativeFullscreenExitProtection()
+        fullscreenTransitionIsActive = true
+        armNativeFullscreenProtection(tabWindow: Self.transitionFailSafeWindow,
+                                      pathWindow: Self.transitionFailSafeWindow)
     }
 
     func endNativeFullscreenExitProtection() {
-        armNativeFullscreenExitProtection()
+        fullscreenTransitionIsActive = false
+        armNativeFullscreenProtection(tabWindow: Self.transitionFailSafeWindow,
+                                      pathWindow: Self.postTransitionProtectionWindow)
     }
 
     func shouldAcceptPathChange(from oldPath: [DeepLinkRouter.SessionRoute],
                                 to newPath: [DeepLinkRouter.SessionRoute]) -> Bool {
-        guard isProtectingNativeFullscreenExit,
+        guard isProtectingPathShrink,
               newPath.count < oldPath.count,
               let oldForeground = oldPath.last,
               oldForeground.playerRoute != nil || oldForeground.liveRoute != nil else {
@@ -496,14 +505,23 @@ final class PlayerPresentationNavigationGuard: ObservableObject {
         return !removedForeground
     }
 
-    private func armNativeFullscreenExitProtection() {
-        fullscreenExitProtectionDeadline = Date().addingTimeInterval(PlayerTransientPauseSuppressionContext.nativeFullscreenExit.window)
+    private var isProtectingPathShrink: Bool {
+        fullscreenTransitionIsActive || Date() < pathShrinkProtectionDeadline
+    }
+
+    private func armNativeFullscreenProtection(tabWindow: TimeInterval, pathWindow: TimeInterval) {
+        tabSelectionProtectionDeadline = Date().addingTimeInterval(tabWindow)
+        pathShrinkProtectionDeadline = Date().addingTimeInterval(pathWindow)
         releaseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
+            self?.fullscreenTransitionIsActive = false
             self?.releaseWork = nil
         }
         releaseWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + PlayerTransientPauseSuppressionContext.nativeFullscreenExit.window, execute: work)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(tabWindow, pathWindow),
+            execute: work
+        )
     }
 }
 
