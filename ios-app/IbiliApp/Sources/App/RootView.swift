@@ -1573,7 +1573,8 @@ private struct MainTabView: View {
             vm: searchViewModel,
             history: searchHistory,
             isFiltersSheetPresented: $isSearchFiltersSheetPresented,
-            hostsSearchField: false
+            hostsSearchField: false,
+            onProgrammaticSubmit: dismissSearchPresentationAfterSubmit
         )
     }
 
@@ -1624,6 +1625,7 @@ private struct MainTabView: View {
         ]) {
             searchHistory.push(searchViewModel.query)
             searchViewModel.submit()
+            dismissSearchPresentationAfterSubmit()
         }
     }
 
@@ -1636,6 +1638,16 @@ private struct MainTabView: View {
             "isPresented": String(shouldPresent),
         ])
         isSearchPresented = shouldPresent
+    }
+
+    private func dismissSearchPresentationAfterSubmit() {
+        guard isSearchPresented else { return }
+        NavigationTrace.log("系统搜索呈现请求", metadata: [
+            "reason": "submit",
+            "selectedTab": "\(selectedTab)",
+            "isPresented": "false",
+        ])
+        isSearchPresented = false
     }
 }
 

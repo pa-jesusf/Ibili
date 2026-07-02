@@ -34,7 +34,7 @@ struct SearchFiltersSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("应用") {
-                        vm.submit()
+                        vm.resubmitSubmittedQuery()
                         dismiss()
                     }
                     .foregroundStyle(IbiliTheme.accent)

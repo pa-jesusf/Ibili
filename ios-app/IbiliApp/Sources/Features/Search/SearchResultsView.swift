@@ -315,7 +315,7 @@ struct SearchResultsView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(IbiliTheme.textSecondary)
             if retry {
-                Button("重试") { vm.submit() }
+                Button("重试") { vm.resubmitSubmittedQuery() }
                     .buttonStyle(.borderedProminent)
                     .tint(IbiliTheme.accent)
             }

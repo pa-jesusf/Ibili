@@ -19,13 +19,14 @@ final class SearchViewModel: ObservableObject {
     @Published var selectedType: SearchResultType = .video {
         didSet {
             guard oldValue != selectedType else { return }
-            guard hasSubmittedQuery, query == submittedQuery, selectedType.isImplemented else { return }
+            guard hasActiveSubmittedQuery, selectedType.isImplemented else { return }
+            let activeQuery = submittedQuery
             results = []
             page = 0
             totalResults = 0
             hasMore = true
             errorText = nil
-            Task { await fetchPage(1) }
+            Task { await fetchPage(1, keyword: activeQuery) }
         }
     }
     @Published var selectedCategory: SearchCategory? = nil
@@ -44,14 +45,18 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var errorText: String? = nil
 
     /// The exact query string that produced `results`. Distinct from
-    /// `query` so the UI can hide stale results as soon as the user
-    /// starts editing the search field; we only consider results
-    /// "current" when `query == submittedQuery`.
+    /// `query` because SwiftUI's system search field may write transient
+    /// editing text back into `query` while the submitted results remain
+    /// the active content.
     @Published private(set) var submittedQuery: String = ""
 
     /// `true` once the user has triggered at least one search since the
     /// view appeared. Drives the landing → results swap.
     @Published private(set) var hasSubmittedQuery: Bool = false
+
+    var hasActiveSubmittedQuery: Bool {
+        hasSubmittedQuery && !submittedQuery.isEmpty
+    }
 
     private let client: CoreClient
 
@@ -62,7 +67,22 @@ final class SearchViewModel: ObservableObject {
     /// Run a fresh search using the current query + filter state.
     /// Empty / whitespace queries are ignored.
     func submit() {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        submitResolvedQuery(query)
+    }
+
+    /// Fill the search box with the given query and immediately fire a
+    /// new search.
+    func submit(query: String, category: SearchCategory? = nil) {
+        selectedCategory = category
+        submitResolvedQuery(query)
+    }
+
+    func resubmitSubmittedQuery() {
+        submitResolvedQuery(submittedQuery)
+    }
+
+    private func submitResolvedQuery(_ rawQuery: String) {
+        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         query = trimmed
         submittedQuery = trimmed
@@ -72,32 +92,25 @@ final class SearchViewModel: ObservableObject {
         totalResults = 0
         hasMore = true
         errorText = nil
-        Task { await fetchPage(1) }
-    }
-
-    /// Fill the search box with the given query and immediately fire a
-    /// new search.
-    func submit(query: String, category: SearchCategory? = nil) {
-        self.query = query
-        if let category {
-            selectedCategory = category
-        }
-        submit()
+        Task { await fetchPage(1, keyword: trimmed) }
     }
 
     func loadNextPage() {
-        guard hasMore, !isLoading else { return }
-        Task { await fetchPage(page + 1) }
+        guard hasActiveSubmittedQuery, hasMore, !isLoading else { return }
+        let activeQuery = submittedQuery
+        Task { await fetchPage(page + 1, keyword: activeQuery) }
     }
 
     func loadPreviousPage() {
-        guard page > 1, !isLoading else { return }
-        Task { await fetchPage(page - 1) }
+        guard hasActiveSubmittedQuery, page > 1, !isLoading else { return }
+        let activeQuery = submittedQuery
+        Task { await fetchPage(page - 1, keyword: activeQuery) }
     }
 
     func loadPage(_ targetPage: Int64) {
-        guard targetPage >= 1, targetPage != page, !isLoading else { return }
-        Task { await fetchPage(targetPage) }
+        guard hasActiveSubmittedQuery, targetPage >= 1, targetPage != page, !isLoading else { return }
+        let activeQuery = submittedQuery
+        Task { await fetchPage(targetPage, keyword: activeQuery) }
     }
 
     /// Clear results and return to the landing state. Used when the
@@ -135,17 +148,18 @@ final class SearchViewModel: ObservableObject {
 
     // MARK: - Private
 
-    private func fetchPage(_ targetPage: Int64) async {
+    private func fetchPage(_ targetPage: Int64, keyword: String) async {
         guard selectedType.isImplemented else {
             isLoading = false
             hasMore = false
             return
         }
+        let queryCopy = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !queryCopy.isEmpty else { return }
 
         isLoading = true
         defer { isLoading = false }
 
-        let queryCopy = query
         let typeCopy = selectedType
         let videoOrderCopy = order
         let durationCopy = durationFilter
@@ -229,8 +243,8 @@ final class SearchViewModel: ObservableObject {
                     )
                 }.value
             }
-            // Guard against late callbacks for a stale query.
-            guard queryCopy == self.query, typeCopy == self.selectedType else { return }
+            // Guard against late callbacks for a stale submitted search.
+            guard queryCopy == self.submittedQuery, typeCopy == self.selectedType else { return }
             self.page = targetPage
             self.results = pageData.items
             self.totalResults = pageData.numResults

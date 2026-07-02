@@ -30,10 +30,7 @@ struct SearchRouteView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if vm.hasSubmittedQuery,
-           !vm.submittedQuery.isEmpty,
-           vm.query == vm.submittedQuery,
-           vm.selectedType.hasFilters {
+        if vm.hasActiveSubmittedQuery, vm.selectedType.hasFilters {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     isFiltersSheetPresented = true

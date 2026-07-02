@@ -7,6 +7,7 @@ struct SearchView: View {
     @ObservedObject var history: SearchHistoryStore
     @Binding var isFiltersSheetPresented: Bool
     let hostsSearchField: Bool
+    let onProgrammaticSubmit: () -> Void
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.dismissSearch) private var dismissSearch
     @Environment(\.rootContentNavigation) private var rootContentNavigation
@@ -14,11 +15,13 @@ struct SearchView: View {
     init(vm: SearchViewModel,
          history: SearchHistoryStore,
          isFiltersSheetPresented: Binding<Bool>,
-         hostsSearchField: Bool = true) {
+         hostsSearchField: Bool = true,
+         onProgrammaticSubmit: @escaping () -> Void = {}) {
         self.vm = vm
         self.history = history
         _isFiltersSheetPresented = isFiltersSheetPresented
         self.hostsSearchField = hostsSearchField
+        self.onProgrammaticSubmit = onProgrammaticSubmit
     }
 
     @ViewBuilder
@@ -64,9 +67,7 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if vm.hasSubmittedQuery,
-           !vm.submittedQuery.isEmpty,
-           vm.query == vm.submittedQuery {
+        if vm.hasActiveSubmittedQuery {
             VStack(spacing: 0) {
                 SearchTypeBar(vm: vm)
                 Divider().opacity(0.4)
@@ -74,21 +75,17 @@ struct SearchView: View {
             }
         } else {
             SearchLandingView(vm: vm, history: history) { query, category in
-                vm.selectedCategory = category
-                vm.query = query
+                vm.submit(query: query, category: category)
                 history.push(query)
-                vm.submit()
                 dismissSearch()
+                onProgrammaticSubmit()
             }
         }
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if vm.hasSubmittedQuery,
-           !vm.submittedQuery.isEmpty,
-           vm.query == vm.submittedQuery,
-           vm.selectedType.hasFilters {
+        if vm.hasActiveSubmittedQuery, vm.selectedType.hasFilters {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     isFiltersSheetPresented = true
@@ -107,6 +104,7 @@ struct SearchView: View {
             history.push(vm.query)
             vm.submit()
             dismissSearch()
+            onProgrammaticSubmit()
         }
     }
 }
