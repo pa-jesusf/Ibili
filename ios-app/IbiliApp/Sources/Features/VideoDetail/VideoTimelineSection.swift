@@ -1,13 +1,29 @@
 import SwiftUI
 
+/// Once-per-second playback position for the detail timeline UI.
+///
+/// Deliberately held by `PlayerView` via plain `@State` (NOT
+/// `@StateObject`) and passed down as a plain `let` so the frequent
+/// `seconds` updates do not invalidate the player page's `body` —
+/// re-rendering the whole page every second tears down the open
+/// toolbar `Menu` (visible flicker + taps that never fire). Only
+/// `VideoTimelineSection` observes it, so the 1 Hz redraw is limited
+/// to the timeline cards.
+@MainActor
+final class PlaybackTimelineClock: ObservableObject {
+    @Published var seconds: Double = 0
+    /// Dedup guard so the observer only publishes on whole-second changes.
+    var lastWholeSecond: Int64 = -1
+}
+
 struct VideoTimelineSection: View {
     let viewPoints: [VideoViewPointDTO]
-    let currentSeconds: Double
+    @ObservedObject var timeline: PlaybackTimelineClock
     let onSeek: (Int64) -> Void
 
     private var currentID: VideoViewPointDTO.ID? {
-        guard currentSeconds.isFinite else { return nil }
-        let second = Int64(currentSeconds.rounded(.down))
+        guard timeline.seconds.isFinite else { return nil }
+        let second = Int64(timeline.seconds.rounded(.down))
         return viewPoints.first { second >= $0.fromSec && second < $0.toSec }?.id
     }
 

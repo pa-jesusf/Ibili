@@ -23,7 +23,9 @@ struct VideoDetailContent: View {
     @ObservedObject private var interaction: VideoInteractionService
     private let onScrollOffsetChange: ((CGFloat) -> Void)?
     private let viewPoints: [VideoViewPointDTO]
-    private let currentPlaybackSeconds: Double
+    // Plain `let` on purpose: only `VideoTimelineSection` observes the
+    // clock, so its per-second ticks don't re-render this whole view.
+    private let playbackTimeline: PlaybackTimelineClock
     private let onSeekToTime: ((Int64) -> Void)?
     private let onNextPartCandidateChange: ((PlayerNextPartCandidate?) -> Void)?
     @EnvironmentObject private var router: DeepLinkRouter
@@ -56,7 +58,7 @@ struct VideoDetailContent: View {
          commentListViewModel: CommentListViewModel,
          interactionService: VideoInteractionService,
          viewPoints: [VideoViewPointDTO] = [],
-         currentPlaybackSeconds: Double = 0,
+         playbackTimeline: PlaybackTimelineClock,
          onSeekToTime: ((Int64) -> Void)? = nil,
          onNextPartCandidateChange: ((PlayerNextPartCandidate?) -> Void)? = nil,
          onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
@@ -68,7 +70,7 @@ struct VideoDetailContent: View {
         self.commentListViewModel = commentListViewModel
         self._interaction = ObservedObject(wrappedValue: interactionService)
         self.viewPoints = viewPoints
-        self.currentPlaybackSeconds = currentPlaybackSeconds
+        self.playbackTimeline = playbackTimeline
         self.onSeekToTime = onSeekToTime
         self.onNextPartCandidateChange = onNextPartCandidateChange
         self.onScrollOffsetChange = onScrollOffsetChange
@@ -513,7 +515,7 @@ struct VideoDetailContent: View {
             if !viewPoints.isEmpty {
                 VideoTimelineSection(
                     viewPoints: viewPoints,
-                    currentSeconds: currentPlaybackSeconds,
+                    timeline: playbackTimeline,
                     onSeek: { seconds in
                         onSeekToTime?(seconds)
                     }

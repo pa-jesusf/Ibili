@@ -346,7 +346,17 @@ final class PlayerViewModel: ObservableObject {
             // single-shot — `observeItemStatus` consumes it on the
             // first `.readyToPlay`, then zeroes the field so future
             // quality switches don't re-seek backward.
-            self.pendingResumeMs = info.lastPlayTimeMs
+            //
+            // `lastPlayTimeMs` is aid-level: the server reports the most
+            // recent position across ALL parts, with `lastPlayCid`
+            // identifying which part it belongs to. Only honor it when
+            // it belongs to the part we are loading, otherwise switching
+            // 分P would inherit another part's progress.
+            if info.lastPlayCid == 0 || info.lastPlayCid == item.cid {
+                self.pendingResumeMs = info.lastPlayTimeMs
+            } else {
+                self.pendingResumeMs = 0
+            }
 
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else {
@@ -1010,13 +1020,23 @@ final class PlayerViewModel: ObservableObject {
               targetPlayer === player,
               targetPlayer.timeControlStatus == .paused,
               targetPlayer.rate == 0 else { return }
-        isPausedForDetailCollapse = true
+        // Guard against same-value re-publishing: `@Published` fires
+        // `objectWillChange` on EVERY assignment, and this runs on the
+        // timeControlStatus KVO path which fires in bursts while
+        // buffering. Each spurious publish rebuilds the page body and
+        // tears down the open toolbar `Menu` (flicker + dead taps).
+        if !isPausedForDetailCollapse {
+            isPausedForDetailCollapse = true
+        }
     }
 
     private func clearPausedForDetailCollapse() {
         pausedForDetailCollapseConfirmationWork?.cancel()
         pausedForDetailCollapseConfirmationWork = nil
-        isPausedForDetailCollapse = false
+        // Same-value guard: see `confirmPausedForDetailCollapse`.
+        if isPausedForDetailCollapse {
+            isPausedForDetailCollapse = false
+        }
     }
 
     func armTransientPauseSuppression(for context: PlayerTransientPauseSuppressionContext) {
@@ -1891,7 +1911,12 @@ struct PlayerView: View {
     @State private var subtitleEnabled = false
     @State private var subtitleLoadingID: String?
     @State private var selectedSubtitleID: String?
-    @StateObject private var offlineService = OfflineDownloadService.shared
+    /// Plain `let` on purpose (NOT `@StateObject`): this page only calls
+    /// methods on the service and never reads its `@Published` state in
+    /// `body`. Subscribing would re-render the page (and tear down the
+    /// open toolbar `Menu`) every time a background download mutates
+    /// `entries`.
+    private let offlineService = OfflineDownloadService.shared
     @State private var playerActionToast: String?
     @State private var playerActionToastWork: DispatchWorkItem?
     /// One-shot transient hint that surfaces when the user enables
@@ -1910,8 +1935,11 @@ struct PlayerView: View {
     @State private var danmakuTimeJumpObserver: NSObjectProtocol?
     @State private var detailTimelineObserver: Any?
     @State private var detailTimelineObserverPlayer: AVPlayer?
-    @State private var detailTimelineSeconds: Double = 0
-    @State private var lastDetailTimelineWholeSecond: Int64 = -1
+    /// Held via `@State` (NOT `@StateObject`) so the per-second tick
+    /// does not invalidate this view's `body`; rebuilding the body every
+    /// second destroys the open toolbar `Menu` (flicker + dead taps).
+    /// Only `VideoTimelineSection` down in the detail area observes it.
+    @State private var detailTimelineClock = PlaybackTimelineClock()
     @State private var nextPartCandidate: PlayerNextPartCandidate?
     @State private var detailScrollOffsetForPlayerCollapse: CGFloat = 0
     @State private var isPlayerCollapseArmed = false
@@ -2207,8 +2235,8 @@ struct PlayerView: View {
         guard let player = vm.player else { return }
         let target = CMTime(seconds: Double(max(0, seconds)), preferredTimescale: 600)
         Task { @MainActor in
-            detailTimelineSeconds = Double(max(0, seconds))
-            lastDetailTimelineWholeSecond = seconds
+            detailTimelineClock.seconds = Double(max(0, seconds))
+            detailTimelineClock.lastWholeSecond = seconds
             await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
             if player.rate == 0 {
                 vm.handle(.playbackIntentChanged(.play))
@@ -2313,7 +2341,7 @@ struct PlayerView: View {
                                    commentListViewModel: vm.pageCache.commentListViewModel,
                                    interactionService: vm.pageCache.interactionService,
                                    viewPoints: vm.viewPoints,
-                                   currentPlaybackSeconds: detailTimelineSeconds,
+                                   playbackTimeline: detailTimelineClock,
                                    onSeekToTime: { seconds in seekTo(seconds: seconds) },
                                    onNextPartCandidateChange: { candidate in
                                        nextPartCandidate = candidate
@@ -2845,8 +2873,9 @@ struct PlayerView: View {
     private func configureDetailTimelineObserver(for player: AVPlayer) {
         clearDetailTimelineObserver()
         detailTimelineObserverPlayer = player
+        let clock = detailTimelineClock
         if let seconds = vm.currentElapsedPlaybackTime {
-            detailTimelineSeconds = seconds
+            clock.seconds = seconds
         }
         detailTimelineObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.6, preferredTimescale: 600),
@@ -2856,9 +2885,9 @@ struct PlayerView: View {
                 let seconds = time.seconds
                 guard seconds.isFinite, seconds >= 0 else { return }
                 let wholeSecond = Int64(seconds.rounded(.down))
-                guard wholeSecond != lastDetailTimelineWholeSecond else { return }
-                lastDetailTimelineWholeSecond = wholeSecond
-                detailTimelineSeconds = seconds
+                guard wholeSecond != clock.lastWholeSecond else { return }
+                clock.lastWholeSecond = wholeSecond
+                clock.seconds = seconds
             }
         }
     }
@@ -2869,7 +2898,7 @@ struct PlayerView: View {
         }
         detailTimelineObserver = nil
         detailTimelineObserverPlayer = nil
-        lastDetailTimelineWholeSecond = -1
+        detailTimelineClock.lastWholeSecond = -1
     }
 
     private func resetDanmakuSegmentLoading() {

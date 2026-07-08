@@ -158,6 +158,11 @@ private struct AvatarRing: View {
 
 private struct ProfileQuickActions: View {
     let mid: Int64
+    // Route-based pushes (instead of plain `NavigationLink`) keep the
+    // profile stack homogeneous with the value-based `.player` pushes,
+    // so opening a video from these lists gets the native push
+    // transition + toolbar morph.
+    @Environment(\.rootContentNavigation) private var rootNavigation
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -166,28 +171,28 @@ private struct ProfileQuickActions: View {
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 12) {
-            NavigationLink {
-                HistoryListView()
+            Button {
+                rootNavigation.openProfileList(.history)
             } label: {
                 ActionTile(symbol: "clock.arrow.circlepath", title: "历史记录")
             }
-            NavigationLink {
-                WatchLaterListView()
+            Button {
+                rootNavigation.openProfileList(.watchLater)
             } label: {
                 ActionTile(symbol: "list.bullet.rectangle.portrait", title: "稍后再看")
             }
-            NavigationLink {
-                FavoritesFolderListView(mid: mid)
+            Button {
+                rootNavigation.openProfileList(.favorites(mid: mid))
             } label: {
                 ActionTile(symbol: "star.fill", title: "我的收藏")
             }
-            NavigationLink {
-                SubscriptionFolderListView(mid: mid)
+            Button {
+                rootNavigation.openProfileList(.subscriptions(mid: mid))
             } label: {
                 ActionTile(symbol: "rectangle.stack.badge.person.crop", title: "我的订阅")
             }
-            NavigationLink {
-                OfflineCacheListView()
+            Button {
+                rootNavigation.openProfileList(.offlineCache)
             } label: {
                 ActionTile(symbol: "square.and.arrow.down", title: "离线缓存")
             }

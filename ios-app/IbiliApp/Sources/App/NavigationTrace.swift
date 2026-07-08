@@ -445,6 +445,8 @@ extension RootContentRoute {
             return "article:\(kind):\(id)"
         case .search(let keyword):
             return "search:\(keyword)"
+        case .profileList(let kind):
+            return "profileList:\(kind.traceName)"
         }
     }
 
@@ -462,6 +464,8 @@ extension RootContentRoute {
             return "article(articleID=\(id),kind=\(kind))"
         case .search(let keyword):
             return "search(keyword=\(keyword))"
+        case .profileList(let kind):
+            return "profileList(kind=\(kind.traceName))"
         }
     }
 
@@ -479,6 +483,8 @@ extension RootContentRoute {
             return ["routeKind": "article", "articleID": id, "kind": kind]
         case .search(let keyword):
             return ["routeKind": "search", "keyword": keyword]
+        case .profileList(let kind):
+            return ["routeKind": "profileList", "kind": kind.traceName]
         }
     }
 }

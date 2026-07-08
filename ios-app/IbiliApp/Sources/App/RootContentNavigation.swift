@@ -1,5 +1,34 @@
 import SwiftUI
 
+/// Profile sub-list pages (history / watch-later / …) pushed from the
+/// Profile tab. Route-based (instead of plain `NavigationLink`) so the
+/// stack stays homogeneous with the value-based `.player` pushes —
+/// mixing view-destination links with path pushes in the same
+/// `NavigationStack` breaks the native push transition (no toolbar
+/// morph) when a video is opened from inside these lists.
+enum ProfileListKind: Hashable {
+    case history
+    case watchLater
+    case favorites(mid: Int64)
+    case subscriptions(mid: Int64)
+    case offlineCache
+
+    var traceName: String {
+        switch self {
+        case .history:
+            return "history"
+        case .watchLater:
+            return "watchLater"
+        case .favorites(let mid):
+            return "favorites:\(mid)"
+        case .subscriptions(let mid):
+            return "subscriptions:\(mid)"
+        case .offlineCache:
+            return "offlineCache"
+        }
+    }
+}
+
 enum RootContentRoute: Hashable {
     case player(DeepLinkRouter.PlayerRoute)
     case live(DeepLinkRouter.LiveRoute)
@@ -7,6 +36,7 @@ enum RootContentRoute: Hashable {
     case dynamicDetail(DynamicItemDTO)
     case article(id: String, kind: String)
     case search(keyword: String)
+    case profileList(ProfileListKind)
 
     var playerRoute: DeepLinkRouter.PlayerRoute? {
         guard case .player(let route) = self else { return nil }
@@ -18,7 +48,11 @@ enum RootContentRoute: Hashable {
         return route
     }
 
-    var sessionRoute: DeepLinkRouter.SessionRoute {
+    /// Session-world representation used by the presentation guard and
+    /// PiP snapshots. Profile list pages have no session equivalent
+    /// (they never appear in the media host worlds), so they map to
+    /// `nil` and are dropped from snapshots via `compactMap`.
+    var sessionRoute: DeepLinkRouter.SessionRoute? {
         switch self {
         case .player(let route):
             return .player(route)
@@ -32,6 +66,8 @@ enum RootContentRoute: Hashable {
             return .article(DeepLinkRouter.ArticleRoute(articleID: id, kind: kind))
         case .search(let keyword):
             return .search(DeepLinkRouter.SearchRoute(keyword: keyword))
+        case .profileList:
+            return nil
         }
     }
 
@@ -172,6 +208,17 @@ struct RootContentNavigationActions {
     }
 
     @MainActor
+    func openProfileList(_ kind: ProfileListKind) {
+        NavigationTrace.log("根内容导航请求", metadata: [
+            "request": "openProfileList",
+            "kind": kind.traceName,
+            "transitionWorld": "root-content",
+            "transitionMode": "intent",
+        ], includeStack: true)
+        open(.profileList(kind))
+    }
+
+    @MainActor
     func handle(_ url: URL, router: DeepLinkRouter) -> OpenURLAction.Result {
         guard url.scheme?.lowercased() == "ibili" else { return .systemAction }
         NavigationTrace.log("根内容 openURL", metadata: [
@@ -280,17 +327,20 @@ struct RootContentNavigationStack<Root: View>: View {
         let navigation = actions
         NavigationStack(path: controlledPath) {
             root()
-                .environment(\.rootContentNavigation, navigation)
                 .navigationTracePage("RootContent:\(name)", metadata: rootTraceMetadata)
                 .navigationDestination(for: RootContentRoute.self) { route in
                     destinationView(for: route)
-                        .environment(\.rootContentNavigation, navigation)
                         .navigationTracePage("RootContentRoute", metadata: route.navigationTraceMetadata.merging([
                             "stack": name,
                             "route": route.navigationTraceSummary,
                         ]) { current, _ in current })
                 }
         }
+        // Injected on the stack (not just `root()`) so views pushed via
+        // plain `NavigationLink` (history / watch-later / favorites lists
+        // under Profile) also resolve the real actions instead of the
+        // no-op `EnvironmentKey` default, which silently swallowed taps.
+        .environment(\.rootContentNavigation, navigation)
         .environment(\.openURL, OpenURLAction { url in
             navigation.handle(url, router: router)
         })
@@ -331,8 +381,8 @@ struct RootContentNavigationStack<Root: View>: View {
             set: { newPath in
                 let oldPath = path
                 let accepted = presentationGuard.shouldAcceptPathChange(
-                    from: oldPath.map(\.sessionRoute),
-                    to: newPath.map(\.sessionRoute)
+                    from: oldPath.compactMap(\.sessionRoute),
+                    to: newPath.compactMap(\.sessionRoute)
                 )
                 NavigationTrace.log(accepted ? "根内容 NavigationStack path 写回" : "根内容 NavigationStack path 写回被拒绝", metadata: [
                     "stack": name,
@@ -376,6 +426,24 @@ struct RootContentNavigationStack<Root: View>: View {
             ArticleView(articleID: id, kind: kind)
         case .search(let keyword):
             SearchRouteView(keyword: keyword)
+        case .profileList(let kind):
+            profileListView(for: kind)
+        }
+    }
+
+    @ViewBuilder
+    private func profileListView(for kind: ProfileListKind) -> some View {
+        switch kind {
+        case .history:
+            HistoryListView()
+        case .watchLater:
+            WatchLaterListView()
+        case .favorites(let mid):
+            FavoritesFolderListView(mid: mid)
+        case .subscriptions(let mid):
+            SubscriptionFolderListView(mid: mid)
+        case .offlineCache:
+            OfflineCacheListView()
         }
     }
 
@@ -385,8 +453,8 @@ struct RootContentNavigationStack<Root: View>: View {
             isActive,
             for: routeID,
             snapshot: isActive ? DeepLinkRouter.SessionSnapshot(
-                pending: path.first?.sessionRoute.rootRoute,
-                path: path.map(\.sessionRoute)
+                pending: path.first?.sessionRoute?.rootRoute,
+                path: path.compactMap(\.sessionRoute)
             ) : nil
         )
         syncMediaSessions()
@@ -425,7 +493,7 @@ struct RootContentNavigationStack<Root: View>: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search:
+        case .userSpace, .dynamicDetail, .article, .search, .profileList:
             break
         }
     }
@@ -490,6 +558,8 @@ extension RootContentRoute {
             return "article:\(kind):\(id)"
         case .search(let keyword):
             return "search:\(keyword)"
+        case .profileList(let kind):
+            return "profileList:\(kind.traceName)"
         }
     }
 }
