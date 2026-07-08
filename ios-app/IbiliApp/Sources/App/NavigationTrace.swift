@@ -446,6 +446,10 @@ extension RootContentRoute {
             return "search:\(keyword)"
         case .profileList(let kind):
             return "profileList:\(kind.traceName)"
+        case .messageCenter:
+            return "messageCenter"
+        case .messageFeed(let kind):
+            return "messageFeed:\(kind.rawValue)"
         }
     }
 
@@ -465,6 +469,10 @@ extension RootContentRoute {
             return "search(keyword=\(keyword))"
         case .profileList(let kind):
             return "profileList(kind=\(kind.traceName))"
+        case .messageCenter:
+            return "messageCenter"
+        case .messageFeed(let kind):
+            return "messageFeed(kind=\(kind.rawValue))"
         }
     }
 
@@ -484,6 +492,10 @@ extension RootContentRoute {
             return ["routeKind": "search", "keyword": keyword]
         case .profileList(let kind):
             return ["routeKind": "profileList", "kind": kind.traceName]
+        case .messageCenter:
+            return ["routeKind": "messageCenter"]
+        case .messageFeed(let kind):
+            return ["routeKind": "messageFeed", "kind": kind.rawValue]
         }
     }
 }

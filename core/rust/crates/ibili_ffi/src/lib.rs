@@ -208,6 +208,16 @@ struct FollowedPgcListArgs {
     page_size: i64,
 }
 
+#[derive(Deserialize)]
+struct MessageFeedArgs {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    cursor_id: i64,
+    #[serde(default)]
+    cursor_time: i64,
+}
+
 fn default_qn() -> i64 {
     0
 }
@@ -938,6 +948,12 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: FollowedPgcListArgs = serde_json::from_value(args)?;
             to_value(c.inner.followed_pgc_list(a.kind, a.page, a.page_size)?)
         }
+        "message.unread" => to_value(c.inner.message_unread_summary()?),
+        "message.feed" => {
+            let a: MessageFeedArgs = serde_json::from_value(args)?;
+            to_value(c.inner.message_feed(&a.kind, a.cursor_id, a.cursor_time)?)
+        }
+        "message.sessions" => to_value(c.inner.message_sessions()?),
         "user.watchlater_list" => {
             let a: WatchLaterListArgs =
                 serde_json::from_value(args).unwrap_or(WatchLaterListArgs {

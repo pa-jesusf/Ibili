@@ -5,7 +5,7 @@ import SwiftUI
 /// Layout (top → bottom):
 ///   1. Profile header card: avatar, name, sign, fans/following pill row.
 ///      Tap fans / following → push the `RelationListView` for that scope.
-///   2. Quick-action grid: 历史 / 收藏 / 订阅 / 稍后再看. We mirror
+///   2. Quick-action grid: 历史 / 稍后再看 / 收藏 / 追番 / 订阅 / 离线缓存. We mirror
 ///      upstream PiliPlus's "我的" surface but render as a grid of large
 ///      iconic cards rather than a list of system rows — closer in feel
 ///      to Apple's own Music / TV "Library" hubs.
@@ -20,7 +20,9 @@ import SwiftUI
 struct ProfileRoot: View {
     @EnvironmentObject var session: AppSession
     @EnvironmentObject private var tabReselect: TabReselectSignals
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @StateObject private var loader = ProfileHeaderLoader()
+    @StateObject private var messageUnread = MessageUnreadViewModel()
     @State private var headerCollapseProgress: CGFloat = 0
 
     var body: some View {
@@ -38,6 +40,7 @@ struct ProfileRoot: View {
                 showsRefresh: true,
                 onRefresh: {
                     await loader.reload(mid: session.mid)
+                    await messageUnread.reload()
                 }
             ) {
                 LazyVStack(spacing: 16) {
@@ -52,6 +55,14 @@ struct ProfileRoot: View {
         }
         .task(id: session.mid) {
             await loader.load(mid: session.mid)
+            await messageUnread.reload()
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                MessageToolbarButton(unreadCount: messageUnread.summary.total) {
+                    rootNavigation.openMessageCenter()
+                }
+            }
         }
         .tint(IbiliTheme.accent)
     }

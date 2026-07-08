@@ -886,11 +886,11 @@ private struct DeepLinkPlayerHost: View {
                 router.openArticle(id: id, kind: kind)
             case .search(let keyword):
                 router.openSearch(keyword: keyword)
-            case .profileList:
-                // Profile lists are only reachable from the Profile tab
+            case .profileList, .messageCenter, .messageFeed:
+                // Profile and message pages are only reachable from the Profile tab
                 // (root-content world); the session host has no
                 // representation for them.
-                NavigationTrace.log("播放器宿主忽略 profileList 路由", metadata: [
+                NavigationTrace.log("播放器宿主忽略非媒体 root-content 路由", metadata: [
                     "route": route.navigationTraceSummary,
                 ])
             }
@@ -1214,11 +1214,11 @@ private struct DeepLinkSplitHost: View {
                 router.openArticle(id: id, kind: kind)
             case .search(let keyword):
                 router.openSearch(keyword: keyword)
-            case .profileList:
-                // Profile lists are only reachable from the Profile tab
+            case .profileList, .messageCenter, .messageFeed:
+                // Profile and message pages are only reachable from the Profile tab
                 // (root-content world); the session host has no
                 // representation for them.
-                NavigationTrace.log("播放器宿主忽略 profileList 路由", metadata: [
+                NavigationTrace.log("播放器宿主忽略非媒体 root-content 路由", metadata: [
                     "route": route.navigationTraceSummary,
                 ])
             }

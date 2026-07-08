@@ -492,8 +492,8 @@ struct FavoritesFolderListView: View {
                 } else {
                     List {
                         ForEach(filteredFolders) { folder in
-                            NavigationLink {
-                                FavoriteResourcesView(folderId: folder.id, title: folder.title)
+                            Button {
+                                rootNavigation.openProfileList(.favoriteResources(folderId: folder.id, title: folder.title))
                             } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "folder.fill")
@@ -505,8 +505,13 @@ struct FavoritesFolderListView: View {
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(IbiliTheme.textSecondary.opacity(0.6))
                                 }
                             }
+                            .buttonStyle(.plain)
                         }
                     }
                     .listStyle(.insetGrouped)
@@ -756,6 +761,7 @@ final class FavoriteResourcesViewModel: ObservableObject {
 
 struct SubscriptionFolderListView: View {
     let mid: Int64
+    @Environment(\.rootContentNavigation) private var rootNavigation
     @StateObject private var vm = SubscriptionFolderListViewModel()
     @State private var searchText = ""
 
@@ -781,15 +787,13 @@ struct SubscriptionFolderListView: View {
                     ScrollView {
                         LazyVStack(spacing: 10) {
                             ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
-                                NavigationLink {
-                                    SubscriptionResourcesView(folder: item)
-                                } label: {
-                                    SubscriptionFolderRow(
-                                        item: item,
-                                        onCancel: { Task { await vm.cancel(item) } }
-                                    )
-                                }
-                                .buttonStyle(.plain)
+                                SubscriptionFolderRow(
+                                    item: item,
+                                    onOpen: {
+                                        rootNavigation.openProfileList(.subscriptionResources(item))
+                                    },
+                                    onCancel: { Task { await vm.cancel(item) } }
+                                )
                                 .onAppear {
                                     if normalizedProfileSearchQuery(searchText).isEmpty,
                                        !vm.isEnd,
@@ -815,32 +819,40 @@ struct SubscriptionFolderListView: View {
 
 private struct SubscriptionFolderRow: View {
     let item: SubscriptionFolderDTO
+    let onOpen: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            RemoteImage(url: item.cover,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: 220, height: 140),
-                        quality: 76)
-                .frame(width: 104, height: 66)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 6) {
-                Text(item.title)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(2)
-                if !item.upperName.isEmpty {
-                    Label(item.upperName, systemImage: "person.crop.circle")
-                        .font(.caption2)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                        .lineLimit(1)
+            Button(action: onOpen) {
+                HStack(alignment: .top, spacing: 12) {
+                    RemoteImage(url: item.cover,
+                                contentMode: .fill,
+                                targetPointSize: CGSize(width: 220, height: 140),
+                                quality: 76)
+                        .frame(width: 104, height: 66)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.title)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(IbiliTheme.textPrimary)
+                            .lineLimit(2)
+                        if !item.upperName.isEmpty {
+                            Label(item.upperName, systemImage: "person.crop.circle")
+                                .font(.caption2)
+                                .foregroundStyle(IbiliTheme.textSecondary)
+                                .lineLimit(1)
+                        }
+                        Text("\(item.mediaCount) 个视频")
+                            .font(.caption2)
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Text("\(item.mediaCount) 个视频")
-                    .font(.caption2)
-                    .foregroundStyle(IbiliTheme.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
             Spacer(minLength: 0)
             Button(role: .destructive, action: onCancel) {
                 Image(systemName: "trash")

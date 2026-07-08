@@ -15,6 +15,7 @@ pub mod feed;
 pub mod http;
 pub mod interaction;
 pub mod live;
+pub mod message;
 pub mod packaging;
 pub mod reply;
 pub mod search;

@@ -842,6 +842,23 @@ public final class CoreClient: @unchecked Sendable {
         return try call("user.followed_pgc", args: A(kind: kind, page: page, page_size: pageSize), decoding: FollowedPgcPageDTO.self)
     }
 
+    public func messageUnreadSummary() throws -> MessageUnreadSummaryDTO {
+        try call("message.unread", decoding: MessageUnreadSummaryDTO.self)
+    }
+
+    public func messageFeed(kind: String, cursorID: Int64 = 0, cursorTime: Int64 = 0) throws -> MessagePageDTO {
+        struct A: Encodable {
+            let kind: String
+            let cursor_id: Int64
+            let cursor_time: Int64
+        }
+        return try call("message.feed", args: A(kind: kind, cursor_id: cursorID, cursor_time: cursorTime), decoding: MessagePageDTO.self)
+    }
+
+    public func messageSessions() throws -> MessageSessionPageDTO {
+        try call("message.sessions", decoding: MessageSessionPageDTO.self)
+    }
+
     /// Rich watch-later list (title / cover / progress).
     public func userWatchLaterList(page: Int64 = 1, keyword: String = "") throws -> [WatchLaterItemDTO] {
         struct A: Encodable { let pn: Int64; let keyword: String }

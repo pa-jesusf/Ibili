@@ -1734,6 +1734,93 @@ public struct FollowedPgcPageDTO: Decodable {
     }
 }
 
+public struct MessageUnreadSummaryDTO: Decodable, Hashable {
+    public let reply: Int64
+    public let at: Int64
+    public let like: Int64
+    public let sysMsg: Int64
+    public let whisper: Int64
+    public let total: Int64
+
+    public static let empty = MessageUnreadSummaryDTO(reply: 0, at: 0, like: 0, sysMsg: 0, whisper: 0, total: 0)
+
+    enum CodingKeys: String, CodingKey {
+        case reply, at, like, whisper, total
+        case sysMsg = "sys_msg"
+    }
+}
+
+public struct MessageItemDTO: Decodable, Identifiable, Hashable {
+    public let id: String
+    public let kind: String
+    public let userMid: Int64
+    public let userName: String
+    public let userAvatar: String
+    public let action: String
+    public let title: String
+    public let content: String
+    public let secondaryContent: String
+    public let image: String
+    public let nativeUri: String
+    public let timestamp: Int64
+    public let timeText: String
+    public let count: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, action, title, content, image, timestamp, count
+        case userMid = "user_mid"
+        case userName = "user_name"
+        case userAvatar = "user_avatar"
+        case secondaryContent = "secondary_content"
+        case nativeUri = "native_uri"
+        case timeText = "time_text"
+    }
+}
+
+public struct MessagePageDTO: Decodable {
+    public let items: [MessageItemDTO]
+    public let nextCursorID: Int64
+    public let nextCursorTime: Int64
+    public let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case nextCursorID = "next_cursor_id"
+        case nextCursorTime = "next_cursor_time"
+        case hasMore = "has_more"
+    }
+}
+
+public struct MessageSessionDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { talkerID }
+    public let talkerID: Int64
+    public let name: String
+    public let avatar: String
+    public let lastMessage: String
+    public let timestamp: Int64
+    public let unread: Int64
+    public let isPinned: Bool
+    public let isMuted: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case name, avatar, timestamp, unread
+        case talkerID = "talker_id"
+        case lastMessage = "last_message"
+        case isPinned = "is_pinned"
+        case isMuted = "is_muted"
+    }
+}
+
+public struct MessageSessionPageDTO: Decodable {
+    public let items: [MessageSessionDTO]
+    public let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case hasMore = "has_more"
+    }
+}
+
 public struct WatchLaterItemDTO: Decodable, Identifiable, Hashable {
     public var id: Int64 { aid }
     public let aid: Int64

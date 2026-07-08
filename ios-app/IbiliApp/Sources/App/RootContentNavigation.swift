@@ -10,7 +10,9 @@ enum ProfileListKind: Hashable {
     case history
     case watchLater
     case favorites(mid: Int64)
+    case favoriteResources(folderId: Int64, title: String)
     case subscriptions(mid: Int64)
+    case subscriptionResources(SubscriptionFolderDTO)
     case followedPgc
     case offlineCache
 
@@ -22,12 +24,51 @@ enum ProfileListKind: Hashable {
             return "watchLater"
         case .favorites(let mid):
             return "favorites:\(mid)"
+        case .favoriteResources(let folderId, let title):
+            return "favoriteResources:\(folderId):\(title)"
         case .subscriptions(let mid):
             return "subscriptions:\(mid)"
+        case .subscriptionResources(let folder):
+            return "subscriptionResources:\(folder.folderID):\(folder.title)"
         case .followedPgc:
             return "followedPgc"
         case .offlineCache:
             return "offlineCache"
+        }
+    }
+}
+
+enum MessageFeedKind: String, CaseIterable, Hashable, Identifiable {
+    case reply
+    case at
+    case like
+    case system
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .reply:
+            return "回复我的"
+        case .at:
+            return "@我"
+        case .like:
+            return "收到的赞"
+        case .system:
+            return "系统通知"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .reply:
+            return "bubble.left.and.bubble.right"
+        case .at:
+            return "at"
+        case .like:
+            return "hand.thumbsup"
+        case .system:
+            return "bell.badge"
         }
     }
 }
@@ -40,6 +81,8 @@ enum RootContentRoute: Hashable {
     case article(id: String, kind: String)
     case search(keyword: String)
     case profileList(ProfileListKind)
+    case messageCenter
+    case messageFeed(MessageFeedKind)
 
     var playerRoute: DeepLinkRouter.PlayerRoute? {
         guard case .player(let route) = self else { return nil }
@@ -69,7 +112,7 @@ enum RootContentRoute: Hashable {
             return .article(DeepLinkRouter.ArticleRoute(articleID: id, kind: kind))
         case .search(let keyword):
             return .search(DeepLinkRouter.SearchRoute(keyword: keyword))
-        case .profileList:
+        case .profileList, .messageCenter, .messageFeed:
             return nil
         }
     }
@@ -219,6 +262,27 @@ struct RootContentNavigationActions {
             "transitionMode": "intent",
         ], includeStack: true)
         open(.profileList(kind))
+    }
+
+    @MainActor
+    func openMessageCenter() {
+        NavigationTrace.log("根内容导航请求", metadata: [
+            "request": "openMessageCenter",
+            "transitionWorld": "root-content",
+            "transitionMode": "intent",
+        ], includeStack: true)
+        open(.messageCenter)
+    }
+
+    @MainActor
+    func openMessageFeed(_ kind: MessageFeedKind) {
+        NavigationTrace.log("根内容导航请求", metadata: [
+            "request": "openMessageFeed",
+            "kind": kind.rawValue,
+            "transitionWorld": "root-content",
+            "transitionMode": "intent",
+        ], includeStack: true)
+        open(.messageFeed(kind))
     }
 
     @MainActor
@@ -431,6 +495,10 @@ struct RootContentNavigationStack<Root: View>: View {
             SearchRouteView(keyword: keyword)
         case .profileList(let kind):
             profileListView(for: kind)
+        case .messageCenter:
+            MessageCenterView()
+        case .messageFeed(let kind):
+            MessageFeedListView(kind: kind)
         }
     }
 
@@ -443,8 +511,12 @@ struct RootContentNavigationStack<Root: View>: View {
             WatchLaterListView()
         case .favorites(let mid):
             FavoritesFolderListView(mid: mid)
+        case .favoriteResources(let folderId, let title):
+            FavoriteResourcesView(folderId: folderId, title: title)
         case .subscriptions(let mid):
             SubscriptionFolderListView(mid: mid)
+        case .subscriptionResources(let folder):
+            SubscriptionResourcesView(folder: folder)
         case .followedPgc:
             FollowedPgcListView()
         case .offlineCache:
@@ -498,7 +570,7 @@ struct RootContentNavigationStack<Root: View>: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, .profileList:
+        case .userSpace, .dynamicDetail, .article, .search, .profileList, .messageCenter, .messageFeed:
             break
         }
     }
@@ -565,6 +637,10 @@ extension RootContentRoute {
             return "search:\(keyword)"
         case .profileList(let kind):
             return "profileList:\(kind.traceName)"
+        case .messageCenter:
+            return "messageCenter"
+        case .messageFeed(let kind):
+            return "messageFeed:\(kind.rawValue)"
         }
     }
 }
