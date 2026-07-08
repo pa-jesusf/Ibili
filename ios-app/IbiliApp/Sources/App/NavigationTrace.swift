@@ -37,7 +37,7 @@ enum NavigationTrace {
     static func recordTouch(phase: String, touch: UITouch, in view: UIView?) {
         let window = view?.window
         let location = touch.location(in: window)
-        let hitView = window?.hitTest(location, with: nil)
+        let hitView = window?.hitTest(location, with: nil) ?? touch.view
         let context = makeContext(kind: "touch", name: phase, metadata: [
             "phase": phase,
             "point": String(format: "%.1f,%.1f", location.x, location.y),
@@ -237,7 +237,6 @@ private final class NavigationTraceTouchGestureRecognizer: UIGestureRecognizer {
         if let touch = touches.first {
             NavigationTrace.recordTouch(phase: "began", touch: touch, in: view)
         }
-        state = .began
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -245,7 +244,7 @@ private final class NavigationTraceTouchGestureRecognizer: UIGestureRecognizer {
         if let touch = touches.first {
             NavigationTrace.recordTouch(phase: "ended", touch: touch, in: view)
         }
-        state = .ended
+        state = .failed
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -253,7 +252,7 @@ private final class NavigationTraceTouchGestureRecognizer: UIGestureRecognizer {
         if let touch = touches.first {
             NavigationTrace.recordTouch(phase: "cancelled", touch: touch, in: view)
         }
-        state = .cancelled
+        state = .failed
     }
 }
 

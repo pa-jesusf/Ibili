@@ -2365,104 +2365,7 @@ struct PlayerView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                PlayerToolbarDanmaku(
-                    danmakuEnabled: $settings.danmakuEnabled,
-                    isEnabled: vm.player != nil,
-                    onLongPress: { activeSheet = .danmakuSend }
-                )
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                PlayerToolbarSubtitle(
-                    subtitles: vm.availableSubtitles,
-                    selectedID: selectedSubtitleID,
-                    isEnabled: vm.player != nil,
-                    isLoadingID: subtitleLoadingID,
-                    onPick: { track in
-                        Task { await selectSubtitle(track) }
-                    },
-                    onDisable: {
-                        disableSubtitle()
-                    }
-                )
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                PlayerToolbarVideoQuality(
-                    qualities: vm.availableQualities,
-                    currentQn: vm.currentQn,
-                    onPick: { qn in Task { await vm.switchQuality(to: qn) } }
-                )
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    if !vm.availableAudioQualities.isEmpty {
-                        Menu {
-                            ForEach(vm.availableAudioQualities, id: \.qn) { q in
-                                Button {
-                                    logPlayerMenu("选择音质", metadata: [
-                                        "audioQn": String(q.qn),
-                                        "label": q.label,
-                                    ])
-                                    Task { await vm.switchAudioQuality(to: q.qn) }
-                                } label: {
-                                    if q.qn == vm.currentAudioQn {
-                                        Label(q.label, systemImage: "checkmark")
-                                    } else {
-                                        Text(q.label)
-                                    }
-                                }
-                            }
-                        } label: {
-                            Label("音质", systemImage: "hifispeaker")
-                        }
-                    }
-                    Button {
-                        logPlayerMenu("打开离线缓存")
-                        activeSheet = .offlineDownload
-                    } label: {
-                        Label("离线缓存", systemImage: "square.and.arrow.down")
-                    }
-                    Button {
-                        logPlayerMenu("打开弹幕样式")
-                        activeSheet = .danmakuStyle
-                    } label: {
-                        Label("弹幕样式", systemImage: "textformat.size")
-                    }
-                    Menu {
-                        ForEach(PlayerCompletionBehavior.allCases) { behavior in
-                            Button {
-                                selectCompletionBehavior(behavior)
-                            } label: {
-                                if behavior == settings.completionBehavior {
-                                    Label(behavior.label, systemImage: "checkmark")
-                                } else {
-                                    Label(behavior.label, systemImage: behavior.systemImage)
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("播放完行为", systemImage: settings.completionBehavior.systemImage)
-                    }
-                    Button {
-                        logPlayerMenu("保存封面请求")
-                        saveCurrentCover()
-                    } label: {
-                        Label("保存封面", systemImage: "photo")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.white)
-                }
-                .disabled(vm.player == nil)
-                .simultaneousGesture(TapGesture().onEnded {
-                    logPlayerMenu("溢出菜单按钮点击", metadata: [
-                        "isDisabled": String(vm.player == nil),
-                        "completionBehavior": settings.completionBehavior.rawValue,
-                        "availableAudioCount": String(vm.availableAudioQualities.count),
-                    ])
-                })
-            }
+            playerToolbar
         }
         .onChange(of: activeSheet?.id) { newValue in
             logPlayerMenu("菜单 sheet 状态变化", metadata: [
@@ -2657,6 +2560,97 @@ struct PlayerView: View {
         }
     }
 
+    @ToolbarContentBuilder
+    private var playerToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            PlayerToolbarDanmaku(
+                danmakuEnabled: $settings.danmakuEnabled,
+                isEnabled: vm.player != nil,
+                onLongPress: { activeSheet = .danmakuSend }
+            )
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            PlayerToolbarSubtitle(
+                subtitles: vm.availableSubtitles,
+                selectedID: selectedSubtitleID,
+                isEnabled: vm.player != nil,
+                isLoadingID: subtitleLoadingID,
+                onPick: { track in
+                    logPlayerMenu("选择字幕", metadata: [
+                        "subtitleID": track.id,
+                        "subtitleLanguage": track.lan,
+                    ])
+                    Task { await selectSubtitle(track) }
+                },
+                onDisable: {
+                    logPlayerMenu("关闭字幕")
+                    disableSubtitle()
+                },
+                onOpen: {
+                    logPlayerMenu("打开字幕菜单", metadata: [
+                        "subtitleCount": String(vm.availableSubtitles.count),
+                    ])
+                }
+            )
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            PlayerToolbarVideoQuality(
+                qualities: vm.availableQualities,
+                currentQn: vm.currentQn,
+                onPick: { qn in
+                    logPlayerMenu("选择画质", metadata: [
+                        "qn": String(qn),
+                    ])
+                    Task { await vm.switchQuality(to: qn) }
+                },
+                onOpen: {
+                    logPlayerMenu("打开画质菜单", metadata: [
+                        "qualityCount": String(vm.availableQualities.count),
+                    ])
+                }
+            )
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            PlayerToolbarOverflowMenu(
+                audioQualities: vm.availableAudioQualities,
+                currentAudioQn: vm.currentAudioQn,
+                completionBehavior: settings.completionBehavior,
+                isEnabled: vm.player != nil,
+                onPickAudioQuality: { qn in
+                    if let quality = vm.availableAudioQualities.first(where: { $0.qn == qn }) {
+                        selectAudioQuality(quality)
+                    } else {
+                        logPlayerMenu("选择音质", metadata: [
+                            "audioQn": String(qn),
+                            "label": "",
+                        ])
+                        Task { await vm.switchAudioQuality(to: qn) }
+                    }
+                },
+                onSelectCompletionBehavior: { behavior in
+                    selectCompletionBehavior(behavior)
+                },
+                onOpenOfflineDownload: {
+                    presentPlayerSheet(.offlineDownload, logMessage: "打开离线缓存")
+                },
+                onOpenDanmakuStyle: {
+                    presentPlayerSheet(.danmakuStyle, logMessage: "打开弹幕样式")
+                },
+                onSaveCover: {
+                    logPlayerMenu("保存封面请求")
+                    saveCurrentCover()
+                },
+                onOpen: {
+                    logPlayerMenu("打开更多菜单", metadata: [
+                        "isDisabled": String(vm.player == nil),
+                        "completionBehavior": settings.completionBehavior.rawValue,
+                        "availableAudioCount": String(vm.availableAudioQualities.count),
+                    ])
+                }
+            )
+        }
+    }
+
     /// Snapshot the live AVPlayer playhead in milliseconds. Falls back
     /// to 0 if the player isn't ready or the time is invalid.
     private func currentPlayheadMs() -> Int64 {
@@ -2687,6 +2681,21 @@ struct PlayerView: View {
                     flashPlayerAction((error as? LocalizedError)?.errorDescription ?? "封面保存失败")
                 }
             }
+        }
+    }
+
+    private func presentPlayerSheet(_ sheet: PlayerSheet, logMessage: String) {
+        logPlayerMenu(logMessage)
+        activeSheet = sheet
+    }
+
+    private func selectAudioQuality(_ quality: (qn: Int64, label: String)) {
+        logPlayerMenu("选择音质", metadata: [
+            "audioQn": String(quality.qn),
+            "label": quality.label,
+        ])
+        Task {
+            await vm.switchAudioQuality(to: quality.qn)
         }
     }
 

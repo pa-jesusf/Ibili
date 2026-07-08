@@ -225,8 +225,14 @@ final class AppLogStore: ObservableObject {
     }
 
     private func sharedFileCoalescingSignature(for entry: AppLogEntry) -> String? {
-        guard entry.level == .debug, entry.category == "navigation" else { return nil }
-        let ignoredKeys: Set<String> = ["callStack", "point", "traceAgeMs", "traceID"]
+        guard entry.level == .debug, entry.category == "navigation" || entry.category == "player" else { return nil }
+        let ignoredKeys: Set<String> = [
+            "callStack",
+            "point",
+            "traceAgeMs",
+            "traceID",
+            "transientPauseSuppressionRemainingMs",
+        ]
         let stableMetadata = entry.metadata
             .filter { !ignoredKeys.contains($0.key) }
             .map { "\($0.key)=\($0.value)" }
