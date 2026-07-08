@@ -48,7 +48,7 @@ enum NavigationTrace {
         write(
             phase == "began" ? "用户触摸开始" : "用户触摸结束",
             metadata: contextMetadata(for: context, includeAge: false),
-            includeStack: phase == "began"
+            includeStack: false
         )
     }
 
@@ -153,7 +153,7 @@ enum NavigationTrace {
         DispatchQueue.main.asyncAfter(deadline: .now() + recentInteractionWindow, execute: work)
     }
 
-    private static func callStackSummary(maxFrames: Int = 24) -> String {
+    private static func callStackSummary(maxFrames: Int = 12) -> String {
         Thread.callStackSymbols
             .dropFirst(3)
             .prefix(maxFrames)

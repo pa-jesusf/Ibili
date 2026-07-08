@@ -239,7 +239,11 @@ final class AppSettings: ObservableObject {
 
     var completionBehavior: PlayerCompletionBehavior {
         get { PlayerCompletionBehavior(rawValue: completionBehaviorRaw) ?? .pause }
-        set { completionBehaviorRaw = newValue.rawValue }
+        set {
+            guard completionBehaviorRaw != newValue.rawValue else { return }
+            objectWillChange.send()
+            completionBehaviorRaw = newValue.rawValue
+        }
     }
 
     func playbackCacheVariantKey() -> String {

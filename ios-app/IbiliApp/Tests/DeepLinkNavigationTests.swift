@@ -11,7 +11,7 @@ final class DeepLinkNavigationTests: XCTestCase {
         let playerRootRoute = RootContentRoute(sessionRoute: .player(playerRoute))
         XCTAssertEqual(playerRootRoute.playerRoute?.id, playerID)
         XCTAssertEqual(playerRootRoute.playerRoute?.offlineOnly, true)
-        XCTAssertEqual(playerRootRoute.sessionRoute.id, playerID)
+        XCTAssertEqual(playerRootRoute.sessionRoute?.id, playerID)
 
         let liveID = UUID()
         let liveRoute = DeepLinkRouter.LiveRoute(
@@ -25,7 +25,7 @@ final class DeepLinkNavigationTests: XCTestCase {
         let liveRootRoute = RootContentRoute(sessionRoute: .live(liveRoute))
         XCTAssertEqual(liveRootRoute.liveRoute?.id, liveID)
         XCTAssertEqual(liveRootRoute.liveRoute?.roomID, 123)
-        XCTAssertEqual(liveRootRoute.sessionRoute.id, liveID)
+        XCTAssertEqual(liveRootRoute.sessionRoute?.id, liveID)
     }
 
     func testRootContentOpenPlayerDispatchesPushAndReplace() {
@@ -147,8 +147,8 @@ final class DeepLinkNavigationTests: XCTestCase {
         navigationGuard.beginNativeFullscreenExitProtection()
 
         XCTAssertFalse(navigationGuard.shouldAcceptPathChange(
-            from: rootPath.map(\.sessionRoute),
-            to: shrunkenPath.map(\.sessionRoute)
+            from: rootPath.compactMap(\.sessionRoute),
+            to: shrunkenPath.compactMap(\.sessionRoute)
         ))
     }
 

@@ -129,11 +129,20 @@ actor AppLogSharedFileSink {
 final class AppLogStore: ObservableObject {
     static let shared = AppLogStore()
 
+    private struct SharedFileCoalescingState {
+        let signature: String
+        let sample: AppLogEntry
+        var lastTimestamp: Date
+        var suppressedCount: Int = 0
+    }
+
     @Published private(set) var entries: [AppLogEntry] = []
 
     private let persistence = AppLogPersistence()
     private let sharedFileSink = AppLogSharedFileSink()
     private let maxEntries = 1_000
+    private let sharedFileCoalescingWindow: TimeInterval = 2
+    private var sharedFileCoalescingState: SharedFileCoalescingState?
 
     private init() {
         Task {
@@ -154,14 +163,18 @@ final class AppLogStore: ObservableObject {
         entries.append(entry)
         entries = trimToMaxEntries(entries)
         let snapshot = entries
+        let fileEntries = entriesForSharedFile(entry)
         Task {
-            await sharedFileSink.append(entry)
+            for fileEntry in fileEntries {
+                await sharedFileSink.append(fileEntry)
+            }
             await persistence.saveEntries(snapshot)
         }
     }
 
     func clear() {
         entries.removeAll()
+        sharedFileCoalescingState = nil
         Task {
             await sharedFileSink.clear()
             await persistence.clear()
@@ -180,6 +193,60 @@ final class AppLogStore: ObservableObject {
 
     private func trimToMaxEntries(_ items: [AppLogEntry]) -> [AppLogEntry] {
         Array(items.suffix(maxEntries))
+    }
+
+    private func entriesForSharedFile(_ entry: AppLogEntry) -> [AppLogEntry] {
+        var output: [AppLogEntry] = []
+        let signature = sharedFileCoalescingSignature(for: entry)
+
+        if let state = sharedFileCoalescingState {
+            let elapsed = entry.timestamp.timeIntervalSince(state.lastTimestamp)
+            if signature == state.signature, elapsed <= sharedFileCoalescingWindow {
+                sharedFileCoalescingState?.lastTimestamp = entry.timestamp
+                sharedFileCoalescingState?.suppressedCount += 1
+                return output
+            }
+
+            if let summary = sharedFileCoalescingSummary(from: state) {
+                output.append(summary)
+            }
+            sharedFileCoalescingState = nil
+        }
+
+        if let signature {
+            sharedFileCoalescingState = SharedFileCoalescingState(
+                signature: signature,
+                sample: entry,
+                lastTimestamp: entry.timestamp
+            )
+        }
+        output.append(entry)
+        return output
+    }
+
+    private func sharedFileCoalescingSignature(for entry: AppLogEntry) -> String? {
+        guard entry.level == .debug, entry.category == "navigation" else { return nil }
+        let ignoredKeys: Set<String> = ["callStack", "point", "traceAgeMs", "traceID"]
+        let stableMetadata = entry.metadata
+            .filter { !ignoredKeys.contains($0.key) }
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
+            .joined(separator: "|")
+        return "\(entry.category)|\(entry.message)|\(stableMetadata)"
+    }
+
+    private func sharedFileCoalescingSummary(from state: SharedFileCoalescingState) -> AppLogEntry? {
+        guard state.suppressedCount > 0 else { return nil }
+        return AppLogEntry(
+            timestamp: state.lastTimestamp,
+            level: state.sample.level,
+            category: state.sample.category,
+            message: "重复调试日志已折叠",
+            metadata: [
+                "originalMessage": state.sample.message,
+                "suppressedCount": String(state.suppressedCount),
+            ]
+        )
     }
 
     private func mergeEntries(_ lhs: [AppLogEntry], with rhs: [AppLogEntry]) -> [AppLogEntry] {

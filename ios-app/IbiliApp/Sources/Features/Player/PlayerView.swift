@@ -2399,7 +2399,7 @@ struct PlayerView: View {
                         Menu {
                             ForEach(vm.availableAudioQualities, id: \.qn) { q in
                                 Button {
-                                    AppLog.info("player", "播放器菜单选择音质", metadata: [
+                                    logPlayerMenu("选择音质", metadata: [
                                         "audioQn": String(q.qn),
                                         "label": q.label,
                                     ])
@@ -2417,39 +2417,34 @@ struct PlayerView: View {
                         }
                     }
                     Button {
-                        AppLog.info("player", "播放器菜单打开离线缓存", metadata: [
-                            "aid": String(vm.currentAid),
-                            "cid": String(vm.currentCid),
-                        ])
+                        logPlayerMenu("打开离线缓存")
                         activeSheet = .offlineDownload
                     } label: {
                         Label("离线缓存", systemImage: "square.and.arrow.down")
                     }
                     Button {
-                        AppLog.info("player", "播放器菜单打开弹幕样式", metadata: [
-                            "aid": String(vm.currentAid),
-                            "cid": String(vm.currentCid),
-                        ])
+                        logPlayerMenu("打开弹幕样式")
                         activeSheet = .danmakuStyle
                     } label: {
                         Label("弹幕样式", systemImage: "textformat.size")
                     }
-                    Picker(selection: Binding(
-                        get: { settings.completionBehavior },
-                        set: { settings.completionBehavior = $0 }
-                    )) {
+                    Menu {
                         ForEach(PlayerCompletionBehavior.allCases) { behavior in
-                            Label(behavior.label, systemImage: behavior.systemImage)
-                                .tag(behavior)
+                            Button {
+                                selectCompletionBehavior(behavior)
+                            } label: {
+                                if behavior == settings.completionBehavior {
+                                    Label(behavior.label, systemImage: "checkmark")
+                                } else {
+                                    Label(behavior.label, systemImage: behavior.systemImage)
+                                }
+                            }
                         }
                     } label: {
                         Label("播放完行为", systemImage: settings.completionBehavior.systemImage)
                     }
                     Button {
-                        AppLog.info("player", "播放器菜单保存封面", metadata: [
-                            "aid": String(vm.currentAid),
-                            "cid": String(vm.currentCid),
-                        ])
+                        logPlayerMenu("保存封面请求")
                         saveCurrentCover()
                     } label: {
                         Label("保存封面", systemImage: "photo")
@@ -2460,7 +2455,24 @@ struct PlayerView: View {
                         .foregroundStyle(.white)
                 }
                 .disabled(vm.player == nil)
+                .simultaneousGesture(TapGesture().onEnded {
+                    logPlayerMenu("溢出菜单按钮点击", metadata: [
+                        "isDisabled": String(vm.player == nil),
+                        "completionBehavior": settings.completionBehavior.rawValue,
+                        "availableAudioCount": String(vm.availableAudioQualities.count),
+                    ])
+                })
             }
+        }
+        .onChange(of: activeSheet?.id) { newValue in
+            logPlayerMenu("菜单 sheet 状态变化", metadata: [
+                "activeSheet": newValue ?? "nil",
+            ])
+        }
+        .onChange(of: settings.completionBehavior) { newValue in
+            logPlayerMenu("播放完行为状态已观察到变化", metadata: [
+                "value": newValue.rawValue,
+            ])
         }
         .task(id: mediaLoadKey) {
             if !didBootstrap {
@@ -2658,14 +2670,57 @@ struct PlayerView: View {
 
     private func saveCurrentCover() {
         let cover = (vm.currentFeedItem ?? item).cover
+        logPlayerMenu("保存封面任务开始", metadata: [
+            "coverEmpty": String(cover.isEmpty),
+            "cover": cover,
+        ])
         Task {
             do {
                 try await offlineService.saveCoverToPhotos(urlString: cover)
-                await MainActor.run { flashPlayerAction("封面已保存到相册") }
+                await MainActor.run {
+                    logPlayerMenu("保存封面成功")
+                    flashPlayerAction("封面已保存到相册")
+                }
             } catch {
-                await MainActor.run { flashPlayerAction((error as? LocalizedError)?.errorDescription ?? "封面保存失败") }
+                await MainActor.run {
+                    AppLog.error("player.menu", "保存封面失败", error: error, metadata: playerMenuMetadata())
+                    flashPlayerAction((error as? LocalizedError)?.errorDescription ?? "封面保存失败")
+                }
             }
         }
+    }
+
+    private func selectCompletionBehavior(_ behavior: PlayerCompletionBehavior) {
+        let oldValue = settings.completionBehavior
+        logPlayerMenu("选择播放完行为", metadata: [
+            "oldValue": oldValue.rawValue,
+            "newValue": behavior.rawValue,
+        ])
+        settings.completionBehavior = behavior
+        logPlayerMenu("播放完行为写入完成", metadata: [
+            "oldValue": oldValue.rawValue,
+            "newValue": settings.completionBehavior.rawValue,
+        ])
+    }
+
+    private func logPlayerMenu(_ message: String, metadata: [String: String] = [:]) {
+        AppLog.info("player.menu", message, metadata: playerMenuMetadata(extra: metadata))
+    }
+
+    private func playerMenuMetadata(extra: [String: String] = [:]) -> [String: String] {
+        var metadata = [
+            "aid": String(vm.currentAid),
+            "cid": String(vm.currentCid),
+            "hasPlayer": String(vm.player != nil),
+            "currentQn": String(vm.currentQn),
+            "currentAudioQn": String(vm.currentAudioQn),
+            "completionBehavior": settings.completionBehavior.rawValue,
+            "activeSheet": activeSheet?.id ?? "nil",
+        ]
+        for (key, value) in extra {
+            metadata[key] = value
+        }
+        return metadata
     }
 
     private func flashPlayerAction(_ message: String) {
