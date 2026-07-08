@@ -1861,6 +1861,14 @@ struct PlayerNextPartCandidate: Equatable {
     let label: String
 }
 
+private enum PlayerSheet: String, Identifiable {
+    case danmakuSend
+    case danmakuStyle
+    case offlineDownload
+
+    var id: String { rawValue }
+}
+
 struct PlayerView: View {
     private static let deferredDetailMountDelay: TimeInterval = 0.24
     private static let danmakuSegmentLengthSec: Double = 6 * 60
@@ -1879,9 +1887,7 @@ struct PlayerView: View {
     /// Weak handle to the AVPlayerViewController for PiP and background audio handling.
     @State private var playerVCRef = PlayerVCBox()
     /// Long-press on the danmaku toggle opens this sheet for sending.
-    @State private var showDanmakuSheet = false
-    @State private var showDanmakuStyleSheet = false
-    @State private var showOfflineDownloadSheet = false
+    @State private var activeSheet: PlayerSheet?
     @State private var subtitleEnabled = false
     @State private var subtitleLoadingID: String?
     @State private var selectedSubtitleID: String?
@@ -2335,7 +2341,7 @@ struct PlayerView: View {
                 PlayerToolbarDanmaku(
                     danmakuEnabled: $settings.danmakuEnabled,
                     isEnabled: vm.player != nil,
-                    onLongPress: { showDanmakuSheet = true }
+                    onLongPress: { activeSheet = .danmakuSend }
                 )
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -2365,6 +2371,10 @@ struct PlayerView: View {
                         Menu {
                             ForEach(vm.availableAudioQualities, id: \.qn) { q in
                                 Button {
+                                    AppLog.info("player", "播放器菜单选择音质", metadata: [
+                                        "audioQn": String(q.qn),
+                                        "label": q.label,
+                                    ])
                                     Task { await vm.switchAudioQuality(to: q.qn) }
                                 } label: {
                                     if q.qn == vm.currentAudioQn {
@@ -2379,12 +2389,20 @@ struct PlayerView: View {
                         }
                     }
                     Button {
-                        showOfflineDownloadSheet = true
+                        AppLog.info("player", "播放器菜单打开离线缓存", metadata: [
+                            "aid": String(vm.currentAid),
+                            "cid": String(vm.currentCid),
+                        ])
+                        activeSheet = .offlineDownload
                     } label: {
                         Label("离线缓存", systemImage: "square.and.arrow.down")
                     }
                     Button {
-                        showDanmakuStyleSheet = true
+                        AppLog.info("player", "播放器菜单打开弹幕样式", metadata: [
+                            "aid": String(vm.currentAid),
+                            "cid": String(vm.currentCid),
+                        ])
+                        activeSheet = .danmakuStyle
                     } label: {
                         Label("弹幕样式", systemImage: "textformat.size")
                     }
@@ -2400,6 +2418,10 @@ struct PlayerView: View {
                         Label("播放完行为", systemImage: settings.completionBehavior.systemImage)
                     }
                     Button {
+                        AppLog.info("player", "播放器菜单保存封面", metadata: [
+                            "aid": String(vm.currentAid),
+                            "cid": String(vm.currentCid),
+                        ])
                         saveCurrentCover()
                     } label: {
                         Label("保存封面", systemImage: "photo")
@@ -2560,37 +2582,38 @@ struct PlayerView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: danmakuHint)
         .animation(.easeInOut(duration: 0.2), value: playerActionToast)
-        .sheet(isPresented: $showDanmakuSheet) {
-            DanmakuSendSheet(
-                aid: vm.currentAid > 0 ? vm.currentAid : item.aid,
-                cid: vm.currentCid > 0 ? vm.currentCid : item.cid,
-                progressProvider: { currentPlayheadMs() },
-                onSent: { echo in
-                    // Local-echo into the live renderer so the user
-                    // sees their bullet immediately. Frame styling is
-                    // handled inside the canvas based on `isSelf`.
-                    danmaku.appendLive(echo)
-                }
-            )
-        }
-        .sheet(isPresented: $showDanmakuStyleSheet) {
-            DanmakuStyleSettingsView()
-                .environmentObject(settings)
-        }
-        .sheet(isPresented: $showOfflineDownloadSheet) {
-            OfflineDownloadSheet(
-                item: vm.currentFeedItem ?? item,
-                qualities: vm.availableQualities,
-                currentQn: vm.currentQn,
-                audioQualities: vm.availableAudioQualities,
-                currentAudioQn: vm.currentAudioQn,
-                cdn: settings.cdnService.rawValue,
-                onStart: { request in
-                    offlineService.start(request)
-                    showOfflineDownloadSheet = false
-                    flashPlayerAction("已加入离线缓存")
-                }
-            )
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .danmakuSend:
+                DanmakuSendSheet(
+                    aid: vm.currentAid > 0 ? vm.currentAid : item.aid,
+                    cid: vm.currentCid > 0 ? vm.currentCid : item.cid,
+                    progressProvider: { currentPlayheadMs() },
+                    onSent: { echo in
+                        // Local-echo into the live renderer so the user
+                        // sees their bullet immediately. Frame styling is
+                        // handled inside the canvas based on `isSelf`.
+                        danmaku.appendLive(echo)
+                    }
+                )
+            case .danmakuStyle:
+                DanmakuStyleSettingsView()
+                    .environmentObject(settings)
+            case .offlineDownload:
+                OfflineDownloadSheet(
+                    item: vm.currentFeedItem ?? item,
+                    qualities: vm.availableQualities,
+                    currentQn: vm.currentQn,
+                    audioQualities: vm.availableAudioQualities,
+                    currentAudioQn: vm.currentAudioQn,
+                    cdn: settings.cdnService.rawValue,
+                    onStart: { request in
+                        offlineService.start(request)
+                        activeSheet = nil
+                        flashPlayerAction("已加入离线缓存")
+                    }
+                )
+            }
         }
     }
 

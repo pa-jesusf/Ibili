@@ -299,7 +299,7 @@ struct RootContentNavigationStack<Root: View>: View {
         .onAppear {
             syncMediaSessions()
         }
-        .onChange(of: path.map(\.navigationIdentity)) { _ in
+        .onChange(of: path.map(\.navigationContentIdentity)) { _ in
             syncMediaSessions()
         }
     }
@@ -362,11 +362,11 @@ struct RootContentNavigationStack<Root: View>: View {
                     restorePictureInPicture(routeID: routeID, completion: completion)
                 }
             )
-            .id(playerRoute.id)
+            .id(playerRoute.navigationContentIdentity)
             .toolbar(.hidden, for: .tabBar)
         case .live(let liveRoute):
             DeepLinkRouteContent.liveDestination(for: liveRoute)
-                .id(liveRoute.id)
+                .id(liveRoute.navigationContentIdentity)
                 .toolbar(.hidden, for: .tabBar)
         case .userSpace(let mid):
             UserSpaceView(mid: mid)

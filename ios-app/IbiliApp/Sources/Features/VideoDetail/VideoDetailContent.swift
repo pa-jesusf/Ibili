@@ -526,6 +526,12 @@ struct VideoDetailContent: View {
                 if let season = v.ugcSeason, season.id > 0 {
                     VideoSeasonCard(source: .season(season, currentCid: activeCid)) { aid, bvid, cid in
                         guard cid != activeCid else { return }
+                        AppLog.info("player", "播放页合集切换请求", metadata: [
+                            "fromCid": String(activeCid),
+                            "toCid": String(cid),
+                            "aid": String(aid ?? 0),
+                            "bvid": bvid ?? "",
+                        ])
                         let next = FeedItemDTO(
                             aid: aid ?? 0,
                             bvid: bvid ?? "",
@@ -539,6 +545,12 @@ struct VideoDetailContent: View {
                 } else if v.pages.count > 1 {
                     VideoSeasonCard(source: .pages(aid: v.aid, bvid: v.bvid, pages: v.pages, currentCid: activeCid)) { aid, bvid, cid in
                         guard cid != activeCid else { return }
+                        AppLog.info("player", "播放页分P切换请求", metadata: [
+                            "fromCid": String(activeCid),
+                            "toCid": String(cid),
+                            "aid": String(aid ?? v.aid),
+                            "bvid": (bvid?.isEmpty == false ? bvid : v.bvid) ?? "",
+                        ])
                         let next = FeedItemDTO(
                             aid: aid ?? v.aid,
                             bvid: (bvid?.isEmpty == false ? bvid : v.bvid) ?? "",
@@ -581,6 +593,12 @@ struct VideoDetailContent: View {
                 season: season,
                 currentEpID: effectivePgcEpisodeID,
                 onPickEpisode: { episode in
+                    AppLog.info("player", "播放页番剧分集切换请求", metadata: [
+                        "fromEpID": String(effectivePgcEpisodeID),
+                        "toEpID": String(episode.epID),
+                        "seasonID": String(season.seasonID),
+                        "cid": String(episode.cid),
+                    ])
                     openPlayer(makePgcFeedItem(season: season, episode: episode), mode: .replaceCurrent)
                 }
             )

@@ -8,9 +8,9 @@ enum DeepLinkNavigationPathCoordinator {
         newPath: [DeepLinkRouter.SessionRoute],
         navigationGuard: PlayerPresentationNavigationGuard
     ) -> Bool {
-        let displayedIDs = displayedPath.map(\.id)
-        let newIDs = newPath.map(\.id)
-        guard displayedIDs != newIDs else {
+        let displayedIdentities = displayedPath.map(\.navigationContentIdentity)
+        let newIdentities = newPath.map(\.navigationContentIdentity)
+        guard displayedIdentities != newIdentities else {
             NavigationTrace.log("导航栈 path 写回被拒绝：重复写入", metadata: [
                 "displayedDepth": String(displayedPath.count),
                 "newDepth": String(newPath.count),

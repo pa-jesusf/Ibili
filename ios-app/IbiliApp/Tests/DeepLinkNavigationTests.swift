@@ -46,6 +46,49 @@ final class DeepLinkNavigationTests: XCTestCase {
         XCTAssertEqual(replacedRoute?.playerRoute?.offlineOnly, false)
     }
 
+    func testReplaceCurrentPlayerPartKeepsSessionButChangesContentIdentity() {
+        let router = DeepLinkRouter()
+        let first = FeedItemDTO(
+            aid: 11,
+            bvid: "BV11",
+            cid: 101,
+            title: "P1",
+            cover: "",
+            author: "",
+            durationSec: 0,
+            play: 0,
+            danmaku: 0
+        )
+        let second = FeedItemDTO(
+            aid: 11,
+            bvid: "BV11",
+            cid: 202,
+            title: "P2",
+            cover: "",
+            author: "",
+            durationSec: 0,
+            play: 0,
+            danmaku: 0
+        )
+
+        router.open(first)
+        let originalRoute = router.path[0]
+        let originalIdentity = originalRoute.navigationContentIdentity
+
+        router.open(second, mode: .replaceCurrent)
+        let replacementRoute = router.path[0]
+
+        XCTAssertEqual(replacementRoute.id, originalRoute.id)
+        XCTAssertNotEqual(replacementRoute.navigationContentIdentity, originalIdentity)
+        XCTAssertEqual(replacementRoute.playerRoute?.item.cid, 202)
+        XCTAssertTrue(DeepLinkNavigationPathCoordinator.shouldApply(
+            displayedPath: [originalRoute],
+            routerPath: [originalRoute],
+            newPath: [replacementRoute],
+            navigationGuard: PlayerPresentationNavigationGuard()
+        ))
+    }
+
     func testInitialEmptyNavigationEchoDoesNotClearActiveSession() {
         let router = DeepLinkRouter()
         router.open(DeepLinkRouter.makeShell(aid: 1, bvid: "BV1"))

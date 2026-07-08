@@ -35,10 +35,24 @@ final class DeepLinkRouter: ObservableObject {
 
         func hash(into hasher: inout Hasher) {
             hasher.combine(id)
+            hasher.combine(item.aid)
+            hasher.combine(item.bvid)
+            hasher.combine(item.cid)
+            hasher.combine(item.epID)
+            hasher.combine(item.seasonID)
+            hasher.combine(item.isPGC)
+            hasher.combine(offlineOnly)
         }
 
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.id == rhs.id
+                && lhs.item.aid == rhs.item.aid
+                && lhs.item.bvid == rhs.item.bvid
+                && lhs.item.cid == rhs.item.cid
+                && lhs.item.epID == rhs.item.epID
+                && lhs.item.seasonID == rhs.item.seasonID
+                && lhs.item.isPGC == rhs.item.isPGC
+                && lhs.offlineOnly == rhs.offlineOnly
         }
     }
 
@@ -75,10 +89,18 @@ final class DeepLinkRouter: ObservableObject {
 
         func hash(into hasher: inout Hasher) {
             hasher.combine(id)
+            hasher.combine(roomID)
+            hasher.combine(title)
+            hasher.combine(cover)
+            hasher.combine(anchorName)
         }
 
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.id == rhs.id
+                && lhs.roomID == rhs.roomID
+                && lhs.title == rhs.title
+                && lhs.cover == rhs.cover
+                && lhs.anchorName == rhs.anchorName
         }
     }
 

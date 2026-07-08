@@ -280,6 +280,21 @@ extension View {
 }
 
 extension DeepLinkRouter.PlayerRoute {
+    var navigationContentIdentity: String {
+        let item = item
+        return [
+            "player",
+            id.uuidString,
+            String(item.aid),
+            item.bvid,
+            String(item.cid),
+            String(item.epID),
+            String(item.seasonID),
+            String(item.isPGC),
+            String(offlineOnly),
+        ].joined(separator: ":")
+    }
+
     var navigationTraceSummary: String {
         let item = item
         return "player(id=\(id.uuidString.prefix(8)),aid=\(item.aid),cid=\(item.cid),bvid=\(item.bvid))"
@@ -299,6 +314,17 @@ extension DeepLinkRouter.PlayerRoute {
 }
 
 extension DeepLinkRouter.LiveRoute {
+    var navigationContentIdentity: String {
+        [
+            "live",
+            id.uuidString,
+            String(roomID),
+            title,
+            cover,
+            anchorName,
+        ].joined(separator: ":")
+    }
+
     var navigationTraceSummary: String {
         "live(id=\(id.uuidString.prefix(8)),roomID=\(roomID))"
     }
@@ -315,6 +341,23 @@ extension DeepLinkRouter.LiveRoute {
 }
 
 extension DeepLinkRouter.SessionRoute {
+    var navigationContentIdentity: String {
+        switch self {
+        case .player(let route):
+            return route.navigationContentIdentity
+        case .live(let route):
+            return route.navigationContentIdentity
+        case .userSpace(let route):
+            return "user:\(route.id.uuidString):\(route.mid)"
+        case .dynamicDetail(let route):
+            return "dynamic:\(route.id.uuidString):\(route.item.id)"
+        case .article(let route):
+            return "article:\(route.id.uuidString):\(route.kind):\(route.articleID)"
+        case .search(let route):
+            return "search:\(route.id.uuidString):\(route.keyword)"
+        }
+    }
+
     var navigationTraceSummary: String {
         switch self {
         case .player(let route):
@@ -388,6 +431,23 @@ extension DeepLinkRouter.RootRoute {
 }
 
 extension RootContentRoute {
+    var navigationContentIdentity: String {
+        switch self {
+        case .player(let route):
+            return route.navigationContentIdentity
+        case .live(let route):
+            return route.navigationContentIdentity
+        case .userSpace(let mid):
+            return "user:\(mid)"
+        case .dynamicDetail(let item):
+            return "dynamic:\(item.id)"
+        case .article(let id, let kind):
+            return "article:\(kind):\(id)"
+        case .search(let keyword):
+            return "search:\(keyword)"
+        }
+    }
+
     var navigationTraceSummary: String {
         switch self {
         case .player(let route):

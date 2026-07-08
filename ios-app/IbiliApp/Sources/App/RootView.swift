@@ -595,7 +595,7 @@ private struct DeepLinkPlayerHost: View {
                 .background(IbiliTheme.background)
             .navigationDestination(for: DeepLinkRouter.SessionRoute.self) { route in
                 destinationView(for: route)
-                    .id(route.id)
+                    .id(route.navigationContentIdentity)
                     .environment(\.dismissPlayerHost, dismiss)
                     .navigationBarBackButtonHidden(router.path.count <= 1)
                     .toolbar { rootDismissToolbar(for: route) }
@@ -640,7 +640,7 @@ private struct DeepLinkPlayerHost: View {
             }
             syncPlayerSessions()
         }
-        .onChange(of: router.path.map(\.id)) { _ in
+        .onChange(of: router.path.map(\.navigationContentIdentity)) { _ in
             NavigationTrace.log("播放器宿主观察 router.path 变化", metadata: hostTraceMetadata(reason: "routerPath"), includeStack: true)
             cancelPendingDismiss(resetRouterDismissal: true)
             if router.pending != nil {
@@ -912,7 +912,7 @@ private struct DeepLinkPlayerHost: View {
 
     private func syncDisplayedPathFromRouter(animated: Bool, deferToNextRunLoop: Bool = false) {
         let targetPath = router.path
-        guard displayedPath.map(\.id) != targetPath.map(\.id) else { return }
+        guard displayedPath.map(\.navigationContentIdentity) != targetPath.map(\.navigationContentIdentity) else { return }
         NavigationTrace.log("播放器宿主同步 router.path 到 displayedPath", metadata: [
             "animated": String(animated),
             "deferToNextRunLoop": String(deferToNextRunLoop),
@@ -980,11 +980,11 @@ struct DeepLinkRouteContent {
                 onPictureInPictureActiveChange: onPictureInPictureActiveChange,
                 onPictureInPictureRestore: onPictureInPictureRestore
             )
-            .id(playerRoute.id)
+            .id(playerRoute.navigationContentIdentity)
             .navigationTracePage("HostRoute:player", metadata: playerRoute.navigationTraceMetadata)
         case .live(let liveRoute):
             liveDestination(for: liveRoute)
-                .id(liveRoute.id)
+                .id(liveRoute.navigationContentIdentity)
                 .navigationTracePage("HostRoute:live", metadata: liveRoute.navigationTraceMetadata)
         case .userSpace(let userSpaceRoute):
             UserSpaceView(mid: userSpaceRoute.mid)
@@ -1061,7 +1061,7 @@ private struct DeepLinkSplitHost: View {
                     onPictureInPictureActiveChange: handlePictureInPictureChange,
                     onPictureInPictureRestore: restorePictureInPicture
                 )
-                .id(route.id)
+                .id(route.navigationContentIdentity)
                 .environment(\.dismissPlayerHost, dismiss)
                 .navigationBarBackButtonHidden(router.path.count <= 1)
                 .toolbar { rootDismissToolbar(for: route) }
@@ -1088,7 +1088,7 @@ private struct DeepLinkSplitHost: View {
             syncDisplayedPathFromRouter(animated: true, deferToNextRunLoop: true)
             syncPlayerSessions()
         }
-        .onChange(of: router.path.map(\.id)) { _ in
+        .onChange(of: router.path.map(\.navigationContentIdentity)) { _ in
             NavigationTrace.log("Split 宿主观察 router.path 变化", metadata: splitTraceMetadata(reason: "routerPath"), includeStack: true)
             router.cancelRootSessionDismissal()
             syncDisplayedPathFromRouter(animated: true)
@@ -1233,7 +1233,7 @@ private struct DeepLinkSplitHost: View {
 
     private func syncDisplayedPathFromRouter(animated: Bool, deferToNextRunLoop: Bool = false) {
         let targetPath = router.path
-        guard displayedPath.map(\.id) != targetPath.map(\.id) else { return }
+        guard displayedPath.map(\.navigationContentIdentity) != targetPath.map(\.navigationContentIdentity) else { return }
         NavigationTrace.log("Split 同步 router.path 到 displayedPath", metadata: [
             "animated": String(animated),
             "deferToNextRunLoop": String(deferToNextRunLoop),
