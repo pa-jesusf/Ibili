@@ -10,6 +10,7 @@ struct SearchView: View {
     let onProgrammaticSubmit: () -> Void
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.dismissSearch) private var dismissSearch
+    @Environment(\.isSearching) private var isSearching
     @Environment(\.rootContentNavigation) private var rootContentNavigation
 
     init(vm: SearchViewModel,
@@ -70,7 +71,7 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if vm.hasActiveSubmittedQuery {
+        if showsResultsContent {
             VStack(spacing: 0) {
                 SearchTypeBar(vm: vm)
                 Divider().opacity(0.4)
@@ -83,9 +84,13 @@ struct SearchView: View {
         }
     }
 
+    private var showsResultsContent: Bool {
+        vm.hasActiveSubmittedQuery && !isSearching
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if vm.hasActiveSubmittedQuery {
+        if showsResultsContent {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button {
                     vm.reset()
