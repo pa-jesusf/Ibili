@@ -1701,6 +1701,39 @@ public struct SubscriptionResourcePageDTO: Decodable {
     }
 }
 
+public struct FollowedPgcItemDTO: Decodable, Identifiable, Hashable {
+    public var id: Int64 { seasonID }
+    public let seasonID: Int64
+    public let title: String
+    public let cover: String
+    public let isFinish: Int64
+    public let badge: String
+    public let newEpIndex: String
+    public let newEpTitle: String
+    public let renewalTime: String
+    public let progress: String
+
+    enum CodingKeys: String, CodingKey {
+        case seasonID = "season_id"
+        case title, cover, badge, progress
+        case isFinish = "is_finish"
+        case newEpIndex = "new_ep_index"
+        case newEpTitle = "new_ep_title"
+        case renewalTime = "renewal_time"
+    }
+}
+
+public struct FollowedPgcPageDTO: Decodable {
+    public let items: [FollowedPgcItemDTO]
+    public let total: Int64
+    public let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case items, total
+        case hasMore = "has_more"
+    }
+}
+
 public struct WatchLaterItemDTO: Decodable, Identifiable, Hashable {
     public var id: Int64 { aid }
     public let aid: Int64

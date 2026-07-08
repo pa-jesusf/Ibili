@@ -11,6 +11,7 @@ enum ProfileListKind: Hashable {
     case watchLater
     case favorites(mid: Int64)
     case subscriptions(mid: Int64)
+    case followedPgc
     case offlineCache
 
     var traceName: String {
@@ -23,6 +24,8 @@ enum ProfileListKind: Hashable {
             return "favorites:\(mid)"
         case .subscriptions(let mid):
             return "subscriptions:\(mid)"
+        case .followedPgc:
+            return "followedPgc"
         case .offlineCache:
             return "offlineCache"
         }
@@ -442,6 +445,8 @@ struct RootContentNavigationStack<Root: View>: View {
             FavoritesFolderListView(mid: mid)
         case .subscriptions(let mid):
             SubscriptionFolderListView(mid: mid)
+        case .followedPgc:
+            FollowedPgcListView()
         case .offlineCache:
             OfflineCacheListView()
         }

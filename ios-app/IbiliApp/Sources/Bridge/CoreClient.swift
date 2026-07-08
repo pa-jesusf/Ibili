@@ -837,6 +837,11 @@ public final class CoreClient: @unchecked Sendable {
         try callVoid("user.subscription_cancel", args: A(id: id, kind: type))
     }
 
+    public func userFollowedPgc(kind: Int64 = 1, page: Int64 = 1, pageSize: Int64 = 20) throws -> FollowedPgcPageDTO {
+        struct A: Encodable { let kind: Int64; let page: Int64; let page_size: Int64 }
+        return try call("user.followed_pgc", args: A(kind: kind, page: page, page_size: pageSize), decoding: FollowedPgcPageDTO.self)
+    }
+
     /// Rich watch-later list (title / cover / progress).
     public func userWatchLaterList(page: Int64 = 1, keyword: String = "") throws -> [WatchLaterItemDTO] {
         struct A: Encodable { let pn: Int64; let keyword: String }

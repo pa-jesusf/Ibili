@@ -29,6 +29,24 @@ private func pushVideo(
     }
 }
 
+@MainActor
+private func pushPgc(
+    _ router: DeepLinkRouter,
+    rootNavigation: RootContentNavigationActions,
+    isInPlayerHostNavigation: Bool = false,
+    seasonID: Int64,
+    prefersSplitRootSelection: Bool = false
+) {
+    guard seasonID > 0 else { return }
+    if prefersSplitRootSelection && !isInPlayerHostNavigation {
+        router.selectPgc(seasonID: seasonID)
+    } else if isInPlayerHostNavigation {
+        router.openPgc(seasonID: seasonID)
+    } else {
+        rootNavigation.openPgc(seasonID: seasonID)
+    }
+}
+
 private func normalizedProfileSearchQuery(_ query: String) -> String {
     query.trimmingCharacters(in: .whitespacesAndNewlines)
 }
@@ -977,6 +995,204 @@ final class SubscriptionResourcesViewModel: ObservableObject {
         guard let result else { isEnd = true; return }
         items.append(contentsOf: result.items)
         if result.hasMore { page += 1 } else { isEnd = true }
+    }
+}
+
+// MARK: - Followed PGC
+
+struct FollowedPgcListView: View {
+    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
+    @StateObject private var vm = FollowedPgcListViewModel()
+    @State private var searchText = ""
+
+    private var displayedItems: [FollowedPgcItemDTO] {
+        let keyword = normalizedProfileSearchQuery(searchText)
+        guard !keyword.isEmpty else { return vm.items }
+        return vm.items.filter {
+            profileFields([$0.title, $0.newEpIndex, $0.newEpTitle, $0.progress], match: keyword)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ProfileInlineSearchBar(placeholder: "搜索我的追番", text: $searchText)
+            Group {
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if displayedItems.isEmpty {
+                    emptyState(
+                        title: emptyTitle,
+                        symbol: "play.tv",
+                        message: vm.errorText
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 10) {
+                            ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
+                                Button {
+                                    pushPgc(
+                                        router,
+                                        rootNavigation: rootNavigation,
+                                        isInPlayerHostNavigation: isInPlayerHostNavigation,
+                                        seasonID: item.seasonID,
+                                        prefersSplitRootSelection: prefersSplitRootSelection
+                                    )
+                                } label: {
+                                    FollowedPgcRow(item: item)
+                                }
+                                .buttonStyle(.plain)
+                                .onAppear {
+                                    if normalizedProfileSearchQuery(searchText).isEmpty,
+                                       !vm.isEnd,
+                                       index >= max(0, displayedItems.count - 4) {
+                                        Task { await vm.loadMore() }
+                                    }
+                                }
+                            }
+                            if vm.isLoading {
+                                ProgressView().padding()
+                            }
+                        }
+                        .padding(12)
+                    }
+                }
+            }
+        }
+        .background(IbiliTheme.background)
+        .navigationTitle("我的追番")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await vm.loadInitial() }
+        .refreshable { await vm.reload() }
+    }
+
+    private var emptyTitle: String {
+        if vm.errorText != nil { return "追番加载失败" }
+        return normalizedProfileSearchQuery(searchText).isEmpty ? "暂无追番" : "没有搜索结果"
+    }
+}
+
+private struct FollowedPgcRow: View {
+    let item: FollowedPgcItemDTO
+
+    private var episodeLine: String {
+        guard !item.newEpIndex.isEmpty else { return "" }
+        if item.isFinish == 0 && !item.renewalTime.isEmpty {
+            return "\(item.newEpIndex)，\(item.renewalTime)"
+        }
+        return item.newEpIndex
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack(alignment: .topTrailing) {
+                RemoteImage(
+                    url: item.cover,
+                    contentMode: .fill,
+                    targetPointSize: CGSize(width: 210, height: 280),
+                    quality: 76
+                )
+                .frame(width: 84, height: 112)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                if !item.badge.isEmpty {
+                    Text(item.badge)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(IbiliTheme.accent, in: Capsule())
+                        .padding(5)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(item.title)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(2)
+
+                if !episodeLine.isEmpty {
+                    Text(episodeLine)
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .lineLimit(1)
+                }
+
+                if !item.progress.isEmpty {
+                    Text(item.progress)
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .lineLimit(1)
+                }
+
+                if !item.newEpTitle.isEmpty {
+                    Text(item.newEpTitle)
+                        .font(.caption2)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(IbiliTheme.textSecondary)
+                .padding(.top, 4)
+        }
+        .padding(10)
+        .background(IbiliTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+@MainActor
+final class FollowedPgcListViewModel: ObservableObject {
+    @Published var items: [FollowedPgcItemDTO] = []
+    @Published var isLoading = false
+    @Published var isEnd = false
+    @Published var errorText: String?
+    private var page: Int64 = 1
+
+    func loadInitial() async {
+        guard items.isEmpty else { return }
+        await fetch(reset: true)
+    }
+
+    func reload() async {
+        await fetch(reset: true)
+    }
+
+    func loadMore() async {
+        guard !isLoading, !isEnd else { return }
+        await fetch(reset: false)
+    }
+
+    private func fetch(reset: Bool) async {
+        guard !isLoading else { return }
+        if reset {
+            page = 1
+            isEnd = false
+            errorText = nil
+            items.removeAll()
+        }
+        isLoading = true
+        let p = page
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.userFollowedPgc(kind: 1, page: p)
+            }.value
+            isLoading = false
+            items.append(contentsOf: result.items)
+            if result.hasMore { page += 1 } else { isEnd = true }
+        } catch {
+            isLoading = false
+            errorText = error.localizedDescription
+            isEnd = true
+        }
     }
 }
 

@@ -187,6 +187,11 @@ private struct ProfileQuickActions: View {
                 ActionTile(symbol: "star.fill", title: "我的收藏")
             }
             Button {
+                rootNavigation.openProfileList(.followedPgc)
+            } label: {
+                ActionTile(symbol: "play.tv", title: "我的追番")
+            }
+            Button {
                 rootNavigation.openProfileList(.subscriptions(mid: mid))
             } label: {
                 ActionTile(symbol: "rectangle.stack.badge.person.crop", title: "我的订阅")

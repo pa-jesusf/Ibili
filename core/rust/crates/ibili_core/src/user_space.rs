@@ -25,6 +25,7 @@ const URL_FAV_RESOURCE_LIST: &str = "https://api.bilibili.com/x/v3/fav/resource/
 const URL_SUBSCRIPTION_FOLDER_LIST: &str =
     "https://api.bilibili.com/x/v3/fav/folder/collected/list";
 const URL_SUBSCRIPTION_RESOURCE_LIST: &str = "https://api.bilibili.com/x/space/fav/season/list";
+const URL_FOLLOWED_PGC_LIST: &str = "https://api.bilibili.com/x/space/bangumi/follow/list";
 const URL_UNFAV_FOLDER: &str = "https://api.bilibili.com/x/v3/fav/folder/unfav";
 const URL_UNFAV_SEASON: &str = "https://api.bilibili.com/x/v3/fav/season/unfav";
 const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/web";
@@ -157,6 +158,26 @@ pub struct SubscriptionResource {
 pub struct SubscriptionResourcePage {
     pub info: Option<SubscriptionFolder>,
     pub items: Vec<SubscriptionResource>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct FollowedPgcItem {
+    pub season_id: i64,
+    pub title: String,
+    pub cover: String,
+    pub is_finish: i64,
+    pub badge: String,
+    pub new_ep_index: String,
+    pub new_ep_title: String,
+    pub renewal_time: String,
+    pub progress: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct FollowedPgcPage {
+    pub items: Vec<FollowedPgcItem>,
+    pub total: i64,
     pub has_more: bool,
 }
 
@@ -455,6 +476,42 @@ impl Core {
         Ok(SubscriptionResourcePage {
             info: raw.info.map(subscription_folder_from_wire),
             items,
+            has_more,
+        })
+    }
+
+    /// `/x/space/bangumi/follow/list`. Lists Bilibili-native followed PGC
+    /// seasons. `kind == 1` is 追番; `kind == 2` is 追剧.
+    pub fn followed_pgc_list(&self, kind: i64, pn: i64, ps: i64) -> CoreResult<FollowedPgcPage> {
+        let session = self.session.read().snapshot();
+        let mid = self.http.web_user_mid().unwrap_or(session.mid);
+        if mid <= 0 || self.session.read().access_key().is_none() {
+            return Ok(FollowedPgcPage {
+                items: vec![],
+                total: 0,
+                has_more: false,
+            });
+        }
+        let page = pn.max(1);
+        let page_size = ps.clamp(1, 50);
+        let params: Vec<(String, String)> = vec![
+            ("vmid".into(), mid.to_string()),
+            ("type".into(), kind.clamp(1, 2).to_string()),
+            ("pn".into(), page.to_string()),
+            ("ps".into(), page_size.to_string()),
+        ];
+        let raw: FollowedPgcListWire = self.http.get_web(URL_FOLLOWED_PGC_LIST, &params)?;
+        let total = raw.total.unwrap_or(0);
+        let items: Vec<FollowedPgcItem> =
+            raw.list.into_iter().map(followed_pgc_from_wire).collect();
+        let has_more = if total > 0 {
+            page * page_size < total
+        } else {
+            items.len() >= page_size as usize
+        };
+        Ok(FollowedPgcPage {
+            items,
+            total,
             has_more,
         })
     }
@@ -828,6 +885,17 @@ where
     })
 }
 
+fn deser_optional_blank_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = deser_optional_loose_string(d)?;
+    Ok(value.and_then(|s| {
+        let trimmed = s.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }))
+}
+
 #[derive(Default, Deserialize)]
 struct SpaceLiveWire {
     #[serde(default)]
@@ -1009,6 +1077,42 @@ struct SubscriptionResourceWire {
 }
 
 #[derive(Default, Deserialize)]
+struct FollowedPgcListWire {
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
+    list: Vec<FollowedPgcWire>,
+    #[serde(default)]
+    total: Option<i64>,
+}
+
+#[derive(Default, Deserialize)]
+struct FollowedPgcWire {
+    #[serde(default)]
+    season_id: Option<i64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    is_finish: Option<i64>,
+    #[serde(default)]
+    badge: Option<String>,
+    #[serde(default)]
+    new_ep: Option<FollowedPgcNewEpWire>,
+    #[serde(default)]
+    renewal_time: Option<String>,
+    #[serde(default, deserialize_with = "deser_optional_blank_string")]
+    progress: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct FollowedPgcNewEpWire {
+    #[serde(default)]
+    index_show: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
 struct WatchLaterFullWire {
     #[serde(default, deserialize_with = "null_as_empty_vec")]
     list: Vec<WatchLaterFullItemWire>,
@@ -1114,6 +1218,21 @@ fn subscription_folder_from_wire(raw: SubscriptionFolderWire) -> SubscriptionFol
         view_count: raw.view_count.unwrap_or(0),
         fav_state: raw.fav_state.unwrap_or(0),
         kind: raw.kind.unwrap_or(0),
+    }
+}
+
+fn followed_pgc_from_wire(raw: FollowedPgcWire) -> FollowedPgcItem {
+    let new_ep = raw.new_ep.unwrap_or_default();
+    FollowedPgcItem {
+        season_id: raw.season_id.unwrap_or(0),
+        title: raw.title.unwrap_or_default(),
+        cover: raw.cover.unwrap_or_default(),
+        is_finish: raw.is_finish.unwrap_or(0),
+        badge: raw.badge.unwrap_or_default(),
+        new_ep_index: new_ep.index_show.unwrap_or_default(),
+        new_ep_title: new_ep.title.unwrap_or_default(),
+        renewal_time: raw.renewal_time.unwrap_or_default(),
+        progress: raw.progress.unwrap_or_default(),
     }
 }
 

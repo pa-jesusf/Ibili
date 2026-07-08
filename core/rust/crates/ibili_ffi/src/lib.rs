@@ -198,6 +198,16 @@ struct SubscriptionCancelArgs {
     kind: i64,
 }
 
+#[derive(Deserialize)]
+struct FollowedPgcListArgs {
+    #[serde(default = "default_one_i64")]
+    kind: i64,
+    #[serde(default = "default_one_i64")]
+    page: i64,
+    #[serde(default = "default_ps")]
+    page_size: i64,
+}
+
 fn default_qn() -> i64 {
     0
 }
@@ -923,6 +933,10 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: SubscriptionCancelArgs = serde_json::from_value(args)?;
             c.inner.subscription_cancel(a.id, a.kind)?;
             Ok(Value::Object(Default::default()))
+        }
+        "user.followed_pgc" => {
+            let a: FollowedPgcListArgs = serde_json::from_value(args)?;
+            to_value(c.inner.followed_pgc_list(a.kind, a.page, a.page_size)?)
         }
         "user.watchlater_list" => {
             let a: WatchLaterListArgs =
