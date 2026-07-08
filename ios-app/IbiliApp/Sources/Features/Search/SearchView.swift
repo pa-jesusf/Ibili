@@ -48,6 +48,9 @@ struct SearchView: View {
             content
                 .searchable(text: $vm.query, prompt: "搜索视频、UP主、番剧")
                 .onSubmit(of: .search, submitCurrentQuery)
+                .onChange(of: vm.query) { newValue in
+                    vm.handleQueryTextChanged(newValue)
+                }
         } else {
             content
         }
@@ -75,25 +78,47 @@ struct SearchView: View {
             }
         } else {
             SearchLandingView(vm: vm, history: history) { query, category in
-                vm.submit(query: query, category: category)
-                history.push(query)
-                dismissSearch()
-                onProgrammaticSubmit()
+                submit(query: query, category: category)
             }
         }
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if vm.hasActiveSubmittedQuery, vm.selectedType.hasFilters {
-            ToolbarItem(placement: .navigationBarTrailing) {
+        if vm.hasActiveSubmittedQuery {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button {
-                    isFiltersSheetPresented = true
+                    vm.reset()
+                    dismissSearch()
+                    onProgrammaticSubmit()
                 } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Image(systemName: "xmark.circle")
                 }
-                .foregroundStyle(IbiliTheme.accent)
+                .foregroundStyle(IbiliTheme.textSecondary)
+                .accessibilityLabel("清空搜索")
+
+                if vm.selectedType.hasFilters {
+                    Button {
+                        isFiltersSheetPresented = true
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                    .foregroundStyle(IbiliTheme.accent)
+                    .accessibilityLabel("筛选")
+                }
             }
+        }
+    }
+
+    private func submit(query: String, category: SearchCategory?) {
+        NavigationTrace.withUserAction("search.submit", metadata: [
+            "query": query,
+            "category": category?.name ?? "nil",
+        ]) {
+            guard vm.submit(query: query, category: category) else { return }
+            history.push(vm.submittedQuery)
+            dismissSearch()
+            onProgrammaticSubmit()
         }
     }
 
@@ -101,8 +126,8 @@ struct SearchView: View {
         NavigationTrace.withUserAction("search.submit", metadata: [
             "query": vm.query,
         ]) {
-            history.push(vm.query)
-            vm.submit()
+            guard vm.submit() else { return }
+            history.push(vm.submittedQuery)
             dismissSearch()
             onProgrammaticSubmit()
         }

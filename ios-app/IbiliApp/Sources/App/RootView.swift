@@ -1518,6 +1518,9 @@ private struct MainTabView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onSubmit(of: .search, submitCurrentQuery)
+                    .onChange(of: searchViewModel.query) { newValue in
+                        searchViewModel.handleQueryTextChanged(newValue)
+                    }
                 }
             }
             .tint(IbiliTheme.accent)
@@ -1637,8 +1640,8 @@ private struct MainTabView: View {
         NavigationTrace.withUserAction("search.submit", metadata: [
             "query": searchViewModel.query,
         ]) {
-            searchHistory.push(searchViewModel.query)
-            searchViewModel.submit()
+            guard searchViewModel.submit() else { return }
+            searchHistory.push(searchViewModel.submittedQuery)
             dismissSearchPresentationAfterSubmit()
         }
     }

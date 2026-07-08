@@ -19,6 +19,7 @@ final class SearchViewModel: ObservableObject {
     @Published var selectedType: SearchResultType = .video {
         didSet {
             guard oldValue != selectedType else { return }
+            guard !suppressTypeAutoRefresh else { return }
             guard hasActiveSubmittedQuery, selectedType.isImplemented else { return }
             let activeQuery = submittedQuery
             results = []
@@ -26,6 +27,7 @@ final class SearchViewModel: ObservableObject {
             totalResults = 0
             hasMore = true
             errorText = nil
+            guard automaticallyLoads else { return }
             Task { await fetchPage(1, keyword: activeQuery) }
         }
     }
@@ -59,31 +61,44 @@ final class SearchViewModel: ObservableObject {
     }
 
     private let client: CoreClient
+    private let automaticallyLoads: Bool
+    private var suppressTypeAutoRefresh = false
 
-    init(client: CoreClient = .shared) {
+    init(client: CoreClient = .shared, automaticallyLoads: Bool = true) {
         self.client = client
+        self.automaticallyLoads = automaticallyLoads
     }
 
     /// Run a fresh search using the current query + filter state.
     /// Empty / whitespace queries are ignored.
-    func submit() {
-        submitResolvedQuery(query)
+    @discardableResult
+    func submit() -> Bool {
+        selectedCategory = nil
+        return submitResolvedQuery(query)
     }
 
     /// Fill the search box with the given query and immediately fire a
     /// new search.
-    func submit(query: String, category: SearchCategory? = nil) {
+    @discardableResult
+    func submit(query: String, category: SearchCategory? = nil) -> Bool {
+        if selectedType != .video {
+            suppressTypeAutoRefresh = true
+            defer { suppressTypeAutoRefresh = false }
+            selectedType = .video
+        }
         selectedCategory = category
-        submitResolvedQuery(query)
+        return submitResolvedQuery(query)
     }
 
-    func resubmitSubmittedQuery() {
+    @discardableResult
+    func resubmitSubmittedQuery() -> Bool {
         submitResolvedQuery(submittedQuery)
     }
 
-    private func submitResolvedQuery(_ rawQuery: String) {
+    @discardableResult
+    private func submitResolvedQuery(_ rawQuery: String) -> Bool {
         let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         query = trimmed
         submittedQuery = trimmed
         hasSubmittedQuery = true
@@ -92,7 +107,10 @@ final class SearchViewModel: ObservableObject {
         totalResults = 0
         hasMore = true
         errorText = nil
-        Task { await fetchPage(1, keyword: trimmed) }
+        if automaticallyLoads {
+            Task { await fetchPage(1, keyword: trimmed) }
+        }
+        return true
     }
 
     func loadNextPage() {
@@ -113,8 +131,7 @@ final class SearchViewModel: ObservableObject {
         Task { await fetchPage(targetPage, keyword: activeQuery) }
     }
 
-    /// Clear results and return to the landing state. Used when the
-    /// user dismisses the search field via the system Cancel button.
+    /// Clear results and return to the landing state.
     func reset() {
         query = ""
         submittedQuery = ""
@@ -124,6 +141,24 @@ final class SearchViewModel: ObservableObject {
         totalResults = 0
         errorText = nil
         hasSubmittedQuery = false
+        selectedType = .video
+        selectedCategory = nil
+        order = .totalrank
+        durationFilter = .any
+        userOrder = .defaultOrder
+        userKind = .all
+        articleOrder = .totalrank
+        articleZone = .all
+    }
+
+    /// Called by the system search field binding. Clearing the editing
+    /// text should return to the discover/history landing screen, matching
+    /// native Search behaviour where an empty query shows suggestions.
+    func handleQueryTextChanged(_ newValue: String) {
+        guard hasActiveSubmittedQuery else { return }
+        if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            reset()
+        }
     }
 
     func hideVideo(aid: Int64) {
