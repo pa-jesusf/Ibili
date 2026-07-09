@@ -72,6 +72,18 @@ final class LocalHLSProxy: @unchecked Sendable {
         let upper: UInt64
     }
 
+    private struct PlaybackHostCandidate {
+        let interfaceName: String
+        let address: String
+        let score: Int
+    }
+
+    private struct PlaybackHost {
+        let address: String
+        let mode: String
+        let externalReachable: Bool
+    }
+
     private final class InflightFetch {
         let task: Task<ProxyURLLoader.RangeResponse, Error>
 
@@ -417,20 +429,22 @@ final class LocalHLSProxy: @unchecked Sendable {
 
     // MARK: - Public API
 
-    /// Register a source and receive the `master.m3u8` URL. When the device
-    /// has a Wi-Fi/LAN address we publish that instead of loopback so AirPlay
-    /// receivers can fetch the same proxy playlist; otherwise we fall back to
-    /// `127.0.0.1` for ordinary on-device playback.
+    /// Register a source and receive the `master.m3u8` URL. Remote streams
+    /// publish a device address when one is available so AirPlay receivers can
+    /// fetch the same proxy playlist. Loopback is reserved for local-only
+    /// playback, where no external receiver could resolve the proxy anyway.
     /// Idempotent: re-registering the same `token` overwrites the prior entry.
     func register(token: String, source: Source) throws -> URL {
         try ensureRunning()
         let runtime = RuntimeSource(source: source)
         let port = state.withLock { s -> UInt16 in s.sources[token] = runtime; return s.port }
-        let playbackHost = Self.preferredPlaybackHost(for: source)
+        let playbackHost = Self.playbackHost(for: source)
         runtime.prewarmStartupSegments()
         AppLog.info("player", "HLS 代理 source 已注册", metadata: [
             "token": token,
-            "host": playbackHost,
+            "host": playbackHost.address,
+            "hostMode": playbackHost.mode,
+            "externalReachable": String(playbackHost.externalReachable),
             "videoFragments": String(source.videoProbe.index.entries.count),
             "audioFragments": String(source.audioProbe?.index.entries.count ?? 0),
             "videoPlaylistOutputEntries": String(runtime.videoOutputEntries),
@@ -439,7 +453,7 @@ final class LocalHLSProxy: @unchecked Sendable {
             "videoHeadCacheBytes": String(source.videoHeadCache?.count ?? 0),
             "audioHeadCacheBytes": String(source.audioHeadCache?.count ?? 0),
         ])
-        guard let url = URL(string: "http://\(playbackHost):\(port)/play/\(token)/master.m3u8") else {
+        guard let url = URL(string: "http://\(playbackHost.address):\(port)/play/\(token)/master.m3u8") else {
             throw ProxyServerError.invalidServerURL
         }
         return url
@@ -835,25 +849,46 @@ final class LocalHLSProxy: @unchecked Sendable {
         }
     }
 
-    private static func preferredPlaybackHost(for source: Source) -> String {
+    private static func playbackHost(for source: Source) -> PlaybackHost {
         if source.videoCandidates.allSatisfy(\.isFileURL),
            source.audioCandidates.allSatisfy(\.isFileURL) {
-            return "127.0.0.1"
+            return PlaybackHost(address: "127.0.0.1",
+                                mode: "localFileLoopback",
+                                externalReachable: false)
         }
-        return preferredLANIPv4Address() ?? "127.0.0.1"
+        let candidates = playbackHostCandidates()
+        guard let selected = candidates.first else {
+            AppLog.warning("player", "HLS 代理未找到可发布的本机地址，仅支持本机播放", metadata: [
+                "hostMode": "remoteLocalOnlyLoopback",
+                "externalReachable": "false",
+            ])
+            return PlaybackHost(address: "127.0.0.1",
+                                mode: "remoteLocalOnlyLoopback",
+                                externalReachable: false)
+        }
+        AppLog.info("player", "HLS 代理播放 host 选择", metadata: [
+            "selected": "\(selected.interfaceName)=\(selected.address)",
+            "candidates": candidates
+                .map { "\($0.interfaceName)=\($0.address)#\($0.score)" }
+                .joined(separator: ","),
+        ])
+        return PlaybackHost(address: selected.address,
+                            mode: "publishedInterface",
+                            externalReachable: true)
     }
 
-    private static func preferredLANIPv4Address() -> String? {
+    private static func playbackHostCandidates() -> [PlaybackHostCandidate] {
         var interfaces: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return [] }
         defer { freeifaddrs(interfaces) }
 
-        var candidates: [(score: Int, address: String)] = []
+        var candidates: [PlaybackHostCandidate] = []
         var pointer: UnsafeMutablePointer<ifaddrs>? = first
         while let current = pointer {
             defer { pointer = current.pointee.ifa_next }
             let flags = current.pointee.ifa_flags
             guard flags & UInt32(IFF_UP) != 0,
+                  flags & UInt32(IFF_RUNNING) != 0,
                   flags & UInt32(IFF_LOOPBACK) == 0,
                   let rawAddress = current.pointee.ifa_addr,
                   rawAddress.pointee.sa_family == UInt8(AF_INET) else {
@@ -861,29 +896,25 @@ final class LocalHLSProxy: @unchecked Sendable {
             }
 
             let name = String(cString: current.pointee.ifa_name)
-            guard !name.hasPrefix("pdp_ip") else { continue }
+            guard !isExcludedPlaybackInterface(name) else { continue }
             guard let address = ipv4String(from: rawAddress),
                   !address.isEmpty,
-                  address != "0.0.0.0",
-                  isPrivateLANIPv4Address(address) else { continue }
+                  isUsablePlaybackIPv4Address(address) else { continue }
 
-            let score: Int
-            if name == "en0" {
-                score = 0
-            } else if name.hasPrefix("en") {
-                score = 1
-            } else if name.hasPrefix("bridge") {
-                score = 2
-            } else {
-                score = 3
-            }
-            candidates.append((score, address))
+            candidates.append(PlaybackHostCandidate(
+                interfaceName: name,
+                address: address,
+                score: playbackHostScore(interfaceName: name, address: address)
+            ))
         }
 
         return candidates.sorted { lhs, rhs in
-            if lhs.score == rhs.score { return lhs.address < rhs.address }
+            if lhs.score == rhs.score {
+                if lhs.interfaceName == rhs.interfaceName { return lhs.address < rhs.address }
+                return lhs.interfaceName < rhs.interfaceName
+            }
             return lhs.score < rhs.score
-        }.first?.address
+        }
     }
 
     private static func ipv4String(from address: UnsafeMutablePointer<sockaddr>) -> String? {
@@ -897,6 +928,56 @@ final class LocalHLSProxy: @unchecked Sendable {
         }
     }
 
+    private static func isExcludedPlaybackInterface(_ name: String) -> Bool {
+        name.hasPrefix("pdp_ip")
+            || name.hasPrefix("utun")
+            || name.hasPrefix("ipsec")
+            || name.hasPrefix("ppp")
+    }
+
+    private static func playbackHostScore(interfaceName: String, address: String) -> Int {
+        let addressScore: Int
+        if isPrivateLANIPv4Address(address) {
+            addressScore = 0
+        } else if isSharedAddressSpaceIPv4Address(address) {
+            addressScore = 2
+        } else if isLinkLocalIPv4Address(address) {
+            addressScore = 20
+        } else {
+            addressScore = 10
+        }
+
+        let interfaceScore: Int
+        if interfaceName == "en0" {
+            interfaceScore = 0
+        } else if interfaceName.hasPrefix("en") {
+            interfaceScore = 2
+        } else if interfaceName.hasPrefix("bridge") {
+            interfaceScore = 4
+        } else if interfaceName.hasPrefix("awdl") {
+            interfaceScore = 6
+        } else if interfaceName.hasPrefix("llw") {
+            interfaceScore = 7
+        } else if interfaceName.hasPrefix("anpi") {
+            interfaceScore = 8
+        } else {
+            interfaceScore = 12
+        }
+        return addressScore + interfaceScore
+    }
+
+    private static func isUsablePlaybackIPv4Address(_ address: String) -> Bool {
+        let parts = address.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        guard parts[0] != 0,
+              parts[0] != 127,
+              parts[0] < 224,
+              !(parts[0] == 255 && parts[1] == 255 && parts[2] == 255 && parts[3] == 255) else {
+            return false
+        }
+        return true
+    }
+
     private static func isPrivateLANIPv4Address(_ address: String) -> Bool {
         let parts = address.split(separator: ".").compactMap { Int($0) }
         guard parts.count == 4 else { return false }
@@ -904,6 +985,16 @@ final class LocalHLSProxy: @unchecked Sendable {
         if parts[0] == 172, (16...31).contains(parts[1]) { return true }
         if parts[0] == 192, parts[1] == 168 { return true }
         return false
+    }
+
+    private static func isSharedAddressSpaceIPv4Address(_ address: String) -> Bool {
+        let parts = address.split(separator: ".").compactMap { Int($0) }
+        return parts.count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
+    }
+
+    private static func isLinkLocalIPv4Address(_ address: String) -> Bool {
+        let parts = address.split(separator: ".").compactMap { Int($0) }
+        return parts.count == 4 && parts[0] == 169 && parts[1] == 254
     }
 
     // MARK: - Connection handling

@@ -8,7 +8,8 @@ import Foundation
 ///    pick the fastest host and (b) collect ftyp + moov + sidx, which we
 ///    parse via ``ISOBMFF/probe(_:)``.
 /// 3. Register the parsed `Source` with ``LocalHLSProxy`` and hand a
-///    `http://127.0.0.1:<port>/play/<token>/master.m3u8` URL to AVPlayer.
+///    proxy `master.m3u8` URL to AVPlayer. For remote streams the proxy
+///    publishes a LAN-reachable host so AirPlay receivers can fetch it too.
 /// 4. AVPlayer treats this as a vanilla HLS stream — fast startup, full
 ///    native UI, system PiP, AirPlay all preserved.
 @MainActor
