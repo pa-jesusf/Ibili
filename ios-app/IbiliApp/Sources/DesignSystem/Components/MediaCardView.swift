@@ -37,7 +37,6 @@ struct MediaCardView: View {
         .frame(width: width, alignment: .topLeading)
         .background(IbiliTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .drawingGroup(opaque: false)
     }
 }
 
@@ -129,4 +128,3 @@ struct MediaRowView: View {
         model.durationSec > 0 ? BiliFormat.duration(model.durationSec) : nil
     }
 }
-

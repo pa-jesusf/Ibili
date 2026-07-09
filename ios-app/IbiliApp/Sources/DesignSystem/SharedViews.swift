@@ -42,7 +42,7 @@ final class ImageCache {
 final class CoverImagePrefetcher {
     static let shared = CoverImagePrefetcher()
 
-    private let maxConcurrent = 6
+    private let maxConcurrent = 4
     private var tasks: [URL: Task<Void, Never>] = [:]
 
     func prefetch(_ urlStrings: [String], targetPointSize: CGSize, quality: Int?) {
@@ -50,33 +50,24 @@ final class CoverImagePrefetcher {
             let resolved = BiliImageURL.resized(raw, pointSize: targetPointSize, quality: quality)
             return URL(string: resolved)
         }
+        let maxPixelDimension = Self.maxPixelDimension(for: targetPointSize)
         for url in urls where tasks[url] == nil && ImageCache.shared.image(for: url) == nil {
             if tasks.count >= maxConcurrent, let first = tasks.keys.first {
                 tasks[first]?.cancel()
                 tasks[first] = nil
             }
-            tasks[url] = Task { [url] in
+            tasks[url] = Task { [url, maxPixelDimension] in
                 defer { Task { @MainActor in self.tasks[url] = nil } }
-                // Disk-cache hit — promote into memory without
-                // touching the network. Saves both bandwidth and
-                // CDN-warmup latency on subsequent feed scrolls.
-                if let cached = ImageDiskCache.shared.read(url),
-                   let img = UIImage(data: cached) {
-                    ImageCache.shared.store(img, for: url, cost: cached.count)
-                    return
-                }
-                do {
-                    let (data, response) = try await URLSession.shared.data(from: url)
-                    if Task.isCancelled { return }
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return }
-                    guard let img = UIImage(data: data) else { return }
-                    ImageCache.shared.store(img, for: url, cost: data.count)
-                    ImageDiskCache.shared.write(url, data: data)
-                } catch {
-                    return
-                }
+                _ = await ImagePipeline.shared.image(for: url, maxPixelDimension: maxPixelDimension)
             }
         }
+    }
+
+    private static func maxPixelDimension(for targetPointSize: CGSize) -> CGFloat {
+        let scale = UIScreen.main.scale
+        let maxScreenDimension = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * scale
+        let targetDimension = max(targetPointSize.width, targetPointSize.height) * scale
+        return min(max(targetDimension, 160), maxScreenDimension)
     }
 }
 
@@ -90,7 +81,7 @@ private final class RemoteImageLoader: ObservableObject {
     private var task: Task<Void, Never>?
     private var loadedURL: URL?
 
-    func load(_ url: URL?) {
+    func load(_ url: URL?, targetPointSize: CGSize?) {
         guard let url else {
             task?.cancel()
             loadedURL = nil
@@ -101,7 +92,7 @@ private final class RemoteImageLoader: ObservableObject {
         if loadedURL == url, image != nil { return }
         loadedURL = url
         if loadFromMemoryCache(url) { return }
-        let maxDisplayPixelDimension = Self.maxDisplayPixelDimension()
+        let maxDisplayPixelDimension = Self.maxDisplayPixelDimension(for: targetPointSize)
         task?.cancel()
         failed = false
         task = Task { [url] in
@@ -136,8 +127,14 @@ private final class RemoteImageLoader: ObservableObject {
     }
 
     @MainActor
-    private static func maxDisplayPixelDimension() -> CGFloat {
-        UIScreen.main.bounds.width * UIScreen.main.scale
+    private static func maxDisplayPixelDimension(for targetPointSize: CGSize?) -> CGFloat {
+        let scale = UIScreen.main.scale
+        let maxScreenDimension = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * scale
+        guard let targetPointSize else {
+            return maxScreenDimension
+        }
+        let targetDimension = max(targetPointSize.width, targetPointSize.height) * scale
+        return min(max(targetDimension, 160), maxScreenDimension)
     }
 
 }
@@ -169,8 +166,8 @@ struct RemoteImage: View {
                 Rectangle().fill(Color.gray.opacity(0.15))
             }
         }
-        .onAppear { loader.load(resolvedURL) }
-        .onChange(of: resolvedURL) { loader.load($0) }
+        .onAppear { loader.load(resolvedURL, targetPointSize: targetPointSize) }
+        .onChange(of: resolvedURL) { loader.load($0, targetPointSize: targetPointSize) }
         .onReceive(NotificationCenter.default.publisher(for: ImageCache.didStoreImageNotification)) { notification in
             let storedURL = ImageCache.storedURL(from: notification)
             guard storedURL == resolvedURL else { return }

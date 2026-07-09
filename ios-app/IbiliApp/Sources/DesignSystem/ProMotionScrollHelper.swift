@@ -17,8 +17,9 @@ struct ProMotionScrollHint: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onAppear {
-                guard link == nil else { return }
-                link = DisplayLinkBox()
+                guard link == nil,
+                      UIScreen.main.maximumFramesPerSecond > 60 else { return }
+                link = DisplayLinkBox(maximumFramesPerSecond: UIScreen.main.maximumFramesPerSecond)
             }
             .onDisappear {
                 link?.stop()
@@ -30,11 +31,12 @@ struct ProMotionScrollHint: ViewModifier {
 private final class DisplayLinkBox {
     private var displayLink: CADisplayLink?
 
-    init() {
+    init(maximumFramesPerSecond: Int) {
         let link = CADisplayLink(target: self, selector: #selector(tick))
         if #available(iOS 15.0, *) {
+            let fps = Float(min(maximumFramesPerSecond, 120))
             link.preferredFrameRateRange = CAFrameRateRange(
-                minimum: 120, maximum: 120, preferred: 120
+                minimum: fps, maximum: fps, preferred: fps
             )
         }
         link.add(to: .main, forMode: .tracking)

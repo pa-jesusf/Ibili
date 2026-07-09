@@ -169,7 +169,6 @@ struct RootView: View {
             ], includeStack: true)
             return router.handle(url)
         })
-        .background(NavigationTraceTouchObserver())
         .navigationTracePage("RootView", metadata: [
             "selectedTab": "\(selectedMainTab)",
             "isLoggedIn": String(session.isLoggedIn),
@@ -187,7 +186,6 @@ struct RootView: View {
             guard newValue != nil else { return }
             splitRootDismissWork?.cancel()
             splitRootDismissWork = nil
-            splitDetailProgress = 1
             releaseDismissedPlayerHostWork?.cancel()
             releaseDismissedPlayerHostWork = nil
             retainsDismissedPlayerHost = false

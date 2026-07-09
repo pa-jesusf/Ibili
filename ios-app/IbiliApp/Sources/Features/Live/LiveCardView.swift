@@ -42,7 +42,6 @@ struct LiveCardView: View {
         .frame(width: cardWidth, alignment: .topLeading)
         .background(IbiliTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
-        .drawingGroup(opaque: false)
     }
 }
 
@@ -86,7 +85,6 @@ struct SearchLiveResultCardView: View {
         .frame(width: cardWidth, alignment: .topLeading)
         .background(IbiliTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
-        .drawingGroup(opaque: false)
     }
 }
 

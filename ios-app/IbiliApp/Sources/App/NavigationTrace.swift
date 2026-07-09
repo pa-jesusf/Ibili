@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import UIKit
 
 @MainActor
 enum NavigationTrace {
@@ -15,9 +14,7 @@ enum NavigationTrace {
     private static var sequence: UInt64 = 0
     private static var activeAction: InteractionContext?
     private static var recentAction: InteractionContext?
-    private static var recentTouch: InteractionContext?
     private static var clearRecentActionWork: DispatchWorkItem?
-    private static var clearRecentTouchWork: DispatchWorkItem?
     private static let recentInteractionWindow: TimeInterval = 2.0
 
     static func withUserAction(_ name: String,
@@ -32,24 +29,6 @@ enum NavigationTrace {
         perform()
         write("用户操作结束", metadata: contextMetadata(for: context), includeStack: false)
         activeAction = previousAction
-    }
-
-    static func recordTouch(phase: String, touch: UITouch, in view: UIView?) {
-        let window = view?.window
-        let location = touch.location(in: window)
-        let hitView = window?.hitTest(location, with: nil) ?? touch.view
-        let context = makeContext(kind: "touch", name: phase, metadata: [
-            "phase": phase,
-            "point": String(format: "%.1f,%.1f", location.x, location.y),
-            "hitView": viewChain(from: hitView),
-        ])
-        recentTouch = context
-        scheduleRecentTouchClear()
-        write(
-            phase == "began" ? "用户触摸开始" : "用户触摸结束",
-            metadata: contextMetadata(for: context, includeAge: false),
-            includeStack: false
-        )
     }
 
     static func log(_ message: String,
@@ -86,7 +65,7 @@ enum NavigationTrace {
                               metadata: [String: String],
                               includeStack: Bool) {
         var merged = metadata
-        if includeStack {
+        if includeStack, AppDiagnostics.detailedNavigationTracingEnabled {
             merged["callStack"] = callStackSummary()
         }
         AppLog.debug("navigation", message, metadata: merged)
@@ -100,10 +79,6 @@ enum NavigationTrace {
         if let recentAction,
            now.timeIntervalSince(recentAction.startedAt) <= recentInteractionWindow {
             return contextMetadata(for: recentAction)
-        }
-        if let recentTouch,
-           now.timeIntervalSince(recentTouch.startedAt) <= recentInteractionWindow {
-            return contextMetadata(for: recentTouch)
         }
         return ["traceSource": "system-or-unknown"]
     }
@@ -143,16 +118,6 @@ enum NavigationTrace {
         DispatchQueue.main.asyncAfter(deadline: .now() + recentInteractionWindow, execute: work)
     }
 
-    private static func scheduleRecentTouchClear() {
-        clearRecentTouchWork?.cancel()
-        let work = DispatchWorkItem {
-            recentTouch = nil
-            clearRecentTouchWork = nil
-        }
-        clearRecentTouchWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + recentInteractionWindow, execute: work)
-    }
-
     private static func callStackSummary(maxFrames: Int = 12) -> String {
         Thread.callStackSymbols
             .dropFirst(3)
@@ -161,98 +126,6 @@ enum NavigationTrace {
                 frame.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             }
             .joined(separator: " | ")
-    }
-
-    private static func viewChain(from view: UIView?) -> String {
-        var names: [String] = []
-        var current = view
-        while let view = current, names.count < 10 {
-            names.append(String(describing: type(of: view)))
-            current = view.superview
-        }
-        return names.joined(separator: " < ")
-    }
-}
-
-struct NavigationTraceTouchObserver: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
-        view.backgroundColor = .clear
-        view.isUserInteractionEnabled = false
-        context.coordinator.install(from: view)
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.install(from: uiView)
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        private weak var installedWindow: UIWindow?
-        private weak var recognizer: NavigationTraceTouchGestureRecognizer?
-
-        func install(from markerView: UIView) {
-            DispatchQueue.main.async { [weak self, weak markerView] in
-                guard let self, let markerView, let window = markerView.window else { return }
-                guard self.installedWindow !== window else { return }
-                if let recognizer, let installedWindow {
-                    installedWindow.removeGestureRecognizer(recognizer)
-                }
-                let recognizer = NavigationTraceTouchGestureRecognizer()
-                recognizer.cancelsTouchesInView = false
-                recognizer.delaysTouchesBegan = false
-                recognizer.delaysTouchesEnded = false
-                recognizer.delegate = self
-                window.addGestureRecognizer(recognizer)
-                self.installedWindow = window
-                self.recognizer = recognizer
-            }
-        }
-
-        deinit {
-            if let recognizer, let installedWindow {
-                installedWindow.removeGestureRecognizer(recognizer)
-            }
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldReceive touch: UITouch) -> Bool {
-            true
-        }
-    }
-}
-
-private final class NavigationTraceTouchGestureRecognizer: UIGestureRecognizer {
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        super.touchesBegan(touches, with: event)
-        if let touch = touches.first {
-            NavigationTrace.recordTouch(phase: "began", touch: touch, in: view)
-        }
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        super.touchesEnded(touches, with: event)
-        if let touch = touches.first {
-            NavigationTrace.recordTouch(phase: "ended", touch: touch, in: view)
-        }
-        state = .failed
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-        super.touchesCancelled(touches, with: event)
-        if let touch = touches.first {
-            NavigationTrace.recordTouch(phase: "cancelled", touch: touch, in: view)
-        }
-        state = .failed
     }
 }
 

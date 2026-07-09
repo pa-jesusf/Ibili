@@ -268,6 +268,7 @@ enum AppLog {
     static func debug(_ category: String,
                       _ message: String,
                       metadata: [String: String] = [:]) {
+        guard AppDiagnostics.shouldRecordDebug(category: category, message: message) else { return }
         write(level: .debug, category: category, message: message, metadata: metadata)
     }
 

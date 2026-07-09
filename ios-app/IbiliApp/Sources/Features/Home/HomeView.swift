@@ -218,7 +218,7 @@ private struct HomeFeedPage: View {
             },
             onItemAppear: { index, item in
                 prefetch.visibleItemsChanged(visibleItems(around: index))
-                prefetchCovers(around: item, cardWidth: metrics.cardWidth)
+                prefetchCovers(aroundIndex: index, cardWidth: metrics.cardWidth)
             }
         ) {
             EmptyView()
@@ -452,10 +452,10 @@ private struct HomeFeedPage: View {
 
     /// Pre-warm cover images ahead of the user's scroll position so
     /// cells already have their covers cached by the time they appear.
-    private func prefetchCovers(around item: FeedItemDTO, cardWidth: CGFloat) {
-        let lookahead = 18
-        guard let idx = vm.items.firstIndex(where: { $0.aid == item.aid }) else { return }
-        let start = min(idx + 1, vm.items.count)
+    private func prefetchCovers(aroundIndex index: Int, cardWidth: CGFloat) {
+        let lookahead = 12
+        guard vm.items.indices.contains(index) else { return }
+        let start = min(index + 1, vm.items.count)
         let end = min(start + lookahead, vm.items.count)
         guard start < end else { return }
         let covers = vm.items[start..<end].map(\.cover)
