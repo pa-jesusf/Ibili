@@ -1008,6 +1008,11 @@ final class LocalHLSProxy: @unchecked Sendable {
                               conn: NWConnection,
                               label: String) async {
         guard let range = request.range else {
+            AppLog.warning("player", "HLS 代理 segment 请求缺少 range", metadata: [
+                "path": request.path,
+                "label": label,
+                "method": request.method,
+            ])
             respondError(conn: conn, status: 416, body: "Range required")
             return
         }
@@ -1018,14 +1023,16 @@ final class LocalHLSProxy: @unchecked Sendable {
                 candidates: candidates,
                 label: label
             )
+            let status = request.rangeWasProvidedByHeader ? 206 : 200
+            var headers = ["Accept-Ranges": "bytes"]
+            if request.rangeWasProvidedByHeader {
+                headers["Content-Range"] = "bytes \(range.lowerBound)-\(range.upperBound)/\(resp.totalBytes.map(String.init) ?? source.totalBytes(for: track).map(String.init) ?? "*")"
+            }
             respondBinary(conn: conn,
-                          status: 206,
+                          status: status,
                           body: resp.data,
                           contentType: "video/mp4",
-                          extraHeaders: [
-                            "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound)/\(resp.totalBytes.map(String.init) ?? source.totalBytes(for: track).map(String.init) ?? "*")",
-                            "Accept-Ranges": "bytes",
-                          ])
+                          extraHeaders: headers)
         } catch {
             let detail = ProxyURLLoader.debugSummary(of: error)
             respondError(conn: conn, status: 502, body: "Upstream failed: \(detail)")
@@ -1095,6 +1102,7 @@ private struct HTTPRequestHead {
     let method: String
     let path: String
     let range: ClosedRange<UInt64>?
+    let rangeWasProvidedByHeader: Bool
 
     static func parse(_ data: Data) -> HTTPRequestHead? {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
@@ -1103,7 +1111,13 @@ private struct HTTPRequestHead {
         let parts = firstLine.split(separator: " ").map(String.init)
         guard parts.count >= 3 else { return nil }
         let method = parts[0]
-        let path = parts[1]
+        let target = parts[1]
+        let components = URLComponents(string: target)
+        let parsedPath = components?.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = parsedPath?.isEmpty == false ? parsedPath! : target.components(separatedBy: "?").first ?? target
+        let queryRange = components?.queryItems?.first { item in
+            item.name == "range" || item.name == "r"
+        }?.value
         var rangeHeader: String?
         for line in lines.dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { continue }
@@ -1113,14 +1127,21 @@ private struct HTTPRequestHead {
                 rangeHeader = value
             }
         }
+        let headerRange = parseRangeHeader(rangeHeader)
         return HTTPRequestHead(method: method,
                                path: path,
-                               range: parseRange(rangeHeader))
+                               range: headerRange ?? parseRangeToken(queryRange),
+                               rangeWasProvidedByHeader: headerRange != nil)
     }
 
-    private static func parseRange(_ header: String?) -> ClosedRange<UInt64>? {
+    private static func parseRangeHeader(_ header: String?) -> ClosedRange<UInt64>? {
         guard let header, header.hasPrefix("bytes=") else { return nil }
-        let body = header.dropFirst("bytes=".count)
+        return parseRangeToken(String(header.dropFirst("bytes=".count)))
+    }
+
+    private static func parseRangeToken(_ token: String?) -> ClosedRange<UInt64>? {
+        guard let token else { return nil }
+        let body = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = body.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
         guard parts.count == 2,
               let lower = UInt64(parts[0]),

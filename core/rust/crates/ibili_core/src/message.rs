@@ -16,8 +16,6 @@ use crate::Core;
 
 const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 const URL_MSG_UNREAD: &str = "https://api.bilibili.com/x/msgfeed/unread";
-const URL_SINGLE_UNREAD: &str =
-    "https://api.vc.bilibili.com/session_svr/v1/session_svr/single_unread";
 const URL_MSG_REPLY: &str = "https://api.bilibili.com/x/msgfeed/reply";
 const URL_MSG_AT: &str = "https://api.bilibili.com/x/msgfeed/at";
 const URL_MSG_LIKE: &str = "https://api.bilibili.com/x/msgfeed/like";
@@ -90,35 +88,16 @@ impl Core {
             .http
             .get_web::<MsgFeedUnreadWire>(URL_MSG_UNREAD, &web_location_params("333.1365"))
             .unwrap_or_default();
-        let single = self
-            .http
-            .get_web::<SingleUnreadWire>(
-                URL_SINGLE_UNREAD,
-                &[
-                    ("build".into(), "0".into()),
-                    ("mobi_app".into(), "web".into()),
-                    ("unread_type".into(), "0".into()),
-                    ("web_location".into(), "333.1365".into()),
-                ],
-            )
-            .unwrap_or_default();
-        let whisper = single.follow_unread.unwrap_or(0)
-            + single.unfollow_unread.unwrap_or(0)
-            + single.biz_msg_follow_unread.unwrap_or(0)
-            + single.biz_msg_unfollow_unread.unwrap_or(0)
-            + single.unfollow_push_msg.unwrap_or(0)
-            + single.custom_unread.unwrap_or(0);
         let total = feed.reply.unwrap_or(0)
             + feed.at.unwrap_or(0)
             + feed.like.unwrap_or(0)
-            + feed.sys_msg.unwrap_or(0)
-            + whisper;
+            + feed.sys_msg.unwrap_or(0);
         Ok(MessageUnreadSummary {
             reply: feed.reply.unwrap_or(0),
             at: feed.at.unwrap_or(0),
             like: feed.like.unwrap_or(0),
             sys_msg: feed.sys_msg.unwrap_or(0),
-            whisper,
+            whisper: 0,
             total,
         })
     }
@@ -512,16 +491,6 @@ struct MsgFeedUnreadWire {
     at: Option<i64>,
     like: Option<i64>,
     sys_msg: Option<i64>,
-}
-
-#[derive(Default, Deserialize)]
-struct SingleUnreadWire {
-    follow_unread: Option<i64>,
-    unfollow_unread: Option<i64>,
-    unfollow_push_msg: Option<i64>,
-    biz_msg_follow_unread: Option<i64>,
-    biz_msg_unfollow_unread: Option<i64>,
-    custom_unread: Option<i64>,
 }
 
 #[derive(Default, Deserialize)]

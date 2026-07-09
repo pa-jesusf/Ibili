@@ -6,18 +6,16 @@ struct MessageToolbarButton: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack(alignment: .topTrailing) {
-                Text("消息")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(IbiliTheme.accent)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                    .padding(.trailing, unreadCount > 0 ? 8 : 0)
-                if unreadCount > 0 {
-                    MessageUnreadBadge(count: unreadCount, compact: true)
-                        .offset(x: 14, y: -9)
+            Image(systemName: "envelope")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(IbiliTheme.accent)
+                .frame(width: 30, height: 30)
+                .overlay(alignment: .topTrailing) {
+                    if unreadCount > 0 {
+                        MessageUnreadBadge(count: unreadCount, compact: true)
+                            .offset(x: 9, y: -7)
+                    }
                 }
-            }
         }
         .tint(IbiliTheme.accent)
         .accessibilityLabel(unreadCount > 0 ? "消息，\(unreadCount) 条未读" : "消息")

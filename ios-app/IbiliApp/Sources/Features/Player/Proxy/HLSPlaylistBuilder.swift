@@ -4,9 +4,10 @@ import Foundation
 /// an ``ISOBMFF.Probe``.
 ///
 /// The output is a tiny VOD-style master + per-track media playlist that
-/// uses `EXT-X-MAP` (so the init segment is delivered separately) and
-/// `EXT-X-BYTERANGE` (so each fragment is referenced as a byte range in
-/// one upstream blob, with no remuxing).
+/// uses `EXT-X-MAP` (so the init segment is delivered separately). Each
+/// fragment URI carries its byte range in the query string so AirPlay
+/// receivers do not need to preserve HTTP Range headers when fetching
+/// from the in-process proxy.
 enum HLSPlaylistBuilder {
 
     /// Reasonable default if we cannot derive a real bandwidth value.
@@ -150,11 +151,14 @@ enum HLSPlaylistBuilder {
             .nilIfEmpty
     }
 
-    /// Media playlist describing one fMP4 source by byte ranges.
+    /// Media playlist describing one fMP4 source as virtual segment URLs.
     /// `segmentPath` is the proxy URL (relative or absolute) used both for
-    /// `EXT-X-MAP` and for each fragment line.
+    /// `EXT-X-MAP` and for each fragment line; the actual byte range is
+    /// encoded as `?range=lower-upper` so remote AirPlay receivers can fetch
+    /// a complete virtual resource without issuing a Range request.
     static func makeMedia(probe: ISOBMFF.Probe, segmentPath: String, targetDurationOverride: Int? = nil) -> String {
         let plan = makeMediaPlan(probe: probe, targetDurationOverride: targetDurationOverride)
+        let initURL = rangedSegmentPath(segmentPath, range: probe.initSegment.range)
         var lines: [String] = [
             "#EXTM3U",
             "#EXT-X-VERSION:7",
@@ -162,13 +166,12 @@ enum HLSPlaylistBuilder {
             "#EXT-X-INDEPENDENT-SEGMENTS",
             "#EXT-X-TARGETDURATION:\(plan.targetDuration)",
             "#EXT-X-MEDIA-SEQUENCE:0",
-            #"#EXT-X-MAP:URI="\#(segmentPath)",BYTERANGE="\#(probe.initSegment.length)@\#(probe.initSegment.offset)""#,
+            #"#EXT-X-MAP:URI="\#(initURL)""#,
         ]
         for entry in plan.entries {
             let dur = String(format: "%.6f", Double(entry.durationTicks) / Double(probe.index.timescale))
             lines.append("#EXTINF:\(dur),")
-            lines.append("#EXT-X-BYTERANGE:\(entry.length)@\(entry.offset)")
-            lines.append(segmentPath)
+            lines.append(rangedSegmentPath(segmentPath, range: entry.range))
         }
         lines.append("#EXT-X-ENDLIST")
         return lines.joined(separator: "\n") + "\n"
@@ -244,6 +247,11 @@ enum HLSPlaylistBuilder {
             durationTicks: currentDuration
         ))
         return merged
+    }
+
+    private static func rangedSegmentPath(_ segmentPath: String, range: ClosedRange<UInt64>) -> String {
+        let separator = segmentPath.contains("?") ? "&" : "?"
+        return "\(segmentPath)\(separator)range=\(range.lowerBound)-\(range.upperBound)"
     }
 }
 

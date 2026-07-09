@@ -30,7 +30,7 @@ struct ProfileRoot: View {
             headerCollapseProgress: $headerCollapseProgress,
             hidesNavigationBar: false,
             usesInlineSystemHeader: true,
-            reservesInlineAccessoryFootprint: true
+            reservesInlineAccessoryFootprint: false
         ) {
             FeedScrollPage(
                 title: "我的",
@@ -58,7 +58,7 @@ struct ProfileRoot: View {
             await messageUnread.reload()
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 MessageToolbarButton(unreadCount: messageUnread.summary.total) {
                     rootNavigation.openMessageCenter()
                 }
