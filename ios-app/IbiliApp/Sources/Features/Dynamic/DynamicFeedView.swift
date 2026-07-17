@@ -247,15 +247,15 @@ private struct DynamicFeedPage: View {
                             .padding(.top, 18)
                     } else {
                         LazyVStack(spacing: 14) {
-                            ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, item in
+                            ForEach(IndexedArray(vm.items), id: \.element.id) { indexed in
                                 DynamicItemCard(
-                                    item: item,
+                                    item: indexed.element,
                                     contentWidth: contentWidth,
                                     onOpenVideo: onOpenVideo,
                                     onOpenDetail: onOpenDetail
                                 )
                                 .onAppear {
-                                    if !vm.isEnd, index >= max(0, vm.items.count - 3) {
+                                    if !vm.isEnd, indexed.index >= max(0, vm.items.count - 3) {
                                         Task { await vm.loadMore() }
                                     }
                                 }
@@ -854,20 +854,20 @@ private struct DynamicImagesGrid: View {
             let cell = (contentWidth - spacing * CGFloat(cols - 1)) / CGFloat(cols)
             let layout = Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: cols)
             LazyVGrid(columns: layout, alignment: .leading, spacing: spacing) {
-                ForEach(Array(images.enumerated()), id: \.offset) { idx, img in
+                ForEach(IndexedArray(images), id: \.index) { indexed in
                     // Constrain hit-testing to exactly the rendered
                     // square — without `.contentShape` SwiftUI hands
                     // the grid cell's full slack region to whichever
                     // Button it lays out first, which is why a 2-img
                     // post used to register taps far past the visual
                     // boundary of the left image.
-                    RemoteImage(url: img.url, contentMode: .fill,
+                    RemoteImage(url: indexed.element.url, contentMode: .fill,
                                 targetPointSize: CGSize(width: cell, height: cell), quality: 75)
                         .frame(width: cell, height: cell)
                         .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .contentShape(Rectangle())
-                        .onTapGesture { onTap(idx) }
+                        .onTapGesture { onTap(indexed.index) }
                 }
             }
             .frame(width: contentWidth, alignment: .leading)

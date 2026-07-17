@@ -646,9 +646,9 @@ struct ReplyPictureGrid: View {
         let images = previewImages(tileSide: metrics.tileSide)
         return HStack(spacing: 0) {
             LazyVGrid(columns: columns, spacing: spacing) {
-                ForEach(Array(images.enumerated()), id: \.offset) { i, image in
-                    Button { preview = .init(index: i) } label: {
-                        RemoteImage(url: image.originalURL,
+                ForEach(IndexedArray(images), id: \.index) { indexed in
+                    Button { preview = .init(index: indexed.index) } label: {
+                        RemoteImage(url: indexed.element.originalURL,
                                     contentMode: .fill,
                                     targetPointSize: CGSize(width: metrics.tileSide, height: metrics.tileSide),
                                     quality: 75)

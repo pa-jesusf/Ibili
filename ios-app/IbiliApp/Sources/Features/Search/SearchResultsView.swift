@@ -89,10 +89,10 @@ struct SearchResultsView: View {
                     }
 
                     LazyVGrid(columns: gridItems, spacing: rowSpacing) {
-                        ForEach(vm.results) { item in
-                            resultButton(for: item, cardWidth: cardW)
+                        ForEach(IndexedArray(vm.results), id: \.element.id) { indexed in
+                            resultButton(for: indexed.element, cardWidth: cardW)
                                 .onAppear {
-                                    prefetchCovers(around: item, cardWidth: cardW)
+                                    prefetchCovers(around: indexed.index, cardWidth: cardW)
                                 }
                         }
                     }
@@ -283,10 +283,10 @@ struct SearchResultsView: View {
         }
     }
 
-    private func prefetchCovers(around item: SearchResultItem, cardWidth: CGFloat) {
+    private func prefetchCovers(around index: Int, cardWidth: CGFloat) {
         let lookahead = 18
-        guard let idx = vm.results.firstIndex(where: { $0.id == item.id }) else { return }
-        let start = min(idx + 1, vm.results.count)
+        guard vm.results.indices.contains(index) else { return }
+        let start = min(index + 1, vm.results.count)
         let end = min(start + lookahead, vm.results.count)
         guard start < end else { return }
         let covers = vm.results[start..<end].map { result in

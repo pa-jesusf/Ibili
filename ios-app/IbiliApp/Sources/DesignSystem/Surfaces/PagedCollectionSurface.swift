@@ -69,12 +69,12 @@ struct PagedCollectionSurface<Item: Identifiable, ItemContent: View, EmptyConten
         if items.isEmpty, !isLoading {
             emptyContent()
         } else {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                itemContent(index, item)
+            ForEach(IndexedArray(items), id: \.element.id) { indexed in
+                itemContent(indexed.index, indexed.element)
                     .onAppear {
-                        onItemAppear?(index, item)
+                        onItemAppear?(indexed.index, indexed.element)
                         guard !isLoading, !isEnd else { return }
-                        if index >= max(0, items.count - prefetchThreshold) {
+                        if indexed.index >= max(0, items.count - prefetchThreshold) {
                             onReachEnd()
                         }
                     }
@@ -101,5 +101,25 @@ struct PagedCollectionSurface<Item: Identifiable, ItemContent: View, EmptyConten
             }
             .padding(.vertical, 14)
         }
+    }
+}
+
+struct IndexedArray<Element>: RandomAccessCollection {
+    struct IndexedElement {
+        let index: Int
+        let element: Element
+    }
+
+    let elements: [Element]
+
+    init(_ elements: [Element]) {
+        self.elements = elements
+    }
+
+    var startIndex: Int { elements.startIndex }
+    var endIndex: Int { elements.endIndex }
+
+    subscript(position: Int) -> IndexedElement {
+        IndexedElement(index: position, element: elements[position])
     }
 }

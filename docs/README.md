@@ -25,6 +25,9 @@
 
 ## 设计 / 路线图文档
 
+- `telegram-ios-architecture-study.md`
+  - 作用：总结 Telegram iOS 在大列表、底部搜索、iPad master-detail 和视频生命周期方面的架构模式，并映射为 Ibili 的分阶段改造方案。
+  - 当前状态：调研与路线图文档；不代表相关 UIKit 列表、稳定双栏容器、搜索状态机和播放器 owner/lease 已经落地。
 - `ios-avplayer-packaging-implementation-design.md`
   - 作用：说明 AVPlayer 长期打包方案的方向。
   - 当前状态：M1 离线打包已经落地，live packaging 架构仍然属于路线图。

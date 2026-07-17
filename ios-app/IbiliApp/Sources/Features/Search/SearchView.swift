@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Top-level search screen. The root content host owns the `NavigationStack`;
 /// this view owns the system search field only on legacy tabs.
@@ -7,22 +8,23 @@ struct SearchView: View {
     @ObservedObject var history: SearchHistoryStore
     @Binding var isFiltersSheetPresented: Bool
     let hostsSearchField: Bool
-    let onProgrammaticSubmit: () -> Void
+    let onSearchSubmitted: () -> Void
+    let onReturnToLanding: () -> Void
     @EnvironmentObject private var router: DeepLinkRouter
-    @Environment(\.dismissSearch) private var dismissSearch
-    @Environment(\.isSearching) private var isSearching
     @Environment(\.rootContentNavigation) private var rootContentNavigation
 
     init(vm: SearchViewModel,
          history: SearchHistoryStore,
          isFiltersSheetPresented: Binding<Bool>,
          hostsSearchField: Bool = true,
-         onProgrammaticSubmit: @escaping () -> Void = {}) {
+         onSearchSubmitted: @escaping () -> Void = {},
+         onReturnToLanding: @escaping () -> Void = {}) {
         self.vm = vm
         self.history = history
         _isFiltersSheetPresented = isFiltersSheetPresented
         self.hostsSearchField = hostsSearchField
-        self.onProgrammaticSubmit = onProgrammaticSubmit
+        self.onSearchSubmitted = onSearchSubmitted
+        self.onReturnToLanding = onReturnToLanding
     }
 
     @ViewBuilder
@@ -66,7 +68,6 @@ struct SearchView: View {
             .navigationTracePage("SearchRoot", metadata: [
                 "transitionWorld": "root-content-child",
             ])
-            .background(SearchPresentationTrace())
     }
 
     @ViewBuilder
@@ -85,7 +86,7 @@ struct SearchView: View {
     }
 
     private var showsResultsContent: Bool {
-        vm.hasActiveSubmittedQuery && !isSearching
+        vm.hasActiveSubmittedQuery
     }
 
     @ToolbarContentBuilder
@@ -94,8 +95,7 @@ struct SearchView: View {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button {
                     vm.reset()
-                    dismissSearch()
-                    onProgrammaticSubmit()
+                    onReturnToLanding()
                 } label: {
                     Image(systemName: "xmark.circle")
                 }
@@ -122,8 +122,8 @@ struct SearchView: View {
         ]) {
             guard vm.submit(query: query, category: category) else { return }
             history.push(vm.submittedQuery)
-            dismissSearch()
-            onProgrammaticSubmit()
+            SearchKeyboard.dismiss()
+            onSearchSubmitted()
         }
     }
 
@@ -133,29 +133,18 @@ struct SearchView: View {
         ]) {
             guard vm.submit() else { return }
             history.push(vm.submittedQuery)
-            dismissSearch()
-            onProgrammaticSubmit()
+            SearchKeyboard.dismiss()
+            onSearchSubmitted()
         }
     }
 }
 
-private struct SearchPresentationTrace: View {
-    @Environment(\.isSearching) private var isSearching
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .onAppear {
-                NavigationTrace.log("搜索控件状态", metadata: [
-                    "isSearching": String(isSearching),
-                    "event": "appear",
-                ])
-            }
-            .onChange(of: isSearching) { value in
-                NavigationTrace.log("搜索控件状态", metadata: [
-                    "isSearching": String(value),
-                    "event": "change",
-                ])
-            }
+enum SearchKeyboard {
+    static func dismiss() {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .endEditing(true)
     }
 }

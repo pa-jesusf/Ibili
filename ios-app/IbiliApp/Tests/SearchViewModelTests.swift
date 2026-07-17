@@ -60,3 +60,47 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertFalse(vm.hasActiveSubmittedQuery)
     }
 }
+
+final class RootSearchStateTests: XCTestCase {
+    func testPresentationActivatesEditingWithoutEnteringResults() {
+        var state = RootSearchState()
+
+        state.send(.presentationChanged(true))
+
+        XCTAssertEqual(state.phase, .editing)
+        XCTAssertTrue(state.isPresented)
+    }
+
+    func testSubmitKeepsSearchPresentedWhileShowingResults() {
+        var state = RootSearchState()
+        state.send(.presentationChanged(true))
+
+        state.send(.submitted)
+
+        XCTAssertEqual(state.phase, .results)
+        XCTAssertTrue(state.isPresented)
+    }
+
+    func testClearingQueryReturnsToLandingWithoutDismissingSearch() {
+        var state = RootSearchState()
+        state.send(.presentationChanged(true))
+        state.send(.submitted)
+
+        state.send(.queryCleared)
+
+        XCTAssertEqual(state.phase, .editing)
+        XCTAssertTrue(state.isPresented)
+    }
+
+    func testSystemDismissIsTheOnlyEventThatEndsSearchSession() {
+        var state = RootSearchState()
+        state.send(.presentationChanged(true))
+        state.send(.submitted)
+        state.send(.queryCleared)
+
+        state.send(.presentationChanged(false))
+
+        XCTAssertEqual(state.phase, .inactive)
+        XCTAssertFalse(state.isPresented)
+    }
+}

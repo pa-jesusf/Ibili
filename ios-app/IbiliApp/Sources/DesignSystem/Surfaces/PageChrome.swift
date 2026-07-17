@@ -39,6 +39,103 @@ struct FeedChrome<Tab: Hashable & Identifiable, Content: View>: View {
     }
 }
 
+/// Reference-backed scroll state for feed surfaces whose scrolling is owned
+/// by UIKit. Keeping this object in `@State` at the page root means live scroll
+/// updates invalidate the chrome reader, not the entire feed hierarchy.
+final class FeedChromeScrollState: ObservableObject {
+    @Published private(set) var headerCollapseProgress: CGFloat = 0
+    @Published private(set) var scrollOffset: CGFloat = 0
+
+    private var collapseState = FeedScrollCollapseState()
+
+    func update(rawOffset: CGFloat) {
+        let next = collapseState.update(rawOffset: rawOffset)
+        // The floating title is fully gone after 44pt. Clamping here avoids
+        // publishing thousands of irrelevant updates during a long scroll.
+        let visualOffset = min(next.offset, 44)
+        if abs(scrollOffset - visualOffset) >= 0.25 {
+            scrollOffset = visualOffset
+        }
+        if abs(headerCollapseProgress - next.headerProgress) >= 0.01 {
+            headerCollapseProgress = next.headerProgress
+        }
+    }
+
+    func reset() {
+        collapseState.reset()
+        scrollOffset = 0
+        headerCollapseProgress = 0
+    }
+}
+
+/// Feed chrome variant for UIKit-backed scrolling surfaces. Unlike
+/// `FeedChrome` + `FeedScrollPage`, the scroll state never travels through a
+/// binding owned by the page that builds the collection items.
+struct FeedCollectionChrome<Tab: Hashable & Identifiable, Content: View>: View {
+    let title: String
+    let tabs: [Tab]
+    let tabTitle: (Tab) -> String
+    @Binding var selection: Tab
+    let scrollState: FeedChromeScrollState
+    let content: Content
+
+    init(
+        title: String,
+        tabs: [Tab],
+        tabTitle: @escaping (Tab) -> String,
+        selection: Binding<Tab>,
+        scrollState: FeedChromeScrollState,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.tabs = tabs
+        self.tabTitle = tabTitle
+        self._selection = selection
+        self.scrollState = scrollState
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .environment(\.feedChromeShowsInlineSystemHeader, true)
+            .background(IbiliTheme.background.ignoresSafeArea())
+            .overlay(alignment: .top) {
+                FeedCollectionNavigationBackground(scrollState: scrollState)
+            }
+            .overlay(alignment: .topLeading) {
+                FeedCollectionFloatingTitle(title: title, scrollState: scrollState)
+            }
+            .modifier(FeedChromeNavigationModifier(
+                tabs: tabs,
+                tabTitle: tabTitle,
+                selection: $selection
+            ))
+    }
+}
+
+private struct FeedCollectionNavigationBackground: View {
+    @ObservedObject var scrollState: FeedChromeScrollState
+
+    var body: some View {
+        FeedNavigationBackgroundOverlay(
+            collapseProgress: scrollState.headerCollapseProgress
+        )
+    }
+}
+
+private struct FeedCollectionFloatingTitle: View {
+    let title: String
+    @ObservedObject var scrollState: FeedChromeScrollState
+
+    var body: some View {
+        FeedChromeFloatingTitle(
+            title: title,
+            scrollOffset: scrollState.scrollOffset
+        )
+        .allowsHitTesting(false)
+    }
+}
+
 private struct FeedChromeShowsInlineSystemHeaderKey: EnvironmentKey {
     static let defaultValue = false
 }

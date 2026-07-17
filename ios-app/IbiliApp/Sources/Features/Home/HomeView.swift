@@ -4,6 +4,7 @@ import UIKit
 struct HomeView: View {
     @Binding private var section: HomeFeedSection
     @State private var headerCollapseProgress: CGFloat = 0
+    @State private var collectionChromeState = FeedChromeScrollState()
     @StateObject private var recommendVM: HomeViewModel
     @StateObject private var hotVM: HomeViewModel
     @StateObject private var liveVM = LiveHomeViewModel()
@@ -17,23 +18,31 @@ struct HomeView: View {
     }
 
     var body: some View {
-        FeedChrome(
-            title: "主页",
-            tabs: Array(HomeFeedSection.allCases),
-            tabTitle: { $0.title },
-            selection: $section,
-            headerCollapseProgress: $headerCollapseProgress
-        ) {
-            switch section {
-            case .recommend, .hot:
+        switch section {
+        case .recommend, .hot:
+            FeedCollectionChrome(
+                title: "主页",
+                tabs: Array(HomeFeedSection.allCases),
+                tabTitle: { $0.title },
+                selection: $section,
+                scrollState: collectionChromeState
+            ) {
                 HomeFeedPage(
                     section: $section,
-                    collapseProgress: $headerCollapseProgress,
                     vm: activeViewModel,
                     prefetch: prefetch,
-                    scrollToTopSignal: tabReselect.home
+                    scrollToTopSignal: tabReselect.home,
+                    scrollState: collectionChromeState
                 )
-            case .live:
+            }
+        case .live:
+            FeedChrome(
+                title: "主页",
+                tabs: Array(HomeFeedSection.allCases),
+                tabTitle: { $0.title },
+                selection: $section,
+                headerCollapseProgress: $headerCollapseProgress
+            ) {
                 HomeLiveFeedPage(
                     section: $section,
                     collapseProgress: $headerCollapseProgress,
@@ -56,10 +65,10 @@ struct HomeView: View {
 
 private struct HomeFeedPage: View {
     @Binding var section: HomeFeedSection
-    @Binding var collapseProgress: CGFloat
     @ObservedObject var vm: HomeViewModel
     let prefetch: FeedPrefetchCoordinator
     let scrollToTopSignal: Int
+    let scrollState: FeedChromeScrollState
 
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
@@ -73,7 +82,7 @@ private struct HomeFeedPage: View {
 
     var body: some View {
         let recommendSource = settings.homeRecommendSource
-        feedGrid
+        collectionSurface
         .overlay(alignment: .bottom) {
             if let toast {
                 Text(toast)
@@ -94,58 +103,20 @@ private struct HomeFeedPage: View {
             guard vm.section == .recommend else { return }
             Task { await vm.refresh(recommendSource: settings.homeRecommendSource) }
         }
-    }
-
-    private var feedGrid: some View {
-        GeometryReader { geo in
-            let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
-            let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
-            let usesTopTrailingDuration = UIDevice.current.userInterfaceIdiom == .phone && cols >= 3
-            let metrics = homeGridMetrics(containerWidth: geo.size.width, columns: cols)
-            let gridItems = Array(
-                repeating: GridItem(.fixed(metrics.cardWidth), spacing: metrics.spacing, alignment: .top),
-                count: max(1, cols)
-            )
-
-            ZStack {
-                feedScrollContent(
-                    columns: gridItems,
-                    columnCount: cols,
-                    metrics: metrics,
-                    usesTopTrailingDuration: usesTopTrailingDuration
-                )
-            }
-            .transaction { $0.animation = nil }
-            .onAppear {
-                prefetch.update(
-                    preferredQn: Int64(settings.resolvedPreferredVideoQn()),
-                    preferredAudioQn: Int64(settings.resolvedPreferredAudioQn()),
-                    cdnSelection: settings.cdnService.rawValue
-                )
-            }
-            .onChange(of: settings.cdnService.rawValue) { _ in
-                updatePrefetchSettings()
-            }
-            .onChange(of: settings.preferredQn) { _ in
-                updatePrefetchSettings()
-                PlayUrlPrefetcher.shared.clear()
-            }
-            .onChange(of: settings.preferredAudioQn) { _ in
-                updatePrefetchSettings()
-                PlayUrlPrefetcher.shared.clear()
-            }
+        .onAppear {
+            updatePrefetchSettings()
         }
-    }
-
-    private func homeGridMetrics(containerWidth: CGFloat, columns: Int) -> HomeSwiftUIGridMetrics {
-        HomeSwiftUIGridMetrics(containerWidth: containerWidth, columns: columns)
-    }
-
-    private func visibleItems(around index: Int) -> [FeedItemDTO] {
-        guard vm.items.indices.contains(index) else { return [] }
-        let lower = max(0, index - 4)
-        let upper = min(vm.items.count, index + 8)
-        return Array(vm.items[lower..<upper])
+        .onChange(of: settings.cdnService.rawValue) { _ in
+            updatePrefetchSettings()
+        }
+        .onChange(of: settings.preferredQn) { _ in
+            updatePrefetchSettings()
+            PlayUrlPrefetcher.shared.clear()
+        }
+        .onChange(of: settings.preferredAudioQn) { _ in
+            updatePrefetchSettings()
+            PlayUrlPrefetcher.shared.clear()
+        }
     }
 
     private func openFeedItem(_ item: FeedItemDTO) {
@@ -158,35 +129,41 @@ private struct HomeFeedPage: View {
         }
     }
 
-    @ViewBuilder
-    private func feedScrollContent(columns: [GridItem],
-                                   columnCount: Int,
-                                   metrics: HomeSwiftUIGridMetrics,
-                                   usesTopTrailingDuration: Bool) -> some View {
-        FeedScrollPage(
-            title: "主页",
-            coordinateSpace: "home-\(vm.section.rawValue)",
-            scrollToTopSignal: scrollToTopSignal,
-            headerCollapseProgress: $collapseProgress,
-            showsRefresh: true,
-            onRefresh: {
-                await vm.refresh(recommendSource: settings.homeRecommendSource)
-            }
-        ) {
-            if vm.items.isEmpty && vm.isLoading {
-                ProgressView()
-                    .tint(IbiliTheme.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 28)
-            } else if let err = vm.errorText, vm.items.isEmpty {
-                homeErrorState(err)
-            } else {
-                feedItemsGrid(
-                    columns: columns,
-                    columnCount: columnCount,
-                    metrics: metrics,
-                    usesTopTrailingDuration: usesTopTrailingDuration
-                )
+    private var collectionSurface: some View {
+        GeometryReader { geo in
+            let resolvedColumns = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
+            let columns = splitFeedColumnLimit.map { min(resolvedColumns, $0) } ?? resolvedColumns
+            let usesTopTrailingDuration = UIDevice.current.userInterfaceIdiom == .phone && columns >= 3
+
+            HomeFeedCollectionView(
+                items: vm.items,
+                columns: columns,
+                imageQuality: settings.resolvedImageQuality(),
+                meta: settings.homeCardMeta,
+                usesTopTrailingDuration: usesTopTrailingDuration,
+                isLoading: vm.isLoading,
+                isEnd: vm.isEnd,
+                scrollToTopSignal: scrollToTopSignal,
+                scrollState: scrollState,
+                onRefresh: {
+                    Task { await vm.refresh(recommendSource: settings.homeRecommendSource) }
+                },
+                onLoadMore: {
+                    Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
+                },
+                onOpen: openFeedItem,
+                onTouchDown: prefetch.touchDown,
+                onViewportChanged: updateVisibleItems,
+                onMenuAction: handleCardAction
+            )
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
+            .overlay {
+                if vm.items.isEmpty && vm.isLoading {
+                    ProgressView()
+                        .tint(IbiliTheme.accent)
+                } else if let error = vm.errorText, vm.items.isEmpty {
+                    homeErrorState(error)
+                }
             }
         }
     }
@@ -203,71 +180,15 @@ private struct HomeFeedPage: View {
         .padding(.top, 28)
     }
 
-    private func feedItemsGrid(columns: [GridItem],
-                               columnCount: Int,
-                               metrics: HomeSwiftUIGridMetrics,
-                               usesTopTrailingDuration: Bool) -> some View {
-        PagedCollectionSurface(
-            items: vm.items,
-            layout: .grid(columns: columns, spacing: metrics.rowSpacing, footerColumnSpan: max(1, columnCount)),
-            isLoading: vm.isLoading,
-            isEnd: vm.isEnd,
-            prefetchThreshold: 4,
-            onReachEnd: {
-                Task { await vm.loadMore(recommendSource: settings.homeRecommendSource) }
-            },
-            onItemAppear: { index, item in
-                prefetch.visibleItemsChanged(visibleItems(around: index))
-                prefetchCovers(aroundIndex: index, cardWidth: metrics.cardWidth)
-            }
-        ) {
-            EmptyView()
-        } itemContent: { _, item in
-            feedCard(item: item, metrics: metrics, usesTopTrailingDuration: usesTopTrailingDuration)
+    private func updateVisibleItems(_ indices: [Int]) {
+        guard let first = indices.first, let last = indices.last else {
+            prefetch.visibleItemsChanged([])
+            return
         }
-        .padding(.horizontal, metrics.horizontalPadding)
-        .padding(.top, 8)
-        .padding(.bottom, 32)
-    }
-
-    private func feedCard(item: FeedItemDTO,
-                          metrics: HomeSwiftUIGridMetrics,
-                          usesTopTrailingDuration: Bool) -> some View {
-        VideoCardView(
-            item: item,
-            cardWidth: metrics.cardWidth,
-            imageQuality: settings.resolvedImageQuality(),
-            showsDurationAtTopTrailing: usesTopTrailingDuration,
-            meta: settings.homeCardMeta
-        )
-        .overlay(alignment: .bottomTrailing) {
-            feedCardMenu(for: item)
-                .padding(.trailing, 2)
-                .padding(.bottom, 2)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture {
-            prefetch.touchDown(item)
-            openFeedItem(item)
-        }
-    }
-
-    private func feedCardMenu(for item: FeedItemDTO) -> some View {
-        VideoCardOverflowMenu(
-            bvid: item.bvid,
-            author: item.author,
-            ownerMID: item.ownerMID,
-            dislikeReasons: item.dislikeReasons,
-            feedbackReasons: item.feedbackReasons,
-            onCopyBVID: { handleCardAction(item: item, action: .copyBVID) },
-            onWatchLater: { handleCardAction(item: item, action: .watchLater) },
-            onVisitOwner: { handleCardAction(item: item, action: .visitOwner) },
-            onPlainDislike: { handleCardAction(item: item, action: .plainDislike) },
-            onUndoDislike: { handleCardAction(item: item, action: .undoDislike) },
-            onDislikeReason: { handleCardAction(item: item, action: .dislikeReason($0)) },
-            onFeedbackReason: { handleCardAction(item: item, action: .feedbackReason($0)) },
-            onBlockOwner: { handleCardAction(item: item, action: .blockOwner) }
-        )
+        let lower = max(0, first - 4)
+        let upper = min(vm.items.count, last + 9)
+        guard lower < upper else { return }
+        prefetch.visibleItemsChanged(Array(vm.items[lower..<upper]))
     }
 
     private func handleCardAction(item: FeedItemDTO, action: VideoCardOverflowAction) {
@@ -450,20 +371,6 @@ private struct HomeFeedPage: View {
         )
     }
 
-    /// Pre-warm cover images ahead of the user's scroll position so
-    /// cells already have their covers cached by the time they appear.
-    private func prefetchCovers(aroundIndex index: Int, cardWidth: CGFloat) {
-        let lookahead = 12
-        guard vm.items.indices.contains(index) else { return }
-        let start = min(index + 1, vm.items.count)
-        let end = min(start + lookahead, vm.items.count)
-        guard start < end else { return }
-        let covers = vm.items[start..<end].map(\.cover)
-        let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
-        CoverImagePrefetcher.shared.prefetch(covers,
-                                             targetPointSize: size,
-                                             quality: settings.resolvedImageQuality())
-    }
 }
 
 private struct HomeLiveFeedPage: View {
@@ -531,6 +438,9 @@ private struct HomeLiveFeedPage: View {
                             prefetchThreshold: 4,
                             onReachEnd: {
                                 Task { await vm.loadMore() }
+                            },
+                            onItemAppear: { index, _ in
+                                prefetchLiveCovers(around: index, cardWidth: metrics.cardWidth)
                             }
                         ) {
                             EmptyView()
@@ -580,6 +490,24 @@ private struct HomeLiveFeedPage: View {
                 anchorName: item.uname
             )
         }
+    }
+
+    private func prefetchLiveCovers(around index: Int, cardWidth: CGFloat) {
+        guard vm.items.indices.contains(index) else { return }
+        let start = min(index + 1, vm.items.count)
+        let end = min(start + 12, vm.items.count)
+        guard start < end else { return }
+        let covers = vm.items[start..<end].map { item in
+            item.systemCover.isEmpty ? item.cover : item.systemCover
+        }
+        CoverImagePrefetcher.shared.prefetch(
+            covers,
+            targetPointSize: CGSize(
+                width: cardWidth,
+                height: (cardWidth / VideoCoverView.aspectRatio).rounded()
+            ),
+            quality: settings.resolvedImageQuality()
+        )
     }
 
 }

@@ -433,7 +433,9 @@ struct RootView: View {
             return
         }
 
-        lastStableMainTab = newValue
+        if newValue != .search {
+            lastStableMainTab = newValue
+        }
     }
 
     private var activeRootContentPath: [RootContentRoute] {
@@ -1478,10 +1480,10 @@ private struct MainTabView: View {
     @StateObject private var tabReselect = TabReselectSignals()
     @StateObject private var searchViewModel = SearchViewModel()
     @StateObject private var searchHistory = SearchHistoryStore()
+    @StateObject private var searchCoordinator = RootSearchCoordinator()
     @State private var homeSection: HomeFeedSection = .recommend
     @State private var dynamicScope: DynamicFeedScope = .all
     @State private var isSearchFiltersSheetPresented = false
-    @State private var isSearchPresented = false
 
     var body: some View {
         // On iOS 18+ we use the new `Tab(role: .search)` initializer
@@ -1512,12 +1514,19 @@ private struct MainTabView: View {
                     rootContentStack(name: "root-search", path: $searchRootContentPath) {
                         searchTabView
                     }
-                    .searchable(text: $searchViewModel.query, isPresented: $isSearchPresented, prompt: "搜索视频、UP主、番剧")
+                    .searchable(
+                        text: $searchViewModel.query,
+                        isPresented: searchPresentationBinding,
+                        prompt: "搜索视频、UP主、番剧"
+                    )
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onSubmit(of: .search, submitCurrentQuery)
                     .onChange(of: searchViewModel.query) { newValue in
                         searchViewModel.handleQueryTextChanged(newValue)
+                        if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            searchCoordinator.send(.queryCleared)
+                        }
                     }
                 }
             }
@@ -1525,12 +1534,6 @@ private struct MainTabView: View {
             .modifier(SearchTabActivationModifier())
             .toolbarBackground(.hidden, for: .tabBar)
             .environmentObject(tabReselect)
-            .onAppear {
-                updateSearchPresentation(for: selectedTab, reason: "appear")
-            }
-            .onChange(of: selectedTab) { tab in
-                updateSearchPresentation(for: tab, reason: "selectedTab")
-            }
         } else {
             TabView(selection: $selectedTab) {
                 rootContentStack(name: "root-home", path: $homeRootContentPath) {
@@ -1589,7 +1592,12 @@ private struct MainTabView: View {
             history: searchHistory,
             isFiltersSheetPresented: $isSearchFiltersSheetPresented,
             hostsSearchField: false,
-            onProgrammaticSubmit: dismissSearchPresentationAfterSubmit
+            onSearchSubmitted: {
+                searchCoordinator.send(.submitted)
+            },
+            onReturnToLanding: {
+                searchCoordinator.send(.queryCleared)
+            }
         )
     }
 
@@ -1640,29 +1648,23 @@ private struct MainTabView: View {
         ]) {
             guard searchViewModel.submit() else { return }
             searchHistory.push(searchViewModel.submittedQuery)
-            dismissSearchPresentationAfterSubmit()
+            SearchKeyboard.dismiss()
+            searchCoordinator.send(.submitted)
         }
     }
 
-    private func updateSearchPresentation(for tab: MainTab, reason: String) {
-        let shouldPresent = tab == .search
-        guard isSearchPresented != shouldPresent else { return }
-        NavigationTrace.log("系统搜索呈现请求", metadata: [
-            "reason": reason,
-            "selectedTab": "\(tab)",
-            "isPresented": String(shouldPresent),
-        ])
-        isSearchPresented = shouldPresent
-    }
-
-    private func dismissSearchPresentationAfterSubmit() {
-        guard isSearchPresented else { return }
-        NavigationTrace.log("系统搜索呈现请求", metadata: [
-            "reason": "submit",
-            "selectedTab": "\(selectedTab)",
-            "isPresented": "false",
-        ])
-        isSearchPresented = false
+    private var searchPresentationBinding: Binding<Bool> {
+        Binding(
+            get: { searchCoordinator.isPresented },
+            set: { isPresented in
+                NavigationTrace.log("系统搜索呈现变化", metadata: [
+                    "selectedTab": "\(selectedTab)",
+                    "isPresented": String(isPresented),
+                    "phase": "\(searchCoordinator.state.phase)",
+                ])
+                searchCoordinator.send(.presentationChanged(isPresented))
+            }
+        )
     }
 }
 

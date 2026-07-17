@@ -21,6 +21,22 @@ struct RichReplyText: View {
     @State private var emoteImages: [String: UIImage] = [:]
     @State private var lastReportedTruncates: Bool?
 
+    private static let segmentCache: NSCache<NSString, SegmentBox> = {
+        let cache = NSCache<NSString, SegmentBox>()
+        cache.countLimit = 512
+        return cache
+    }()
+
+    private static let inlineLinkRegexes: [NSRegularExpression] = [
+        #"^BV[0-9A-Za-z]{10}"#,
+        #"(?i)^av\d+"#,
+        #"(?i)^cv\d+"#,
+        #"(?i)^opus\d+"#,
+        #"^#[^#\s\u{3000}][^#\n\r]*#"#,
+        #"^https?://[^\s\u{3000}]+"#,
+        #"^www\.[^\s\u{3000}]+"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+
     var body: some View {
         let estimatedTruncates = estimatedTruncation
         measuredText
@@ -121,14 +137,28 @@ struct RichReplyText: View {
         case link(String, String)     // (display, url)
     }
 
+    private final class SegmentBox {
+        let segments: [Segment]
+
+        init(_ segments: [Segment]) {
+            self.segments = segments
+        }
+    }
+
     private func tokenize(message: String,
                           emotes: [ReplyEmoteDTO],
                           jumps: [ReplyJumpUrlDTO]) -> [Segment] {
+        let cacheKey = tokenizationCacheKey(message: message, emotes: emotes, jumps: jumps)
+        if let cached = Self.segmentCache.object(forKey: cacheKey) {
+            return cached.segments
+        }
+
         // Build a quick lookup of all anchors we might splice in.
         let emoteSet = Set(emotes.map { $0.name })
-        let jumpDict = Dictionary(uniqueKeysWithValues: jumps.compactMap { j -> (String, ReplyJumpUrlDTO)? in
-            j.keyword.isEmpty ? nil : (j.keyword, j)
-        })
+        let jumpDict = jumps.reduce(into: [String: ReplyJumpUrlDTO]()) { result, jump in
+            guard !jump.keyword.isEmpty, result[jump.keyword] == nil else { return }
+            result[jump.keyword] = jump
+        }
         let jumpKeywords = jumpDict.keys
             .sorted { $0.count > $1.count }
             .map { ($0, Array($0)) }
@@ -180,7 +210,18 @@ struct RichReplyText: View {
             i += 1
         }
         if !buf.isEmpty { out.append(.text(buf)) }
+        Self.segmentCache.setObject(SegmentBox(out), forKey: cacheKey)
         return out
+    }
+
+    private func tokenizationCacheKey(
+        message: String,
+        emotes: [ReplyEmoteDTO],
+        jumps: [ReplyJumpUrlDTO]
+    ) -> NSString {
+        let emoteKey = emotes.map { "\($0.name)=\($0.url)#\($0.size)" }.joined(separator: "|")
+        let jumpKey = jumps.map { "\($0.keyword)=\($0.title)#\($0.url)" }.joined(separator: "|")
+        return "\(message)\u{1f}\(emoteKey)\u{1f}\(jumpKey)" as NSString
     }
 
     /// Translate the upstream `pc_url` into our internal `ibili://` scheme
@@ -195,17 +236,7 @@ struct RichReplyText: View {
 
     private func detectInlineLink(chars: [Character], start: Int) -> (label: String, url: String, end: Int)? {
         let remaining = String(chars[start...])
-        let patterns = [
-            #"^BV[0-9A-Za-z]{10}"#,
-            #"(?i)^av\d+"#,
-            #"(?i)^cv\d+"#,
-            #"(?i)^opus\d+"#,
-            #"^#[^#\s\u{3000}][^#\n\r]*#"#,
-            #"^https?://[^\s\u{3000}]+"#,
-            #"^www\.[^\s\u{3000}]+"#
-        ]
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        for regex in Self.inlineLinkRegexes {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
             guard let match = regex.firstMatch(in: remaining, range: range),
                   match.range.location == 0,
