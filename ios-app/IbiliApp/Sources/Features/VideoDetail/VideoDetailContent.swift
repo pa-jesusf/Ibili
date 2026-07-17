@@ -44,6 +44,7 @@ struct VideoDetailContent: View {
     @State private var pgcLoading = false
     @State private var pgcErrorText: String?
     @State private var floatingControlsHeight: CGFloat = 0
+    @State private var commentScrollToTopSignal = 0
 
     private let topAnchorID = "videoDetailTop"
     private static let upwardRefreshTriggerOffset: CGFloat = 72
@@ -115,6 +116,10 @@ struct VideoDetailContent: View {
                             tabs: visibleTabs,
                             selection: $tab,
                             onReselectCurrentTab: {
+                                if tab == .replies {
+                                    commentScrollToTopSignal += 1
+                                    return
+                                }
                                 proxy.interruptingScrollTo(
                                     topAnchorID(for: tab),
                                     anchor: .top,
@@ -352,7 +357,9 @@ struct VideoDetailContent: View {
 
     @ViewBuilder
     private func tabScrollContent(for targetTab: Tab, bottomContentInset: CGFloat) -> some View {
-        if #available(iOS 18.0, *) {
+        if targetTab == .replies {
+            commentCollectionContent(bottomContentInset: bottomContentInset)
+        } else if #available(iOS 18.0, *) {
             ScrollView {
                 InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
                     .frame(width: 0, height: 0)
@@ -401,6 +408,30 @@ struct VideoDetailContent: View {
                 handleDetailScrollOffsetChange(value)
             }
             .id(tabInstanceID(for: targetTab))
+        }
+    }
+
+    @ViewBuilder
+    private func commentCollectionContent(bottomContentInset: CGFloat) -> some View {
+        if item.isPGC {
+            CommentListView(
+                oid: pgcCommentOID,
+                kind: pgcCommentKind,
+                viewModel: commentListViewModel,
+                usesVirtualizedScroll: true,
+                scrollToTopSignal: commentScrollToTopSignal,
+                bottomContentInset: bottomContentInset,
+                onScrollOffsetChange: handleDetailScrollOffsetChange
+            )
+        } else {
+            CommentListView(
+                oid: commentOID,
+                viewModel: commentListViewModel,
+                usesVirtualizedScroll: true,
+                scrollToTopSignal: commentScrollToTopSignal,
+                bottomContentInset: bottomContentInset,
+                onScrollOffsetChange: handleDetailScrollOffsetChange
+            )
         }
     }
 

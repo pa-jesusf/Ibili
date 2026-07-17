@@ -248,6 +248,7 @@ final class DeepLinkRouter: ObservableObject {
     /// transitions uniformly.
     @Published var path: [SessionRoute] = []
     @Published private(set) var isClosingRootSession = false
+    var onWillSelectMedia: ((FeedStableIdentity) -> Void)?
 
     enum OpenMode {
         case push
@@ -305,6 +306,7 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     private func selectPlayer(_ item: FeedItemDTO, offlineOnly: Bool) {
+        onWillSelectMedia?(FeedStableIdentity(item))
         NavigationTrace.log("Router selectPlayer", metadata: routerTraceMetadata(reason: "selectPlayer").merging([
             "aid": String(item.aid),
             "cid": String(item.cid),
@@ -397,6 +399,7 @@ final class DeepLinkRouter: ObservableObject {
         anchorName: String = ""
     ) {
         guard roomID > 0 else { return }
+        onWillSelectMedia?(FeedStableIdentity(roomID: roomID))
         NavigationTrace.log("Router selectLive", metadata: routerTraceMetadata(reason: "selectLive").merging([
             "roomID": String(roomID),
             "title": title,

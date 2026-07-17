@@ -19,6 +19,9 @@ struct HomeFeedGridLayoutMetrics: Equatable {
 }
 
 struct HomeFeedCollectionView: UIViewControllerRepresentable {
+    @Environment(\.splitFeedTransitionCoordinator) private var splitTransitionCoordinator
+    @Environment(\.splitFeedTransitionConfiguration) private var splitTransitionConfiguration
+
     let items: [FeedItemDTO]
     let columns: Int
     let imageQuality: Int?
@@ -55,7 +58,9 @@ struct HomeFeedCollectionView: UIViewControllerRepresentable {
             onOpen: onOpen,
             onTouchDown: onTouchDown,
             onViewportChanged: onViewportChanged,
-            onMenuAction: onMenuAction
+            onMenuAction: onMenuAction,
+            splitTransitionCoordinator: splitTransitionCoordinator,
+            splitTransitionConfiguration: splitTransitionConfiguration
         )
     }
 }
@@ -73,6 +78,7 @@ final class HomeFeedCollectionViewController: UIViewController {
 
     private var collectionView: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Section, ItemID>!
+    private let snapshotCoordinator = DiffableSnapshotCoordinator<Section, ItemID>()
     private var itemByID: [FeedStableIdentity: FeedItemDTO] = [:]
     private var modelByID: [FeedStableIdentity: MediaCardRenderModel] = [:]
     private var orderedIDs: [FeedStableIdentity] = []
@@ -86,6 +92,9 @@ final class HomeFeedCollectionViewController: UIViewController {
     private var visibleIndices: Set<Int> = []
     private var viewportPublishScheduled = false
     private weak var scrollState: FeedChromeScrollState?
+    private weak var splitTransitionCoordinator: SplitFeedTransitionCoordinator?
+    private var splitTransitionConfiguration: SplitFeedTransitionConfiguration?
+    private var pendingAnchor: (id: FeedStableIdentity, screenY: CGFloat, targetWidth: CGFloat)?
 
     private var onRefresh: () -> Void = {}
     private var onLoadMore: () -> Void = {}
@@ -129,6 +138,17 @@ final class HomeFeedCollectionViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateLayoutIfNeeded()
+        applyPendingAnchorIfPossible()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        registerSplitTransitionSource()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        splitTransitionCoordinator?.unregister(source: self)
     }
 
     func update(
@@ -146,7 +166,9 @@ final class HomeFeedCollectionViewController: UIViewController {
         onOpen: @escaping (FeedItemDTO) -> Void,
         onTouchDown: @escaping (FeedItemDTO) -> Void,
         onViewportChanged: @escaping ([Int]) -> Void,
-        onMenuAction: @escaping (FeedItemDTO, VideoCardOverflowAction) -> Void
+        onMenuAction: @escaping (FeedItemDTO, VideoCardOverflowAction) -> Void,
+        splitTransitionCoordinator: SplitFeedTransitionCoordinator? = nil,
+        splitTransitionConfiguration: SplitFeedTransitionConfiguration? = nil
     ) {
         loadViewIfNeeded()
         self.imageQuality = imageQuality
@@ -160,9 +182,13 @@ final class HomeFeedCollectionViewController: UIViewController {
         self.onTouchDown = onTouchDown
         self.onViewportChanged = onViewportChanged
         self.onMenuAction = onMenuAction
+        if self.splitTransitionCoordinator !== splitTransitionCoordinator {
+            self.splitTransitionCoordinator?.unregister(source: self)
+        }
+        self.splitTransitionCoordinator = splitTransitionCoordinator
+        self.splitTransitionConfiguration = splitTransitionConfiguration
 
         let newFooterState: HomeFeedFooterState? = {
-            if isLoading, !items.isEmpty { return .loading }
             if isEnd, !items.isEmpty { return .end }
             return nil
         }()
@@ -194,6 +220,8 @@ final class HomeFeedCollectionViewController: UIViewController {
 
         updateLayoutIfNeeded()
         applySnapshot(structureChanged: structureChanged, changedIDs: changedIDs)
+        registerSplitTransitionSource()
+        applyPendingAnchorIfPossible()
 
         if !isLoading, collectionView.refreshControl?.isRefreshing == true {
             collectionView.refreshControl?.endRefreshing()
@@ -238,30 +266,31 @@ final class HomeFeedCollectionViewController: UIViewController {
         if structureChanged {
             visibleIndices.removeAll(keepingCapacity: true)
             onViewportChanged([])
-            var snapshot = NSDiffableDataSourceSnapshot<Section, ItemID>()
-            snapshot.appendSections([.content])
-            snapshot.appendItems(orderedIDs.map(ItemID.card), toSection: .content)
-            if let footerState {
-                snapshot.appendSections([.footer])
-                snapshot.appendItems([.footer(footerState)], toSection: .footer)
-            }
-            dataSource.apply(snapshot, animatingDifferences: false)
-            return
         }
 
-        guard !changedIDs.isEmpty else { return }
-        var snapshot = dataSource.snapshot()
-        let identifiers = changedIDs.map(ItemID.card).filter { snapshot.indexOfItem($0) != nil }
+        var snapshot = NSDiffableDataSourceSnapshot<Section, ItemID>()
+        snapshot.appendSections([.content])
+        snapshot.appendItems(orderedIDs.map(ItemID.card), toSection: .content)
+        if let footerState {
+            snapshot.appendSections([.footer])
+            snapshot.appendItems([.footer(footerState)], toSection: .footer)
+        }
+        let currentItems = Set(dataSource.snapshot().itemIdentifiers)
+        let identifiers = changedIDs
+            .map(ItemID.card)
+            .filter { currentItems.contains($0) && snapshot.indexOfItem($0) != nil }
         if !identifiers.isEmpty {
             snapshot.reconfigureItems(identifiers)
-            dataSource.apply(snapshot, animatingDifferences: false)
         }
+        snapshotCoordinator.apply(snapshot, to: dataSource)
     }
 
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { [weak self] sectionIndex, environment in
             guard let self else { return nil }
-            if sectionIndex == 1 {
+            let sections = self.dataSource?.snapshot().sectionIdentifiers ?? [.content]
+            guard sections.indices.contains(sectionIndex) else { return nil }
+            if sections[sectionIndex] == .footer {
                 let item = NSCollectionLayoutItem(
                     layoutSize: NSCollectionLayoutSize(
                         widthDimension: .fractionalWidth(1),
@@ -307,14 +336,7 @@ final class HomeFeedCollectionViewController: UIViewController {
         layoutConfiguration = next
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
         if !orderedIDs.isEmpty {
-            var snapshot = dataSource.snapshot()
-            let existingIdentifiers = orderedIDs
-                .map(ItemID.card)
-                .filter { snapshot.indexOfItem($0) != nil }
-            if !existingIdentifiers.isEmpty {
-                snapshot.reconfigureItems(existingIdentifiers)
-                dataSource.apply(snapshot, animatingDifferences: false)
-            }
+            applySnapshot(structureChanged: false, changedIDs: orderedIDs)
         }
     }
 
@@ -411,22 +433,156 @@ extension HomeFeedCollectionViewController: UICollectionViewDataSourcePrefetchin
     }
 }
 
+extension HomeFeedCollectionViewController: SplitFeedTransitionSource {
+    func makeSnapshots(
+        direction: SplitFeedTransitionDirection,
+        selectedID: FeedStableIdentity?,
+        configuration: SplitFeedTransitionConfiguration
+    ) -> [SplitFeedCardSnapshot] {
+        guard isEligibleSplitTransitionSource, let window = view.window else { return [] }
+        let visible = collectionView.indexPathsForVisibleItems
+            .filter { $0.section == 0 && orderedIDs.indices.contains($0.item) }
+            .compactMap { indexPath -> (IndexPath, UICollectionViewCell, CGRect)? in
+                guard let cell = collectionView.cellForItem(at: indexPath) else { return nil }
+                return (indexPath, cell, cell.convert(cell.bounds, to: window))
+            }
+        guard !visible.isEmpty else { return [] }
+
+        let anchor: (IndexPath, UICollectionViewCell, CGRect)
+        switch direction {
+        case .entering:
+            guard let selectedID,
+                  let selected = visible.first(where: { orderedIDs[$0.0.item] == selectedID }) else {
+                return []
+            }
+            anchor = selected
+        case .exiting:
+            anchor = topRightVisibleEntry(visible)
+        }
+
+        let targetWidth: CGFloat
+        let targetColumns: Int
+        switch direction {
+        case .entering:
+            targetWidth = configuration.targetLeftWidth
+            targetColumns = max(1, configuration.splitColumns)
+        case .exiting:
+            targetWidth = configuration.containerSize.width
+            targetColumns = max(1, configuration.fullColumns)
+        }
+        let metrics = HomeFeedGridLayoutMetrics(
+            containerWidth: max(1, targetWidth),
+            columns: targetColumns,
+            meta: meta
+        )
+        let anchorIndex = anchor.0.item
+        let targetGeometry = SplitFeedGridGeometry(
+            columns: targetColumns,
+            itemWidth: metrics.cardWidth,
+            itemHeight: metrics.cardHeight,
+            horizontalInset: 12,
+            interitemSpacing: 12,
+            rowSpacing: 14
+        )
+        pendingAnchor = (
+            id: orderedIDs[anchorIndex],
+            screenY: anchor.2.minY,
+            targetWidth: targetWidth
+        )
+
+        return visible.compactMap { indexPath, cell, startFrame in
+            guard let snapshot = cell.snapshotView(afterScreenUpdates: false) else { return nil }
+            let index = indexPath.item
+            let endFrame = targetGeometry.frame(
+                for: index,
+                anchorIndex: anchorIndex,
+                anchorScreenY: anchor.2.minY
+            )
+            snapshot.clipsToBounds = true
+            return SplitFeedCardSnapshot(view: snapshot, startFrame: startFrame, endFrame: endFrame)
+        }
+    }
+
+    func setTransitionCardsHidden(_ hidden: Bool) {
+        collectionView.alpha = hidden ? 0 : 1
+    }
+
+    private func registerSplitTransitionSource() {
+        splitTransitionCoordinator?.register(
+            source: self,
+            configuration: splitTransitionConfiguration
+        )
+    }
+
+    private var isEligibleSplitTransitionSource: Bool {
+        guard isViewLoaded, view.window != nil, view.bounds.width > 1, view.bounds.height > 1 else {
+            return false
+        }
+        var candidate: UIView? = view
+        while let current = candidate {
+            if current.isHidden || current.alpha < 0.01 { return false }
+            candidate = current.superview
+        }
+        guard let window = view.window else { return false }
+        let frame = view.convert(view.bounds, to: window)
+        let intersection = frame.intersection(window.bounds)
+        return !intersection.isNull && intersection.width > 1 && intersection.height > 1
+    }
+
+    private func topRightVisibleEntry(
+        _ entries: [(IndexPath, UICollectionViewCell, CGRect)]
+    ) -> (IndexPath, UICollectionViewCell, CGRect) {
+        let frames = entries.map { (index: $0.0.item, frame: $0.2) }
+        guard let index = SplitFeedGridGeometry.topRightIndex(in: frames),
+              let match = entries.first(where: { $0.0.item == index }) else {
+            return entries.min(by: { $0.2.minY < $1.2.minY })!
+        }
+        return match
+    }
+
+    private func applyPendingAnchorIfPossible() {
+        guard let pendingAnchor,
+              abs(collectionView.bounds.width - pendingAnchor.targetWidth) <= 2,
+              let index = orderedIDs.firstIndex(of: pendingAnchor.id) else { return }
+        collectionView.layoutIfNeeded()
+        let indexPath = IndexPath(item: index, section: 0)
+        guard let attributes = collectionView.collectionViewLayout.layoutAttributesForItem(at: indexPath),
+              let window = collectionView.window else { return }
+        let collectionFrame = collectionView.convert(collectionView.bounds, to: window)
+        let minimumY = -collectionView.adjustedContentInset.top
+        let maximumY = max(
+            minimumY,
+            collectionView.collectionViewLayout.collectionViewContentSize.height
+                - collectionView.bounds.height
+                + collectionView.adjustedContentInset.bottom
+        )
+        let targetY = SplitFeedGridGeometry.contentOffsetY(
+            anchorContentY: attributes.frame.minY,
+            anchorScreenY: pendingAnchor.screenY,
+            collectionScreenMinY: collectionFrame.minY,
+            minimumY: minimumY,
+            maximumY: maximumY
+        )
+        collectionView.setContentOffset(
+            CGPoint(x: 0, y: targetY),
+            animated: false
+        )
+        self.pendingAnchor = nil
+    }
+}
+
 private enum HomeFeedFooterState: Hashable {
-    case loading
     case end
 }
 
 private final class HomeFeedFooterCell: UICollectionViewCell {
-    private let spinner = UIActivityIndicatorView(style: .medium)
     private let label = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        spinner.color = IbiliTheme.accentUIColor
         label.font = .preferredFont(forTextStyle: .caption1)
         label.textColor = .secondaryLabel
         label.textAlignment = .center
-        contentView.addSubview(spinner)
         contentView.addSubview(label)
     }
 
@@ -436,19 +592,11 @@ private final class HomeFeedFooterCell: UICollectionViewCell {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        spinner.center = CGPoint(x: contentView.bounds.midX, y: contentView.bounds.midY)
         label.frame = contentView.bounds.insetBy(dx: 12, dy: 8)
     }
 
     func configure(_ state: HomeFeedFooterState) {
-        switch state {
-        case .loading:
-            label.text = nil
-            spinner.startAnimating()
-        case .end:
-            spinner.stopAnimating()
-            label.text = "已经到底了"
-        }
+        label.text = state == .end ? "已经到底了" : nil
     }
 }
 

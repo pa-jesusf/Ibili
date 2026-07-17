@@ -57,34 +57,58 @@ private func profileFields(_ fields: [String], match query: String) -> Bool {
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
 }
 
-private struct ProfileVideoListSurface<Item: Identifiable, RowContent: View>: View where Item.ID: Hashable {
+private struct ProfileVideoListSurface<Item: Identifiable & Hashable, RowContent: View>: View where Item.ID: Hashable {
     let items: [Item]
     let isLoading: Bool
     let isEnd: Bool
     var showsEndText: Bool = true
     var onReachEnd: () -> Void
+    var onRefresh: (() -> Void)? = nil
+    let splitTransitionIdentity: (Item) -> FeedStableIdentity?
     @ViewBuilder let rowContent: (Item) -> RowContent
 
     var body: some View {
-        ScrollView {
-            PagedCollectionSurface(
-                items: items,
-                layout: .list(spacing: 0),
-                isLoading: isLoading,
-                isEnd: isEnd,
-                prefetchThreshold: 3,
-                endText: showsEndText ? "已经到底了" : nil,
-                onReachEnd: onReachEnd
-            ) {
-                EmptyView()
-            } itemContent: { index, item in
+        VirtualizedCollectionSurface(
+            items: items,
+            layout: .list(
+                horizontalInset: 12,
+                bottomInset: 20,
+                spacing: 0,
+                estimatedHeight: 112
+            ),
+            footer: footer,
+            showsRefresh: onRefresh != nil,
+            prefetchThreshold: 3,
+            onRefresh: { onRefresh?() },
+            onLoadMore: onReachEnd,
+            splitTransitionIdentity: splitTransitionIdentity
+        ) { item, _ in
+            AnyView(
                 rowContent(item)
-                    .padding(.horizontal, 12)
-                if index < items.count - 1 {
-                    Divider().padding(.leading, 144)
-                }
+                    .overlay(alignment: .bottom) {
+                        if item.id != items.last?.id {
+                            Divider().padding(.leading, 132)
+                        }
+                    }
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(ProMotionScrollHint())
+    }
+
+    private var footer: (() -> AnyView)? {
+        if isEnd, !items.isEmpty, showsEndText {
+            return {
+                AnyView(
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                )
             }
         }
+        return nil
     }
 }
 
@@ -176,6 +200,9 @@ struct HistoryListView: View {
                                     await vm.loadMore()
                                 }
                             }
+                        },
+                        splitTransitionIdentity: {
+                            FeedStableIdentity(aid: $0.aid, bvid: $0.bvid, cid: $0.cid)
                         }
                     ) { item in
                         Button {
@@ -367,7 +394,13 @@ struct WatchLaterListView: View {
                         isLoading: vm.isLoading,
                         isEnd: true,
                         showsEndText: false,
-                        onReachEnd: {}
+                        onReachEnd: {},
+                        onRefresh: {
+                            Task { await vm.load(keyword: normalizedProfileSearchQuery(searchText), force: true) }
+                        },
+                        splitTransitionIdentity: {
+                            FeedStableIdentity(aid: $0.aid, bvid: $0.bvid, cid: $0.cid)
+                        }
                     ) { item in
                         Button {
                             pushVideo(router,
@@ -392,7 +425,6 @@ struct WatchLaterListView: View {
         .navigationTitle("稍后再看")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.load() }
-        .refreshable { await vm.load(keyword: normalizedProfileSearchQuery(searchText), force: true) }
         .onChange(of: searchText) { newValue in
             scheduleSearch(newValue)
         }
@@ -583,6 +615,9 @@ private struct FavoriteRootSearchResultsView: View {
                     isEnd: vm.isEnd,
                     onReachEnd: {
                         Task { await vm.loadMore(folderId: folderId, keyword: keyword, allFolders: true) }
+                    },
+                    splitTransitionIdentity: {
+                        FeedStableIdentity(aid: $0.aid, bvid: $0.bvid, cid: $0.cid)
                     }
                 ) { item in
                     favoriteResourceButton(item)
@@ -646,6 +681,9 @@ struct FavoriteResourcesView: View {
                                     keyword: normalizedProfileSearchQuery(searchText)
                                 )
                             }
+                        },
+                        splitTransitionIdentity: {
+                            FeedStableIdentity(aid: $0.aid, bvid: $0.bvid, cid: $0.cid)
                         }
                     ) { item in
                         favoriteResourceButton(item)
@@ -941,6 +979,12 @@ struct SubscriptionResourcesView: View {
                     isEnd: vm.isEnd,
                     onReachEnd: {
                         Task { await vm.loadMore(id: folder.folderID) }
+                    },
+                    onRefresh: {
+                        Task { await vm.reload(id: folder.folderID) }
+                    },
+                    splitTransitionIdentity: {
+                        FeedStableIdentity(aid: $0.aid, bvid: $0.bvid, cid: $0.cid)
                     }
                 ) { item in
                     Button {
@@ -966,7 +1010,6 @@ struct SubscriptionResourcesView: View {
         .navigationTitle(folder.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial(id: folder.folderID) }
-        .refreshable { await vm.reload(id: folder.folderID) }
     }
 }
 

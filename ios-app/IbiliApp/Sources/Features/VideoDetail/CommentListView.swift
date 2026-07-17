@@ -37,12 +37,10 @@ private struct CommentComposerContext: Identifiable {
 /// Top-level comment list. Each row taps into a `CommentThreadSheet`
 /// when the comment has nested replies.
 ///
-/// Rendering strategy: the parent video-detail page already lives inside
-/// a single `ScrollView`; we use `LazyVStack` so SwiftUI only composes
-/// rows currently in (or near) the viewport. Avatar fetches go through
-/// `RemoteImage` (NSCache-backed) so they survive scroll-recycle. Bilibili
-/// emote / picture / jump-link parsing happens once at row level via
-/// `RichReplyText` + `ReplyPictureGrid`.
+/// Video-detail comments use the shared UIKit virtualized collection so
+/// rows are reused and diffed. Embedded article/dynamic comments retain the
+/// lazy inline mode because their parent owns the page scroll. Avatar fetches
+/// are cache-backed, while rich text parsing remains local to each reused row.
 struct CommentListView: View {
     let oid: Int64
     /// `kind` arg for the comment API. 1 = video, 11 = image post,
@@ -51,6 +49,10 @@ struct CommentListView: View {
     var kind: Int32 = 1
     @StateObject private var ownedViewModel = CommentListViewModel()
     private let providedViewModel: CommentListViewModel?
+    private let usesVirtualizedScroll: Bool
+    private let scrollToTopSignal: Int
+    private let bottomContentInset: CGFloat
+    private let onScrollOffsetChange: ((CGFloat) -> Void)?
     @State private var thread: ReplyItemDTO?
     @State private var composer: CommentComposerContext?
     @EnvironmentObject private var session: AppSession
@@ -58,10 +60,18 @@ struct CommentListView: View {
 
     init(oid: Int64,
          kind: Int32 = 1,
-         viewModel: CommentListViewModel? = nil) {
+         viewModel: CommentListViewModel? = nil,
+         usesVirtualizedScroll: Bool = false,
+         scrollToTopSignal: Int = 0,
+         bottomContentInset: CGFloat = 24,
+         onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.oid = oid
         self.kind = kind
         self.providedViewModel = viewModel
+        self.usesVirtualizedScroll = usesVirtualizedScroll
+        self.scrollToTopSignal = scrollToTopSignal
+        self.bottomContentInset = bottomContentInset
+        self.onScrollOffsetChange = onScrollOffsetChange
     }
 
     private var currentViewModel: CommentListViewModel {
@@ -78,7 +88,11 @@ struct CommentListView: View {
                     thread: $thread,
                     onCompose: { composer = .topLevel },
                     onReply: { root, parent in composer = .reply(root: root, parent: parent) },
-                    onOpenUser: openUserSpace
+                    onOpenUser: openUserSpace,
+                    usesVirtualizedScroll: usesVirtualizedScroll,
+                    scrollToTopSignal: scrollToTopSignal,
+                    bottomContentInset: bottomContentInset,
+                    onScrollOffsetChange: onScrollOffsetChange
                 )
             } else {
                 CommentListContent(
@@ -88,7 +102,11 @@ struct CommentListView: View {
                     thread: $thread,
                     onCompose: { composer = .topLevel },
                     onReply: { root, parent in composer = .reply(root: root, parent: parent) },
-                    onOpenUser: openUserSpace
+                    onOpenUser: openUserSpace,
+                    usesVirtualizedScroll: usesVirtualizedScroll,
+                    scrollToTopSignal: scrollToTopSignal,
+                    bottomContentInset: bottomContentInset,
+                    onScrollOffsetChange: onScrollOffsetChange
                 )
             }
         }
@@ -134,6 +152,29 @@ struct CommentListView: View {
     }
 }
 
+private enum CommentVirtualItem: Identifiable, Hashable {
+    case pinned(ReplyItemDTO)
+    case reply(ReplyItemDTO)
+
+    var id: String {
+        switch self {
+        case .pinned(let item): return "pinned-\(item.rpid)"
+        case .reply(let item): return "reply-\(item.rpid)"
+        }
+    }
+
+    var reply: ReplyItemDTO {
+        switch self {
+        case .pinned(let item), .reply(let item): return item
+        }
+    }
+
+    var isPinned: Bool {
+        if case .pinned = self { return true }
+        return false
+    }
+}
+
 private struct CommentListContent: View {
     let oid: Int64
     let kind: Int32
@@ -142,10 +183,23 @@ private struct CommentListContent: View {
     let onCompose: () -> Void
     let onReply: (ReplyItemDTO, ReplyItemDTO) -> Void
     let onOpenUser: (Int64) -> Void
+    let usesVirtualizedScroll: Bool
+    let scrollToTopSignal: Int
+    let bottomContentInset: CGFloat
+    let onScrollOffsetChange: ((CGFloat) -> Void)?
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var settings: AppSettings
+    @Environment(\.commentViewportHeight) private var commentViewportHeight
+    @Environment(\.commentContentWidth) private var commentContentWidth
 
     var body: some View {
-        listContent
+        Group {
+            if usesVirtualizedScroll {
+                virtualizedContent
+            } else {
+                listContent
+            }
+        }
         .onAppear {
             viewModel.bind(oid: oid, kind: kind)
             prefetchCommentAvatars()
@@ -167,6 +221,125 @@ private struct CommentListContent: View {
     private var listContent: some View {
         let prefetchTriggerID = viewModel.prefetchTriggerID
         return LazyVStack(alignment: .leading, spacing: 0) {
+            commentHeader
+
+            if let top = viewModel.top {
+                CommentRow(item: top, upperMid: viewModel.upperMid, isPinned: true,
+                           onLike: { Task { await viewModel.toggleLike(rpid: top.rpid) } },
+                           onReply: session.isLoggedIn ? { onReply(top, top) } : nil,
+                           onOpenUser: onOpenUser) { thread = top }
+                Divider()
+            }
+
+            ForEach(viewModel.items) { item in
+                CommentRow(item: item, upperMid: viewModel.upperMid, isPinned: false,
+                           onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } },
+                           onReply: session.isLoggedIn ? { onReply(item, item) } : nil,
+                           onOpenUser: onOpenUser) { thread = item }
+                    .onAppear {
+                        if item.rpid == prefetchTriggerID {
+                            Task { await viewModel.loadMore() }
+                        }
+                    }
+                Divider()
+            }
+
+            if viewModel.isEnd, !viewModel.items.isEmpty {
+                HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
+                    .padding(.vertical, 12)
+            } else if viewModel.items.isEmpty, !viewModel.isLoading {
+                emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
+                    .padding(.vertical, 30)
+            }
+        }
+    }
+
+    private var virtualizedContent: some View {
+        VirtualizedCollectionSurface(
+            items: virtualItems,
+            layout: .list(
+                horizontalInset: 16,
+                topInset: 0,
+                bottomInset: bottomContentInset,
+                spacing: 0,
+                estimatedHeight: 180
+            ),
+            header: { AnyView(commentHeader.padding(.horizontal, 16).padding(.top, 12)) },
+            footer: commentFooter,
+            showsRefresh: true,
+            scrollToTopSignal: scrollToTopSignal,
+            prefetchThreshold: 4,
+            onRefresh: {
+                Task { await viewModel.refresh(oid: oid, kind: kind) }
+            },
+            onLoadMore: {
+                Task { await viewModel.loadMore() }
+            },
+            onPrefetch: { items, _ in
+                let faces = items.map(\.reply.face).filter { !$0.isEmpty }
+                CoverImagePrefetcher.shared.prefetch(
+                    faces,
+                    targetPointSize: CGSize(width: 64, height: 64),
+                    quality: 75
+                )
+            },
+            onScrollOffsetChanged: { offset in
+                onScrollOffsetChange?(offset)
+            }
+        ) { element, width in
+            let item = element.reply
+            return AnyView(
+                VStack(spacing: 0) {
+                    CommentRow(
+                        item: item,
+                        upperMid: viewModel.upperMid,
+                        isPinned: element.isPinned,
+                        onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } },
+                        onReply: session.isLoggedIn ? { onReply(item, item) } : nil,
+                        onOpenUser: onOpenUser
+                ) { thread = item }
+                Divider()
+            }
+                .environmentObject(settings)
+                .environment(\.commentViewportHeight, commentViewportHeight)
+                .environment(\.commentContentWidth, max(1, width))
+            )
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .modifier(ProMotionScrollHint())
+        .overlay {
+            if viewModel.items.isEmpty, viewModel.top == nil, !viewModel.isLoading {
+                emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
+                    .padding(.horizontal, 24)
+            }
+        }
+    }
+
+    private var virtualItems: [CommentVirtualItem] {
+        var result: [CommentVirtualItem] = []
+        if let top = viewModel.top { result.append(.pinned(top)) }
+        result.append(contentsOf: viewModel.items.map(CommentVirtualItem.reply))
+        return result
+    }
+
+    private var commentFooter: (() -> AnyView)? {
+        if viewModel.isEnd, !viewModel.items.isEmpty {
+            return {
+                AnyView(
+                    HStack {
+                        Spacer()
+                        Text("已经到底了").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.vertical, 12)
+                )
+            }
+        }
+        return nil
+    }
+
+    private var commentHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("评论")
                     .font(.headline)
@@ -206,45 +379,11 @@ private struct CommentListContent: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
-                .background(
-                    Capsule().fill(IbiliTheme.surface)
-                )
+                .background(Capsule().fill(IbiliTheme.surface))
             }
             .buttonStyle(.plain)
             .disabled(!session.isLoggedIn)
             .padding(.bottom, 12)
-
-            if let top = viewModel.top {
-                CommentRow(item: top, upperMid: viewModel.upperMid, isPinned: true,
-                           onLike: { Task { await viewModel.toggleLike(rpid: top.rpid) } },
-                           onReply: session.isLoggedIn ? { onReply(top, top) } : nil,
-                           onOpenUser: onOpenUser) { thread = top }
-                Divider()
-            }
-
-            ForEach(viewModel.items) { item in
-                CommentRow(item: item, upperMid: viewModel.upperMid, isPinned: false,
-                           onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } },
-                           onReply: session.isLoggedIn ? { onReply(item, item) } : nil,
-                           onOpenUser: onOpenUser) { thread = item }
-                    .onAppear {
-                        if item.rpid == prefetchTriggerID {
-                            Task { await viewModel.loadMore() }
-                        }
-                    }
-                Divider()
-            }
-
-            if viewModel.isLoading {
-                HStack { Spacer(); ProgressView(); Spacer() }
-                    .padding(.vertical, 12)
-            } else if viewModel.isEnd, !viewModel.items.isEmpty {
-                HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
-                    .padding(.vertical, 12)
-            } else if viewModel.items.isEmpty, !viewModel.isLoading {
-                emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
-                    .padding(.vertical, 30)
-            }
         }
     }
 

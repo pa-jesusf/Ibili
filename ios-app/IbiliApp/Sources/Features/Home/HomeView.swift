@@ -3,8 +3,8 @@ import UIKit
 
 struct HomeView: View {
     @Binding private var section: HomeFeedSection
-    @State private var headerCollapseProgress: CGFloat = 0
     @State private var collectionChromeState = FeedChromeScrollState()
+    @State private var liveChromeState = FeedChromeScrollState()
     @StateObject private var recommendVM: HomeViewModel
     @StateObject private var hotVM: HomeViewModel
     @StateObject private var liveVM = LiveHomeViewModel()
@@ -36,18 +36,17 @@ struct HomeView: View {
                 )
             }
         case .live:
-            FeedChrome(
+            FeedCollectionChrome(
                 title: "主页",
                 tabs: Array(HomeFeedSection.allCases),
                 tabTitle: { $0.title },
                 selection: $section,
-                headerCollapseProgress: $headerCollapseProgress
+                scrollState: liveChromeState
             ) {
                 HomeLiveFeedPage(
-                    section: $section,
-                    collapseProgress: $headerCollapseProgress,
                     vm: liveVM,
-                    scrollToTopSignal: tabReselect.home
+                    scrollToTopSignal: tabReselect.home,
+                    scrollState: liveChromeState
                 )
             }
         }
@@ -159,10 +158,7 @@ private struct HomeFeedPage: View {
             .ignoresSafeArea(.container, edges: [.top, .bottom])
             .modifier(ProMotionScrollHint())
             .overlay {
-                if vm.items.isEmpty && vm.isLoading {
-                    ProgressView()
-                        .tint(IbiliTheme.accent)
-                } else if let error = vm.errorText, vm.items.isEmpty {
+                if let error = vm.errorText, vm.items.isEmpty, !vm.isLoading {
                     homeErrorState(error)
                 }
             }
@@ -375,10 +371,9 @@ private struct HomeFeedPage: View {
 }
 
 private struct HomeLiveFeedPage: View {
-    @Binding var section: HomeFeedSection
-    @Binding var collapseProgress: CGFloat
     @ObservedObject var vm: LiveHomeViewModel
     let scrollToTopSignal: Int
+    let scrollState: FeedChromeScrollState
 
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
@@ -393,78 +388,84 @@ private struct HomeLiveFeedPage: View {
             let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
             let metrics = HomeSwiftUIGridMetrics(containerWidth: geo.size.width, columns: cols)
-            let gridItems = Array(
-                repeating: GridItem(.fixed(metrics.cardWidth), spacing: metrics.spacing, alignment: .top),
-                count: max(1, cols)
-            )
-            ZStack {
-                FeedScrollPage(
-                    title: "主页",
-                    coordinateSpace: "home-live",
-                    scrollToTopSignal: scrollToTopSignal,
-                    headerCollapseProgress: $collapseProgress,
-                    showsRefresh: true,
-                    onRefresh: {
-                        await vm.refresh()
-                    }
-                ) {
-                    if vm.items.isEmpty && vm.isLoading {
-                        ProgressView()
+            let cardHeight = (metrics.cardWidth / VideoCoverView.aspectRatio).rounded() + 78
+            VirtualizedCollectionSurface(
+                items: vm.items,
+                layout: .grid(
+                    columns: cols,
+                    horizontalInset: metrics.horizontalPadding,
+                    topInset: 8,
+                    bottomInset: 32,
+                    interitemSpacing: metrics.spacing,
+                    rowSpacing: metrics.rowSpacing,
+                    height: .absolute(cardHeight)
+                ),
+                footer: liveFooter,
+                showsRefresh: true,
+                scrollToTopSignal: scrollToTopSignal,
+                prefetchThreshold: 4,
+                scrollState: scrollState,
+                onRefresh: {
+                    Task { await vm.refresh() }
+                },
+                onLoadMore: {
+                    Task { await vm.loadMore() }
+                },
+                onOpen: openLiveItem,
+                onPrefetch: { items, cardWidth in
+                    prefetchLiveCovers(items, cardWidth: cardWidth)
+                },
+                splitTransitionIdentity: { FeedStableIdentity($0) },
+                splitTransitionHeight: { _, width in
+                    (width / VideoCoverView.aspectRatio).rounded() + 78
+                }
+            ) { item, cardWidth in
+                AnyView(
+                    LiveCardView(
+                        item: item,
+                        cardWidth: cardWidth,
+                        imageQuality: settings.resolvedImageQuality()
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                )
+            }
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
+            .modifier(ProMotionScrollHint())
+            .overlay {
+                if let err = vm.errorText, vm.items.isEmpty, !vm.isLoading {
+                    VStack(spacing: 12) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.largeTitle)
+                        Text(err)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                        Button("重试") { Task { await vm.refresh() } }
+                            .buttonStyle(.borderedProminent)
                             .tint(IbiliTheme.accent)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 28)
-                    } else if let err = vm.errorText, vm.items.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "dot.radiowaves.left.and.right")
-                                .font(.largeTitle)
-                            Text(err)
-                                .multilineTextAlignment(.center)
-                                .foregroundStyle(.secondary)
-                            Button("重试") { Task { await vm.refresh() } }
-                                .buttonStyle(.borderedProminent)
-                                .tint(IbiliTheme.accent)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 28)
-                    } else if vm.items.isEmpty {
-                        emptyState(title: "暂无直播", symbol: "dot.radiowaves.left.and.right")
-                            .padding(.top, 28)
-                    } else {
-                        PagedCollectionSurface(
-                            items: vm.items,
-                            layout: .grid(columns: gridItems, spacing: metrics.rowSpacing, footerColumnSpan: max(1, cols)),
-                            isLoading: vm.isLoading,
-                            isEnd: vm.isEnd,
-                            prefetchThreshold: 4,
-                            onReachEnd: {
-                                Task { await vm.loadMore() }
-                            },
-                            onItemAppear: { index, _ in
-                                prefetchLiveCovers(around: index, cardWidth: metrics.cardWidth)
-                            }
-                        ) {
-                            EmptyView()
-                        } itemContent: { _, item in
-                                LiveCardView(
-                                    item: item,
-                                    cardWidth: metrics.cardWidth,
-                                    imageQuality: settings.resolvedImageQuality()
-                                )
-                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .onTapGesture {
-                                    openLiveItem(item)
-                                }
-                        }
-                        .padding(.horizontal, metrics.horizontalPadding)
-                        .padding(.top, 8)
-                        .padding(.bottom, 32)
                     }
+                    .padding(.horizontal, 20)
+                } else if vm.items.isEmpty {
+                    emptyState(title: "暂无直播", symbol: "dot.radiowaves.left.and.right")
                 }
             }
-            .transaction { $0.animation = nil }
         }
         .task { await vm.loadInitial() }
+    }
+
+    private var liveFooter: (() -> AnyView)? {
+        guard !vm.items.isEmpty else { return nil }
+        if vm.isEnd {
+            return {
+                AnyView(
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                )
+            }
+        }
+        return nil
     }
 
     private func openLiveItem(_ item: LiveFeedItemDTO) {
@@ -493,12 +494,8 @@ private struct HomeLiveFeedPage: View {
         }
     }
 
-    private func prefetchLiveCovers(around index: Int, cardWidth: CGFloat) {
-        guard vm.items.indices.contains(index) else { return }
-        let start = min(index + 1, vm.items.count)
-        let end = min(start + 12, vm.items.count)
-        guard start < end else { return }
-        let covers = vm.items[start..<end].map { item in
+    private func prefetchLiveCovers(_ items: [LiveFeedItemDTO], cardWidth: CGFloat) {
+        let covers = items.map { item in
             item.systemCover.isEmpty ? item.cover : item.systemCover
         }
         CoverImagePrefetcher.shared.prefetch(

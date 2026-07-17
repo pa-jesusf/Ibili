@@ -113,6 +113,7 @@ struct RootView: View {
     @State private var profileRootContentPath: [RootContentRoute] = []
     @State private var searchRootContentPath: [RootContentRoute] = []
     @StateObject private var presentationGuard = PlayerPresentationNavigationGuard()
+    @StateObject private var splitFeedTransition = SplitFeedTransitionCoordinator()
 
     var body: some View {
         GeometryReader { proxy in
@@ -160,6 +161,9 @@ struct RootView: View {
             }
             .onAppear {
                 handleRootSizeChange(proxy.size)
+                router.onWillSelectMedia = { identity in
+                    _ = splitFeedTransition.prepareEntering(selectedID: identity)
+                }
             }
         }
         .environmentObject(router)
@@ -200,6 +204,11 @@ struct RootView: View {
             ], includeStack: true)
             splitDetailProgress = 0
             splitLayoutBaseSize = nil
+            splitFeedTransition.cancel()
+        }
+        .onDisappear {
+            router.onWillSelectMedia = nil
+            splitFeedTransition.cancel()
         }
     }
 
@@ -207,6 +216,12 @@ struct RootView: View {
     private func mainContent(size: CGSize, canSplit: Bool, usesSplit: Bool) -> some View {
         if canSplit {
             let splitMetrics = splitLayoutMetrics(size: size, usesSplit: usesSplit)
+            let transitionConfiguration = SplitFeedTransitionConfiguration(
+                containerSize: size,
+                targetLeftWidth: splitMetrics.previewLeftWidth ?? splitMetrics.leftWidth,
+                fullColumns: splitMetrics.fullColumns,
+                splitColumns: splitMetrics.targetColumns
+            )
             ZStack(alignment: .leading) {
                 MainTabView(
                     selectedTab: $selectedMainTab,
@@ -221,6 +236,8 @@ struct RootView: View {
                     .environment(\.splitRootIsActive, usesSplit)
                     .environment(\.splitFeedColumnLimit, splitMetrics.feedColumnLimit)
                     .environment(\.splitPreviewLeftWidth, splitMetrics.previewLeftWidth)
+                    .environment(\.splitFeedTransitionCoordinator, splitFeedTransition)
+                    .environment(\.splitFeedTransitionConfiguration, transitionConfiguration)
                     .frame(width: splitMetrics.leftWidth, height: size.height)
                     .clipped()
                     .transaction { $0.animation = nil }
@@ -238,9 +255,8 @@ struct RootView: View {
                     .frame(width: splitMetrics.rightWidth, height: size.height)
                     .clipped()
                     .offset(x: splitMetrics.leftWidth + 1 + splitMetrics.rightWidth * (1 - splitDetailProgress))
-                    .opacity(splitDetailProgress > 0.01 ? 1 : 0)
+                    .opacity(usesSplit ? 1 : 0)
                     .allowsHitTesting(usesSplit)
-                    .compositingGroup()
             }
             .frame(width: size.width, height: size.height, alignment: .leading)
             .background(IbiliTheme.background.ignoresSafeArea())
@@ -258,6 +274,8 @@ struct RootView: View {
                 .environment(\.splitRootIsActive, false)
                 .environment(\.splitFeedColumnLimit, nil)
                 .environment(\.splitPreviewLeftWidth, nil)
+                .environment(\.splitFeedTransitionCoordinator, nil)
+                .environment(\.splitFeedTransitionConfiguration, nil)
         }
     }
 
@@ -267,12 +285,12 @@ struct RootView: View {
         if isActive {
             splitDetailProgress = 0
             DispatchQueue.main.async {
-                withAnimation(.interactiveSpring(response: 0.30, dampingFraction: 0.9, blendDuration: 0)) {
+                withAnimation(.timingCurve(0.22, 0.8, 0.2, 1, duration: 0.34)) {
                     splitDetailProgress = 1
                 }
             }
         } else {
-            withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.92, blendDuration: 0)) {
+            withAnimation(.timingCurve(0.22, 0.8, 0.2, 1, duration: 0.30)) {
                 splitDetailProgress = 0
             }
         }
@@ -281,7 +299,8 @@ struct RootView: View {
     private func dismissSplitRoot() {
         guard router.pending != nil else { return }
         splitRootDismissWork?.cancel()
-        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.92, blendDuration: 0)) {
+        _ = splitFeedTransition.prepareExiting()
+        withAnimation(.timingCurve(0.22, 0.8, 0.2, 1, duration: 0.30)) {
             splitDetailProgress = 0
         }
         let dismissingRouteID = router.pending?.id
@@ -305,6 +324,8 @@ struct RootView: View {
         let rightWidth: CGFloat
         let feedColumnLimit: Int?
         let previewLeftWidth: CGFloat?
+        let fullColumns: Int
+        let targetColumns: Int
     }
 
     private func splitLayoutMetrics(size: CGSize, usesSplit: Bool) -> SplitLayoutMetrics {
@@ -327,14 +348,18 @@ struct RootView: View {
                 leftWidth: size.width,
                 rightWidth: 0,
                 feedColumnLimit: nil,
-                previewLeftWidth: targetLeftWidth
+                previewLeftWidth: targetLeftWidth,
+                fullColumns: fullColumns,
+                targetColumns: targetColumns
             )
         }
         return SplitLayoutMetrics(
             leftWidth: targetLeftWidth,
             rightWidth: max(0, size.width - targetLeftWidth - 1),
             feedColumnLimit: targetColumns,
-            previewLeftWidth: targetLeftWidth
+            previewLeftWidth: targetLeftWidth,
+            fullColumns: fullColumns,
+            targetColumns: targetColumns
         )
     }
 

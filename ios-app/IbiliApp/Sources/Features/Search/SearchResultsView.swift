@@ -12,11 +12,10 @@ struct SearchResultsView: View {
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var pageInputText: String = ""
     @State private var isPageInputPresented: Bool = false
-    @State private var scrollID: UUID = UUID()
+    @State private var scrollToTopSignal = 0
     @State private var resolvingPgcSeasonID: Int64?
     @State private var toast: String?
     @State private var toastWork: DispatchWorkItem?
-    @StateObject private var scrollContext = InterruptibleScrollContext()
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitFeedColumnLimit) private var splitFeedColumnLimit
@@ -25,8 +24,7 @@ struct SearchResultsView: View {
     var body: some View {
         Group {
             if vm.results.isEmpty && vm.isLoading {
-                ProgressView().tint(IbiliTheme.accent)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Color.clear
             } else if let err = vm.errorText, vm.results.isEmpty {
                 emptyState(systemImage: "wifi.exclamationmark", text: err, retry: true)
             } else if !vm.selectedType.isImplemented {
@@ -63,56 +61,30 @@ struct SearchResultsView: View {
                 : (vm.selectedType == .bangumi || vm.selectedType == .movie ? 1 : feedCols)
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
-            let totalSpacing = spacing * CGFloat(cols - 1) + hPad * 2
-            let cardW = max(1, floor((geo.size.width - totalSpacing) / CGFloat(cols)))
-            let rowSpacing: CGFloat = 14
-            let gridItems = Array(
-                repeating: GridItem(.fixed(cardW), spacing: spacing, alignment: .top),
-                count: cols
-            )
-
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    InterruptibleScrollCapture(context: scrollContext)
-                        .frame(width: 0, height: 0)
-                    Color.clear.frame(height: 0).id("searchResultsTop")
-
-                    if vm.totalResults > 0 {
-                        HStack {
-                            Text("约 \(BiliFormat.compactCount(vm.totalResults)) 个结果")
-                                .font(.footnote)
-                                .foregroundStyle(IbiliTheme.textSecondary)
-                            Spacer()
-                        }
-                        .padding(.horizontal, hPad)
-                        .padding(.top, 4)
-                    }
-
-                    LazyVGrid(columns: gridItems, spacing: rowSpacing) {
-                        ForEach(IndexedArray(vm.results), id: \.element.id) { indexed in
-                            resultButton(for: indexed.element, cardWidth: cardW)
-                                .onAppear {
-                                    prefetchCovers(around: indexed.index, cardWidth: cardW)
-                                }
-                        }
-                    }
-                    .padding(.horizontal, hPad)
-                    .padding(.vertical, 8)
-
-                    searchPaginationBar
-                        .padding(.horizontal, hPad)
-                        .padding(.bottom, 20)
-                }
-                .onChange(of: scrollID) { _ in
-                    scrollProxy.interruptingScrollTo(
-                        "searchResultsTop",
-                        anchor: .top,
-                        context: scrollContext,
-                        animation: .easeOut(duration: 0.2)
-                    )
-                }
-                .transaction { $0.animation = nil }
+            VirtualizedCollectionSurface(
+                items: vm.results,
+                layout: .grid(
+                    columns: cols,
+                    horizontalInset: hPad,
+                    topInset: 8,
+                    bottomInset: 8,
+                    interitemSpacing: spacing,
+                    rowSpacing: 14,
+                    height: .estimated(vm.selectedType == .user ? 132 : 280)
+                ),
+                header: searchResultsHeader,
+                footer: { AnyView(searchPaginationBar.padding(.horizontal, hPad).padding(.bottom, 20)) },
+                scrollToTopSignal: scrollToTopSignal,
+                prefetchThreshold: 8,
+                onPrefetch: { items, width in
+                    prefetchCovers(items, cardWidth: width)
+                },
+                splitTransitionIdentity: searchSplitTransitionIdentity
+            ) { item, width in
+                AnyView(resultButton(for: item, cardWidth: width))
             }
+            .ignoresSafeArea(.container, edges: .bottom)
+            .modifier(ProMotionScrollHint())
         }
         .alert("跳转到页码", isPresented: $isPageInputPresented) {
             TextField("页码", text: $pageInputText)
@@ -120,61 +92,57 @@ struct SearchResultsView: View {
             Button("跳转") {
                 if let target = Int64(pageInputText), target >= 1 {
                     vm.loadPage(target)
-                    scrollID = UUID()
+                    scrollToTopSignal += 1
                 }
             }
             Button("取消", role: .cancel) {}
         }
-        .modifier(ProMotionScrollHint())
     }
 
     @ViewBuilder
     private var searchPaginationBar: some View {
-        if vm.isLoading && !vm.results.isEmpty {
-            ProgressView().padding(.vertical, 16)
-        } else {
-            HStack(spacing: 12) {
-                Button {
-                    vm.loadPreviousPage()
-                    scrollID = UUID()
-                } label: {
-                    Label("上一页", systemImage: "chevron.left")
-                }
-                .disabled(vm.page <= 1)
+        HStack(spacing: 12) {
+            Button {
+                vm.loadPreviousPage()
+                scrollToTopSignal += 1
+            } label: {
+                Label("上一页", systemImage: "chevron.left")
+            }
+            .disabled(vm.page <= 1)
 
-                Spacer(minLength: 8)
+            Spacer(minLength: 8)
 
-                Button {
-                    pageInputText = String(max(vm.page, 1))
-                    isPageInputPresented = true
-                } label: {
-                    VStack(spacing: 2) {
-                        Text("第 \(max(vm.page, 1)) 页")
-                            .font(.subheadline.weight(.semibold))
-                        if vm.totalResults > 0 {
-                            Text("约 \(BiliFormat.compactCount(vm.totalResults)) 个结果")
-                                .font(.caption)
-                                .foregroundStyle(IbiliTheme.textSecondary)
-                        }
+            Button {
+                pageInputText = String(max(vm.page, 1))
+                isPageInputPresented = true
+            } label: {
+                VStack(spacing: 2) {
+                    Text("第 \(max(vm.page, 1)) 页")
+                        .font(.subheadline.weight(.semibold))
+                    if vm.totalResults > 0 {
+                        Text("约 \(BiliFormat.compactCount(vm.totalResults)) 个结果")
+                            .font(.caption)
+                            .foregroundStyle(IbiliTheme.textSecondary)
                     }
                 }
-                .buttonStyle(.plain)
-
-                Spacer(minLength: 8)
-
-                Button {
-                    vm.loadNextPage()
-                    scrollID = UUID()
-                } label: {
-                    Label("下一页", systemImage: "chevron.right")
-                        .labelStyle(.titleAndIcon)
-                }
-                .disabled(!vm.hasMore)
             }
-            .buttonStyle(.bordered)
-            .tint(IbiliTheme.accent)
-            .padding(.top, 8)
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 8)
+
+            Button {
+                vm.loadNextPage()
+                scrollToTopSignal += 1
+            } label: {
+                Label("下一页", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon)
+            }
+            .disabled(!vm.hasMore)
         }
+        .buttonStyle(.bordered)
+        .tint(IbiliTheme.accent)
+        .padding(.top, 8)
+        .disabled(vm.isLoading)
     }
 
     @ViewBuilder
@@ -283,13 +251,24 @@ struct SearchResultsView: View {
         }
     }
 
-    private func prefetchCovers(around index: Int, cardWidth: CGFloat) {
-        let lookahead = 18
-        guard vm.results.indices.contains(index) else { return }
-        let start = min(index + 1, vm.results.count)
-        let end = min(start + lookahead, vm.results.count)
-        guard start < end else { return }
-        let covers = vm.results[start..<end].map { result in
+    private var searchResultsHeader: (() -> AnyView)? {
+        guard vm.totalResults > 0 else { return nil }
+        return {
+            AnyView(
+                HStack {
+                    Text("约 \(BiliFormat.compactCount(vm.totalResults)) 个结果")
+                        .font(.footnote)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+            )
+        }
+    }
+
+    private func prefetchCovers(_ items: [SearchResultItem], cardWidth: CGFloat) {
+        let covers = items.map { result in
             switch result {
             case .video(let video): return video.cover
             case .live(let live): return live.cover
@@ -298,10 +277,23 @@ struct SearchResultsView: View {
             case .pgc(let pgc): return pgc.cover
             }
         }
+        guard !covers.isEmpty else { return }
         let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
         CoverImagePrefetcher.shared.prefetch(covers,
                                              targetPointSize: size,
                                              quality: settings.resolvedImageQuality())
+    }
+
+    private func searchSplitTransitionIdentity(_ item: SearchResultItem) -> FeedStableIdentity? {
+        switch item {
+        case .video(let video):
+            let identity = FeedStableIdentity(video)
+            return identity.isValid ? identity : nil
+        case .live(let live):
+            return live.roomID > 0 ? FeedStableIdentity(roomID: live.roomID) : nil
+        case .user, .article, .pgc:
+            return nil
+        }
     }
 
     private func emptyState(

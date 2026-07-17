@@ -3,8 +3,8 @@ import UIKit
 
 // MARK: - Common helpers
 
-/// Cards in the dynamic feed live inside a `LazyVStack` with 12 pt
-/// horizontal insets, and the cards themselves carry 14 pt internal
+/// Cards in the dynamic feed use the shared virtualized collection with
+/// 12 pt horizontal insets, and the cards themselves carry 14 pt internal
 /// padding. We compute the resulting content width once so image
 /// fetches request the right pixel budget instead of pulling 4K
 /// originals for a 360-pt-wide card.
@@ -144,7 +144,7 @@ private func openVideo(_ router: DeepLinkRouter,
 
 struct DynamicFeedView: View {
     @Binding private var scope: DynamicFeedScope
-    @State private var headerCollapseProgress: CGFloat = 0
+    @State private var collectionChromeState = FeedChromeScrollState()
     @StateObject private var allVM: DynamicFeedViewModel
     @StateObject private var videoVM: DynamicFeedViewModel
     @EnvironmentObject private var router: DeepLinkRouter
@@ -160,19 +160,19 @@ struct DynamicFeedView: View {
     }
 
     var body: some View {
-        FeedChrome(
+        FeedCollectionChrome(
             title: "动态",
             tabs: Array(DynamicFeedScope.allCases),
             tabTitle: { $0.title },
             selection: $scope,
-            headerCollapseProgress: $headerCollapseProgress
+            scrollState: collectionChromeState
         ) {
             DynamicFeedPage(
-                collapseProgress: $headerCollapseProgress,
                 vm: activeViewModel,
                 emptyTitle: scope.emptyTitle,
                 emptyMessage: scope.emptyMessage,
                 scrollToTopSignal: tabReselect.dynamic,
+                scrollState: collectionChromeState,
                 onOpenDetail: { dyn in
                     if isInPlayerHostNavigation {
                         router.openDynamicDetail(dyn)
@@ -206,16 +206,19 @@ struct DynamicFeedView: View {
 }
 
 private struct DynamicFeedPage: View {
-    @Binding var collapseProgress: CGFloat
     @ObservedObject var vm: DynamicFeedViewModel
     let emptyTitle: String
     let emptyMessage: String
     let scrollToTopSignal: Int
+    let scrollState: FeedChromeScrollState
     let onOpenDetail: (DynamicItemDTO) -> Void
     let onOpenVideo: (FeedItemDTO) -> Void
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.splitRootIsActive) private var splitRootIsActive
     @Environment(\.splitPreviewLeftWidth) private var splitPreviewLeftWidth
+    @EnvironmentObject private var router: DeepLinkRouter
+    @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
+    @Environment(\.rootContentNavigation) private var rootNavigation
 
     var body: some View {
         GeometryReader { geo in
@@ -227,61 +230,117 @@ private struct DynamicFeedPage: View {
             let shouldCenterWideFeed = isWidePad && !splitRootIsActive
             let feedWidth = usesPreviewWidth ? (previewWidth ?? geo.size.width) : (shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width)
             let contentWidth = DynamicLayout.contentWidth(containerWidth: feedWidth)
-            FeedScrollPage(
-                title: "动态",
-                coordinateSpace: "dynamic-feed-scroll",
-                scrollToTopSignal: scrollToTopSignal,
-                headerCollapseProgress: $collapseProgress,
+            VirtualizedCollectionSurface(
+                items: vm.items,
+                layout: .list(
+                    horizontalInset: DynamicLayout.outerPad,
+                    topInset: 8,
+                    bottomInset: 32,
+                    spacing: 14,
+                    estimatedHeight: 360
+                ),
+                footer: dynamicFooter,
                 showsRefresh: true,
+                scrollToTopSignal: scrollToTopSignal,
+                prefetchThreshold: 3,
+                scrollState: scrollState,
                 onRefresh: {
-                    await vm.loadInitial(force: true)
-                }
-            ) {
-                VStack(spacing: 0) {
-                    if vm.items.isEmpty && vm.isLoading {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 28)
-                    } else if vm.items.isEmpty {
-                        emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
-                            .padding(.top, 18)
-                    } else {
-                        LazyVStack(spacing: 14) {
-                            ForEach(IndexedArray(vm.items), id: \.element.id) { indexed in
-                                DynamicItemCard(
-                                    item: indexed.element,
-                                    contentWidth: contentWidth,
-                                    onOpenVideo: onOpenVideo,
-                                    onOpenDetail: onOpenDetail
-                                )
-                                .onAppear {
-                                    if !vm.isEnd, indexed.index >= max(0, vm.items.count - 3) {
-                                        Task { await vm.loadMore() }
-                                    }
-                                }
-                            }
-                            if vm.isLoading {
-                                ProgressView().padding()
-                            } else if vm.isEnd {
-                                Text("已经到底了")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .padding()
-                            }
-                        }
-                        .padding(.horizontal, DynamicLayout.outerPad)
-                        .padding(.top, 8)
-                        .padding(.bottom, 32)
-                    }
-                }
-                .frame(width: feedWidth, alignment: .top)
-                .frame(maxWidth: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
+                    Task { await vm.loadInitial(force: true) }
+                },
+                onLoadMore: {
+                    Task { await vm.loadMore() }
+                },
+                onPrefetch: { items, _ in
+                    prefetchDynamicMedia(items, contentWidth: contentWidth)
+                },
+                splitTransitionIdentity: dynamicSplitTransitionIdentity
+            ) { item, _ in
+                AnyView(
+                    DynamicItemCard(
+                        item: item,
+                        contentWidth: contentWidth,
+                        onOpenVideo: onOpenVideo,
+                        onOpenDetail: onOpenDetail
+                    )
+                    .environmentObject(router)
+                    .environment(\.isInPlayerHostNavigation, isInPlayerHostNavigation)
+                    .environment(\.prefersSplitRootSelection, prefersSplitRootSelection)
+                    .environment(\.rootContentNavigation, rootNavigation)
+                )
             }
+            .frame(width: feedWidth, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .contentShape(Rectangle())
-            .transaction { $0.animation = nil }
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
+            .modifier(ProMotionScrollHint())
+            .overlay {
+                if vm.items.isEmpty && !vm.isLoading {
+                    emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
+                        .padding(.horizontal, 24)
+                }
+            }
         }
         .task(id: vm.scope) { await vm.loadInitial() }
+    }
+
+    private var dynamicFooter: (() -> AnyView)? {
+        guard !vm.items.isEmpty else { return nil }
+        if vm.isEnd {
+            return {
+                AnyView(
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                )
+            }
+        }
+        return nil
+    }
+
+    private func prefetchDynamicMedia(_ items: [DynamicItemDTO], contentWidth: CGFloat) {
+        var avatars: [String] = []
+        var covers: [String] = []
+        for item in items {
+            if !item.author.face.isEmpty { avatars.append(item.author.face) }
+            if let cover = item.video?.cover, !cover.isEmpty { covers.append(cover) }
+            if let cover = item.live?.cover, !cover.isEmpty { covers.append(cover) }
+            if let cover = item.article?.cover, !cover.isEmpty { covers.append(cover) }
+            if let orig = item.orig {
+                if !orig.author.face.isEmpty { avatars.append(orig.author.face) }
+                if let cover = orig.video?.cover, !cover.isEmpty { covers.append(cover) }
+                if let cover = orig.live?.cover, !cover.isEmpty { covers.append(cover) }
+                if let cover = orig.article?.cover, !cover.isEmpty { covers.append(cover) }
+            }
+        }
+        CoverImagePrefetcher.shared.prefetch(
+            avatars,
+            targetPointSize: CGSize(width: 40, height: 40),
+            quality: 75
+        )
+        CoverImagePrefetcher.shared.prefetch(
+            covers,
+            targetPointSize: CGSize(
+                width: contentWidth,
+                height: (contentWidth / VideoCoverView.aspectRatio).rounded()
+            ),
+            quality: 78
+        )
+    }
+
+    private func dynamicSplitTransitionIdentity(_ item: DynamicItemDTO) -> FeedStableIdentity? {
+        if let video = item.video ?? item.orig?.video {
+            if video.isPGC, video.epID > 0 {
+                return FeedStableIdentity(epID: video.epID)
+            }
+            let identity = FeedStableIdentity(aid: video.aid, bvid: video.bvid, cid: video.cid)
+            return identity.isValid ? identity : nil
+        }
+        if let live = item.live ?? item.orig?.live, live.roomID > 0 {
+            return FeedStableIdentity(roomID: live.roomID)
+        }
+        return nil
     }
 }
 
