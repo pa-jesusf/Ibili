@@ -109,13 +109,6 @@ private final class RemoteImageLoader: ObservableObject {
         }
     }
 
-    func useCachedImageIfAvailable(for url: URL?) {
-        guard let url, loadedURL == url, image == nil else { return }
-        if loadFromMemoryCache(url) {
-            task?.cancel()
-        }
-    }
-
     deinit { task?.cancel() }
 
     @discardableResult
@@ -168,11 +161,6 @@ struct RemoteImage: View {
         }
         .onAppear { loader.load(resolvedURL, targetPointSize: targetPointSize) }
         .onChange(of: resolvedURL) { loader.load($0, targetPointSize: targetPointSize) }
-        .onReceive(NotificationCenter.default.publisher(for: ImageCache.didStoreImageNotification)) { notification in
-            let storedURL = ImageCache.storedURL(from: notification)
-            guard storedURL == resolvedURL else { return }
-            loader.useCachedImageIfAvailable(for: storedURL)
-        }
     }
 }
 

@@ -84,6 +84,7 @@ final class HomeFeedCollectionViewController: UIViewController {
     private var layoutConfiguration: HomeFeedGridLayoutMetrics?
     private var lastScrollToTopSignal = 0
     private var visibleIndices: Set<Int> = []
+    private var viewportPublishScheduled = false
     private weak var scrollState: FeedChromeScrollState?
 
     private var onRefresh: () -> Void = {}
@@ -328,8 +329,16 @@ final class HomeFeedCollectionViewController: UIViewController {
         onRefresh()
     }
 
-    private func publishVisibleIndices() {
-        onViewportChanged(visibleIndices.sorted())
+    private func scheduleVisibleIndicesPublish(force: Bool = false) {
+        guard force || (!collectionView.isDragging && !collectionView.isDecelerating) else { return }
+        guard !viewportPublishScheduled else { return }
+        viewportPublishScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.viewportPublishScheduled = false
+            guard force || (!self.collectionView.isDragging && !self.collectionView.isDecelerating) else { return }
+            self.onViewportChanged(self.visibleIndices.sorted())
+        }
     }
 }
 
@@ -357,7 +366,7 @@ extension HomeFeedCollectionViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         guard indexPath.section == 0, !orderedIDs.isEmpty else { return }
         if visibleIndices.insert(indexPath.item).inserted {
-            publishVisibleIndices()
+            scheduleVisibleIndicesPublish()
         }
         if indexPath.item >= max(0, orderedIDs.count - 5) {
             onLoadMore()
@@ -367,8 +376,22 @@ extension HomeFeedCollectionViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         guard indexPath.section == 0 else { return }
         if visibleIndices.remove(indexPath.item) != nil {
-            publishVisibleIndices()
+            scheduleVisibleIndicesPublish()
         }
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate {
+            scheduleVisibleIndicesPublish(force: true)
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        scheduleVisibleIndicesPublish(force: true)
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        scheduleVisibleIndicesPublish(force: true)
     }
 }
 
@@ -444,7 +467,11 @@ private final class HomeFeedCardCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .secondarySystemBackground
+        let surfaceColor = UIColor.secondarySystemBackground
+        isOpaque = true
+        contentView.isOpaque = true
+        backgroundColor = surfaceColor
+        contentView.backgroundColor = surfaceColor
         layer.cornerRadius = 10
         layer.cornerCurve = .continuous
         layer.masksToBounds = true
@@ -452,6 +479,7 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         coverImageView.contentMode = .scaleAspectFill
         coverImageView.clipsToBounds = true
         coverImageView.backgroundColor = .tertiarySystemFill
+        coverImageView.isOpaque = true
 
         titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
         titleLabel.textColor = .label

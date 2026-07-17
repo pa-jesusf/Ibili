@@ -14,15 +14,15 @@ final class ImagePipeline {
         if let cached = ImageCache.shared.image(for: url) {
             return cached
         }
-        if let diskData = ImageDiskCache.shared.read(url),
-           let display = await Self.displayImage(from: diskData, maxPixelDimension: maxPixelDimension) {
-            ImageCache.shared.store(display, for: url, cost: diskData.count)
-            return display
-        }
         if let task = inFlight[url] {
             return await task.value
         }
         let task = Task<UIImage?, Never> { [url, maxPixelDimension] in
+            if let diskData = await Self.diskData(for: url),
+               let display = await Self.displayImage(from: diskData, maxPixelDimension: maxPixelDimension) {
+                ImageCache.shared.store(display, for: url, cost: diskData.count)
+                return display
+            }
             for attempt in 0..<3 {
                 if Task.isCancelled { return nil }
                 do {
@@ -61,6 +61,12 @@ final class ImagePipeline {
             }
             guard let raw = UIImage(data: data) else { return nil }
             return downsample(raw, maxPixelDimension: maxPixelDimension)
+        }.value
+    }
+
+    private nonisolated static func diskData(for url: URL) async -> Data? {
+        await Task.detached(priority: .utility) {
+            ImageDiskCache.shared.read(url)
         }.value
     }
 

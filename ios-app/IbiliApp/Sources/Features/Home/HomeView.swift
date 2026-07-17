@@ -157,6 +157,7 @@ private struct HomeFeedPage: View {
                 onMenuAction: handleCardAction
             )
             .ignoresSafeArea(.container, edges: [.top, .bottom])
+            .modifier(ProMotionScrollHint())
             .overlay {
                 if vm.items.isEmpty && vm.isLoading {
                     ProgressView()
