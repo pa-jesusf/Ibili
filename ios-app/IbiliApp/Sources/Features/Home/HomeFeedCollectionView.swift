@@ -95,6 +95,7 @@ final class HomeFeedCollectionViewController: UIViewController {
     private weak var splitTransitionCoordinator: SplitFeedTransitionCoordinator?
     private var splitTransitionConfiguration: SplitFeedTransitionConfiguration?
     private var pendingAnchor: (id: FeedStableIdentity, screenY: CGFloat, targetWidth: CGFloat)?
+    private let refreshControl = UIRefreshControl()
 
     private var onRefresh: () -> Void = {}
     private var onLoadMore: () -> Void = {}
@@ -127,10 +128,8 @@ final class HomeFeedCollectionViewController: UIViewController {
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
-        let refreshControl = UIRefreshControl()
         refreshControl.tintColor = IbiliTheme.accentUIColor
         refreshControl.addTarget(self, action: #selector(refreshRequested), for: .valueChanged)
-        collectionView.refreshControl = refreshControl
 
         configureDataSource()
     }
@@ -217,14 +216,15 @@ final class HomeFeedCollectionViewController: UIViewController {
         itemByID = newItems
         modelByID = newModels
         orderedIDs = newIDs
+        updateRefreshControlAttachment(hasContent: !newIDs.isEmpty)
 
         updateLayoutIfNeeded()
         applySnapshot(structureChanged: structureChanged, changedIDs: changedIDs)
         registerSplitTransitionSource()
         applyPendingAnchorIfPossible()
 
-        if !isLoading, collectionView.refreshControl?.isRefreshing == true {
-            collectionView.refreshControl?.endRefreshing()
+        if !isLoading, refreshControl.isRefreshing {
+            refreshControl.endRefreshing()
         }
 
         if lastScrollToTopSignal != scrollToTopSignal {
@@ -257,6 +257,21 @@ final class HomeFeedCollectionViewController: UIViewController {
                 return collectionView.dequeueConfiguredReusableCell(using: cardRegistration, for: indexPath, item: id)
             case .footer(let state):
                 return collectionView.dequeueConfiguredReusableCell(using: footerRegistration, for: indexPath, item: state)
+            }
+        }
+    }
+
+    private func updateRefreshControlAttachment(hasContent: Bool) {
+        if hasContent {
+            if collectionView.refreshControl !== refreshControl {
+                collectionView.refreshControl = refreshControl
+            }
+        } else {
+            if refreshControl.isRefreshing {
+                refreshControl.endRefreshing()
+            }
+            if collectionView.refreshControl === refreshControl {
+                collectionView.refreshControl = nil
             }
         }
     }
@@ -436,7 +451,7 @@ extension HomeFeedCollectionViewController: UICollectionViewDataSourcePrefetchin
 extension HomeFeedCollectionViewController: SplitFeedTransitionSource {
     func makeSnapshots(
         direction: SplitFeedTransitionDirection,
-        selectedID: FeedStableIdentity?,
+        selectedTarget: SplitFeedTransitionTarget?,
         configuration: SplitFeedTransitionConfiguration
     ) -> [SplitFeedCardSnapshot] {
         guard isEligibleSplitTransitionSource, let window = view.window else { return [] }
@@ -451,7 +466,7 @@ extension HomeFeedCollectionViewController: SplitFeedTransitionSource {
         let anchor: (IndexPath, UICollectionViewCell, CGRect)
         switch direction {
         case .entering:
-            guard let selectedID,
+            guard case .media(let selectedID) = selectedTarget,
                   let selected = visible.first(where: { orderedIDs[$0.0.item] == selectedID }) else {
                 return []
             }

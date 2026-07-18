@@ -7,3 +7,18 @@ import SwiftUI
 func emptyState(title: String, symbol: String, message: String? = nil) -> some View {
     StateView(state: .empty(title: title, systemImage: symbol, message: message))
 }
+
+struct InitialLoadingView: View {
+    var fillsAvailableSpace = true
+
+    var body: some View {
+        ProgressView()
+            .tint(IbiliTheme.accent)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: fillsAvailableSpace ? .infinity : nil
+            )
+            .padding(.vertical, fillsAvailableSpace ? 0 : 28)
+            .allowsHitTesting(false)
+    }
+}

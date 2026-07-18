@@ -14,13 +14,15 @@ struct VirtualizedCollectionLayout: Equatable {
     var interitemSpacing: CGFloat = 0
     var rowSpacing: CGFloat = 0
     var height: Height = .estimated(180)
+    var maximumItemWidth: CGFloat? = nil
 
     static func list(
         horizontalInset: CGFloat = 0,
         topInset: CGFloat = 0,
         bottomInset: CGFloat = 0,
         spacing: CGFloat = 0,
-        estimatedHeight: CGFloat = 180
+        estimatedHeight: CGFloat = 180,
+        maximumItemWidth: CGFloat? = nil
     ) -> Self {
         Self(
             columns: 1,
@@ -29,7 +31,8 @@ struct VirtualizedCollectionLayout: Equatable {
             bottomInset: bottomInset,
             interitemSpacing: 0,
             rowSpacing: spacing,
-            height: .estimated(estimatedHeight)
+            height: .estimated(estimatedHeight),
+            maximumItemWidth: maximumItemWidth
         )
     }
 
@@ -55,8 +58,16 @@ struct VirtualizedCollectionLayout: Equatable {
 
     func itemWidth(containerWidth: CGFloat) -> CGFloat {
         let count = max(1, columns)
-        let occupied = horizontalInset * 2 + interitemSpacing * CGFloat(count - 1)
-        return max(1, floor((containerWidth - occupied) / CGFloat(count)))
+        let inset = resolvedHorizontalInset(containerWidth: containerWidth)
+        let occupied = inset * 2 + interitemSpacing * CGFloat(count - 1)
+        let proposed = max(1, floor((containerWidth - occupied) / CGFloat(count)))
+        guard count == 1, let maximumItemWidth else { return proposed }
+        return min(proposed, max(1, maximumItemWidth))
+    }
+
+    func resolvedHorizontalInset(containerWidth: CGFloat) -> CGFloat {
+        guard columns == 1, let maximumItemWidth else { return horizontalInset }
+        return max(horizontalInset, floor((containerWidth - maximumItemWidth) / 2))
     }
 }
 
@@ -73,6 +84,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
     var header: (() -> AnyView)? = nil
     var footer: (() -> AnyView)? = nil
     var showsRefresh = false
+    var isRefreshing = false
     var scrollToTopSignal = 0
     var prefetchThreshold = 4
     var scrollState: FeedChromeScrollState? = nil
@@ -83,6 +95,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
     var onViewportChanged: ([Item]) -> Void = { _ in }
     var onScrollOffsetChanged: (CGFloat) -> Void = { _ in }
     var splitTransitionIdentity: ((Item) -> FeedStableIdentity?)? = nil
+    var splitTransitionTargets: ((Item) -> Set<SplitFeedTransitionTarget>)? = nil
     var splitTransitionHeight: ((Item, CGFloat) -> CGFloat?)? = nil
     var contentVersion: AnyHashable = 0
     let content: (Item, CGFloat) -> AnyView
@@ -98,6 +111,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
             header: header,
             footer: footer,
             showsRefresh: showsRefresh,
+            isRefreshing: isRefreshing,
             scrollToTopSignal: scrollToTopSignal,
             prefetchThreshold: prefetchThreshold,
             scrollState: scrollState,
@@ -110,6 +124,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
             splitTransitionCoordinator: splitTransitionCoordinator,
             splitTransitionConfiguration: splitTransitionConfiguration,
             splitTransitionIdentity: splitTransitionIdentity,
+            splitTransitionTargets: splitTransitionTargets,
             splitTransitionHeight: splitTransitionHeight,
             contentVersion: contentVersion,
             content: content
@@ -153,11 +168,13 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private weak var splitTransitionCoordinator: SplitFeedTransitionCoordinator?
     private var splitTransitionConfiguration: SplitFeedTransitionConfiguration?
     private var splitTransitionIdentity: ((Item) -> FeedStableIdentity?)?
+    private var splitTransitionTargets: ((Item) -> Set<SplitFeedTransitionTarget>)?
     private var splitTransitionHeight: ((Item, CGFloat) -> CGFloat?)?
     private var pendingAnchor: (id: Item.ID, screenY: CGFloat, targetWidth: CGFloat)?
     private var reflowsAcrossSplit = false
     private var contentVersion: AnyHashable = 0
     private var lastLaidOutWidth: CGFloat = 0
+    private let refreshControl = UIRefreshControl()
 
     private var onRefresh: () -> Void = {}
     private var onLoadMore: () -> Void = {}
@@ -188,10 +205,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
-        let refreshControl = UIRefreshControl()
         refreshControl.tintColor = IbiliTheme.accentUIColor
         refreshControl.addTarget(self, action: #selector(refreshRequested), for: .valueChanged)
-        collectionView.refreshControl = refreshControl
         configureDataSource()
     }
 
@@ -222,6 +237,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         header: (() -> AnyView)?,
         footer: (() -> AnyView)?,
         showsRefresh: Bool,
+        isRefreshing: Bool,
         scrollToTopSignal: Int,
         prefetchThreshold: Int,
         scrollState: FeedChromeScrollState?,
@@ -234,6 +250,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         splitTransitionCoordinator: SplitFeedTransitionCoordinator?,
         splitTransitionConfiguration: SplitFeedTransitionConfiguration?,
         splitTransitionIdentity: ((Item) -> FeedStableIdentity?)?,
+        splitTransitionTargets: ((Item) -> Set<SplitFeedTransitionTarget>)?,
         splitTransitionHeight: ((Item, CGFloat) -> CGFloat?)?,
         contentVersion: AnyHashable,
         content: @escaping (Item, CGFloat) -> AnyView
@@ -269,8 +286,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         self.splitTransitionCoordinator = splitTransitionCoordinator
         self.splitTransitionConfiguration = splitTransitionConfiguration
         self.splitTransitionIdentity = splitTransitionIdentity
+        self.splitTransitionTargets = splitTransitionTargets
         self.splitTransitionHeight = splitTransitionHeight
-        collectionView.refreshControl?.isHidden = !showsRefresh
 
         var nextItems: [Item.ID: Item] = [:]
         var nextIDs: [Item.ID] = []
@@ -286,6 +303,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             : nextIDs.filter { oldItems[$0] != nextItems[$0] }
         itemByID = nextItems
         orderedIDs = nextIDs
+        updateRefreshControlAttachment(showsRefresh: showsRefresh, hasContent: !nextIDs.isEmpty)
 
         if layoutChanged {
             collectionView.setCollectionViewLayout(makeLayout(), animated: false)
@@ -294,8 +312,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         registerSplitTransitionSource()
         applyPendingAnchorIfPossible()
 
-        if collectionView.refreshControl?.isRefreshing == true {
-            collectionView.refreshControl?.endRefreshing()
+        if !isRefreshing, refreshControl.isRefreshing {
+            refreshControl.endRefreshing()
         }
         if lastScrollToTopSignal != scrollToTopSignal {
             lastScrollToTopSignal = scrollToTopSignal
@@ -364,6 +382,22 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         applySnapshot(structureChanged: false, changedIDs: orderedIDs)
     }
 
+    private func updateRefreshControlAttachment(showsRefresh: Bool, hasContent: Bool) {
+        let shouldAttach = showsRefresh && hasContent
+        if shouldAttach {
+            if collectionView.refreshControl !== refreshControl {
+                collectionView.refreshControl = refreshControl
+            }
+        } else {
+            if refreshControl.isRefreshing {
+                refreshControl.endRefreshing()
+            }
+            if collectionView.refreshControl === refreshControl {
+                collectionView.refreshControl = nil
+            }
+        }
+    }
+
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { [weak self] sectionIndex, environment in
             guard let self else { return nil }
@@ -402,9 +436,9 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
                 section.interGroupSpacing = config.rowSpacing
                 section.contentInsets = NSDirectionalEdgeInsets(
                     top: config.topInset,
-                    leading: config.horizontalInset,
+                    leading: config.resolvedHorizontalInset(containerWidth: width),
                     bottom: config.bottomInset,
-                    trailing: config.horizontalInset
+                    trailing: config.resolvedHorizontalInset(containerWidth: width)
                 )
                 return section
             }
@@ -509,12 +543,10 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
 extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
     func makeSnapshots(
         direction: SplitFeedTransitionDirection,
-        selectedID: FeedStableIdentity?,
+        selectedTarget: SplitFeedTransitionTarget?,
         configuration: SplitFeedTransitionConfiguration
     ) -> [SplitFeedCardSnapshot] {
-        guard isEligibleSplitTransitionSource,
-              let identity = splitTransitionIdentity,
-              let window = view.window else { return [] }
+        guard isEligibleSplitTransitionSource, let window = view.window else { return [] }
 
         let visible = collectionView.indexPathsForVisibleItems
             .filter { $0.section == contentSectionIndex && orderedIDs.indices.contains($0.item) }
@@ -527,10 +559,14 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
         let anchor: (IndexPath, UICollectionViewCell, CGRect)
         switch direction {
         case .entering:
-            guard let selectedID,
+            guard let selectedTarget,
                   let selected = visible.first(where: { entry in
                       guard let item = itemByID[orderedIDs[entry.0.item]] else { return false }
-                      return identity(item) == selectedID
+                      if splitTransitionTargets?(item).contains(selectedTarget) == true {
+                          return true
+                      }
+                      guard case .media(let selectedID) = selectedTarget else { return false }
+                      return splitTransitionIdentity?(item) == selectedID
                   }) else { return [] }
             anchor = selected
             reflowsAcrossSplit = collectionView.bounds.width > configuration.targetLeftWidth + 2
@@ -574,7 +610,9 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
             columns: targetColumns,
             itemWidth: targetItemWidth,
             itemHeight: targetAnchorHeight,
-            horizontalInset: layoutConfiguration.horizontalInset,
+            horizontalInset: layoutConfiguration.resolvedHorizontalInset(
+                containerWidth: targetCollectionWidth
+            ),
             interitemSpacing: layoutConfiguration.interitemSpacing,
             rowSpacing: layoutConfiguration.rowSpacing
         )
@@ -610,7 +648,7 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
     }
 
     private func registerSplitTransitionSource() {
-        guard splitTransitionIdentity != nil else {
+        guard splitTransitionIdentity != nil || splitTransitionTargets != nil else {
             splitTransitionCoordinator?.unregister(source: self)
             return
         }

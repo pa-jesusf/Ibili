@@ -23,58 +23,30 @@ struct DynamicDetailView: View {
     var body: some View {
         GeometryReader { proxy in
             let contentWidth = max(1, proxy.size.width - 32)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    header
-                    if !item.text.isEmpty {
-                        Text(item.text)
-                            .font(.body)
-                            .foregroundStyle(IbiliTheme.textPrimary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    DetailBody(
-                        item: refOf(item),
-                        kind: item.kind,
-                        contentWidth: contentWidth,
-                        onPlayVideo: openVideo,
-                        onOpenLive: openLive,
-                        onOpenArticle: openArticle,
-                        onTapImage: { idx in preview = .init(urls: item.images.map(\.url), index: idx) }
+            Group {
+                if item.commentId > 0 && item.commentType > 0 {
+                    CommentListView(
+                        oid: item.commentId,
+                        kind: item.commentType,
+                        usesVirtualizedScroll: true,
+                        bottomContentInset: 32,
+                        virtualizedHeader: {
+                            AnyView(detailHeader(contentWidth: contentWidth))
+                        }
                     )
-
-                    if let orig = item.orig {
-                        DetailForwardPanel(
-                            orig: orig,
-                            contentWidth: max(1, contentWidth - 20),
-                            onPlayVideo: openOrigVideo,
-                            onOpenLive: openOrigLive,
-                            onOpenArticle: openOrigArticle,
-                            onTapImage: { idx in preview = .init(urls: orig.images.map(\.url), index: idx) }
-                        )
-                    }
-
-                    statBar
-
-                    Divider().padding(.vertical, 4)
-
-                    // Re-use the existing comment thread component. The
-                    // dynamic feed surfaces its own (oid, kind) tuple in
-                    // `basic.comment_id_str` / `basic.comment_type` —
-                    // values vary per dynamic kind (1=video archive,
-                    // 11=image post, 17=word/forward).
-                    if item.commentId > 0 && item.commentType > 0 {
-                        CommentListView(oid: item.commentId, kind: item.commentType)
-                    } else {
-                        Text("此动态不支持评论")
-                            .font(.footnote)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 20)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            detailHeader(contentWidth: contentWidth)
+                            Text("此动态不支持评论")
+                                .font(.footnote)
+                                .foregroundStyle(IbiliTheme.textSecondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 20)
+                        }
+                        .padding(.bottom, 32)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
             }
             .environment(\.commentViewportHeight, max(1, proxy.size.height))
             .environment(\.commentContentWidth, max(1, proxy.size.width - 32))
@@ -119,6 +91,44 @@ struct DynamicDetailView: View {
             // the count and let the user toggle.
             likeCount = item.stat.like
         }
+    }
+
+    private func detailHeader(contentWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            if !item.text.isEmpty {
+                Text(item.text)
+                    .font(.body)
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            DetailBody(
+                item: refOf(item),
+                kind: item.kind,
+                contentWidth: contentWidth,
+                onPlayVideo: openVideo,
+                onOpenLive: openLive,
+                onOpenArticle: openArticle,
+                onTapImage: { idx in preview = .init(urls: item.images.map(\.url), index: idx) }
+            )
+
+            if let orig = item.orig {
+                DetailForwardPanel(
+                    orig: orig,
+                    contentWidth: max(1, contentWidth - 20),
+                    onPlayVideo: openOrigVideo,
+                    onOpenLive: openOrigLive,
+                    onOpenArticle: openOrigArticle,
+                    onTapImage: { idx in preview = .init(urls: orig.images.map(\.url), index: idx) }
+                )
+            }
+
+            statBar
+            Divider().padding(.vertical, 4)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
     }
 
     private var header: some View {

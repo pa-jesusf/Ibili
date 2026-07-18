@@ -248,7 +248,7 @@ final class DeepLinkRouter: ObservableObject {
     /// transitions uniformly.
     @Published var path: [SessionRoute] = []
     @Published private(set) var isClosingRootSession = false
-    var onWillSelectMedia: ((FeedStableIdentity) -> Void)?
+    var onWillSelectContent: ((SplitFeedTransitionTarget) -> Void)?
 
     enum OpenMode {
         case push
@@ -306,7 +306,7 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     private func selectPlayer(_ item: FeedItemDTO, offlineOnly: Bool) {
-        onWillSelectMedia?(FeedStableIdentity(item))
+        onWillSelectContent?(.media(FeedStableIdentity(item)))
         NavigationTrace.log("Router selectPlayer", metadata: routerTraceMetadata(reason: "selectPlayer").merging([
             "aid": String(item.aid),
             "cid": String(item.cid),
@@ -399,7 +399,7 @@ final class DeepLinkRouter: ObservableObject {
         anchorName: String = ""
     ) {
         guard roomID > 0 else { return }
-        onWillSelectMedia?(FeedStableIdentity(roomID: roomID))
+        onWillSelectContent?(.media(FeedStableIdentity(roomID: roomID)))
         NavigationTrace.log("Router selectLive", metadata: routerTraceMetadata(reason: "selectLive").merging([
             "roomID": String(roomID),
             "title": title,
@@ -423,8 +423,9 @@ final class DeepLinkRouter: ObservableObject {
         appendRoute(.userSpace(UserSpaceRoute(mid: mid)))
     }
 
-    func selectUserSpace(mid: Int64) {
+    func selectUserSpace(mid: Int64, transitionSource: SplitFeedTransitionTarget? = nil) {
         guard mid > 0 else { return }
+        onWillSelectContent?(transitionSource ?? .userSpace(mid))
         replaceSession(with: .userSpace(UserSpaceRoute(mid: mid)))
     }
 
@@ -440,6 +441,7 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     func selectDynamicDetail(_ item: DynamicItemDTO) {
+        onWillSelectContent?(.dynamic(item.idStr))
         replaceSession(with: .dynamicDetail(DynamicDetailRoute(item: item)))
     }
 
@@ -461,6 +463,7 @@ final class DeepLinkRouter: ObservableObject {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let normalizedKind = kind == "opus" ? "opus" : "read"
+        onWillSelectContent?(.article(id: trimmed, kind: normalizedKind))
         replaceSession(with: .article(ArticleRoute(articleID: trimmed, kind: normalizedKind)))
     }
 

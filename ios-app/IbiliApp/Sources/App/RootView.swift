@@ -161,8 +161,8 @@ struct RootView: View {
             }
             .onAppear {
                 handleRootSizeChange(proxy.size)
-                router.onWillSelectMedia = { identity in
-                    _ = splitFeedTransition.prepareEntering(selectedID: identity)
+                router.onWillSelectContent = { target in
+                    _ = splitFeedTransition.prepareEntering(target: target)
                 }
             }
         }
@@ -207,7 +207,7 @@ struct RootView: View {
             splitFeedTransition.cancel()
         }
         .onDisappear {
-            router.onWillSelectMedia = nil
+            router.onWillSelectContent = nil
             splitFeedTransition.cancel()
         }
     }

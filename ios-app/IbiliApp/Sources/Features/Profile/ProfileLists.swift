@@ -78,6 +78,7 @@ private struct ProfileVideoListSurface<Item: Identifiable & Hashable, RowContent
             ),
             footer: footer,
             showsRefresh: onRefresh != nil,
+            isRefreshing: isLoading,
             prefetchThreshold: 3,
             onRefresh: { onRefresh?() },
             onLoadMore: onReachEnd,

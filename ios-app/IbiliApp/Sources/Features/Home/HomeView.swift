@@ -158,7 +158,9 @@ private struct HomeFeedPage: View {
             .ignoresSafeArea(.container, edges: [.top, .bottom])
             .modifier(ProMotionScrollHint())
             .overlay {
-                if let error = vm.errorText, vm.items.isEmpty, !vm.isLoading {
+                if vm.items.isEmpty, vm.isLoading {
+                    InitialLoadingView()
+                } else if let error = vm.errorText, vm.items.isEmpty {
                     homeErrorState(error)
                 }
             }
@@ -402,6 +404,7 @@ private struct HomeLiveFeedPage: View {
                 ),
                 footer: liveFooter,
                 showsRefresh: true,
+                isRefreshing: vm.isLoading,
                 scrollToTopSignal: scrollToTopSignal,
                 prefetchThreshold: 4,
                 scrollState: scrollState,
@@ -432,7 +435,9 @@ private struct HomeLiveFeedPage: View {
             .ignoresSafeArea(.container, edges: [.top, .bottom])
             .modifier(ProMotionScrollHint())
             .overlay {
-                if let err = vm.errorText, vm.items.isEmpty, !vm.isLoading {
+                if vm.items.isEmpty, vm.isLoading {
+                    InitialLoadingView()
+                } else if let err = vm.errorText, vm.items.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "dot.radiowaves.left.and.right")
                             .font(.largeTitle)

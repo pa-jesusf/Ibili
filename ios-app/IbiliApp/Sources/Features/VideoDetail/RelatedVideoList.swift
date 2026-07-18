@@ -10,38 +10,71 @@ import SwiftUI
 /// opens on top of the current player, mirroring an in-app jump).
 struct RelatedVideoList: View {
     let items: [RelatedVideoItemDTO]
-    let isLoadingMore: Bool
+    let isLoading: Bool
     let isEnd: Bool
+    let scrollToTopSignal: Int
+    let bottomContentInset: CGFloat
+    let onScrollOffsetChange: ((CGFloat) -> Void)?
     let onTap: (FeedItemDTO) -> Void
     let onReachEnd: () -> Void
 
     var body: some View {
-        PagedCollectionSurface(
+        VirtualizedCollectionSurface(
             items: items,
-            layout: .list(spacing: 0),
-            isLoading: isLoadingMore,
-            isEnd: isEnd,
+            layout: .list(
+                horizontalInset: 12,
+                topInset: 12,
+                bottomInset: bottomContentInset,
+                spacing: 0,
+                estimatedHeight: 112
+            ),
+            footer: footer,
+            scrollToTopSignal: scrollToTopSignal,
             prefetchThreshold: 4,
-            onReachEnd: onReachEnd,
-            onItemAppear: { index, _ in
-                prefetchCovers(around: index)
+            onLoadMore: onReachEnd,
+            onOpen: { onTap(adapt($0)) },
+            onPrefetch: { items, _ in prefetchCovers(items) },
+            onScrollOffsetChanged: { onScrollOffsetChange?($0) },
+            splitTransitionIdentity: { item in
+                let identity = FeedStableIdentity(
+                    aid: item.aid,
+                    bvid: item.bvid,
+                    cid: item.cid
+                )
+                return identity.isValid ? identity : nil
             }
-        ) {
-            emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 32)
-        } itemContent: { index, item in
-            Button {
-                onTap(adapt(item))
-            } label: {
-                RelatedRow(item: item)
-                    .equatable()
+        ) { item, _ in
+            AnyView(
+                VStack(spacing: 0) {
+                    RelatedRow(item: item)
+                        .equatable()
+                    if item.id != items.last?.id {
+                        Divider()
+                    }
+                }
+            )
+        }
+        .modifier(ProMotionScrollHint())
+        .overlay {
+            if items.isEmpty, isLoading {
+                InitialLoadingView()
+            } else if items.isEmpty {
+                emptyState(title: "暂无相关视频", symbol: "rectangle.stack.badge.minus")
+                    .padding(.horizontal, 24)
             }
-            .buttonStyle(.plain)
+        }
+    }
 
-            if index < items.count - 1 {
-                Divider()
-            }
+    private var footer: (() -> AnyView)? {
+        guard isEnd, !items.isEmpty else { return nil }
+        return {
+            AnyView(
+                Text("已经到底了")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            )
         }
     }
 
@@ -60,11 +93,8 @@ struct RelatedVideoList: View {
         )
     }
 
-    private func prefetchCovers(around index: Int) {
-        guard items.indices.contains(index) else { return }
-        let lower = max(0, index - 2)
-        let upper = min(items.count, index + 8)
-        let urls = items[lower..<upper].map(\.cover).filter { !$0.isEmpty }
+    private func prefetchCovers(_ items: [RelatedVideoItemDTO]) {
+        let urls = items.map(\.cover).filter { !$0.isEmpty }
         guard !urls.isEmpty else { return }
         CoverImagePrefetcher.shared.prefetch(
             urls,

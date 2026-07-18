@@ -53,6 +53,7 @@ struct CommentListView: View {
     private let scrollToTopSignal: Int
     private let bottomContentInset: CGFloat
     private let onScrollOffsetChange: ((CGFloat) -> Void)?
+    private let virtualizedHeader: (() -> AnyView)?
     @State private var thread: ReplyItemDTO?
     @State private var composer: CommentComposerContext?
     @EnvironmentObject private var session: AppSession
@@ -64,7 +65,8 @@ struct CommentListView: View {
          usesVirtualizedScroll: Bool = false,
          scrollToTopSignal: Int = 0,
          bottomContentInset: CGFloat = 24,
-         onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
+         onScrollOffsetChange: ((CGFloat) -> Void)? = nil,
+         virtualizedHeader: (() -> AnyView)? = nil) {
         self.oid = oid
         self.kind = kind
         self.providedViewModel = viewModel
@@ -72,6 +74,7 @@ struct CommentListView: View {
         self.scrollToTopSignal = scrollToTopSignal
         self.bottomContentInset = bottomContentInset
         self.onScrollOffsetChange = onScrollOffsetChange
+        self.virtualizedHeader = virtualizedHeader
     }
 
     private var currentViewModel: CommentListViewModel {
@@ -92,7 +95,8 @@ struct CommentListView: View {
                     usesVirtualizedScroll: usesVirtualizedScroll,
                     scrollToTopSignal: scrollToTopSignal,
                     bottomContentInset: bottomContentInset,
-                    onScrollOffsetChange: onScrollOffsetChange
+                    onScrollOffsetChange: onScrollOffsetChange,
+                    virtualizedHeader: virtualizedHeader
                 )
             } else {
                 CommentListContent(
@@ -106,7 +110,8 @@ struct CommentListView: View {
                     usesVirtualizedScroll: usesVirtualizedScroll,
                     scrollToTopSignal: scrollToTopSignal,
                     bottomContentInset: bottomContentInset,
-                    onScrollOffsetChange: onScrollOffsetChange
+                    onScrollOffsetChange: onScrollOffsetChange,
+                    virtualizedHeader: virtualizedHeader
                 )
             }
         }
@@ -187,6 +192,7 @@ private struct CommentListContent: View {
     let scrollToTopSignal: Int
     let bottomContentInset: CGFloat
     let onScrollOffsetChange: ((CGFloat) -> Void)?
+    let virtualizedHeader: (() -> AnyView)?
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.commentViewportHeight) private var commentViewportHeight
@@ -244,7 +250,9 @@ private struct CommentListContent: View {
                 Divider()
             }
 
-            if viewModel.isEnd, !viewModel.items.isEmpty {
+            if viewModel.items.isEmpty, viewModel.top == nil, viewModel.isLoading {
+                InitialLoadingView(fillsAvailableSpace: false)
+            } else if viewModel.isEnd, !viewModel.items.isEmpty {
                 HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
                     .padding(.vertical, 12)
             } else if viewModel.items.isEmpty, !viewModel.isLoading {
@@ -264,9 +272,31 @@ private struct CommentListContent: View {
                 spacing: 0,
                 estimatedHeight: 180
             ),
-            header: { AnyView(commentHeader.padding(.horizontal, 16).padding(.top, 12)) },
+            header: {
+                AnyView(
+                    VStack(spacing: 0) {
+                        if let virtualizedHeader {
+                            virtualizedHeader()
+                        }
+                        commentHeader
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                        if virtualizedHeader != nil,
+                           viewModel.items.isEmpty,
+                           viewModel.top == nil {
+                            if viewModel.isLoading {
+                                InitialLoadingView(fillsAvailableSpace: false)
+                            } else {
+                                emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
+                                    .padding(.vertical, 30)
+                            }
+                        }
+                    }
+                )
+            },
             footer: commentFooter,
             showsRefresh: true,
+            isRefreshing: viewModel.isLoading,
             scrollToTopSignal: scrollToTopSignal,
             prefetchThreshold: 4,
             onRefresh: {
@@ -308,7 +338,14 @@ private struct CommentListContent: View {
         .ignoresSafeArea(.container, edges: .bottom)
         .modifier(ProMotionScrollHint())
         .overlay {
-            if viewModel.items.isEmpty, viewModel.top == nil, !viewModel.isLoading {
+            if virtualizedHeader == nil,
+               viewModel.items.isEmpty,
+               viewModel.top == nil,
+               viewModel.isLoading {
+                InitialLoadingView()
+            } else if virtualizedHeader == nil,
+                      viewModel.items.isEmpty,
+                      viewModel.top == nil {
                 emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
                     .padding(.horizontal, 24)
             }

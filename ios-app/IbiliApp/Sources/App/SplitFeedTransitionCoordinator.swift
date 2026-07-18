@@ -13,6 +13,13 @@ enum SplitFeedTransitionDirection {
     case exiting
 }
 
+enum SplitFeedTransitionTarget: Hashable {
+    case media(FeedStableIdentity)
+    case dynamic(String)
+    case userSpace(Int64)
+    case article(id: String, kind: String)
+}
+
 struct SplitFeedCardSnapshot {
     let view: UIView
     let startFrame: CGRect
@@ -72,7 +79,7 @@ struct SplitFeedGridGeometry: Equatable {
 protocol SplitFeedTransitionSource: AnyObject {
     func makeSnapshots(
         direction: SplitFeedTransitionDirection,
-        selectedID: FeedStableIdentity?,
+        selectedTarget: SplitFeedTransitionTarget?,
         configuration: SplitFeedTransitionConfiguration
     ) -> [SplitFeedCardSnapshot]
     func setTransitionCardsHidden(_ hidden: Bool)
@@ -121,13 +128,13 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
     }
 
     @discardableResult
-    func prepareEntering(selectedID: FeedStableIdentity) -> Bool {
-        start(direction: .entering, selectedID: selectedID)
+    func prepareEntering(target: SplitFeedTransitionTarget) -> Bool {
+        start(direction: .entering, selectedTarget: target)
     }
 
     @discardableResult
     func prepareExiting() -> Bool {
-        start(direction: .exiting, selectedID: nil)
+        start(direction: .exiting, selectedTarget: nil)
     }
 
     func cancel() {
@@ -142,7 +149,7 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
 
     private func start(
         direction: SplitFeedTransitionDirection,
-        selectedID: FeedStableIdentity?
+        selectedTarget: SplitFeedTransitionTarget?
     ) -> Bool {
         guard !isAnimating, let window = foregroundWindow() else { return false }
         registrations.removeAll { $0.source == nil }
@@ -161,7 +168,7 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
             guard let source = registration.source else { continue }
             let candidateSnapshots = source.makeSnapshots(
                 direction: direction,
-                selectedID: selectedID,
+                selectedTarget: selectedTarget,
                 configuration: registration.configuration
             )
             guard !candidateSnapshots.isEmpty else { continue }

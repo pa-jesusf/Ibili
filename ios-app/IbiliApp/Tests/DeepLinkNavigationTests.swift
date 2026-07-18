@@ -175,25 +175,35 @@ final class DeepLinkNavigationTests: XCTestCase {
     func testSplitMediaSelectionPublishesStableIdentityBeforeReplacingSession() {
         let router = DeepLinkRouter()
         let item = DeepLinkRouter.makeShell(aid: 42, bvid: "BV42")
-        var observed: [(identity: FeedStableIdentity, pendingWasNil: Bool)] = []
-        router.onWillSelectMedia = { identity in
-            observed.append((identity, router.pending == nil))
+        var observed: [(target: SplitFeedTransitionTarget, pendingWasNil: Bool)] = []
+        router.onWillSelectContent = { target in
+            observed.append((target, router.pending == nil))
         }
 
         router.select(item)
 
         XCTAssertEqual(observed.count, 1)
-        XCTAssertEqual(observed[0].identity, FeedStableIdentity(item))
+        XCTAssertEqual(observed[0].target, .media(FeedStableIdentity(item)))
         XCTAssertTrue(observed[0].pendingWasNil)
     }
 
     func testSplitLiveSelectionUsesRoomIdentity() {
         let router = DeepLinkRouter()
-        var observed: FeedStableIdentity?
-        router.onWillSelectMedia = { observed = $0 }
+        var observed: SplitFeedTransitionTarget?
+        router.onWillSelectContent = { observed = $0 }
 
         router.selectLive(roomID: 7788)
 
-        XCTAssertEqual(observed, FeedStableIdentity(roomID: 7788))
+        XCTAssertEqual(observed, .media(FeedStableIdentity(roomID: 7788)))
+    }
+
+    func testSplitUserSelectionCanPublishOwningDynamicCard() {
+        let router = DeepLinkRouter()
+        var observed: SplitFeedTransitionTarget?
+        router.onWillSelectContent = { observed = $0 }
+
+        router.selectUserSpace(mid: 42, transitionSource: .dynamic("dynamic-7"))
+
+        XCTAssertEqual(observed, .dynamic("dynamic-7"))
     }
 }

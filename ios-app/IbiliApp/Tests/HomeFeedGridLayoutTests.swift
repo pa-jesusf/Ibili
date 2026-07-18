@@ -118,6 +118,17 @@ final class HomeFeedGridLayoutTests: XCTestCase {
 
 @MainActor
 final class HomeFeedCollectionLifecycleTests: XCTestCase {
+    func testRefreshControlIsDetachedUntilHomeFeedHasContent() {
+        let controller = HomeFeedCollectionViewController()
+        controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+
+        update(controller, items: [], isLoading: true, isEnd: false)
+        XCTAssertNil(collectionView(in: controller).refreshControl)
+
+        update(controller, items: makeItems(range: 1...4), isLoading: false, isEnd: false)
+        XCTAssertNotNil(collectionView(in: controller).refreshControl)
+    }
+
     func testRepeatedSectionConfigurationDoesNotLeaveInvalidCollectionState() {
         let controller = HomeFeedCollectionViewController()
         controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
@@ -173,6 +184,14 @@ final class HomeFeedCollectionLifecycleTests: XCTestCase {
             )
         }
     }
+
+    private func collectionView(in controller: HomeFeedCollectionViewController) -> UICollectionView {
+        guard let collectionView = controller.view.subviews.compactMap({ $0 as? UICollectionView }).first else {
+            XCTFail("Expected home collection view")
+            return UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewFlowLayout())
+        }
+        return collectionView
+    }
 }
 
 @MainActor
@@ -180,6 +199,18 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
     private struct Item: Identifiable, Hashable {
         let id: Int
         let title: String
+    }
+
+    func testSingleColumnMaximumWidthKeepsFullWidthScrollSurface() {
+        let layout = VirtualizedCollectionLayout.list(
+            horizontalInset: 16,
+            maximumItemWidth: 608
+        )
+
+        XCTAssertEqual(layout.itemWidth(containerWidth: 1024), 608)
+        XCTAssertEqual(layout.resolvedHorizontalInset(containerWidth: 1024), 208)
+        XCTAssertEqual(layout.itemWidth(containerWidth: 430), 398)
+        XCTAssertEqual(layout.resolvedHorizontalInset(containerWidth: 430), 16)
     }
 
     func testRepeatedGridAndListUpdatesKeepStableCollectionState() {
@@ -199,18 +230,60 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         controller.view.layoutIfNeeded()
     }
 
+    func testRefreshControlIsOnlyAttachedWhenRefreshableContentExists() throws {
+        let controller = VirtualizedCollectionViewController<Item>()
+        controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        let window = UIWindow(frame: controller.view.frame)
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.beginAppearanceTransition(true, animated: false)
+        controller.endAppearanceTransition()
+        controller.view.layoutIfNeeded()
+        defer {
+            controller.beginAppearanceTransition(false, animated: false)
+            controller.endAppearanceTransition()
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+
+        update(controller, items: [], layout: .list(), showsRefresh: true)
+        XCTAssertNil(collectionView(in: controller).refreshControl)
+
+        update(controller, items: makeItems(0..<4), layout: .list(), showsRefresh: true)
+        let refreshControl = try XCTUnwrap(collectionView(in: controller).refreshControl)
+        refreshControl.beginRefreshing()
+
+        update(
+            controller,
+            items: makeItems(0..<4),
+            layout: .list(),
+            showsRefresh: true,
+            isRefreshing: true
+        )
+        XCTAssertTrue(refreshControl.isRefreshing)
+
+        update(controller, items: makeItems(0..<4), layout: .list(), showsRefresh: true)
+        XCTAssertFalse(refreshControl.isRefreshing)
+
+        update(controller, items: [], layout: .list(), showsRefresh: true)
+        XCTAssertNil(collectionView(in: controller).refreshControl)
+    }
+
     private func update(
         _ controller: VirtualizedCollectionViewController<Item>,
         items: [Item],
         layout: VirtualizedCollectionLayout,
-        footerText: String? = nil
+        footerText: String? = nil,
+        showsRefresh: Bool = false,
+        isRefreshing: Bool = false
     ) {
         controller.update(
             items: items,
             layout: layout,
             header: nil,
             footer: footerText.map { text in { AnyView(Text(text)) } },
-            showsRefresh: false,
+            showsRefresh: showsRefresh,
+            isRefreshing: isRefreshing,
             scrollToTopSignal: 0,
             prefetchThreshold: 4,
             scrollState: nil,
@@ -223,6 +296,7 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
             splitTransitionCoordinator: nil,
             splitTransitionConfiguration: nil,
             splitTransitionIdentity: nil,
+            splitTransitionTargets: nil,
             splitTransitionHeight: nil,
             contentVersion: 0,
             content: { item, _ in AnyView(Text(item.title)) }
@@ -231,6 +305,14 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
 
     private func makeItems(_ range: Range<Int>) -> [Item] {
         range.map { Item(id: $0, title: "Item \($0)") }
+    }
+
+    private func collectionView(in controller: VirtualizedCollectionViewController<Item>) -> UICollectionView {
+        guard let collectionView = controller.view.subviews.compactMap({ $0 as? UICollectionView }).first else {
+            XCTFail("Expected virtualized collection view")
+            return UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewFlowLayout())
+        }
+        return collectionView
     }
 
     func testDiffableCoordinatorKeepsLatestRapidSnapshot() {

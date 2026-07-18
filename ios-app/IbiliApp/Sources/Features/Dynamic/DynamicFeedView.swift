@@ -237,10 +237,12 @@ private struct DynamicFeedPage: View {
                     topInset: 8,
                     bottomInset: 32,
                     spacing: 14,
-                    estimatedHeight: 360
+                    estimatedHeight: 360,
+                    maximumItemWidth: contentWidth
                 ),
                 footer: dynamicFooter,
                 showsRefresh: true,
+                isRefreshing: vm.isLoading,
                 scrollToTopSignal: scrollToTopSignal,
                 prefetchThreshold: 3,
                 scrollState: scrollState,
@@ -250,15 +252,16 @@ private struct DynamicFeedPage: View {
                 onLoadMore: {
                     Task { await vm.loadMore() }
                 },
-                onPrefetch: { items, _ in
-                    prefetchDynamicMedia(items, contentWidth: contentWidth)
+                onPrefetch: { items, itemWidth in
+                    prefetchDynamicMedia(items, contentWidth: itemWidth)
                 },
-                splitTransitionIdentity: dynamicSplitTransitionIdentity
-            ) { item, _ in
+                splitTransitionIdentity: dynamicSplitTransitionIdentity,
+                splitTransitionTargets: dynamicSplitTransitionTargets
+            ) { item, itemWidth in
                 AnyView(
                     DynamicItemCard(
                         item: item,
-                        contentWidth: contentWidth,
+                        contentWidth: itemWidth,
                         onOpenVideo: onOpenVideo,
                         onOpenDetail: onOpenDetail
                     )
@@ -268,13 +271,13 @@ private struct DynamicFeedPage: View {
                     .environment(\.rootContentNavigation, rootNavigation)
                 )
             }
-            .frame(width: feedWidth, alignment: .top)
-            .frame(maxWidth: .infinity, alignment: usesPreviewWidth || shouldCenterWideFeed ? .top : .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .ignoresSafeArea(.container, edges: [.top, .bottom])
             .modifier(ProMotionScrollHint())
             .overlay {
-                if vm.items.isEmpty && !vm.isLoading {
+                if vm.items.isEmpty, vm.isLoading {
+                    InitialLoadingView()
+                } else if vm.items.isEmpty {
                     emptyState(title: emptyTitle, symbol: "sparkles", message: emptyMessage)
                         .padding(.horizontal, 24)
                 }
@@ -342,6 +345,20 @@ private struct DynamicFeedPage: View {
         }
         return nil
     }
+
+    private func dynamicSplitTransitionTargets(_ item: DynamicItemDTO) -> Set<SplitFeedTransitionTarget> {
+        var targets: Set<SplitFeedTransitionTarget> = [.dynamic(item.idStr)]
+        if item.author.mid > 0 {
+            targets.insert(.userSpace(item.author.mid))
+        }
+        if let identity = dynamicSplitTransitionIdentity(item) {
+            targets.insert(.media(identity))
+        }
+        for article in [item.article, item.orig?.article].compactMap({ $0 }) where !article.id.isEmpty {
+            targets.insert(.article(id: article.id, kind: article.kind == "opus" ? "opus" : "read"))
+        }
+        return targets
+    }
 }
 
 // MARK: - Card
@@ -386,7 +403,10 @@ struct DynamicItemCard: View {
 
     private func cardContent(resolvedContentWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            DynamicAuthorHeader(author: item.author)
+            DynamicAuthorHeader(
+                author: item.author,
+                splitTransitionSource: .dynamic(item.idStr)
+            )
 
             if !item.text.isEmpty {
                 Text(item.text)
@@ -652,6 +672,7 @@ private struct ImagePreviewState: Identifiable {
 struct DynamicAuthorHeader: View {
     let author: DynamicAuthorDTO
     var avatarSize: CGFloat = 36
+    var splitTransitionSource: SplitFeedTransitionTarget? = nil
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
@@ -682,7 +703,7 @@ struct DynamicAuthorHeader: View {
             if isInPlayerHostNavigation {
                 router.openUserSpace(mid: author.mid)
             } else if prefersSplitRootSelection {
-                router.selectUserSpace(mid: author.mid)
+                router.selectUserSpace(mid: author.mid, transitionSource: splitTransitionSource)
             } else {
                 rootNavigation.openUserSpace(mid: author.mid)
             }

@@ -24,7 +24,7 @@ struct SearchResultsView: View {
     var body: some View {
         Group {
             if vm.results.isEmpty && vm.isLoading {
-                Color.clear
+                InitialLoadingView()
             } else if let err = vm.errorText, vm.results.isEmpty {
                 emptyState(systemImage: "wifi.exclamationmark", text: err, retry: true)
             } else if !vm.selectedType.isImplemented {
@@ -79,7 +79,8 @@ struct SearchResultsView: View {
                 onPrefetch: { items, width in
                     prefetchCovers(items, cardWidth: width)
                 },
-                splitTransitionIdentity: searchSplitTransitionIdentity
+                splitTransitionIdentity: searchSplitTransitionIdentity,
+                splitTransitionTargets: searchSplitTransitionTargets
             ) { item, width in
                 AnyView(resultButton(for: item, cardWidth: width))
             }
@@ -293,6 +294,20 @@ struct SearchResultsView: View {
             return live.roomID > 0 ? FeedStableIdentity(roomID: live.roomID) : nil
         case .user, .article, .pgc:
             return nil
+        }
+    }
+
+    private func searchSplitTransitionTargets(_ item: SearchResultItem) -> Set<SplitFeedTransitionTarget> {
+        switch item {
+        case .video, .live:
+            guard let identity = searchSplitTransitionIdentity(item) else { return [] }
+            return [.media(identity)]
+        case .user(let user):
+            return user.mid > 0 ? [.userSpace(user.mid)] : []
+        case .article(let article):
+            return [.article(id: String(article.id), kind: "read")]
+        case .pgc:
+            return []
         }
     }
 

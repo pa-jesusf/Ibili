@@ -45,6 +45,7 @@ struct VideoDetailContent: View {
     @State private var pgcErrorText: String?
     @State private var floatingControlsHeight: CGFloat = 0
     @State private var commentScrollToTopSignal = 0
+    @State private var relatedScrollToTopSignal = 0
 
     private let topAnchorID = "videoDetailTop"
     private static let upwardRefreshTriggerOffset: CGFloat = 72
@@ -118,6 +119,10 @@ struct VideoDetailContent: View {
                             onReselectCurrentTab: {
                                 if tab == .replies {
                                     commentScrollToTopSignal += 1
+                                    return
+                                }
+                                if tab == .related {
+                                    relatedScrollToTopSignal += 1
                                     return
                                 }
                                 proxy.interruptingScrollTo(
@@ -359,6 +364,21 @@ struct VideoDetailContent: View {
     private func tabScrollContent(for targetTab: Tab, bottomContentInset: CGFloat) -> some View {
         if targetTab == .replies {
             commentCollectionContent(bottomContentInset: bottomContentInset)
+        } else if targetTab == .related, !item.isPGC {
+            RelatedVideoList(
+                items: vm.related,
+                isLoading: vm.isLoading || vm.isLoadingMoreRelated,
+                isEnd: vm.relatedIsEnd,
+                scrollToTopSignal: relatedScrollToTopSignal,
+                bottomContentInset: bottomContentInset,
+                onScrollOffsetChange: handleDetailScrollOffsetChange,
+                onTap: { feedItem in
+                    openPlayer(feedItem)
+                },
+                onReachEnd: {
+                    Task { await vm.loadMoreRelated() }
+                }
+            )
         } else if #available(iOS 18.0, *) {
             ScrollView {
                 InterruptibleScrollCapture(context: scrollContexts.context(for: targetTab))
@@ -464,22 +484,7 @@ struct VideoDetailContent: View {
                             .padding(.horizontal, 16)
                     }
                 case .related:
-                    if item.isPGC {
-                        EmptyView()
-                    } else {
-                        RelatedVideoList(
-                            items: vm.related,
-                            isLoadingMore: vm.isLoadingMoreRelated,
-                            isEnd: vm.relatedIsEnd,
-                            onTap: { feedItem in
-                                openPlayer(feedItem)
-                            },
-                            onReachEnd: {
-                                Task { await vm.loadMoreRelated() }
-                            }
-                        )
-                        .padding(.horizontal, 12)
-                    }
+                    EmptyView()
                 }
             }
             .padding(.bottom, bottomContentInset)
