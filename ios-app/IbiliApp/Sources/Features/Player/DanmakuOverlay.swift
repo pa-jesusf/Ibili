@@ -1,13 +1,12 @@
 import SwiftUI
 import AVFoundation
-import Combine
 
 /// Lightweight danmaku controller that owns a `DanmakuCanvasView` and
-/// connects it to the player's time updates.
+/// connects it to the active player's media timeline.
 ///
-/// Not an `ObservableObject` — the canvas view drives its own
-/// CADisplayLink rendering loop, so no SwiftUI body re-evaluations
-/// are needed for danmaku animation.
+/// Not an `ObservableObject` — the canvas materializes reusable Core
+/// Animation layers inside an `AVSynchronizedLayer`, so danmaku movement
+/// does not require SwiftUI body updates.
 @MainActor
 final class DanmakuController {
     private(set) var canvasView: DanmakuCanvasView?

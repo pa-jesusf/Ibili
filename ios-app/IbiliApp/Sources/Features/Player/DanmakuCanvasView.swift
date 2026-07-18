@@ -1,184 +1,334 @@
 import UIKit
 import AVFoundation
-import Combine
+import CoreText
 
-// MARK: - Canvas-based danmaku renderer
+// MARK: - Lane allocation
 
-/// High-performance danmaku renderer using Core Graphics canvas drawing.
-/// Replaces the SwiftUI ForEach+Text approach with direct bitmap rendering
-/// via CADisplayLink, following the same architectural pattern as the
-/// upstream `canvas_danmaku` Flutter library.
+/// Timeline-based lane allocator shared by the renderer and unit tests.
 ///
-/// Key optimizations:
-/// - Single `UIView` with `CADisplayLink` instead of 100s of SwiftUI Text views
-/// - Pre-rasterized `NSAttributedString` with `CTLine` cached per danmaku
-/// - Stroke-based outline (1 draw call) instead of 8 offset copies
-/// - Dirty-rect tracking to minimize overdraw
-/// - Lane-based collision avoidance with separate pools for scroll/top/bottom
+/// Lane occupancy controls collision placement, not danmaku capacity. When all
+/// lanes are busy, the earliest reusable lane is selected so no source item is
+/// silently dropped.
+struct DanmakuLaneAllocator {
+    private(set) var scrollingFreeAt: [Double]
+    private(set) var topFreeAt: [Double]
+    private(set) var bottomFreeAt: [Double]
+
+    init(laneCount: Int) {
+        let resolvedCount = max(1, laneCount)
+        scrollingFreeAt = Array(repeating: 0, count: resolvedCount)
+        let staticCount = max(resolvedCount / 3, 2)
+        topFreeAt = Array(repeating: 0, count: staticCount)
+        bottomFreeAt = Array(repeating: 0, count: staticCount)
+    }
+
+    mutating func reserveScrollingLane(
+        at startTime: Double,
+        duration: Double
+    ) -> Int {
+        let lane = Self.availableLane(in: scrollingFreeAt, at: startTime)
+        scrollingFreeAt[lane] = startTime + duration * 0.45
+        return lane
+    }
+
+    mutating func reserveTopLane(
+        at startTime: Double,
+        duration: Double
+    ) -> Int {
+        Self.reserveStaticLane(
+            in: &topFreeAt,
+            at: startTime,
+            duration: duration
+        )
+    }
+
+    mutating func reserveBottomLane(
+        at startTime: Double,
+        duration: Double
+    ) -> Int {
+        Self.reserveStaticLane(
+            in: &bottomFreeAt,
+            at: startTime,
+            duration: duration
+        )
+    }
+
+    private static func availableLane(
+        in pool: [Double],
+        at startTime: Double
+    ) -> Int {
+        if let lane = pool.firstIndex(where: { $0 <= startTime }) {
+            return lane
+        }
+        return pool.indices.min(by: { pool[$0] < pool[$1] }) ?? 0
+    }
+
+    private static func reserveStaticLane(
+        in pool: inout [Double],
+        at startTime: Double,
+        duration: Double
+    ) -> Int {
+        let lane = availableLane(in: pool, at: startTime)
+        pool[lane] = startTime + duration
+        return lane
+    }
+}
+
+// MARK: - Reusable render layers
+
+private final class DanmakuCachedText {
+    let image: UIImage
+    let size: CGSize
+
+    init(image: UIImage, size: CGSize) {
+        self.image = image
+        self.size = size
+    }
+
+    var cost: Int {
+        guard let image = image.cgImage else { return 0 }
+        return image.bytesPerRow * image.height
+    }
+}
+
+private final class DanmakuCachedSpecialText {
+    let image: UIImage
+    let size: CGSize
+    let drawOffset: CGPoint
+
+    init(image: UIImage, size: CGSize, drawOffset: CGPoint) {
+        self.image = image
+        self.size = size
+        self.drawOffset = drawOffset
+    }
+
+    var cost: Int {
+        guard let image = image.cgImage else { return 0 }
+        return image.bytesPerRow * image.height
+    }
+}
+
+private final class DanmakuBulletLayer: CALayer {
+    private let contentLayer = CALayer()
+
+    override init() {
+        super.init()
+        setup()
+    }
+
+    override init(layer: Any) {
+        super.init(layer: layer)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "opacity": NSNull(),
+            "contents": NSNull(),
+            "sublayers": NSNull(),
+        ]
+        contentLayer.actions = actions
+        contentLayer.contentsGravity = .resize
+        addSublayer(contentLayer)
+    }
+
+    func configureText(
+        _ cached: DanmakuCachedText,
+        isSelf: Bool,
+        contentsScale: CGFloat
+    ) {
+        bounds = CGRect(origin: .zero, size: cached.size)
+        contentLayer.contentsScale = contentsScale
+        contentLayer.frame = bounds
+        contentLayer.contents = cached.image.cgImage
+        configureSelfFrame(isSelf)
+        shouldRasterize = false
+    }
+
+    func configureSpecial(
+        _ cached: DanmakuCachedSpecialText,
+        contentsScale: CGFloat
+    ) {
+        bounds = CGRect(origin: .zero, size: cached.size)
+        contentLayer.contentsScale = contentsScale
+        contentLayer.frame = bounds
+        contentLayer.contents = cached.image.cgImage
+        configureSelfFrame(false)
+        shouldRasterize = false
+    }
+
+    func prepareForReuse() {
+        removeAllAnimations()
+        contentLayer.removeAllAnimations()
+        contentLayer.contents = nil
+        opacity = 1
+        transform = CATransform3DIdentity
+        backgroundColor = nil
+        borderColor = nil
+        borderWidth = 0
+        cornerRadius = 0
+        shouldRasterize = false
+        removeFromSuperlayer()
+    }
+
+    private func configureSelfFrame(_ isSelf: Bool) {
+        guard isSelf else {
+            backgroundColor = nil
+            borderColor = nil
+            borderWidth = 0
+            cornerRadius = 0
+            return
+        }
+        backgroundColor = UIColor(red: 1, green: 0.42, blue: 0.65, alpha: 0.18).cgColor
+        borderColor = UIColor(red: 1, green: 0.42, blue: 0.65, alpha: 0.95).cgColor
+        borderWidth = 1.2
+        cornerRadius = min(bounds.height / 2, 8)
+    }
+}
+
+// MARK: - Synchronized danmaku renderer
+
+/// GPU-composited danmaku renderer synchronized directly to the active
+/// `AVPlayerItem` timeline.
+///
+/// Source items remain as plain data. Only bullets intersecting a small media
+/// time window are materialized as reusable Core Animation layers. Movement,
+/// pause, rate changes and seeking are then driven by `AVSynchronizedLayer`
+/// rather than main-thread per-frame drawing.
 @MainActor
 final class DanmakuCanvasView: UIView {
 
-    // MARK: - Configuration
+    // MARK: Configuration
 
-    var laneCount: Int = 14 { didSet { rebuildLanes() } }
-    var scrollDuration: Double = 8.0
-    var staticDuration: Double = 4.0
+    var laneCount: Int = 14 {
+        didSet {
+            guard laneCount != oldValue else { return }
+            resynchronizePresentation()
+        }
+    }
+
+    var scrollDuration: Double = 8 {
+        didSet {
+            scrollDuration = max(0.1, scrollDuration)
+            guard scrollDuration != oldValue else { return }
+            resynchronizePresentation()
+        }
+    }
+
+    var staticDuration: Double = 4 {
+        didSet {
+            staticDuration = max(0.1, staticDuration)
+            guard staticDuration != oldValue else { return }
+            resynchronizePresentation()
+        }
+    }
+
     var blockLevel: Int {
         get { storedBlockLevel }
         set {
             let clamped = min(max(newValue, 0), 11)
             guard storedBlockLevel != clamped else { return }
             storedBlockLevel = clamped
-            rebuildTrack()
+            rebuildTrack(clearTextCaches: false)
         }
     }
+
     var preferredFrameRate: Int {
         get { storedFrameRate }
         set {
             let resolved = DanmakuFrameRateOption.resolve(newValue)
             guard storedFrameRate != resolved else { return }
             storedFrameRate = resolved
-            reconfigureTiming()
+            resynchronizePresentation()
         }
     }
-    /// Black halo width for normal (non mode-7) danmaku. We render a
-    /// black copy of the exact same glyph run with a zero-offset
-    /// shadow underneath the foreground text. Using the same font and
-    /// advances for both passes avoids the digit / latin misalignment
-    /// introduced by the previous "heavier underlay font" approach,
-    /// while keeping the steady-state cost at two `CTLineDraw` calls.
-    /// Setter invalidates the text cache so the change takes effect
-    /// on the next bullet, without having to tear the canvas down.
+
     var normalStrokeWidth: CGFloat {
         get { storedNormalStrokeWidth }
         set {
             let clamped = max(0, min(newValue, 6))
             guard storedNormalStrokeWidth != clamped else { return }
             storedNormalStrokeWidth = clamped
-            textCache.removeAllObjects()
-            needsRedraw = true
+            invalidateNormalTextStyle()
         }
     }
-    /// 1...9, mirrors the SettingsView slider; 6 ≈ semibold.
+
     var normalFontWeight: Int {
         get { storedNormalFontWeight }
         set {
             let clamped = max(1, min(newValue, 9))
             guard storedNormalFontWeight != clamped else { return }
             storedNormalFontWeight = clamped
-            textCache.removeAllObjects()
-            needsRedraw = true
+            invalidateNormalTextStyle()
         }
     }
-    /// Multiplier applied on top of the per-bullet `fontSize`.
+
     var normalFontScale: CGFloat {
         get { storedNormalFontScale }
         set {
             let clamped = max(0.6, min(newValue, 1.6))
             guard storedNormalFontScale != clamped else { return }
             storedNormalFontScale = clamped
-            textCache.removeAllObjects()
-            needsRedraw = true
+            invalidateNormalTextStyle()
         }
     }
-    private let seekResyncThreshold: Double = 0.5
-    private let perTickCap = 12
 
-    // MARK: - State
+    private let schedulerInterval: Double = 0.25
+    private let schedulingLookAhead: Double = 2
+    private let resynchronizationLookBehind: Double = 30
+    private let seekResyncThreshold: Double = 1.25
+    private let recycleGrace: Double = 0.2
+    private let maximumPooledLayers = 128
+
+    // MARK: Timeline state
 
     private var sourceItems: [DanmakuItemDTO] = []
     private var all: [DanmakuItemDTO] = []
-    private var active: [LiveDanmaku] = []
-    private var cursor: Int = 0
-    private var lastTime: Double = 0
-    private var hasSyncedPlaybackTime = false
-
-    private var scrollLaneFreeAt: [Double] = []
-    private var topLaneNextFree: [Double] = []
-    private var bottomLaneNextFree: [Double] = []
+    private var cursor = 0
+    private var laneAllocator = DanmakuLaneAllocator(laneCount: 14)
+    private var activeLayers: [ActiveLayer] = []
+    private var layerPool: [DanmakuBulletLayer] = []
+    private var lastObservedPlaybackTime: Double?
 
     private weak var player: AVPlayer?
     private var timeObserver: Any?
-    private var displayLink: CADisplayLink?
-    private var storedBlockLevel: Int = 0
-    private var storedFrameRate: Int = 60
-    private var storedNormalStrokeWidth: CGFloat = 3.0
-    private var storedNormalFontWeight: Int = 6
-    private var storedNormalFontScale: CGFloat = 1.0
-    private var currentPlaybackTime: Double = 0
-    private var needsRedraw = false
+    private var currentItemObservation: NSKeyValueObservation?
+    private var timeJumpObserver: NSObjectProtocol?
+    private var synchronizedLayer: AVSynchronizedLayer?
+    private var normalContainerLayer: CALayer?
+    private var specialContainerLayer: CALayer?
+    private var lastLayoutSize: CGSize = .zero
+    private var layoutResynchronizationWork: DispatchWorkItem?
 
-    // MARK: - Text cache
+    private var storedBlockLevel = 0
+    private var storedFrameRate = 60
+    private var storedNormalStrokeWidth: CGFloat = 3
+    private var storedNormalFontWeight = 6
+    private var storedNormalFontScale: CGFloat = 1
 
-    private var textCache = NSCache<NSString, CachedText>()
-    private var specialTextCache = NSCache<NSString, CachedSpecialText>()
+    private var textCache = NSCache<NSString, DanmakuCachedText>()
+    private var specialTextCache = NSCache<NSString, DanmakuCachedSpecialText>()
 
-    private final class CachedText {
-        /// Foreground glyph run, drawn last so the user-visible text
-        /// sits on top of the halo.
-        let line: CTLine
-        /// Optional halo line: the exact same glyph run in black. We
-        /// draw it once with a zero-offset shadow to form the halo,
-        /// then draw `line` on top. Matching glyph metrics exactly is
-        /// what keeps numbers / latin text aligned with the foreground.
-        let haloLine: CTLine?
-        let haloBlur: CGFloat
-        let size: CGSize
-        let contentBounds: CGRect
-        let contentSize: CGSize
-        let drawInset: CGFloat
-
-        init(
-            line: CTLine,
-            haloLine: CTLine?,
-            haloBlur: CGFloat,
-            size: CGSize,
-            contentBounds: CGRect,
-            contentSize: CGSize,
-            drawInset: CGFloat
-        ) {
-            self.line = line
-            self.haloLine = haloLine
-            self.haloBlur = haloBlur
-            self.size = size
-            self.contentBounds = contentBounds
-            self.contentSize = contentSize
-            self.drawInset = drawInset
-        }
+    private struct ActiveLayer {
+        let layer: DanmakuBulletLayer
+        let endTime: Double
     }
 
-    private final class CachedSpecialText {
-        let image: UIImage
-        let size: CGSize
-        let drawOffset: CGPoint
-
-        init(image: UIImage, size: CGSize, drawOffset: CGPoint) {
-            self.image = image
-            self.size = size
-            self.drawOffset = drawOffset
-        }
+    private enum DanmakuMode {
+        case scroll
+        case top
+        case bottom
+        case special(SpecialDanmakuDescriptor)
     }
 
-    private struct LiveDanmaku {
-        let item: DanmakuItemDTO
-        let displayText: String
-        let lane: Int
-        let startTime: Double
-        let duration: Double
-        let mode: DanmakuMode
-        let textKey: NSString
-        let specialDescriptor: SpecialDanmakuDescriptor?
-        var cachedText: CachedText?
-        var cachedSpecialText: CachedSpecialText?
-        /// Mirrors `item.isSelf` at schedule time. Used by the renderer
-        /// to draw a capsule frame around the user's own bullets so
-        /// they're visually distinct from everyone else's.
-        var isSelf: Bool { item.isSelf }
-    }
-
-    private enum DanmakuMode { case scroll, top, bottom, special }
-
-    // MARK: - Init
+    // MARK: Lifecycle
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -194,190 +344,443 @@ final class DanmakuCanvasView: UIView {
         isOpaque = false
         backgroundColor = .clear
         isUserInteractionEnabled = false
-        clearsContextBeforeDrawing = true
-        contentMode = .redraw
-        rebuildLanes()
-
-        textCache.countLimit = 512
+        layer.masksToBounds = true
+        textCache.countLimit = 768
+        textCache.totalCostLimit = 24 * 1024 * 1024
         specialTextCache.countLimit = 128
+        specialTextCache.totalCostLimit = 12 * 1024 * 1024
     }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        guard window != nil else { return }
-        reconfigureTiming()
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        synchronizedLayer?.frame = bounds
+        normalContainerLayer?.frame = bounds
+        specialContainerLayer?.frame = bounds
+        CATransaction.commit()
+
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        guard abs(lastLayoutSize.width - bounds.width) > 0.5
+                || abs(lastLayoutSize.height - bounds.height) > 0.5 else {
+            return
+        }
+        lastLayoutSize = bounds.size
+        scheduleLayoutResynchronization()
     }
 
-    private func rebuildLanes() {
-        scrollLaneFreeAt = Array(repeating: 0, count: laneCount)
-        topLaneNextFree = Array(repeating: 0, count: max(laneCount / 3, 2))
-        bottomLaneNextFree = Array(repeating: 0, count: max(laneCount / 3, 2))
+    deinit {
+        MainActor.assumeIsolated {
+            layoutResynchronizationWork?.cancel()
+            removeObservers()
+        }
     }
 
-    // MARK: - Public API
+    // MARK: Public API
 
     func setItems(_ items: [DanmakuItemDTO]) {
-        // Callers hand us a pre-sorted track so route transitions
-        // don't spend their first few frames doing an O(n log n)
-        // sort on the main actor.
         sourceItems = items
-        rebuildTrack()
+        rebuildTrack(clearTextCaches: true)
     }
 
     func mergeItems(_ items: [DanmakuItemDTO]) {
         guard !items.isEmpty else { return }
         let sortedItems = items.sorted { $0.timeSec < $1.timeSec }
         sourceItems = Self.mergingSortedDanmaku(sourceItems, with: sortedItems)
-        let previousTime = currentPlaybackTime
         all = Self.mergingSortedDanmaku(all, with: sortedItems.filter(shouldInclude))
-        cursor = lowerBound(of: Float(previousTime))
-        currentPlaybackTime = previousTime
-        lastTime = previousTime
-        needsRedraw = true
+        resynchronizePresentation()
     }
 
-    /// Inject a single live item at the current playhead and schedule
-    /// it for immediate display. Used by the local-echo path after the
-    /// user successfully sends their own danmaku — saves a full track
-    /// refetch round-trip.
     func appendLive(_ item: DanmakuItemDTO) {
-        // Keep `sourceItems` sorted so a future seek+rewind still
-        // surfaces the user's bullet in chronological order. We don't
-        // bother resorting the whole list: insertion is rare and the
-        // active scheduler only cares about `cursor` advancing.
-        let insertAt = sourceItems.firstIndex(where: { $0.timeSec > item.timeSec }) ?? sourceItems.count
-        sourceItems.insert(item, at: insertAt)
-        // Mirror the `shouldInclude` filter so block-level rules still
-        // apply consistently to local echoes (self-bullets are exempt
-        // from weight-based blocking by design).
+        let sourceInsert = sourceItems.firstIndex(where: { $0.timeSec > item.timeSec }) ?? sourceItems.count
+        sourceItems.insert(item, at: sourceInsert)
         guard shouldInclude(item) else { return }
-        // Schedule against `currentPlaybackTime` rather than the item's
-        // own timeSec so it shows up *now*, even if the user paused or
-        // the playhead drifted.
-        schedule(item, at: currentPlaybackTime)
-        // Maintain the cursor so the time-driven feeder doesn't replay
-        // it as an upcoming item once the playhead crosses timeSec.
-        let bound = lowerBound(of: item.timeSec)
-        if bound <= cursor {
-            cursor += 1
-        }
-        // Keep the `all` filtered cache in sync so seek-resync still
-        // reproduces the bullet later.
+
         let allInsert = all.firstIndex(where: { $0.timeSec > item.timeSec }) ?? all.count
         all.insert(item, at: allInsert)
         if allInsert <= cursor {
             cursor += 1
         }
-        needsRedraw = true
-        setNeedsDisplay()
-    }
 
-    private func rebuildTrack() {
-        all = sourceItems.filter(shouldInclude)
-        cursor = 0
-        active.removeAll()
-        rebuildLanes()
-        textCache.removeAllObjects()
-        specialTextCache.removeAllObjects()
-        hasSyncedPlaybackTime = false
-        needsRedraw = true
-    }
-
-    private static func mergingSortedDanmaku(_ lhs: [DanmakuItemDTO],
-                                             with rhs: [DanmakuItemDTO]) -> [DanmakuItemDTO] {
-        var merged: [DanmakuItemDTO] = []
-        merged.reserveCapacity(lhs.count + rhs.count)
-        var i = 0
-        var j = 0
-        var seen = Set<String>()
-
-        func key(_ item: DanmakuItemDTO) -> String {
-            "\(item.timeSec)|\(item.mode)|\(item.color)|\(item.fontSize)|\(item.midHash)|\(item.text)"
-        }
-
-        func appendIfNeeded(_ item: DanmakuItemDTO) {
-            if seen.insert(key(item)).inserted {
-                merged.append(item)
-            }
-        }
-
-        while i < lhs.count || j < rhs.count {
-            if j >= rhs.count || (i < lhs.count && lhs[i].timeSec <= rhs[j].timeSec) {
-                appendIfNeeded(lhs[i])
-                i += 1
-            } else {
-                appendIfNeeded(rhs[j])
-                j += 1
-            }
-        }
-        return merged
-    }
-
-    private func shouldInclude(_ item: DanmakuItemDTO) -> Bool {
-        if item.hasWeight, !item.isSelf, item.weight < Int32(storedBlockLevel) {
-            return false
-        }
-        if item.mode == 7 {
-            return SpecialDanmakuDescriptor.parse(rawText: item.text) != nil
-        }
-        return true
+        let now = resolvedPlaybackTime()
+        materialize(
+            item,
+            startTime: now,
+            currentTime: now
+        )
     }
 
     func attach(_ player: AVPlayer) {
-        removeTimeObserverIfNeeded()
-        self.player = player
-        syncToPlayerTime(player.currentTime().seconds, preserveActive: false)
-        let interval = CMTime(
-            seconds: 1.0 / Double(effectiveFrameRate),
-            preferredTimescale: 90_000
-        )
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
-            guard let self else { return }
-            let secs = t.seconds.isFinite ? t.seconds : 0
-            self.tickLogic(secs)
+        if self.player === player, currentItemObservation != nil {
+            if synchronizedLayer?.playerItem !== player.currentItem {
+                installSynchronizedLayer(for: player.currentItem)
+            }
+            return
         }
-        startDisplayLink()
+
+        removeObservers()
+        self.player = player
+        addScheduler(to: player)
+        currentItemObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] observedPlayer, _ in
+            Task { @MainActor [weak self] in
+                guard self?.player === observedPlayer else { return }
+                self?.installSynchronizedLayer(for: observedPlayer.currentItem)
+            }
+        }
     }
 
     func detach() {
-        stopDisplayLink()
-        removeTimeObserverIfNeeded()
+        removeObservers()
         player = nil
-        active.removeAll()
-        hasSyncedPlaybackTime = false
-        needsRedraw = true
-        setNeedsDisplay()
+        installSynchronizedLayer(for: nil)
     }
 
-    private func reconfigureTiming() {
-        if let player {
-            attach(player)
+    static func effectiveFrameRate(requested: Int, maximumFramesPerSecond: Int) -> Int {
+        min(
+            DanmakuFrameRateOption.resolve(requested),
+            max(1, maximumFramesPerSecond)
+        )
+    }
+
+    // MARK: Scheduling
+
+    private func addScheduler(to player: AVPlayer) {
+        let interval = CMTime(seconds: schedulerInterval, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            let seconds = time.seconds.isFinite ? max(0, time.seconds) : 0
+            Task { @MainActor [weak self] in
+                self?.handleSchedulerTick(at: seconds)
+            }
         }
-        if let displayLink {
-            applyPreferredFrameRate(to: displayLink)
+    }
+
+    private func handleSchedulerTick(at now: Double) {
+        if let lastObservedPlaybackTime,
+           now + 0.05 < lastObservedPlaybackTime
+                || now - lastObservedPlaybackTime > seekResyncThreshold {
+            resynchronizePresentation(at: now)
+            return
         }
+
+        lastObservedPlaybackTime = now
+        recycleExpiredLayers(at: now)
+        scheduleItems(through: now + schedulingLookAhead, currentTime: now)
     }
 
-    private func startDisplayLink() {
-        guard displayLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(displayTick))
-        applyPreferredFrameRate(to: link)
-        link.add(to: .main, forMode: .common)
-        displayLink = link
+    private func installSynchronizedLayer(for item: AVPlayerItem?) {
+        removeTimeJumpObserver()
+        recycleAllActiveLayers()
+        synchronizedLayer?.removeFromSuperlayer()
+        synchronizedLayer = nil
+        normalContainerLayer = nil
+        specialContainerLayer = nil
+        lastObservedPlaybackTime = nil
+
+        guard let item else { return }
+        let syncLayer = AVSynchronizedLayer(playerItem: item)
+        syncLayer.frame = bounds
+        syncLayer.masksToBounds = true
+        let normalLayer = makeContainerLayer()
+        let specialLayer = makeContainerLayer()
+        syncLayer.addSublayer(normalLayer)
+        syncLayer.addSublayer(specialLayer)
+        layer.addSublayer(syncLayer)
+        synchronizedLayer = syncLayer
+        normalContainerLayer = normalLayer
+        specialContainerLayer = specialLayer
+
+        timeJumpObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemTimeJumped,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.resynchronizePresentation()
+            }
+        }
+        resynchronizePresentation()
     }
 
-    private func applyPreferredFrameRate(to link: CADisplayLink) {
-        let frameRate = effectiveFrameRate
-        if #available(iOS 15.0, *) {
-            let rate = Float(frameRate)
-            link.preferredFrameRateRange = CAFrameRateRange(
-                minimum: rate,
-                maximum: rate,
-                preferred: rate
+    private func resynchronizePresentation(at explicitTime: Double? = nil) {
+        guard synchronizedLayer != nil, bounds.width > 0, bounds.height > 0 else { return }
+        let now = explicitTime ?? resolvedPlaybackTime()
+        recycleAllActiveLayers()
+        laneAllocator = DanmakuLaneAllocator(laneCount: laneCount)
+        cursor = lowerBound(of: Float(max(0, now - resynchronizationLookBehind)))
+        scheduleItems(through: now + schedulingLookAhead, currentTime: now)
+        lastObservedPlaybackTime = now
+    }
+
+    private func scheduleItems(through horizon: Double, currentTime: Double) {
+        while cursor < all.count, Double(all[cursor].timeSec) <= horizon {
+            let item = all[cursor]
+            materialize(
+                item,
+                startTime: max(0, Double(item.timeSec)),
+                currentTime: currentTime
             )
-        } else {
-            link.preferredFramesPerSecond = frameRate
+            cursor += 1
         }
+    }
+
+    private func materialize(
+        _ item: DanmakuItemDTO,
+        startTime: Double,
+        currentTime: Double
+    ) {
+        guard synchronizedLayer != nil else { return }
+
+        let mode: DanmakuMode
+        let displayText: String
+        let duration: Double
+        switch item.mode {
+        case 4:
+            mode = .bottom
+            displayText = item.text
+            duration = staticDuration
+        case 5:
+            mode = .top
+            displayText = item.text
+            duration = staticDuration
+        case 7:
+            guard let descriptor = SpecialDanmakuDescriptor.parse(rawText: item.text) else { return }
+            mode = .special(descriptor)
+            displayText = descriptor.text
+            duration = descriptor.displayDuration
+        default:
+            mode = .scroll
+            displayText = item.text
+            duration = scrollDuration
+        }
+
+        let endTime = startTime + duration
+        let isCurrentlyRelevant = endTime > currentTime - recycleGrace
+        let lane: Int
+        switch mode {
+        case .scroll:
+            lane = laneAllocator.reserveScrollingLane(
+                at: startTime,
+                duration: duration
+            )
+        case .top:
+            lane = laneAllocator.reserveTopLane(
+                at: startTime,
+                duration: duration
+            )
+        case .bottom:
+            lane = laneAllocator.reserveBottomLane(
+                at: startTime,
+                duration: duration
+            )
+        case .special:
+            lane = 0
+        }
+
+        guard isCurrentlyRelevant else { return }
+
+        let bulletLayer = dequeueLayer()
+        let scale = resolvedContentsScale()
+        let cacheText = item.mode == 7 ? item.text : displayText
+        let textKey = "\(cacheText)_\(item.color)_\(item.fontSize)_\(item.mode)" as NSString
+
+        switch mode {
+        case .special(let descriptor):
+            let cached = cachedSpecialText(
+                key: textKey,
+                displayText: displayText,
+                item: item,
+                descriptor: descriptor
+            )
+            bulletLayer.configureSpecial(cached, contentsScale: scale)
+            specialContainerLayer?.addSublayer(bulletLayer)
+            configureSpecialAnimations(
+                on: bulletLayer,
+                cached: cached,
+                descriptor: descriptor,
+                startTime: startTime
+            )
+
+        case .scroll, .top, .bottom:
+            let cached = cachedNormalText(key: textKey, displayText: displayText, item: item)
+            bulletLayer.configureText(cached, isSelf: item.isSelf, contentsScale: scale)
+            normalContainerLayer?.addSublayer(bulletLayer)
+            configureNormalAnimations(
+                on: bulletLayer,
+                cached: cached,
+                mode: mode,
+                lane: lane,
+                startTime: startTime,
+                duration: duration
+            )
+        }
+
+        activeLayers.append(ActiveLayer(
+            layer: bulletLayer,
+            endTime: endTime
+        ))
+    }
+
+    // MARK: Animation construction
+
+    private func configureNormalAnimations(
+        on layer: DanmakuBulletLayer,
+        cached: DanmakuCachedText,
+        mode: DanmakuMode,
+        lane: Int,
+        startTime: Double,
+        duration: Double
+    ) {
+        let laneHeight = max(20, bounds.height / CGFloat(max(1, laneCount) + 1))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        switch mode {
+        case .scroll:
+            let y = laneHeight * (CGFloat(lane) + 0.5)
+            let startX = bounds.width + cached.size.width / 2
+            let endX = -cached.size.width / 2
+            layer.position = CGPoint(x: endX, y: y)
+            layer.opacity = 1
+
+            let movement = CABasicAnimation(keyPath: "position.x")
+            movement.fromValue = startX
+            movement.toValue = endX
+            configure(
+                movement,
+                beginTime: startTime,
+                duration: duration,
+                timingFunction: CAMediaTimingFunction(name: .linear)
+            )
+            layer.add(movement, forKey: "danmaku.scroll")
+
+        case .top, .bottom:
+            let y: CGFloat
+            if case .top = mode {
+                y = laneHeight * (CGFloat(lane) + 0.5)
+            } else {
+                y = bounds.height - laneHeight * (CGFloat(lane) + 1.5) + cached.size.height / 2
+            }
+            layer.position = CGPoint(x: bounds.midX, y: y)
+            layer.opacity = 0
+            addVisibilityAnimation(
+                to: layer,
+                startAlpha: 1,
+                endAlpha: 1,
+                beginTime: startTime,
+                duration: duration
+            )
+
+        case .special:
+            break
+        }
+        CATransaction.commit()
+    }
+
+    private func configureSpecialAnimations(
+        on layer: DanmakuBulletLayer,
+        cached: DanmakuCachedSpecialText,
+        descriptor: SpecialDanmakuDescriptor,
+        startTime: Double
+    ) {
+        let startOrigin = descriptor.position(at: 0, in: bounds.size)
+        let endOrigin = descriptor.position(
+            at: descriptor.delay + descriptor.moveDuration,
+            in: bounds.size
+        )
+        let startPosition = CGPoint(
+            x: startOrigin.x + cached.drawOffset.x + cached.size.width / 2,
+            y: startOrigin.y + cached.drawOffset.y + cached.size.height / 2
+        )
+        let endPosition = CGPoint(
+            x: endOrigin.x + cached.drawOffset.x + cached.size.width / 2,
+            y: endOrigin.y + cached.drawOffset.y + cached.size.height / 2
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.position = endPosition
+        layer.opacity = 0
+
+        let remainingDuration = max(0, descriptor.displayDuration - descriptor.delay)
+        let movementDuration = min(descriptor.moveDuration, remainingDuration)
+        if movementDuration > 0.001, startPosition != endPosition {
+            let movement = CABasicAnimation(keyPath: "position")
+            movement.fromValue = NSValue(cgPoint: startPosition)
+            movement.toValue = NSValue(cgPoint: endPosition)
+            let timingFunction: CAMediaTimingFunction
+            switch descriptor.easing {
+            case .easeInCubic:
+                timingFunction = CAMediaTimingFunction(
+                    controlPoints: 0.55,
+                    0.055,
+                    0.675,
+                    0.19
+                )
+            case .linear:
+                timingFunction = CAMediaTimingFunction(name: .linear)
+            }
+            configure(
+                movement,
+                beginTime: startTime + descriptor.delay,
+                duration: movementDuration,
+                timingFunction: timingFunction
+            )
+            layer.add(movement, forKey: "danmaku.special.position")
+        } else {
+            layer.position = startPosition
+        }
+
+        addVisibilityAnimation(
+            to: layer,
+            startAlpha: descriptor.startAlpha,
+            endAlpha: descriptor.endAlpha,
+            beginTime: startTime,
+            duration: descriptor.displayDuration
+        )
+        CATransaction.commit()
+    }
+
+    private func addVisibilityAnimation(
+        to layer: CALayer,
+        startAlpha: CGFloat,
+        endAlpha: CGFloat,
+        beginTime: Double,
+        duration: Double
+    ) {
+        let visibility = CAKeyframeAnimation(keyPath: "opacity")
+        visibility.values = [0, startAlpha, endAlpha, 0]
+        visibility.keyTimes = [0, 0.001, 0.999, 1]
+        visibility.calculationMode = .linear
+        configure(
+            visibility,
+            beginTime: beginTime,
+            duration: max(0.001, duration),
+            timingFunction: nil
+        )
+        layer.add(visibility, forKey: "danmaku.visibility")
+    }
+
+    private func configure(
+        _ animation: CAAnimation,
+        beginTime: Double,
+        duration: Double,
+        timingFunction: CAMediaTimingFunction?
+    ) {
+        animation.beginTime = mediaTimelineBeginTime(beginTime)
+        animation.duration = max(0.001, duration)
+        animation.fillMode = .both
+        animation.isRemovedOnCompletion = false
+        animation.timingFunction = timingFunction
+        let frameRate = Float(effectiveFrameRate)
+        animation.preferredFrameRateRange = CAFrameRateRange(
+            minimum: frameRate,
+            maximum: frameRate,
+            preferred: frameRate
+        )
+    }
+
+    private func mediaTimelineBeginTime(_ seconds: Double) -> CFTimeInterval {
+        seconds > 0 ? seconds : AVCoreAnimationBeginTimeAtZero
     }
 
     private var effectiveFrameRate: Int {
@@ -389,177 +792,194 @@ final class DanmakuCanvasView: UIView {
         )
     }
 
-    static func effectiveFrameRate(requested: Int, maximumFramesPerSecond: Int) -> Int {
-        min(
-            DanmakuFrameRateOption.resolve(requested),
-            max(1, maximumFramesPerSecond)
+    // MARK: Text preparation
+
+    private let baseFontSize: CGFloat = 18
+    private let maxRasterSize: CGFloat = 4096
+
+    private func cachedNormalText(
+        key: NSString,
+        displayText: String,
+        item: DanmakuItemDTO
+    ) -> DanmakuCachedText {
+        if let cached = textCache.object(forKey: key) {
+            return cached
+        }
+        let cached = makeNormalText(displayText: displayText, item: item)
+        textCache.setObject(cached, forKey: key, cost: cached.cost)
+        return cached
+    }
+
+    private func cachedSpecialText(
+        key: NSString,
+        displayText: String,
+        item: DanmakuItemDTO,
+        descriptor: SpecialDanmakuDescriptor
+    ) -> DanmakuCachedSpecialText {
+        if let cached = specialTextCache.object(forKey: key) {
+            return cached
+        }
+        let cached = makeSpecialText(
+            displayText: displayText,
+            item: item,
+            descriptor: descriptor
+        )
+        specialTextCache.setObject(cached, forKey: key, cost: cached.cost)
+        return cached
+    }
+
+    private func makeNormalText(
+        displayText: String,
+        item: DanmakuItemDTO
+    ) -> DanmakuCachedText {
+        let font = resolvedFont(for: item)
+        let foregroundText = NSAttributedString(string: displayText, attributes: [
+            .font: font,
+            .foregroundColor: resolvedTextColor(for: item),
+        ])
+        let foregroundLine = CTLineCreateWithAttributedString(foregroundText)
+        let opticalBounds = CTLineGetBoundsWithOptions(foregroundLine, .useOpticalBounds)
+
+        let haloLine: CTLine?
+        let haloBlur: CGFloat
+        if storedNormalStrokeWidth > 0 {
+            let haloText = NSAttributedString(string: displayText, attributes: [
+                .font: font,
+                .foregroundColor: UIColor.black,
+            ])
+            haloLine = CTLineCreateWithAttributedString(haloText)
+            haloBlur = max(0.8, storedNormalStrokeWidth * 0.95)
+        } else {
+            haloLine = nil
+            haloBlur = 0
+        }
+
+        let drawInset = max(2, ceil(haloBlur * 2.2) + 1)
+        let contentBounds = CGRect(
+            x: floor(opticalBounds.minX),
+            y: floor(opticalBounds.minY),
+            width: max(1, ceil(opticalBounds.maxX) - floor(opticalBounds.minX)),
+            height: max(1, ceil(opticalBounds.maxY) - floor(opticalBounds.minY))
+        )
+        let size = CGSize(
+            width: min(maxRasterSize, contentBounds.width + drawInset * 2),
+            height: min(maxRasterSize, contentBounds.height + drawInset * 2)
+        )
+
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = resolvedContentsScale()
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let cgContext = context.cgContext
+            cgContext.setAllowsAntialiasing(true)
+            cgContext.setShouldAntialias(true)
+            cgContext.setAllowsFontSmoothing(true)
+            cgContext.setShouldSmoothFonts(true)
+            cgContext.textMatrix = .identity
+            cgContext.translateBy(x: drawInset, y: size.height - drawInset)
+            cgContext.scaleBy(x: 1, y: -1)
+
+            if let haloLine {
+                cgContext.setShadow(
+                    offset: .zero,
+                    blur: haloBlur,
+                    color: UIColor.black.cgColor
+                )
+                cgContext.textPosition = .zero
+                CTLineDraw(haloLine, cgContext)
+                cgContext.setShadow(offset: .zero, blur: 0, color: nil)
+            }
+
+            cgContext.textPosition = .zero
+            CTLineDraw(foregroundLine, cgContext)
+        }
+        return DanmakuCachedText(image: image, size: size)
+    }
+
+    private func makeSpecialText(
+        displayText: String,
+        item: DanmakuItemDTO,
+        descriptor: SpecialDanmakuDescriptor
+    ) -> DanmakuCachedSpecialText {
+        let font = resolvedFont(for: item)
+        let fillColor = resolvedTextColor(for: item)
+        let padding: CGFloat = descriptor.hasStroke ? max(2, ceil(font.pointSize * 0.05)) : 1
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .left
+        paragraphStyle.lineBreakMode = .byClipping
+
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: fillColor,
+            .paragraphStyle: paragraphStyle,
+        ]
+        if descriptor.hasStroke {
+            let shadow = NSShadow()
+            shadow.shadowColor = UIColor.black.withAlphaComponent(0.85)
+            shadow.shadowBlurRadius = padding
+            shadow.shadowOffset = .zero
+            attributes[.shadow] = shadow
+        }
+
+        let attributed = NSAttributedString(string: displayText, attributes: attributes)
+        let measured = attributed.boundingRect(
+            with: CGSize(width: maxRasterSize, height: maxRasterSize),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+        let textSize = CGSize(
+            width: max(1, min(maxRasterSize, ceil(measured.width))),
+            height: max(1, min(maxRasterSize, ceil(measured.height)))
+        )
+        let textRect = CGRect(origin: .zero, size: textSize)
+        let transformedBounds = descriptor.transform.isIdentity
+            ? textRect
+            : textRect.applying(descriptor.transform)
+        let rasterBounds = transformedBounds.insetBy(dx: -padding, dy: -padding).integral
+        let rasterSize = CGSize(
+            width: max(1, ceil(rasterBounds.width)),
+            height: max(1, ceil(rasterBounds.height))
+        )
+
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = resolvedContentsScale()
+        let image = UIGraphicsImageRenderer(size: rasterSize, format: format).image { context in
+            let cgContext = context.cgContext
+            cgContext.translateBy(x: -rasterBounds.minX, y: -rasterBounds.minY)
+            if !descriptor.transform.isIdentity {
+                cgContext.concatenate(descriptor.transform)
+            }
+            attributed.draw(
+                with: textRect,
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+        }
+
+        return DanmakuCachedSpecialText(
+            image: image,
+            size: rasterSize,
+            drawOffset: rasterBounds.origin
         )
     }
 
-    private func removeTimeObserverIfNeeded() {
-        if let timeObserver, let player {
-            player.removeTimeObserver(timeObserver)
-        }
-        timeObserver = nil
-    }
-
-    private func stopDisplayLink() {
-        displayLink?.invalidate()
-        displayLink = nil
-    }
-
-    @objc private func displayTick(_ link: CADisplayLink) {
-        if needsRedraw || !active.isEmpty {
-            setNeedsDisplay()
-            needsRedraw = false
-        }
-    }
-
-    // MARK: - Logic tick (driven by the configured player time observer)
-
-    private func tickLogic(_ now: Double) {
-        if !hasSyncedPlaybackTime {
-            syncToPlayerTime(now, preserveActive: false)
-            needsRedraw = true
-            return
-        }
-        if abs(now - lastTime) > seekResyncThreshold {
-            syncToPlayerTime(now, preserveActive: false)
-        }
-        lastTime = now
-        currentPlaybackTime = now
-
-        active.removeAll { now > $0.startTime + $0.duration }
-
-        var added = 0
-        while cursor < all.count, Double(all[cursor].timeSec) <= now + 0.05 {
-            schedule(all[cursor], at: now)
-            cursor += 1
-            added += 1
-            if added > perTickCap { break }
-        }
-
-        needsRedraw = true
-    }
-
-    private func syncToPlayerTime(_ seconds: Double, preserveActive: Bool) {
-        let now = seconds.isFinite ? max(0, seconds) : 0
-        if !preserveActive {
-            active.removeAll()
-            rebuildLanes()
-        }
-        cursor = lowerBound(of: Float(now))
-        lastTime = now
-        currentPlaybackTime = now
-        hasSyncedPlaybackTime = true
-    }
-
-    private func schedule(_ item: DanmakuItemDTO, at now: Double) {
-        let mode: DanmakuMode
-        let displayText: String
-        let specialDescriptor: SpecialDanmakuDescriptor?
-        let key: NSString
-        var lane: Int
-
-        switch item.mode {
-        case 4:
-            mode = .bottom
-            displayText = item.text
-            specialDescriptor = nil
-            key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
-            lane = pickStaticLane(from: &bottomLaneNextFree, at: now)
-        case 5:
-            mode = .top
-            displayText = item.text
-            specialDescriptor = nil
-            key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
-            lane = pickStaticLane(from: &topLaneNextFree, at: now)
-        case 7:
-            guard let parsed = SpecialDanmakuDescriptor.parse(rawText: item.text) else { return }
-            mode = .special
-            displayText = parsed.text
-            specialDescriptor = parsed
-            key = "\(item.text)_\(item.color)_\(item.fontSize)" as NSString
-            lane = 0
-        default:
-            mode = .scroll
-            displayText = item.text
-            specialDescriptor = nil
-            key = "\(displayText)_\(item.color)_\(item.fontSize)" as NSString
-            lane = pickScrollLane(at: now)
-            scrollLaneFreeAt[lane] = now + scrollDuration * 0.45
-        }
-
-        let duration = specialDescriptor?.displayDuration
-            ?? (mode == .scroll ? scrollDuration : staticDuration)
-        var dm = LiveDanmaku(item: item, displayText: displayText, lane: lane, startTime: now,
-                             duration: duration, mode: mode, textKey: key,
-                             specialDescriptor: specialDescriptor)
-        if let specialDescriptor {
-            dm.cachedSpecialText = specialTextCache.object(forKey: key)
-            if dm.cachedSpecialText == nil {
-                let cached = makeSpecialText(
-                    displayText: displayText,
-                    item: item,
-                    descriptor: specialDescriptor
-                )
-                specialTextCache.setObject(cached, forKey: key)
-                dm.cachedSpecialText = cached
-            }
-        } else {
-            dm.cachedText = textCache.object(forKey: key)
-            if dm.cachedText == nil {
-                let cached = makeText(displayText: displayText, item: item)
-                textCache.setObject(cached, forKey: key)
-                dm.cachedText = cached
-            }
-        }
-        active.append(dm)
-    }
-
-    private func pickScrollLane(at now: Double) -> Int {
-        if let idx = scrollLaneFreeAt.firstIndex(where: { $0 <= now }) { return idx }
-        return Int.random(in: 0..<scrollLaneFreeAt.count)
-    }
-
-    private func pickStaticLane(from pool: inout [Double], at now: Double) -> Int {
-        if let idx = pool.firstIndex(where: { $0 <= now }) {
-            pool[idx] = now + staticDuration
-            return idx
-        }
-        let idx = Int.random(in: 0..<pool.count)
-        pool[idx] = now + staticDuration
-        return idx
-    }
-
-    private func lowerBound(of t: Float) -> Int {
-        var lo = 0, hi = all.count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if all[mid].timeSec < t { lo = mid + 1 } else { hi = mid }
-        }
-        return lo
-    }
-
-    // MARK: - Text rendering
-
-    private let baseFontSize: CGFloat = 18
-    private let maxSpecialRasterSize: CGFloat = 4096
-
     private func resolvedFontSize(for item: DanmakuItemDTO) -> CGFloat {
-        let perItem = item.fontSize > 0 ? CGFloat(item.fontSize) / 25.0 : 1.0
-        // Mode-7 (advanced) bullets handle their own typography; the
-        // user-tunable scale only affects normal bullets.
-        let userScale = item.mode == 7 ? CGFloat(1.0) : storedNormalFontScale
+        let perItem = item.fontSize > 0 ? CGFloat(item.fontSize) / 25 : 1
+        let userScale = item.mode == 7 ? CGFloat(1) : storedNormalFontScale
         return baseFontSize * perItem * userScale
     }
 
     private func resolvedFont(for item: DanmakuItemDTO) -> UIFont {
         let fontSize = resolvedFontSize(for: item)
-        let weight = item.mode == 7 ? UIFont.Weight.semibold : Self.fontWeight(forSlot: storedNormalFontWeight)
+        let weight = item.mode == 7
+            ? UIFont.Weight.semibold
+            : Self.fontWeight(forSlot: storedNormalFontWeight)
         let baseFont = UIFont.systemFont(ofSize: fontSize, weight: weight)
         return baseFont.fontDescriptor.withDesign(.rounded)
-            .map { UIFont(descriptor: $0, size: fontSize) } ?? baseFont
+            .map { UIFont(descriptor: $0, size: fontSize) }
+            ?? baseFont
     }
 
     private static func fontWeight(forSlot slot: Int) -> UIFont.Weight {
@@ -577,281 +997,165 @@ final class DanmakuCanvasView: UIView {
     }
 
     private func resolvedTextColor(for item: DanmakuItemDTO) -> UIColor {
-        let r = CGFloat((item.color >> 16) & 0xFF) / 255
-        let g = CGFloat((item.color >> 8) & 0xFF) / 255
-        let b = CGFloat(item.color & 0xFF) / 255
-        return UIColor(red: r, green: g, blue: b, alpha: 1.0)
+        let red = CGFloat((item.color >> 16) & 0xFF) / 255
+        let green = CGFloat((item.color >> 8) & 0xFF) / 255
+        let blue = CGFloat(item.color & 0xFF) / 255
+        return UIColor(red: red, green: green, blue: blue, alpha: 1)
     }
 
-    private func makeText(displayText: String, item: DanmakuItemDTO) -> CachedText {
-        let font = resolvedFont(for: item)
-        let fillColor = resolvedTextColor(for: item)
+    private func resolvedContentsScale() -> CGFloat {
+        window?.screen.scale ?? UIScreen.main.scale
+    }
 
-        let mainAttrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: fillColor,
+    private func makeContainerLayer() -> CALayer {
+        let container = CALayer()
+        container.frame = bounds
+        container.masksToBounds = true
+        container.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "sublayers": NSNull(),
         ]
-        let mainStr = NSAttributedString(string: displayText, attributes: mainAttrs)
-        let mainLine = CTLineCreateWithAttributedString(mainStr)
-        let mainBounds = CTLineGetBoundsWithOptions(mainLine, .useOpticalBounds)
-
-        // Build a black copy of the *same* glyph run. At draw time we
-        // render it once with a zero-offset shadow, which produces a
-        // soft halo without perturbing glyph metrics. That avoids the
-        // numeric/latin drift caused by the prior heavier-font underlay.
-        var haloLine: CTLine?
-        var haloBlur: CGFloat = 0
-        if item.mode != 7, storedNormalStrokeWidth > 0 {
-            let haloAttrs: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: UIColor.black,
-            ]
-            let haloStr = NSAttributedString(string: displayText, attributes: haloAttrs)
-            haloLine = CTLineCreateWithAttributedString(haloStr)
-            haloBlur = max(0.8, storedNormalStrokeWidth * 0.95)
-        }
-
-        // Zero-offset shadows expand symmetrically around the optical
-        // bounds. Reserve enough inset so the cached draw rect never
-        // clips the halo even at the largest slider setting.
-        let drawInset: CGFloat = max(2, ceil(haloBlur * 2.2) + 1)
-        let contentBounds = CGRect(
-            x: floor(mainBounds.minX),
-            y: floor(mainBounds.minY),
-            width: ceil(mainBounds.maxX) - floor(mainBounds.minX),
-            height: ceil(mainBounds.maxY) - floor(mainBounds.minY)
-        )
-        let contentSize = contentBounds.size
-        let size = CGSize(
-            width: contentSize.width + drawInset * 2,
-            height: contentSize.height + drawInset * 2
-        )
-        return CachedText(
-            line: mainLine,
-            haloLine: haloLine,
-            haloBlur: haloBlur,
-            size: size,
-            contentBounds: contentBounds,
-            contentSize: contentSize,
-            drawInset: drawInset
-        )
+        return container
     }
 
-    private func makeSpecialText(
-        displayText: String,
-        item: DanmakuItemDTO,
-        descriptor: SpecialDanmakuDescriptor
-    ) -> CachedSpecialText {
-        let font = resolvedFont(for: item)
-        let fillColor = resolvedTextColor(for: item)
-        let padding: CGFloat = descriptor.hasStroke ? max(2, ceil(font.pointSize * 0.05)) : 1
+    // MARK: Layer reuse
 
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.alignment = .left
-        paragraphStyle.lineBreakMode = .byClipping
-
-        var attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: fillColor,
-            .paragraphStyle: paragraphStyle,
-        ]
-
-        if descriptor.hasStroke {
-            let shadow = NSShadow()
-            shadow.shadowColor = UIColor.black.withAlphaComponent(0.85)
-            shadow.shadowBlurRadius = padding
-            shadow.shadowOffset = .zero
-            attributes[.shadow] = shadow
+    private func dequeueLayer() -> DanmakuBulletLayer {
+        if let layer = layerPool.popLast() {
+            return layer
         }
-
-        let attributed = NSAttributedString(string: displayText, attributes: attributes)
-        let measured = attributed.boundingRect(
-            with: CGSize(width: maxSpecialRasterSize, height: maxSpecialRasterSize),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            context: nil
-        )
-        let textSize = CGSize(
-            width: max(1, min(maxSpecialRasterSize, ceil(measured.width))),
-            height: max(1, min(maxSpecialRasterSize, ceil(measured.height)))
-        )
-        let textRect = CGRect(origin: .zero, size: textSize)
-        let transformedBounds = descriptor.transform.isIdentity
-            ? textRect
-            : textRect.applying(descriptor.transform)
-        let rasterBounds = transformedBounds.insetBy(dx: -padding, dy: -padding).integral
-        let rasterSize = CGSize(
-            width: max(1, ceil(rasterBounds.width)),
-            height: max(1, ceil(rasterBounds.height))
-        )
-
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = false
-        format.scale = UIScreen.main.scale
-
-        let renderer = UIGraphicsImageRenderer(size: rasterSize, format: format)
-        let image = renderer.image { context in
-            let cgContext = context.cgContext
-            cgContext.translateBy(x: -rasterBounds.minX, y: -rasterBounds.minY)
-            if !descriptor.transform.isIdentity {
-                cgContext.concatenate(descriptor.transform)
-            }
-            attributed.draw(
-                with: textRect,
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                context: nil
-            )
-        }
-
-        return CachedSpecialText(
-            image: image,
-            size: rasterSize,
-            drawOffset: rasterBounds.origin
-        )
+        return DanmakuBulletLayer()
     }
 
-    // MARK: - Draw
-
-    override func draw(_ rect: CGRect) {
-        guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        let size = bounds.size
-        guard size.width > 0, size.height > 0 else { return }
-        let now = currentPlaybackTime
-        let scrollLaneH = max(20, size.height / CGFloat(laneCount + 1))
-
-        ctx.setAllowsAntialiasing(true)
-        ctx.setShouldAntialias(true)
-        ctx.setAllowsFontSmoothing(true)
-        ctx.setShouldSmoothFonts(true)
-        ctx.interpolationQuality = .high
-
-        for dm in active {
-            switch dm.mode {
-            case .scroll:
-                guard let ct = dm.cachedText else { continue }
-                let progress = CGFloat(max(0, min(1, (now - dm.startTime) / dm.duration)))
-                let travel = size.width + ct.size.width
-                let x = size.width - travel * progress
-                let y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
-                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, isSelf: dm.isSelf, in: ctx, viewport: size)
-
-            case .top:
-                guard let ct = dm.cachedText else { continue }
-                let x = (size.width - ct.size.width) / 2
-                let y = scrollLaneH * (CGFloat(dm.lane) + 0.5) - ct.size.height / 2
-                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, isSelf: dm.isSelf, in: ctx, viewport: size)
-
-            case .bottom:
-                guard let ct = dm.cachedText else { continue }
-                let x = (size.width - ct.size.width) / 2
-                let y = size.height - scrollLaneH * (CGFloat(dm.lane) + 1.5)
-                drawNormalText(ct, at: CGPoint(x: x, y: y), alpha: 1.0, isSelf: dm.isSelf, in: ctx, viewport: size)
-
-            case .special:
-                guard let special = dm.specialDescriptor,
-                      let cached = dm.cachedSpecialText else { continue }
-                let elapsed = max(0, now - dm.startTime)
-                let point = special.position(at: elapsed, in: size)
-                let origin = CGPoint(
-                    x: point.x + cached.drawOffset.x,
-                    y: point.y + cached.drawOffset.y
-                )
-                drawSpecialText(cached, at: origin, alpha: special.alpha(at: elapsed), in: ctx, viewport: size)
+    private func recycleExpiredLayers(at currentTime: Double) {
+        var survivors: [ActiveLayer] = []
+        survivors.reserveCapacity(activeLayers.count)
+        for active in activeLayers {
+            if active.endTime < currentTime - recycleGrace {
+                recycle(active.layer)
+            } else {
+                survivors.append(active)
             }
         }
+        activeLayers = survivors
     }
 
-    private func drawNormalText(
-        _ cached: CachedText,
-        at origin: CGPoint,
-        alpha: CGFloat,
-        isSelf: Bool,
-        in context: CGContext,
-        viewport: CGSize
-    ) {
-        guard alpha > 0.01 else { return }
-        guard origin.x + cached.size.width > 0,
-              origin.x < viewport.width,
-              origin.y + cached.size.height > 0,
-              origin.y < viewport.height else { return }
+    private func recycleAllActiveLayers() {
+        activeLayers.forEach { recycle($0.layer) }
+        activeLayers.removeAll(keepingCapacity: true)
+    }
 
-        if isSelf {
-            // Frame the user's own bullet so they can spot it in the
-            // crowd. We use the accent tint with a translucent fill so
-            // it reads as "yours" without overpowering the text.
-            let horizontalPadding: CGFloat = 4
-            let verticalPadding: CGFloat = 1
-            let baselineY = origin.y + cached.size.height - cached.drawInset
-            let frame = CGRect(
-                x: origin.x + cached.drawInset + cached.contentBounds.minX - horizontalPadding,
-                y: baselineY - cached.contentBounds.maxY - verticalPadding,
-                width: cached.contentSize.width + horizontalPadding * 2,
-                height: cached.contentSize.height + verticalPadding * 2
-            )
-            let radius = min(frame.height / 2, 8)
-            let path = CGPath(
-                roundedRect: frame,
-                cornerWidth: radius,
-                cornerHeight: radius,
-                transform: nil
-            )
-            context.saveGState()
-            context.setAlpha(alpha)
-            context.addPath(path)
-            context.setFillColor(UIColor(red: 1.0, green: 0.42, blue: 0.65, alpha: 0.18).cgColor)
-            context.fillPath()
-            context.addPath(path)
-            context.setStrokeColor(UIColor(red: 1.0, green: 0.42, blue: 0.65, alpha: 0.95).cgColor)
-            context.setLineWidth(1.2)
-            context.strokePath()
-            context.restoreGState()
+    private func recycle(_ layer: DanmakuBulletLayer) {
+        layer.prepareForReuse()
+        if layerPool.count < maximumPooledLayers {
+            layerPool.append(layer)
         }
+    }
 
-        context.saveGState()
-        context.setAlpha(alpha)
-        context.textMatrix = .identity
-        context.translateBy(
-            x: origin.x + cached.drawInset,
-            y: origin.y + cached.size.height - cached.drawInset
-        )
-        context.scaleBy(x: 1, y: -1)
-        // Halo first (heavier-weight black laid out at the same
-        // baseline), foreground glyphs on top — two `CTLineDraw`
-        // calls total, both pre-cached.
-        if let halo = cached.haloLine {
-            context.setShadow(offset: .zero, blur: cached.haloBlur, color: UIColor.black.cgColor)
-            context.textPosition = .zero
-            CTLineDraw(halo, context)
-            context.setShadow(offset: .zero, blur: 0, color: nil)
+    // MARK: Track and observer maintenance
+
+    private func rebuildTrack(clearTextCaches: Bool) {
+        all = sourceItems.filter(shouldInclude)
+        if clearTextCaches {
+            textCache.removeAllObjects()
+            specialTextCache.removeAllObjects()
         }
-        context.textPosition = .zero
-        CTLineDraw(cached.line, context)
-        context.restoreGState()
+        resynchronizePresentation()
     }
 
-    private func drawSpecialText(
-        _ cached: CachedSpecialText,
-        at origin: CGPoint,
-        alpha: CGFloat,
-        in _: CGContext,
-        viewport: CGSize
-    ) {
-        guard alpha > 0.01 else { return }
-        guard origin.x + cached.size.width > 0,
-              origin.x < viewport.width,
-              origin.y + cached.size.height > 0,
-              origin.y < viewport.height else { return }
-
-        cached.image.draw(in: CGRect(origin: origin, size: cached.size), blendMode: .normal, alpha: alpha)
+    private func invalidateNormalTextStyle() {
+        textCache.removeAllObjects()
+        resynchronizePresentation()
     }
 
-    // MARK: - Lifecycle
+    private func shouldInclude(_ item: DanmakuItemDTO) -> Bool {
+        if item.hasWeight, !item.isSelf, item.weight < Int32(storedBlockLevel) {
+            return false
+        }
+        if item.mode == 7 {
+            return SpecialDanmakuDescriptor.parse(rawText: item.text) != nil
+        }
+        return true
+    }
 
-    deinit {
-        MainActor.assumeIsolated {
-            displayLink?.invalidate()
-            if let timeObserver, let player {
-                player.removeTimeObserver(timeObserver)
+    private func scheduleLayoutResynchronization() {
+        layoutResynchronizationWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.layoutResynchronizationWork = nil
+            self.resynchronizePresentation()
+        }
+        layoutResynchronizationWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+    }
+
+    private func resolvedPlaybackTime() -> Double {
+        guard let seconds = player?.currentTime().seconds, seconds.isFinite else { return 0 }
+        return max(0, seconds)
+    }
+
+    private func removeObservers() {
+        if let timeObserver, let player {
+            player.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
+        currentItemObservation?.invalidate()
+        currentItemObservation = nil
+        removeTimeJumpObserver()
+    }
+
+    private func removeTimeJumpObserver() {
+        if let timeJumpObserver {
+            NotificationCenter.default.removeObserver(timeJumpObserver)
+        }
+        timeJumpObserver = nil
+    }
+
+    private func lowerBound(of time: Float) -> Int {
+        var lower = 0
+        var upper = all.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if all[middle].timeSec < time {
+                lower = middle + 1
+            } else {
+                upper = middle
             }
         }
+        return lower
+    }
+
+    private static func mergingSortedDanmaku(
+        _ lhs: [DanmakuItemDTO],
+        with rhs: [DanmakuItemDTO]
+    ) -> [DanmakuItemDTO] {
+        var merged: [DanmakuItemDTO] = []
+        merged.reserveCapacity(lhs.count + rhs.count)
+        var lhsIndex = 0
+        var rhsIndex = 0
+        var seen = Set<String>()
+
+        func key(_ item: DanmakuItemDTO) -> String {
+            "\(item.timeSec)|\(item.mode)|\(item.color)|\(item.fontSize)|\(item.midHash)|\(item.text)"
+        }
+
+        func appendIfNeeded(_ item: DanmakuItemDTO) {
+            if seen.insert(key(item)).inserted {
+                merged.append(item)
+            }
+        }
+
+        while lhsIndex < lhs.count || rhsIndex < rhs.count {
+            if rhsIndex >= rhs.count
+                || (lhsIndex < lhs.count && lhs[lhsIndex].timeSec <= rhs[rhsIndex].timeSec) {
+                appendIfNeeded(lhs[lhsIndex])
+                lhsIndex += 1
+            } else {
+                appendIfNeeded(rhs[rhsIndex])
+                rhsIndex += 1
+            }
+        }
+        return merged
     }
 }

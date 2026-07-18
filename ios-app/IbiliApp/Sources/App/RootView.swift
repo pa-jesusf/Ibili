@@ -734,9 +734,9 @@ private struct DeepLinkPlayerHost: View {
         }
         pendingDismissWork = work
         // Defer the heavy session teardown to a later runloop tick so
-        // SwiftUI commits the slide animation before AVPlayer /
-        // local-HLS / danmaku-displaylink deinit work seizes the main
-        // thread. By the time the teardown runs, the host is already
+        // SwiftUI commits the slide animation before AVPlayer / local-HLS /
+        // synchronized-overlay teardown work reaches the main thread. By the
+        // time the teardown runs, the host is already
         // off-screen, so the user never sees the freeze.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.34, execute: work)
     }
