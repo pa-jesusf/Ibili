@@ -442,6 +442,21 @@ final class DanmakuCanvasView: UIView {
         )
     }
 
+    static func normalTrackHeight(
+        containerHeight: CGFloat,
+        laneCount: Int,
+        fontSize: CGFloat,
+        lineHeightMultiplier: CGFloat = 1.6
+    ) -> CGFloat {
+        let minimumHeight: CGFloat = 20
+        let distributedHeight = containerHeight / CGFloat(max(1, laneCount) + 1)
+        let typographyHeight = ceil(max(1, fontSize) * max(1, lineHeightMultiplier))
+        return min(
+            max(minimumHeight, distributedHeight),
+            max(minimumHeight, typographyHeight)
+        )
+    }
+
     // MARK: Scheduling
 
     private func addScheduler(to player: AVPlayer) {
@@ -630,7 +645,11 @@ final class DanmakuCanvasView: UIView {
         startTime: Double,
         duration: Double
     ) {
-        let laneHeight = max(20, bounds.height / CGFloat(max(1, laneCount) + 1))
+        let laneHeight = Self.normalTrackHeight(
+            containerHeight: bounds.height,
+            laneCount: laneCount,
+            fontSize: baseFontSize * storedNormalFontScale
+        )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 

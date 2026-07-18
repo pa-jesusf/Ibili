@@ -123,7 +123,12 @@ enum VideoCardOverflowAction {
 
 enum VideoCardOverflowMenuBuilder {
     static func configureButton(_ button: UIButton) {
-        button.setImage(UIImage(systemName: "ellipsis"), for: .normal)
+        let symbolConfiguration = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+        button.setImage(
+            UIImage(systemName: "ellipsis", withConfiguration: symbolConfiguration),
+            for: .normal
+        )
+        button.imageView?.contentMode = .scaleAspectFit
         button.tintColor = UIColor.secondaryLabel
         button.transform = CGAffineTransform(rotationAngle: .pi / 2)
         button.showsMenuAsPrimaryAction = true

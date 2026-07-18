@@ -87,6 +87,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
     let items: [Item]
     let layout: VirtualizedCollectionLayout
     var header: (() -> AnyView)? = nil
+    var headerVersion: AnyHashable? = nil
     var footer: (() -> AnyView)? = nil
     var showsRefresh = false
     var isRefreshing = false
@@ -118,6 +119,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
             items: items,
             layout: layout,
             header: header,
+            headerVersion: headerVersion,
             footer: footer,
             showsRefresh: showsRefresh,
             isRefreshing: isRefreshing,
@@ -171,6 +173,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var hasHeader = false
     private var hasFooter = false
     private var headerProvider: (() -> AnyView)?
+    private var headerVersion: AnyHashable?
     private var footerProvider: (() -> AnyView)?
     private var contentProvider: (Item, CGFloat) -> AnyView = { _, _ in AnyView(EmptyView()) }
     private var prefetchThreshold = 4
@@ -244,7 +247,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         if abs(width - lastLaidOutWidth) > 0.5 {
             lastLaidOutWidth = width
             collectionView.collectionViewLayout.invalidateLayout()
-            reconfigureContentItems(reloadData: true)
+            reconfigureContentItems()
         }
         applyPendingAnchorIfPossible()
     }
@@ -253,6 +256,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         items: [Item],
         layout: VirtualizedCollectionLayout,
         header: (() -> AnyView)?,
+        headerVersion: AnyHashable? = nil,
         footer: (() -> AnyView)?,
         showsRefresh: Bool,
         isRefreshing: Bool,
@@ -281,6 +285,11 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         let oldItems = itemByID
         let nextHeader = header != nil
         let nextFooter = footer != nil
+        let shouldReconfigureHeader = nextHeader && (
+            headerVersion == nil
+                || self.headerVersion != headerVersion
+                || !hasHeader
+        )
         let structureChanged = orderedIDs != items.map(\.id)
             || hasHeader != nextHeader
             || hasFooter != nextFooter
@@ -292,6 +301,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         hasHeader = nextHeader
         hasFooter = nextFooter
         headerProvider = header
+        self.headerVersion = headerVersion
         footerProvider = footer
         contentProvider = content
         self.prefetchThreshold = max(1, prefetchThreshold)
@@ -335,7 +345,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         applySnapshot(
             structureChanged: structureChanged,
             changedIDs: changedIDs,
-            reloadData: layoutChanged
+            reconfigureHeader: shouldReconfigureHeader,
+            reconfigureFooter: true
         )
         registerSplitTransitionSource()
         applyPendingAnchorIfPossible()
@@ -383,7 +394,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private func applySnapshot(
         structureChanged: Bool,
         changedIDs: [Item.ID],
-        reloadData: Bool = false
+        reconfigureHeader: Bool,
+        reconfigureFooter: Bool
     ) {
         if structureChanged {
             visibleIDs.removeAll(keepingCapacity: true)
@@ -402,31 +414,30 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             snapshot.appendItems([.footer], toSection: .footer)
         }
 
-        if !reloadData {
-            let currentItems = Set(dataSource.snapshot().itemIdentifiers)
-            var reconfigured = changedIDs.map(ElementID.item)
-            if hasHeader { reconfigured.append(.header) }
-            if hasFooter { reconfigured.append(.footer) }
-            let existing = reconfigured.filter {
-                currentItems.contains($0) && snapshot.indexOfItem($0) != nil
-            }
-            if !existing.isEmpty {
-                snapshot.reconfigureItems(existing)
-            }
+        let currentItems = Set(dataSource.snapshot().itemIdentifiers)
+        var reconfigured = changedIDs.map(ElementID.item)
+        if hasHeader, reconfigureHeader { reconfigured.append(.header) }
+        if hasFooter, reconfigureFooter { reconfigured.append(.footer) }
+        let existing = reconfigured.filter {
+            currentItems.contains($0) && snapshot.indexOfItem($0) != nil
+        }
+        if !existing.isEmpty {
+            snapshot.reconfigureItems(existing)
         }
         snapshotCoordinator.apply(
             snapshot,
             to: dataSource,
-            mode: reloadData ? .reloadData : .diff
+            mode: .diff
         )
     }
 
-    private func reconfigureContentItems(reloadData: Bool = false) {
+    private func reconfigureContentItems() {
         guard dataSource != nil, !orderedIDs.isEmpty else { return }
         applySnapshot(
             structureChanged: false,
             changedIDs: orderedIDs,
-            reloadData: reloadData
+            reconfigureHeader: false,
+            reconfigureFooter: false
         )
     }
 

@@ -147,6 +147,7 @@ struct MessageFeedListView: View {
                 )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
             .modifier(ProMotionScrollHint())
 
             if vm.items.isEmpty {

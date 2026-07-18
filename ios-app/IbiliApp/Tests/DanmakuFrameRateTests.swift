@@ -29,6 +29,36 @@ final class DanmakuFrameRateTests: XCTestCase {
             90
         )
     }
+
+    func testNormalTrackHeightIsTypographyBoundOnTallPlayers() {
+        XCTAssertEqual(
+            DanmakuCanvasView.normalTrackHeight(
+                containerHeight: 844,
+                laneCount: 14,
+                fontSize: 18
+            ),
+            29
+        )
+    }
+
+    func testNormalTrackHeightStillCompressesOnShortPlayers() {
+        XCTAssertEqual(
+            DanmakuCanvasView.normalTrackHeight(
+                containerHeight: 330,
+                laneCount: 14,
+                fontSize: 18
+            ),
+            22
+        )
+        XCTAssertEqual(
+            DanmakuCanvasView.normalTrackHeight(
+                containerHeight: 220,
+                laneCount: 14,
+                fontSize: 18
+            ),
+            20
+        )
+    }
 }
 
 final class DanmakuLaneAllocatorTests: XCTestCase {

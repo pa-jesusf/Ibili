@@ -94,6 +94,7 @@ private struct ProfileVideoListSurface<Item: Identifiable & Hashable, RowContent
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
         .modifier(ProMotionScrollHint())
     }
 
@@ -144,6 +145,7 @@ private struct ProfilePagedCardListSurface<Item: Identifiable & Hashable, RowCon
             AnyView(rowContent(item))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
         .modifier(ProMotionScrollHint())
     }
 

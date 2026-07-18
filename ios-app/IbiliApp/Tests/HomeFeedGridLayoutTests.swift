@@ -393,6 +393,63 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         wait(for: [expanded], timeout: 1)
     }
 
+    func testStableHeaderVersionSurvivesContentLayoutChanges() {
+        let controller = VirtualizedCollectionViewController<Item>()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 1200))
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.beginAppearanceTransition(true, animated: false)
+        controller.endAppearanceTransition()
+        defer {
+            controller.beginAppearanceTransition(false, animated: false)
+            controller.endAppearanceTransition()
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+
+        var headerBuildCount = 0
+        let header = {
+            headerBuildCount += 1
+            return AnyView(Text("Header"))
+        }
+        let items = makeItems(0..<12)
+        update(
+            controller,
+            items: items,
+            layout: .grid(columns: 2, height: .absolute(180)),
+            header: header,
+            headerVersion: "user-space",
+            contentVersion: "archives"
+        )
+        controller.view.layoutIfNeeded()
+
+        let initialHeader = expectation(description: "initial header configured")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            XCTAssertGreaterThan(headerBuildCount, 0)
+            let initialBuildCount = headerBuildCount
+
+            self.update(
+                controller,
+                items: items,
+                layout: .list(spacing: 8, estimatedHeight: 96),
+                header: header,
+                headerVersion: "user-space",
+                contentVersion: "dynamics"
+            )
+            controller.view.layoutIfNeeded()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                XCTAssertEqual(
+                    headerBuildCount,
+                    initialBuildCount,
+                    "A content-layout switch rebuilt the stable native header"
+                )
+                initialHeader.fulfill()
+            }
+        }
+        wait(for: [initialHeader], timeout: 1)
+    }
+
     func testRefreshControlIsOnlyAttachedWhenRefreshableContentExists() throws {
         let controller = VirtualizedCollectionViewController<Item>()
         controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
@@ -479,15 +536,19 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         items: [Item],
         layout: VirtualizedCollectionLayout,
         footerText: String? = nil,
+        header: (() -> AnyView)? = nil,
+        headerVersion: AnyHashable? = nil,
         showsRefresh: Bool = false,
         isRefreshing: Bool = false,
         scrollToBottomSignal: Int = 0,
+        contentVersion: AnyHashable = 0,
         content: ((Item, CGFloat) -> AnyView)? = nil
     ) {
         controller.update(
             items: items,
             layout: layout,
-            header: nil,
+            header: header,
+            headerVersion: headerVersion,
             footer: footerText.map { text in { AnyView(Text(text)) } },
             showsRefresh: showsRefresh,
             isRefreshing: isRefreshing,
@@ -509,7 +570,7 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
             splitTransitionIdentity: nil,
             splitTransitionTargets: nil,
             splitTransitionHeight: nil,
-            contentVersion: 0,
+            contentVersion: contentVersion,
             content: content ?? { item, _ in AnyView(Text(item.title)) }
         )
     }

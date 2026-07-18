@@ -38,6 +38,14 @@ private enum UserSpaceCollectionItem: Identifiable, Hashable {
     }
 }
 
+private struct UserSpaceHeaderVersion: Hashable {
+    let mid: Int64
+    let card: UserCardDTO?
+    let live: UserLiveRoomDTO?
+    let isFollowed: Bool
+    let followBusy: Bool
+}
+
 struct UserSpaceView: View {
     let mid: Int64
 
@@ -48,7 +56,6 @@ struct UserSpaceView: View {
     @Environment(\.rootContentNavigation) private var rootNavigation
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
-    @FocusState private var searchFocused: Bool
 
     enum Tab: Hashable, Identifiable, CaseIterable {
         case dynamics, archives
@@ -67,6 +74,7 @@ struct UserSpaceView: View {
                 items: collectionItems,
                 layout: collectionLayout(containerWidth: proxy.size.width),
                 header: { AnyView(collectionHeader) },
+                headerVersion: collectionHeaderVersion,
                 footer: collectionFooter,
                 prefetchThreshold: 3,
                 onLoadMore: loadMore,
@@ -78,6 +86,7 @@ struct UserSpaceView: View {
                 AnyView(collectionRow(item, itemWidth: itemWidth))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
             .modifier(ProMotionScrollHint())
         }
         .background(IbiliTheme.background.ignoresSafeArea())
@@ -242,14 +251,25 @@ struct UserSpaceView: View {
             tabBar
                 .padding(.top, 14)
                 .padding(.horizontal, 16)
-            if tab == .archives {
-                searchBar
-                    .padding(.top, 12)
-                    .padding(.horizontal, 16)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+            UserSpaceArchiveSearchBar(
+                tab: $tab,
+                keyword: $keyword,
+                onSubmit: { query in
+                    Task { await vm.refreshArchives(mid: mid, keyword: query) }
+                }
+            )
             Color.clear.frame(height: 12)
         }
+    }
+
+    private var collectionHeaderVersion: AnyHashable {
+        UserSpaceHeaderVersion(
+            mid: mid,
+            card: vm.card,
+            live: vm.userLive,
+            isFollowed: vm.isFollowed,
+            followBusy: vm.followBusy
+        )
     }
 
     private func collectionLayout(containerWidth: CGFloat) -> VirtualizedCollectionLayout {
@@ -449,29 +469,41 @@ struct UserSpaceView: View {
             return DynamicSplitTransition.targets(dynamic)
         }
     }
-    // MARK: Search bar
+}
 
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(IbiliTheme.textSecondary)
-            TextField("搜索该用户的内容", text: $keyword)
-                .focused($searchFocused)
-                .submitLabel(.search)
-                .onSubmit { Task { await vm.refreshArchives(mid: mid, keyword: keyword) } }
-            if !keyword.isEmpty {
-                Button {
-                    keyword = ""
-                    Task { await vm.refreshArchives(mid: mid, keyword: "") }
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(IbiliTheme.textSecondary)
+private struct UserSpaceArchiveSearchBar: View {
+    @Binding var tab: UserSpaceView.Tab
+    @Binding var keyword: String
+    let onSubmit: (String) -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        if tab == .archives {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                TextField("搜索该用户的内容", text: $keyword)
+                    .focused($isFocused)
+                    .submitLabel(.search)
+                    .onSubmit { onSubmit(keyword) }
+                if !keyword.isEmpty {
+                    Button {
+                        keyword = ""
+                        onSubmit("")
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(IbiliTheme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .modifier(GlassCapsuleModifier())
+            .padding(.top, 12)
+            .padding(.horizontal, 16)
+            .transition(.opacity.combined(with: .move(edge: .top)))
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .modifier(GlassCapsuleModifier())
     }
 }
 
