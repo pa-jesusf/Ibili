@@ -185,8 +185,8 @@ struct SearchResultsView: View {
                     onFeedbackReason: { _ in markNotInterested(aid: video.aid) },
                     onBlockOwner: { blockOwner(mid: video.ownerMID, author: video.author) }
                 )
-                .padding(.trailing, 4)
-                .padding(.bottom, 4)
+                .padding(.trailing, VideoCardOverflowButtonMetrics.cardEdgeInset)
+                .padding(.bottom, VideoCardOverflowButtonMetrics.cardEdgeInset)
             }
             .frame(width: cardWidth, alignment: .topLeading)
         case .live(let live):

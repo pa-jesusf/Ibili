@@ -715,8 +715,13 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         } else {
             metaLabel.frame = .zero
         }
-        menuButton.bounds = CGRect(x: 0, y: 0, width: 32, height: 32)
-        menuButton.center = CGPoint(x: width - 18, y: contentView.bounds.height - 18)
+        let menuHitSize = VideoCardOverflowButtonMetrics.hitSize
+        let menuCenterInset = VideoCardOverflowButtonMetrics.cardEdgeInset + menuHitSize / 2
+        menuButton.bounds = CGRect(x: 0, y: 0, width: menuHitSize, height: menuHitSize)
+        menuButton.center = CGPoint(
+            x: width - menuCenterInset,
+            y: contentView.bounds.height - menuCenterInset
+        )
     }
 
     func configure(

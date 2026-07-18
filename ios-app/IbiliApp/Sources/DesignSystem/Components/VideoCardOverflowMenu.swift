@@ -1,6 +1,12 @@
 import SwiftUI
 import UIKit
 
+enum VideoCardOverflowButtonMetrics {
+    static let symbolPointSize: CGFloat = 16
+    static let hitSize: CGFloat = 32
+    static let cardEdgeInset: CGFloat = 4
+}
+
 struct VideoCardOverflowMenu: View {
     let bvid: String
     let author: String
@@ -72,9 +78,15 @@ struct VideoCardOverflowMenu: View {
         } label: {
             Image(systemName: "ellipsis")
                 .rotationEffect(.degrees(90))
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(
+                    size: VideoCardOverflowButtonMetrics.symbolPointSize,
+                    weight: .semibold
+                ))
                 .foregroundStyle(IbiliTheme.textSecondary)
-                .frame(width: 32, height: 32)
+                .frame(
+                    width: VideoCardOverflowButtonMetrics.hitSize,
+                    height: VideoCardOverflowButtonMetrics.hitSize
+                )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -123,12 +135,14 @@ enum VideoCardOverflowAction {
 
 enum VideoCardOverflowMenuBuilder {
     static func configureButton(_ button: UIButton) {
-        let symbolConfiguration = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
-        button.setImage(
-            UIImage(systemName: "ellipsis", withConfiguration: symbolConfiguration),
-            for: .normal
+        let symbolConfiguration = UIImage.SymbolConfiguration(
+            pointSize: VideoCardOverflowButtonMetrics.symbolPointSize,
+            weight: .semibold
         )
+        button.setImage(UIImage(systemName: "ellipsis"), for: .normal)
+        button.setPreferredSymbolConfiguration(symbolConfiguration, forImageIn: .normal)
         button.imageView?.contentMode = .scaleAspectFit
+        button.contentEdgeInsets = .zero
         button.tintColor = UIColor.secondaryLabel
         button.transform = CGAffineTransform(rotationAngle: .pi / 2)
         button.showsMenuAsPrimaryAction = true
