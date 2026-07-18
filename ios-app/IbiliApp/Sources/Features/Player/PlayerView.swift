@@ -1889,10 +1889,32 @@ private enum PlayerSheet: String, Identifiable {
     var id: String { rawValue }
 }
 
+struct PlayerPageLayoutMetrics: Equatable {
+    let viewportSize: CGSize
+    let interfaceIdiom: UIUserInterfaceIdiom
+
+    var usesLandscapePageScroll: Bool {
+        interfaceIdiom == .phone && viewportSize.width > viewportSize.height
+    }
+
+    var expandedPlayerHeight: CGFloat {
+        usesLandscapePageScroll
+            ? max(1, viewportSize.height)
+            : max(1, viewportSize.width * 9.0 / 16.0)
+    }
+
+    func detailViewportHeight(visiblePlayerHeight: CGFloat) -> CGFloat {
+        usesLandscapePageScroll
+            ? max(1, viewportSize.height)
+            : max(1, viewportSize.height - visiblePlayerHeight)
+    }
+}
+
 struct PlayerView: View {
     private static let deferredDetailMountDelay: TimeInterval = 0.24
     private static let danmakuSegmentLengthSec: Double = 6 * 60
     private static let longDanmakuDurationThresholdSec: Int64 = 2 * 60 * 60
+    private static let playerPageTopAnchorID = "player-page-video-top"
 
     let item: FeedItemDTO
     let offlineOnly: Bool
@@ -1944,6 +1966,7 @@ struct PlayerView: View {
     @State private var detailScrollOffsetForPlayerCollapse: CGFloat = 0
     @State private var isPlayerCollapseArmed = false
     @State private var playerCollapseAnchorOffset: CGFloat = 0
+    @StateObject private var pageScrollContext = InterruptibleScrollContext()
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
@@ -2036,8 +2059,7 @@ struct PlayerView: View {
         return min(max(scrollDeltaAfterPause / scrollDistance, 0), 1)
     }
 
-    private func playerHeight(for width: CGFloat) -> CGFloat {
-        let expandedHeight = width * 9.0 / 16.0
+    private func playerHeight(expandedHeight: CGFloat) -> CGFloat {
         let collapsedHeight = collapsedPlayerHeight(expandedHeight: expandedHeight)
         let progress = playerCollapseProgress(expandedHeight: expandedHeight)
         return expandedHeight - (expandedHeight - collapsedHeight) * progress
@@ -2064,6 +2086,22 @@ struct PlayerView: View {
     private func resetPlayerCollapseAnchor() {
         isPlayerCollapseArmed = false
         playerCollapseAnchorOffset = detailScrollOffsetForPlayerCollapse
+    }
+
+    private func configurePageScroll(
+        _ proxy: ScrollViewProxy,
+        landscapeEnabled: Bool
+    ) {
+        pageScrollContext.configureUserScrolling(
+            enabled: landscapeEnabled,
+            alwaysBounceVertical: landscapeEnabled
+        )
+        proxy.interruptingScrollTo(
+            Self.playerPageTopAnchorID,
+            anchor: .top,
+            context: pageScrollContext,
+            animation: nil
+        )
     }
 
     private func expandCollapsedPlayerAndPlay() {
@@ -2271,95 +2309,135 @@ struct PlayerView: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let layoutMetrics = PlayerPageLayoutMetrics(
+                viewportSize: proxy.size,
+                interfaceIdiom: UIDevice.current.userInterfaceIdiom
+            )
             let playerWidth = proxy.size.width
-            let expandedPlayerHeight = playerWidth * 9.0 / 16.0
-            let collapseProgress = playerCollapseProgress(expandedHeight: expandedPlayerHeight)
-            let visiblePlayerHeight = playerHeight(for: playerWidth)
-            VStack(spacing: 0) {
-                ZStack(alignment: .top) {
-                    ZStack {
-                        Color.black
-                        if let p = vm.player {
-                            PlayerContainer(
-                                player: p,
-                                sessionID: vm.currentSessionID,
-                                title: item.title,
-                                danmaku: danmaku,
-                                subtitle: subtitle,
-                                subtitleEnabled: subtitleEnabled,
-                                danmakuEnabled: settings.danmakuEnabled,
-                                danmakuOpacity: settings.danmakuOpacity,
-                                danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
-                                danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
-                                danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
-                                danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
-                                danmakuFontScale: settings.resolvedDanmakuFontScale(),
-                                isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
-                                canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
-                                beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
-                                endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
-                                shouldResumePlaybackAfterNativeFullscreenExit: { vm.shouldResumePlaybackAfterNativeFullscreenExit },
-                                onCreated: { vc in playerVCRef.vc = vc },
-                                onPresentationEvent: handlePresentationEvent
-                            )
-                            // Cover the native chrome until the first frame is
-                            // ready, otherwise users see a misleading pause icon
-                            // hovering over a black surface during buffering.
-                            if !vm.isVideoReady {
-                                Color.black.opacity(0.85)
-                                ProgressView().tint(.white)
+            let expandedPlayerHeight = layoutMetrics.expandedPlayerHeight
+            let collapseProgress = layoutMetrics.usesLandscapePageScroll
+                ? 0
+                : playerCollapseProgress(expandedHeight: expandedPlayerHeight)
+            let visiblePlayerHeight = layoutMetrics.usesLandscapePageScroll
+                ? expandedPlayerHeight
+                : playerHeight(expandedHeight: expandedPlayerHeight)
+            let detailViewportHeight = layoutMetrics.detailViewportHeight(
+                visiblePlayerHeight: visiblePlayerHeight
+            )
+
+            ScrollViewReader { pageScrollProxy in
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        InterruptibleScrollCapture(context: pageScrollContext)
+                            .frame(width: 0, height: 0)
+                            .id(Self.playerPageTopAnchorID)
+
+                        ZStack(alignment: .top) {
+                            ZStack {
+                                Color.black
+                                if let p = vm.player {
+                                    PlayerContainer(
+                                        player: p,
+                                        sessionID: vm.currentSessionID,
+                                        title: item.title,
+                                        danmaku: danmaku,
+                                        subtitle: subtitle,
+                                        subtitleEnabled: subtitleEnabled,
+                                        danmakuEnabled: settings.danmakuEnabled,
+                                        danmakuOpacity: settings.danmakuOpacity,
+                                        danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
+                                        danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
+                                        danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
+                                        danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
+                                        danmakuFontScale: settings.resolvedDanmakuFontScale(),
+                                        isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
+                                        canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
+                                        beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
+                                        endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
+                                        shouldResumePlaybackAfterNativeFullscreenExit: { vm.shouldResumePlaybackAfterNativeFullscreenExit },
+                                        onCreated: { vc in playerVCRef.vc = vc },
+                                        onPresentationEvent: handlePresentationEvent
+                                    )
+                                    // Cover the native chrome until the first frame is
+                                    // ready, otherwise users see a misleading pause icon
+                                    // hovering over a black surface during buffering.
+                                    if !vm.isVideoReady {
+                                        Color.black.opacity(0.85)
+                                        ProgressView().tint(.white)
+                                    }
+                                } else if vm.isLoading {
+                                    ProgressView().tint(.white)
+                                } else if let err = vm.errorText {
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "exclamationmark.triangle").font(.largeTitle)
+                                            .foregroundStyle(.yellow)
+                                        Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
+                                            .padding(.horizontal)
+                                    }
+                                }
                             }
-                        } else if vm.isLoading {
-                            ProgressView().tint(.white)
-                        } else if let err = vm.errorText {
-                            VStack(spacing: 12) {
-                                Image(systemName: "exclamationmark.triangle").font(.largeTitle)
-                                    .foregroundStyle(.yellow)
-                                Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
-                                    .padding(.horizontal)
+                            .frame(width: playerWidth, height: expandedPlayerHeight)
+                            .opacity(Double(max(0, 1 - collapseProgress * 1.6)))
+                            .allowsHitTesting(collapseProgress < 0.78)
+
+                            collapsedPlayerButton(progress: collapseProgress)
+                        }
+                        .frame(width: playerWidth, height: visiblePlayerHeight, alignment: .top)
+                        .clipped()
+                        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.9, blendDuration: 0.08), value: vm.isPausedForDetailCollapse)
+
+                        Group {
+                            if offlineOnly {
+                                offlineDetailPlaceholder
+                            } else if shouldMountDetailContent {
+                                VideoDetailContent(item: item,
+                                                   currentCid: vm.currentCid,
+                                                   currentSeasonID: vm.currentSeasonID,
+                                                   currentEpisodeID: vm.currentEpisodeID,
+                                               detailViewModel: vm.pageCache.detailViewModel,
+                                               commentListViewModel: vm.pageCache.commentListViewModel,
+                                               interactionService: vm.pageCache.interactionService,
+                                               viewPoints: vm.viewPoints,
+                                               playbackTimeline: detailTimelineClock,
+                                               onSeekToTime: { seconds in seekTo(seconds: seconds) },
+                                               onNextPartCandidateChange: { candidate in
+                                                   nextPartCandidate = candidate
+                                               },
+                                               onScrollOffsetChange: handleDetailScrollOffsetForPlayerCollapse)
+                                    .transition(.opacity)
+                            } else {
+                                VStack(spacing: 12) {
+                                    ProgressView().tint(IbiliTheme.accent)
+                                    Text("正在准备详情")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 160)
+                                .background(IbiliTheme.background)
                             }
                         }
+                        .frame(
+                            width: playerWidth,
+                            height: detailViewportHeight,
+                            alignment: .top
+                        )
                     }
-                    .frame(width: playerWidth, height: expandedPlayerHeight)
-                    .opacity(Double(max(0, 1 - collapseProgress * 1.6)))
-                    .allowsHitTesting(collapseProgress < 0.78)
-
-                    collapsedPlayerButton(progress: collapseProgress)
+                    .frame(width: playerWidth, alignment: .top)
                 }
-                .frame(width: playerWidth, height: visiblePlayerHeight, alignment: .top)
-                .clipped()
-                .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.9, blendDuration: 0.08), value: vm.isPausedForDetailCollapse)
-
-                if offlineOnly {
-                    offlineDetailPlaceholder
-                } else if shouldMountDetailContent {
-                    VideoDetailContent(item: item,
-                                       currentCid: vm.currentCid,
-                                       currentSeasonID: vm.currentSeasonID,
-                                       currentEpisodeID: vm.currentEpisodeID,
-                                   detailViewModel: vm.pageCache.detailViewModel,
-                                   commentListViewModel: vm.pageCache.commentListViewModel,
-                                   interactionService: vm.pageCache.interactionService,
-                                   viewPoints: vm.viewPoints,
-                                   playbackTimeline: detailTimelineClock,
-                                   onSeekToTime: { seconds in seekTo(seconds: seconds) },
-                                   onNextPartCandidateChange: { candidate in
-                                       nextPartCandidate = candidate
-                                   },
-                                   onScrollOffsetChange: handleDetailScrollOffsetForPlayerCollapse)
-                        .transition(.opacity)
-                } else {
-                    VStack(spacing: 12) {
-                        ProgressView().tint(IbiliTheme.accent)
-                        Text("正在准备详情")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 160)
-                    .background(IbiliTheme.background)
+                .scrollIndicators(.hidden)
+                .onAppear {
+                    configurePageScroll(
+                        pageScrollProxy,
+                        landscapeEnabled: layoutMetrics.usesLandscapePageScroll
+                    )
+                }
+                .onChange(of: layoutMetrics.usesLandscapePageScroll) { landscapeEnabled in
+                    configurePageScroll(
+                        pageScrollProxy,
+                        landscapeEnabled: landscapeEnabled
+                    )
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             .background(IbiliTheme.background.ignoresSafeArea(.container, edges: .bottom))
             .ignoresSafeArea(.container, edges: .bottom)
         }

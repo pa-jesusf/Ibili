@@ -42,10 +42,6 @@ struct SettingsView: View {
         ("132K", 30232),
         ("64K", 30216),
     ]
-    private let danmakuFrameRateOptions: [(label: String, value: Int)] = [
-        ("30 帧", 30),
-        ("60 帧", 60),
-    ]
     /// 1...9 mapping to UIFont.Weight slots, mirrors
     /// `AppSettings.resolvedDanmakuFontWeight()`. Only the
     /// commonly-useful weights are surfaced — the user does not need
@@ -158,8 +154,8 @@ struct SettingsView: View {
                         get: { settings.resolvedDanmakuFrameRate() },
                         set: { settings.danmakuFrameRate = $0 }
                     )) {
-                        ForEach(danmakuFrameRateOptions, id: \.value) { opt in
-                            Text(opt.label).tag(opt.value)
+                        ForEach(DanmakuFrameRateOption.allCases) { option in
+                            Text(option.label).tag(option.rawValue)
                         }
                     }
                     VStack(alignment: .leading) {

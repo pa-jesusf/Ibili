@@ -18,8 +18,6 @@ import Combine
 @MainActor
 final class DanmakuCanvasView: UIView {
 
-    private static let supportedFrameRates: Set<Int> = [30, 60]
-
     // MARK: - Configuration
 
     var laneCount: Int = 14 { didSet { rebuildLanes() } }
@@ -37,9 +35,9 @@ final class DanmakuCanvasView: UIView {
     var preferredFrameRate: Int {
         get { storedFrameRate }
         set {
-            let clamped = Self.supportedFrameRates.contains(newValue) ? newValue : 60
-            guard storedFrameRate != clamped else { return }
-            storedFrameRate = clamped
+            let resolved = DanmakuFrameRateOption.resolve(newValue)
+            guard storedFrameRate != resolved else { return }
+            storedFrameRate = resolved
             reconfigureTiming()
         }
     }
@@ -204,6 +202,12 @@ final class DanmakuCanvasView: UIView {
         specialTextCache.countLimit = 128
     }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        reconfigureTiming()
+    }
+
     private func rebuildLanes() {
         scrollLaneFreeAt = Array(repeating: 0, count: laneCount)
         topLaneNextFree = Array(repeating: 0, count: max(laneCount / 3, 2))
@@ -323,7 +327,10 @@ final class DanmakuCanvasView: UIView {
         removeTimeObserverIfNeeded()
         self.player = player
         syncToPlayerTime(player.currentTime().seconds, preserveActive: false)
-        let interval = CMTime(seconds: 1.0 / Double(storedFrameRate), preferredTimescale: 600)
+        let interval = CMTime(
+            seconds: 1.0 / Double(effectiveFrameRate),
+            preferredTimescale: 90_000
+        )
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
             guard let self else { return }
             let secs = t.seconds.isFinite ? t.seconds : 0
@@ -360,16 +367,33 @@ final class DanmakuCanvasView: UIView {
     }
 
     private func applyPreferredFrameRate(to link: CADisplayLink) {
+        let frameRate = effectiveFrameRate
         if #available(iOS 15.0, *) {
-            let rate = Float(storedFrameRate)
+            let rate = Float(frameRate)
             link.preferredFrameRateRange = CAFrameRateRange(
                 minimum: rate,
                 maximum: rate,
                 preferred: rate
             )
         } else {
-            link.preferredFramesPerSecond = storedFrameRate
+            link.preferredFramesPerSecond = frameRate
         }
+    }
+
+    private var effectiveFrameRate: Int {
+        let maximum = window?.windowScene?.screen.maximumFramesPerSecond
+            ?? UIScreen.main.maximumFramesPerSecond
+        return Self.effectiveFrameRate(
+            requested: storedFrameRate,
+            maximumFramesPerSecond: maximum
+        )
+    }
+
+    static func effectiveFrameRate(requested: Int, maximumFramesPerSecond: Int) -> Int {
+        min(
+            DanmakuFrameRateOption.resolve(requested),
+            max(1, maximumFramesPerSecond)
+        )
     }
 
     private func removeTimeObserverIfNeeded() {
@@ -391,7 +415,7 @@ final class DanmakuCanvasView: UIView {
         }
     }
 
-    // MARK: - Logic tick (driven by player time observer at 30Hz)
+    // MARK: - Logic tick (driven by the configured player time observer)
 
     private func tickLogic(_ now: Double) {
         if !hasSyncedPlaybackTime {

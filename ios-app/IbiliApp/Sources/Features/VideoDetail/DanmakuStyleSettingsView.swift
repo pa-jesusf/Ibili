@@ -2,10 +2,6 @@ import SwiftUI
 
 struct DanmakuStyleSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
-    private let danmakuFrameRateOptions: [(label: String, value: Int)] = [
-        ("30 帧", 30),
-        ("60 帧", 60),
-    ]
     private let danmakuFontWeightOptions: [(label: String, value: Int)] = [
         ("常规", 4),
         ("中等", 5),
@@ -52,8 +48,8 @@ struct DanmakuStyleSettingsView: View {
                         get: { settings.resolvedDanmakuFrameRate() },
                         set: { settings.danmakuFrameRate = $0 }
                     )) {
-                        ForEach(danmakuFrameRateOptions, id: \.value) { opt in
-                            Text(opt.label).tag(opt.value)
+                        ForEach(DanmakuFrameRateOption.allCases) { option in
+                            Text(option.label).tag(option.rawValue)
                         }
                     }
                     VStack(alignment: .leading, spacing: 8) {

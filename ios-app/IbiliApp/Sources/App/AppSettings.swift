@@ -8,6 +8,22 @@ enum VideoIdDisplay: String, CaseIterable, Identifiable {
     var label: String { self == .bv ? "BV 号" : "AV 号" }
 }
 
+enum DanmakuFrameRateOption: Int, CaseIterable, Identifiable {
+    case fps30 = 30
+    case fps60 = 60
+    case fps90 = 90
+    case fps120 = 120
+
+    static let defaultValue = 60
+
+    var id: Int { rawValue }
+    var label: String { "\(rawValue) 帧" }
+
+    static func resolve(_ value: Int) -> Int {
+        Self(rawValue: value)?.rawValue ?? defaultValue
+    }
+}
+
 /// Which numeric stat is shown next to the publish-date line on a feed
 /// card. Users frequently switch between 弹幕 / 点赞 depending on what
 /// they care about; "none" hides the column entirely. 收藏 was removed
@@ -313,7 +329,6 @@ final class AppSettings: ObservableObject {
     }
 
     private let maxFeedColumns = 4
-    private let supportedDanmakuFrameRates = [30, 60]
 
     /// Resolves the effective column count given the current layout context.
     /// iOS defaults to 2 columns on phones and opens at most 4 columns.
@@ -371,7 +386,7 @@ final class AppSettings: ObservableObject {
     }
 
     func resolvedDanmakuFrameRate() -> Int {
-        let resolved = supportedDanmakuFrameRates.contains(danmakuFrameRate) ? danmakuFrameRate : 60
+        let resolved = DanmakuFrameRateOption.resolve(danmakuFrameRate)
         if danmakuFrameRate != resolved {
             danmakuFrameRate = resolved
         }

@@ -4,13 +4,29 @@ import UIKit
 /// Bridges SwiftUI `ScrollViewReader` actions with the underlying
 /// `UIScrollView` so programmatic jumps can interrupt deceleration.
 final class InterruptibleScrollContext: ObservableObject {
-    fileprivate weak var scrollView: UIScrollView?
+    fileprivate weak var scrollView: UIScrollView? {
+        didSet { applyUserScrollingConfiguration() }
+    }
+    private var userScrollingEnabled: Bool?
+    private var alwaysBounceVertical = false
 
     func interruptInFlightScroll() {
         guard let scrollView else { return }
         let offset = scrollView.contentOffset
         scrollView.setContentOffset(offset, animated: false)
         scrollView.layer.removeAllAnimations()
+    }
+
+    func configureUserScrolling(enabled: Bool, alwaysBounceVertical: Bool) {
+        userScrollingEnabled = enabled
+        self.alwaysBounceVertical = alwaysBounceVertical
+        applyUserScrollingConfiguration()
+    }
+
+    private func applyUserScrollingConfiguration() {
+        guard let scrollView, let userScrollingEnabled else { return }
+        scrollView.isScrollEnabled = userScrollingEnabled
+        scrollView.alwaysBounceVertical = alwaysBounceVertical
     }
 }
 
