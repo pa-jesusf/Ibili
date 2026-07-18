@@ -740,183 +740,79 @@ private struct LiveDanmakuScrollPane: View {
 
     @State private var followsLatest = true
     @State private var showsJumpToBottom = false
-    @State private var pendingScrollWork: DispatchWorkItem?
+    @State private var scrollToBottomSignal = 0
+    @State private var scrollToBottomAnimated = false
 
-    private static let bottomID = "live-danmaku-bottom"
     private let panelHeight: CGFloat = 300
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                ScrollView(.vertical, showsIndicators: true) {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(messages) { message in
-                            LiveDanmakuMessageRow(message: message)
-                        }
-                        Color.clear
-                            .frame(height: 1)
-                            .id(Self.bottomID)
-                    }
-                    .padding(.vertical, 2)
-                    .background(
-                        LiveDanmakuScrollObserver(
-                            followsLatest: $followsLatest,
-                            showsJumpToBottom: $showsJumpToBottom
-                        )
-                    )
+        ZStack(alignment: .bottomTrailing) {
+            VirtualizedCollectionSurface(
+                items: messages,
+                layout: .list(
+                    horizontalInset: 0,
+                    topInset: 2,
+                    bottomInset: 2,
+                    spacing: 8,
+                    estimatedHeight: 44
+                ),
+                scrollToBottomSignal: scrollToBottomSignal,
+                scrollToBottomAnimated: scrollToBottomAnimated,
+                bottomProximity: 36,
+                onBottomStateChanged: handleBottomState
+            ) { message, _ in
+                AnyView(LiveDanmakuMessageRow(message: message))
+            }
+            .frame(height: panelHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .modifier(ProMotionScrollHint())
+            .onAppear {
+                requestScrollToBottom(animated: false)
+            }
+            .onChange(of: messages.count) { _ in
+                if followsLatest {
+                    requestScrollToBottom(animated: false)
+                } else {
+                    showsJumpToBottom = true
                 }
-                .frame(height: panelHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .onAppear {
-                    scheduleScrollToBottom(proxy, animated: false)
-                }
-                .onChange(of: messages.count) { _ in
-                    if followsLatest {
-                        scheduleScrollToBottom(proxy, animated: false)
-                    } else {
-                        showsJumpToBottom = true
-                    }
-                }
+            }
 
-                if showsJumpToBottom {
-                    Button {
-                        followsLatest = true
-                        showsJumpToBottom = false
-                        scheduleScrollToBottom(proxy)
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 34, height: 34)
-                            .background(Circle().fill(IbiliTheme.accent))
-                            .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.trailing, 8)
-                    .padding(.bottom, 8)
-                    .accessibilityLabel("回到最新弹幕")
-                    .transition(.scale.combined(with: .opacity))
+            if showsJumpToBottom {
+                Button {
+                    followsLatest = true
+                    showsJumpToBottom = false
+                    requestScrollToBottom(animated: true)
+                } label: {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(IbiliTheme.accent))
+                        .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
                 }
+                .buttonStyle(.plain)
+                .padding(.trailing, 8)
+                .padding(.bottom, 8)
+                .accessibilityLabel("回到最新弹幕")
+                .transition(.scale.combined(with: .opacity))
             }
         }
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: showsJumpToBottom)
     }
 
-    private func scheduleScrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        pendingScrollWork?.cancel()
-        let work = DispatchWorkItem {
-            let updates = {
-                proxy.scrollTo(Self.bottomID, anchor: .bottom)
-            }
-            if animated {
-                withAnimation(.easeOut(duration: 0.18), updates)
-            } else {
-                updates()
-            }
-        }
-        pendingScrollWork = work
-        if animated {
-            DispatchQueue.main.async(execute: work)
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
-        }
-    }
-}
-
-private struct LiveDanmakuScrollObserver: UIViewRepresentable {
-    @Binding var followsLatest: Bool
-    @Binding var showsJumpToBottom: Bool
-
-    func makeUIView(context: Context) -> ObserverView {
-        let view = ObserverView()
-        view.onResolve = { scrollView in
-            context.coordinator.attach(to: scrollView)
-        }
-        return view
-    }
-
-    func updateUIView(_ uiView: ObserverView, context: Context) {
-        context.coordinator.parent = self
-        uiView.onResolve = { scrollView in
-            context.coordinator.attach(to: scrollView)
-        }
-        uiView.resolve()
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    final class Coordinator {
-        var parent: LiveDanmakuScrollObserver
-        private weak var scrollView: UIScrollView?
-        private var contentOffsetObservation: NSKeyValueObservation?
-
-        init(parent: LiveDanmakuScrollObserver) {
-            self.parent = parent
-        }
-
-        func attach(to scrollView: UIScrollView?) {
-            guard self.scrollView !== scrollView else { return }
-            contentOffsetObservation?.invalidate()
-            self.scrollView = scrollView
-            guard let scrollView else { return }
-            contentOffsetObservation = scrollView.observe(\.contentOffset, options: [.initial, .new]) { [weak self, weak scrollView] _, _ in
-                guard let self, let scrollView else { return }
-                DispatchQueue.main.async {
-                    self.updateState(from: scrollView)
-                }
-            }
-        }
-
-        private func updateState(from scrollView: UIScrollView) {
-            let distanceToBottom = scrollView.contentSize.height
-                + scrollView.adjustedContentInset.bottom
-                - scrollView.bounds.height
-                - scrollView.contentOffset.y
-            let isAtBottom = distanceToBottom <= 36
-            let isUserMoving = scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating
-
-            if isAtBottom {
-                parent.followsLatest = true
-                parent.showsJumpToBottom = false
-            } else if isUserMoving {
-                parent.followsLatest = false
-                parent.showsJumpToBottom = true
-            }
+    private func handleBottomState(_ state: VirtualizedCollectionBottomState) {
+        if state.isAtBottom {
+            followsLatest = true
+            showsJumpToBottom = false
+        } else if state.isUserInteracting {
+            followsLatest = false
+            showsJumpToBottom = true
         }
     }
 
-    final class ObserverView: UIView {
-        var onResolve: ((UIScrollView?) -> Void)?
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            resolve()
-        }
-
-        override func didMoveToSuperview() {
-            super.didMoveToSuperview()
-            resolve()
-        }
-
-        func resolve() {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.onResolve?(self.enclosingScrollView())
-            }
-        }
-
-        private func enclosingScrollView() -> UIScrollView? {
-            var view = superview
-            while let current = view {
-                if let scrollView = current as? UIScrollView {
-                    return scrollView
-                }
-                view = current.superview
-            }
-            return nil
-        }
+    private func requestScrollToBottom(animated: Bool) {
+        scrollToBottomAnimated = animated
+        scrollToBottomSignal &+= 1
     }
 }
 

@@ -21,6 +21,23 @@ import UIKit
 /// Dynamic details use the root content navigator when this page lives in a
 /// tab stack, and the media-session navigator when it lives inside the player
 /// host. Video/live entries always start or extend the media session.
+private enum UserSpaceCollectionItem: Identifiable, Hashable {
+    enum ID: Hashable {
+        case archive(Int64)
+        case dynamic(String)
+    }
+
+    case archive(SpaceArcItemDTO)
+    case dynamic(DynamicItemDTO)
+
+    var id: ID {
+        switch self {
+        case .archive(let item): return .archive(item.id)
+        case .dynamic(let item): return .dynamic(item.idStr)
+        }
+    }
+}
+
 struct UserSpaceView: View {
     let mid: Int64
 
@@ -31,7 +48,6 @@ struct UserSpaceView: View {
     @Environment(\.rootContentNavigation) private var rootNavigation
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
-    @State private var dynamicsContainerWidth: CGFloat = 0
     @FocusState private var searchFocused: Bool
 
     enum Tab: Hashable, Identifiable, CaseIterable {
@@ -46,22 +62,23 @@ struct UserSpaceView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                header
-                tabBar
-                    .padding(.top, 14)
-                    .padding(.horizontal, 16)
-                if tab == .archives {
-                    searchBar
-                        .padding(.top, 12)
-                        .padding(.horizontal, 16)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-                Color.clear.frame(height: 12)
-                content
+        GeometryReader { proxy in
+            VirtualizedCollectionSurface(
+                items: collectionItems,
+                layout: collectionLayout(containerWidth: proxy.size.width),
+                header: { AnyView(collectionHeader) },
+                footer: collectionFooter,
+                prefetchThreshold: 3,
+                onLoadMore: loadMore,
+                onPrefetch: prefetch,
+                splitTransitionIdentity: splitTransitionIdentity,
+                splitTransitionTargets: splitTransitionTargets,
+                contentVersion: tab
+            ) { item, itemWidth in
+                AnyView(collectionRow(item, itemWidth: itemWidth))
             }
-            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(ProMotionScrollHint())
         }
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle("用户空间")
@@ -210,118 +227,226 @@ struct UserSpaceView: View {
 
     // MARK: Content list
 
-    @ViewBuilder
-    private var content: some View {
+    private var collectionItems: [UserSpaceCollectionItem] {
         switch tab {
-        case .archives: archivesList
-        case .dynamics: dynamicsList
+        case .archives:
+            return vm.archives.map(UserSpaceCollectionItem.archive)
+        case .dynamics:
+            return vm.dynamics.map(UserSpaceCollectionItem.dynamic)
         }
     }
 
-    private var archivesList: some View {
-        LazyVStack(spacing: 4) {
-            ForEach(Array(vm.archives.enumerated()), id: \.element.id) { idx, item in
-                Button {
-                    let feedItem = FeedItemDTO(
-                        aid: item.aid, bvid: item.bvid, cid: 0,
-                        title: item.title, cover: item.cover,
-                        author: item.author, durationSec: 0,
-                        play: item.play, danmaku: item.danmaku
-                    )
-                    if isInPlayerHostNavigation {
-                        router.open(feedItem)
-                    } else if prefersSplitRootSelection {
-                        router.select(feedItem)
-                    } else {
-                        rootNavigation.openPlayer(feedItem)
-                    }
-                } label: {
-                    CompactVideoRow(
-                        cover: item.cover,
-                        title: item.title,
-                        author: "",
-                        durationSec: 0,
-                        play: item.play,
-                        danmaku: item.comment,
-                        durationOverride: item.durationLabel.isEmpty ? nil : item.durationLabel
-                    )
-                    .padding(.horizontal, 12)
-                }
-                .buttonStyle(.plain)
-                .onAppear {
-                    if !vm.archivesEnd, idx >= vm.archives.count - 3 {
-                        Task { await vm.loadMoreArchives(mid: mid, keyword: keyword) }
-                    }
-                }
+    private var collectionHeader: some View {
+        VStack(spacing: 0) {
+            header
+            tabBar
+                .padding(.top, 14)
+                .padding(.horizontal, 16)
+            if tab == .archives {
+                searchBar
+                    .padding(.top, 12)
+                    .padding(.horizontal, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            if vm.archivesLoading && vm.archives.isEmpty {
-                ProgressView().padding(.vertical, 40)
-            } else if vm.archives.isEmpty && !vm.archivesLoading {
-                emptyState(title: keyword.isEmpty ? "暂无投稿" : "未匹配到视频",
-                           symbol: "rectangle.stack")
-                    .padding(.vertical, 40)
-            } else if vm.archivesEnd, !vm.archives.isEmpty {
-                Text("已经到底了").font(.caption).foregroundStyle(IbiliTheme.textSecondary)
-                    .padding(.vertical, 16)
-            } else if vm.archivesLoading {
-                ProgressView().padding(.vertical, 16)
-            }
+            Color.clear.frame(height: 12)
         }
     }
 
-    private var dynamicsList: some View {
-        let containerWidth = dynamicsContainerWidth > 0 ? dynamicsContainerWidth : UIScreen.main.bounds.width
-        let contentWidth = DynamicLayout.contentWidth(containerWidth: containerWidth)
-        return LazyVStack(spacing: 14) {
-            ForEach(Array(vm.dynamics.enumerated()), id: \.element.id) { idx, item in
-                DynamicItemCard(
-                    item: item,
-                    contentWidth: contentWidth,
-                    onOpenVideo: { feedItem in
-                        if isInPlayerHostNavigation {
-                            router.open(feedItem)
-                        } else if prefersSplitRootSelection {
-                            router.select(feedItem)
-                        } else {
-                            rootNavigation.openPlayer(feedItem)
-                        }
-                    },
-                    onOpenDetail: { dyn in
-                        if isInPlayerHostNavigation {
-                            router.openDynamicDetail(dyn)
-                        } else if prefersSplitRootSelection {
-                            router.selectDynamicDetail(dyn)
-                        } else {
-                            rootNavigation.openDynamicDetail(dyn)
-                        }
-                    }
+    private func collectionLayout(containerWidth: CGFloat) -> VirtualizedCollectionLayout {
+        switch tab {
+        case .archives:
+            return .list(
+                horizontalInset: 12,
+                bottomInset: 32,
+                spacing: 4,
+                estimatedHeight: 112
+            )
+        case .dynamics:
+            return .list(
+                horizontalInset: DynamicLayout.outerPad,
+                topInset: 8,
+                bottomInset: 32,
+                spacing: 14,
+                estimatedHeight: 360,
+                maximumItemWidth: DynamicLayout.cardWidth(containerWidth: containerWidth)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func collectionRow(_ item: UserSpaceCollectionItem, itemWidth: CGFloat) -> some View {
+        switch item {
+        case .archive(let archive):
+            Button {
+                openArchive(archive)
+            } label: {
+                CompactVideoRow(
+                    cover: archive.cover,
+                    title: archive.title,
+                    author: "",
+                    durationSec: 0,
+                    play: archive.play,
+                    danmaku: archive.comment,
+                    durationOverride: archive.durationLabel.isEmpty ? nil : archive.durationLabel
                 )
-                .onAppear {
-                    if !vm.dynamicsEnd, idx >= vm.dynamics.count - 3 {
-                        Task { await vm.loadMoreDynamics(mid: mid) }
-                    }
-                }
             }
-            if vm.dynamicsLoading && vm.dynamics.isEmpty {
-                ProgressView().padding(.vertical, 40)
-            } else if vm.dynamics.isEmpty && !vm.dynamicsLoading {
-                emptyState(title: "暂无动态", symbol: "sparkles")
-                    .padding(.vertical, 40)
-            } else if vm.dynamicsEnd, !vm.dynamics.isEmpty {
-                Text("已经到底了").font(.caption).foregroundStyle(IbiliTheme.textSecondary)
-                    .padding(.vertical, 16)
-            } else if vm.dynamicsLoading {
-                ProgressView().padding(.vertical, 16)
+            .buttonStyle(.plain)
+
+        case .dynamic(let dynamic):
+            DynamicItemCard(
+                item: dynamic,
+                contentWidth: DynamicLayout.contentWidth(cardWidth: itemWidth),
+                onOpenVideo: openVideo,
+                onOpenDetail: openDynamic
+            )
+            .environmentObject(router)
+            .environment(\.isInPlayerHostNavigation, isInPlayerHostNavigation)
+            .environment(\.prefersSplitRootSelection, prefersSplitRootSelection)
+            .environment(\.rootContentNavigation, rootNavigation)
+        }
+    }
+
+    private var collectionFooter: (() -> AnyView)? {
+        switch tab {
+        case .archives:
+            if vm.archivesLoading {
+                return loadingFooter
+            }
+            if vm.archives.isEmpty {
+                let title = keyword.isEmpty ? "暂无投稿" : "未匹配到视频"
+                return emptyFooter(title: title, symbol: "rectangle.stack")
+            }
+            if vm.archivesEnd {
+                return endFooter
+            }
+
+        case .dynamics:
+            if vm.dynamicsLoading {
+                return loadingFooter
+            }
+            if vm.dynamics.isEmpty {
+                return emptyFooter(title: "暂无动态", symbol: "sparkles")
+            }
+            if vm.dynamicsEnd {
+                return endFooter
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .background {
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { dynamicsContainerWidth = proxy.size.width }
-                    .onChange(of: proxy.size.width) { dynamicsContainerWidth = $0 }
-            }
+        return nil
+    }
+
+    private var loadingFooter: () -> AnyView {
+        {
+            AnyView(
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            )
+        }
+    }
+
+    private var endFooter: () -> AnyView {
+        {
+            AnyView(
+                Text("已经到底了")
+                    .font(.caption)
+                    .foregroundStyle(IbiliTheme.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+            )
+        }
+    }
+
+    private func emptyFooter(title: String, symbol: String) -> () -> AnyView {
+        {
+            AnyView(
+                emptyState(title: title, symbol: symbol)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+            )
+        }
+    }
+
+    private func loadMore() {
+        switch tab {
+        case .archives:
+            Task { await vm.loadMoreArchives(mid: mid, keyword: keyword) }
+        case .dynamics:
+            Task { await vm.loadMoreDynamics(mid: mid) }
+        }
+    }
+
+    private func prefetch(_ items: [UserSpaceCollectionItem], itemWidth: CGFloat) {
+        let archives = items.compactMap { item -> SpaceArcItemDTO? in
+            if case .archive(let archive) = item { return archive }
+            return nil
+        }
+        if !archives.isEmpty {
+            CoverImagePrefetcher.shared.prefetch(
+                archives.map(\.cover),
+                targetPointSize: CGSize(width: 120, height: 68),
+                quality: 76
+            )
+        }
+        let dynamics = items.compactMap { item -> DynamicItemDTO? in
+            if case .dynamic(let dynamic) = item { return dynamic }
+            return nil
+        }
+        if !dynamics.isEmpty {
+            DynamicMediaPrefetcher.prefetch(dynamics, cardWidth: itemWidth)
+        }
+    }
+
+    private func openArchive(_ item: SpaceArcItemDTO) {
+        openVideo(FeedItemDTO(
+            aid: item.aid,
+            bvid: item.bvid,
+            cid: 0,
+            title: item.title,
+            cover: item.cover,
+            author: item.author,
+            durationSec: 0,
+            play: item.play,
+            danmaku: item.danmaku
+        ))
+    }
+
+    private func openVideo(_ item: FeedItemDTO) {
+        if isInPlayerHostNavigation {
+            router.open(item)
+        } else if prefersSplitRootSelection {
+            router.select(item)
+        } else {
+            rootNavigation.openPlayer(item)
+        }
+    }
+
+    private func openDynamic(_ item: DynamicItemDTO) {
+        if isInPlayerHostNavigation {
+            router.openDynamicDetail(item)
+        } else if prefersSplitRootSelection {
+            router.selectDynamicDetail(item)
+        } else {
+            rootNavigation.openDynamicDetail(item)
+        }
+    }
+
+    private func splitTransitionIdentity(_ item: UserSpaceCollectionItem) -> FeedStableIdentity? {
+        switch item {
+        case .archive(let archive):
+            let identity = FeedStableIdentity(aid: archive.aid, bvid: archive.bvid, cid: 0)
+            return identity.isValid ? identity : nil
+        case .dynamic(let dynamic):
+            return DynamicSplitTransition.identity(dynamic)
+        }
+    }
+
+    private func splitTransitionTargets(_ item: UserSpaceCollectionItem) -> Set<SplitFeedTransitionTarget> {
+        switch item {
+        case .archive:
+            guard let identity = splitTransitionIdentity(item) else { return [] }
+            return [.media(identity)]
+        case .dynamic(let dynamic):
+            return DynamicSplitTransition.targets(dynamic)
         }
     }
     // MARK: Search bar

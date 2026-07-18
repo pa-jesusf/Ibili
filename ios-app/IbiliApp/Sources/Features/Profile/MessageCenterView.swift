@@ -116,50 +116,43 @@ struct MessageFeedListView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 12) {
-                if vm.isLoading && vm.items.isEmpty {
-                    ProgressView().tint(IbiliTheme.accent)
-                        .padding(.top, 36)
-                } else if let error = vm.error, vm.items.isEmpty {
-                    VStack(spacing: 14) {
-                        emptyState(title: "\(kind.title)加载失败", symbol: "wifi.exclamationmark", message: error)
-                        Button("重试") {
-                            Task { await vm.reload() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(IbiliTheme.accent)
-                    }
-                    .padding(.top, 36)
-                } else if vm.items.isEmpty {
-                    emptyState(title: "暂无\(kind.title)", symbol: kind.symbol)
-                        .padding(.top, 36)
-                } else {
-                    ForEach(vm.items) { item in
-                        Button {
-                            openMessageItem(item)
-                        } label: {
-                            MessageItemRow(item: item)
-                        }
-                        .buttonStyle(.plain)
-                        .onAppear {
-                            Task { await vm.loadMoreIfNeeded(current: item) }
-                        }
-                    }
-
-                    if vm.isLoadingMore {
-                        ProgressView().tint(IbiliTheme.accent)
-                            .padding(.vertical, 12)
-                    } else if !vm.hasMore {
-                        Text("已经到底了")
-                            .font(.caption)
-                            .foregroundStyle(IbiliTheme.textSecondary)
-                            .padding(.vertical, 8)
-                    }
+        ZStack {
+            VirtualizedCollectionSurface(
+                items: vm.items,
+                layout: .list(
+                    horizontalInset: 16,
+                    topInset: 16,
+                    bottomInset: 16,
+                    spacing: 12,
+                    estimatedHeight: 150
+                ),
+                footer: messageFooter,
+                showsRefresh: true,
+                isRefreshing: vm.isLoading,
+                prefetchThreshold: 3,
+                onRefresh: {
+                    Task { await vm.reload() }
+                },
+                onLoadMore: {
+                    Task { await vm.loadMore() }
                 }
+            ) { item, _ in
+                AnyView(
+                    Button {
+                        openMessageItem(item)
+                    } label: {
+                        MessageItemRow(item: item)
+                    }
+                    .buttonStyle(.plain)
+                )
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(ProMotionScrollHint())
+
+            if vm.items.isEmpty {
+                messageEmptyState
+                    .padding(.horizontal, 24)
+            }
         }
         .background(IbiliTheme.background.ignoresSafeArea())
         .navigationTitle(kind.title)
@@ -168,10 +161,55 @@ struct MessageFeedListView: View {
         .task {
             await vm.loadInitial()
         }
-        .refreshable {
-            await vm.reload()
-        }
         .tint(IbiliTheme.accent)
+    }
+
+    @ViewBuilder
+    private var messageEmptyState: some View {
+        if vm.isLoading {
+            ProgressView().tint(IbiliTheme.accent)
+        } else if let error = vm.error {
+            VStack(spacing: 14) {
+                emptyState(
+                    title: "\(kind.title)加载失败",
+                    symbol: "wifi.exclamationmark",
+                    message: error
+                )
+                Button("重试") {
+                    Task { await vm.reload() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(IbiliTheme.accent)
+            }
+        } else {
+            emptyState(title: "暂无\(kind.title)", symbol: kind.symbol)
+        }
+    }
+
+    private var messageFooter: (() -> AnyView)? {
+        guard !vm.items.isEmpty else { return nil }
+        if vm.isLoadingMore {
+            return {
+                AnyView(
+                    ProgressView()
+                        .tint(IbiliTheme.accent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                )
+            }
+        }
+        if !vm.hasMore {
+            return {
+                AnyView(
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                )
+            }
+        }
+        return nil
     }
 
     private func openMessageItem(_ item: MessageItemDTO) {
@@ -292,8 +330,8 @@ private final class MessageFeedListViewModel: ObservableObject {
         await fetch(reset: true)
     }
 
-    func loadMoreIfNeeded(current item: MessageItemDTO) async {
-        guard item.id == items.last?.id, hasMore, !isLoading, !isLoadingMore else { return }
+    func loadMore() async {
+        guard hasMore, !isLoading, !isLoadingMore else { return }
         await fetch(reset: false)
     }
 

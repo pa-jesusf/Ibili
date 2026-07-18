@@ -113,6 +113,66 @@ private struct ProfileVideoListSurface<Item: Identifiable & Hashable, RowContent
     }
 }
 
+private struct ProfilePagedCardListSurface<Item: Identifiable & Hashable, RowContent: View>: View where Item.ID: Hashable {
+    let items: [Item]
+    let isLoading: Bool
+    let isEnd: Bool
+    let estimatedHeight: CGFloat
+    let onReachEnd: () -> Void
+    let onRefresh: () -> Void
+    var onPrefetch: ([Item], CGFloat) -> Void = { _, _ in }
+    @ViewBuilder let rowContent: (Item) -> RowContent
+
+    var body: some View {
+        VirtualizedCollectionSurface(
+            items: items,
+            layout: .list(
+                horizontalInset: 12,
+                topInset: 12,
+                bottomInset: 20,
+                spacing: 10,
+                estimatedHeight: estimatedHeight
+            ),
+            footer: footer,
+            showsRefresh: true,
+            isRefreshing: isLoading,
+            prefetchThreshold: 4,
+            onRefresh: onRefresh,
+            onLoadMore: onReachEnd,
+            onPrefetch: onPrefetch
+        ) { item, _ in
+            AnyView(rowContent(item))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(ProMotionScrollHint())
+    }
+
+    private var footer: (() -> AnyView)? {
+        guard !items.isEmpty else { return nil }
+        if isLoading {
+            return {
+                AnyView(
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                )
+            }
+        }
+        if isEnd {
+            return {
+                AnyView(
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(IbiliTheme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                )
+            }
+        }
+        return nil
+    }
+}
+
 private struct ProfileInlineSearchBar: View {
     let placeholder: String
     @Binding var text: String
@@ -823,27 +883,33 @@ struct SubscriptionFolderListView: View {
                                symbol: "rectangle.stack")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
-                            ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
-                                SubscriptionFolderRow(
-                                    item: item,
-                                    onOpen: {
-                                        rootNavigation.openProfileList(.subscriptionResources(item))
-                                    },
-                                    onCancel: { Task { await vm.cancel(item) } }
-                                )
-                                .onAppear {
-                                    if normalizedProfileSearchQuery(searchText).isEmpty,
-                                       !vm.isEnd,
-                                       index >= max(0, displayedItems.count - 4) {
-                                        Task { await vm.loadMore(mid: mid) }
-                                    }
-                                }
-                            }
-                            if vm.isLoading { ProgressView().padding() }
+                    ProfilePagedCardListSurface(
+                        items: displayedItems,
+                        isLoading: vm.isLoading,
+                        isEnd: vm.isEnd,
+                        estimatedHeight: 88,
+                        onReachEnd: {
+                            guard normalizedProfileSearchQuery(searchText).isEmpty else { return }
+                            Task { await vm.loadMore(mid: mid) }
+                        },
+                        onRefresh: {
+                            Task { await vm.reload(mid: mid) }
+                        },
+                        onPrefetch: { items, _ in
+                            CoverImagePrefetcher.shared.prefetch(
+                                items.map(\.cover),
+                                targetPointSize: CGSize(width: 104, height: 66),
+                                quality: 76
+                            )
                         }
-                        .padding(12)
+                    ) { item in
+                        SubscriptionFolderRow(
+                            item: item,
+                            onOpen: {
+                                rootNavigation.openProfileList(.subscriptionResources(item))
+                            },
+                            onCancel: { Task { await vm.cancel(item) } }
+                        )
                     }
                 }
             }
@@ -852,7 +918,6 @@ struct SubscriptionFolderListView: View {
         .navigationTitle("我的订阅")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial(mid: mid) }
-        .refreshable { await vm.reload(mid: mid) }
     }
 }
 
@@ -1086,34 +1151,38 @@ struct FollowedPgcListView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
-                            ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
-                                Button {
-                                    pushPgc(
-                                        router,
-                                        rootNavigation: rootNavigation,
-                                        isInPlayerHostNavigation: isInPlayerHostNavigation,
-                                        seasonID: item.seasonID,
-                                        prefersSplitRootSelection: prefersSplitRootSelection
-                                    )
-                                } label: {
-                                    FollowedPgcRow(item: item)
-                                }
-                                .buttonStyle(.plain)
-                                .onAppear {
-                                    if normalizedProfileSearchQuery(searchText).isEmpty,
-                                       !vm.isEnd,
-                                       index >= max(0, displayedItems.count - 4) {
-                                        Task { await vm.loadMore() }
-                                    }
-                                }
-                            }
-                            if vm.isLoading {
-                                ProgressView().padding()
-                            }
+                    ProfilePagedCardListSurface(
+                        items: displayedItems,
+                        isLoading: vm.isLoading,
+                        isEnd: vm.isEnd,
+                        estimatedHeight: 132,
+                        onReachEnd: {
+                            guard normalizedProfileSearchQuery(searchText).isEmpty else { return }
+                            Task { await vm.loadMore() }
+                        },
+                        onRefresh: {
+                            Task { await vm.reload() }
+                        },
+                        onPrefetch: { items, _ in
+                            CoverImagePrefetcher.shared.prefetch(
+                                items.map(\.cover),
+                                targetPointSize: CGSize(width: 84, height: 112),
+                                quality: 76
+                            )
                         }
-                        .padding(12)
+                    ) { item in
+                        Button {
+                            pushPgc(
+                                router,
+                                rootNavigation: rootNavigation,
+                                isInPlayerHostNavigation: isInPlayerHostNavigation,
+                                seasonID: item.seasonID,
+                                prefersSplitRootSelection: prefersSplitRootSelection
+                            )
+                        } label: {
+                            FollowedPgcRow(item: item)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -1122,7 +1191,6 @@ struct FollowedPgcListView: View {
         .navigationTitle("我的追番")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.loadInitial() }
-        .refreshable { await vm.reload() }
     }
 
     private var emptyTitle: String {

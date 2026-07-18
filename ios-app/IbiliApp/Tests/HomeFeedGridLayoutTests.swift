@@ -432,6 +432,48 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         XCTAssertNil(collectionView(in: controller).refreshControl)
     }
 
+    func testScrollToBottomSignalAnchorsTheLastItem() {
+        let controller = VirtualizedCollectionViewController<Item>()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 320))
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.beginAppearanceTransition(true, animated: false)
+        controller.endAppearanceTransition()
+        defer {
+            controller.beginAppearanceTransition(false, animated: false)
+            controller.endAppearanceTransition()
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+
+        let items = makeItems(0..<40)
+        let layout = VirtualizedCollectionLayout(
+            bottomInset: 8,
+            height: .absolute(44)
+        )
+        update(controller, items: items, layout: layout)
+        controller.view.layoutIfNeeded()
+        update(
+            controller,
+            items: items,
+            layout: layout,
+            scrollToBottomSignal: 1
+        )
+
+        let scrolled = expectation(description: "last item anchored")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            let collectionView = self.collectionView(in: controller)
+            collectionView.layoutIfNeeded()
+            let distanceToBottom = collectionView.contentSize.height
+                + collectionView.adjustedContentInset.bottom
+                - collectionView.bounds.height
+                - collectionView.contentOffset.y
+            XCTAssertLessThanOrEqual(distanceToBottom, 1)
+            scrolled.fulfill()
+        }
+        wait(for: [scrolled], timeout: 1)
+    }
+
     private func update(
         _ controller: VirtualizedCollectionViewController<Item>,
         items: [Item],
@@ -439,6 +481,7 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         footerText: String? = nil,
         showsRefresh: Bool = false,
         isRefreshing: Bool = false,
+        scrollToBottomSignal: Int = 0,
         content: ((Item, CGFloat) -> AnyView)? = nil
     ) {
         controller.update(
@@ -449,6 +492,9 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
             showsRefresh: showsRefresh,
             isRefreshing: isRefreshing,
             scrollToTopSignal: 0,
+            scrollToBottomSignal: scrollToBottomSignal,
+            scrollToBottomAnimated: false,
+            bottomProximity: 36,
             prefetchThreshold: 4,
             scrollState: nil,
             onRefresh: {},
@@ -457,6 +503,7 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
             onPrefetch: { _, _ in },
             onViewportChanged: { _ in },
             onScrollOffsetChanged: { _ in },
+            onBottomStateChanged: { _ in },
             splitTransitionCoordinator: nil,
             splitTransitionConfiguration: nil,
             splitTransitionIdentity: nil,

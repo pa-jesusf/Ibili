@@ -2,11 +2,9 @@ import SwiftUI
 
 /// Sheet showing the full reply thread (楼中楼) for a single root comment.
 ///
-/// The sheet runs its own `LazyVStack` and a small page-based loader; we
-/// only fetch the next page when the *last* visible row appears, so users
-/// who only scan the top of a thread never pay for the rest. Avatars +
-/// rich content reuse the same `RemoteImage` / `RichReplyText` pipeline
-/// as the main list.
+/// The sheet uses the shared virtualized collection and a small page-based
+/// loader. Avatars and rich content still reuse the same `RemoteImage` /
+/// `RichReplyText` pipeline as the main list.
 struct CommentThreadSheet: View {
     let root: ReplyItemDTO
     var kind: Int32 = 1
@@ -38,28 +36,30 @@ struct CommentThreadSheet: View {
     var body: some View {
         GeometryReader { proxy in
             NavigationStack {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        threadRow(for: currentRootItem)
-                        Divider()
-                        ForEach(replies) { r in
-                            threadRow(for: r)
-                                .onAppear {
-                                    if r.id == replies.last?.id, !isEnd, !isLoading {
-                                        Task { await loadMore() }
-                                    }
-                                }
+                VirtualizedCollectionSurface(
+                    items: replies,
+                    layout: .list(
+                        horizontalInset: 0,
+                        bottomInset: 12,
+                        spacing: 0,
+                        estimatedHeight: 180
+                    ),
+                    header: threadHeader,
+                    footer: threadFooter,
+                    prefetchThreshold: 2,
+                    onLoadMore: {
+                        Task { await loadMore() }
+                    }
+                ) { reply, _ in
+                    AnyView(
+                        VStack(spacing: 0) {
+                            threadRow(for: reply)
                             Divider()
                         }
-                        if isLoading {
-                            HStack { Spacer(); ProgressView(); Spacer() }
-                                .padding(.vertical, 12)
-                        } else if isEnd, !replies.isEmpty {
-                            HStack { Spacer(); Text("已经到底了").font(.caption).foregroundStyle(.secondary); Spacer() }
-                                .padding(.vertical, 12)
-                        }
-                    }
+                    )
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(ProMotionScrollHint())
                 .navigationTitle(navigationTitleText)
                 .navigationBarTitleDisplayMode(.inline)
             }
@@ -83,6 +83,41 @@ struct CommentThreadSheet: View {
                 insertLocalReply(echo)
             }
         }
+    }
+
+    private var threadHeader: () -> AnyView {
+        {
+            AnyView(
+                VStack(spacing: 0) {
+                    threadRow(for: currentRootItem)
+                    Divider()
+                }
+            )
+        }
+    }
+
+    private var threadFooter: (() -> AnyView)? {
+        if isLoading {
+            return {
+                AnyView(
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                )
+            }
+        }
+        if isEnd, !replies.isEmpty {
+            return {
+                AnyView(
+                    Text("已经到底了")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                )
+            }
+        }
+        return nil
     }
 
     private func threadRow(for item: ReplyItemDTO) -> AnyView {

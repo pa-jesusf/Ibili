@@ -40,6 +40,70 @@ enum DynamicLayout {
     }
 }
 
+enum DynamicMediaPrefetcher {
+    @MainActor
+    static func prefetch(_ items: [DynamicItemDTO], cardWidth: CGFloat) {
+        var avatars: [String] = []
+        var covers: [String] = []
+        for item in items {
+            if !item.author.face.isEmpty { avatars.append(item.author.face) }
+            if let cover = item.video?.cover, !cover.isEmpty { covers.append(cover) }
+            if let cover = item.live?.cover, !cover.isEmpty { covers.append(cover) }
+            if let cover = item.article?.cover, !cover.isEmpty { covers.append(cover) }
+            if let orig = item.orig {
+                if !orig.author.face.isEmpty { avatars.append(orig.author.face) }
+                if let cover = orig.video?.cover, !cover.isEmpty { covers.append(cover) }
+                if let cover = orig.live?.cover, !cover.isEmpty { covers.append(cover) }
+                if let cover = orig.article?.cover, !cover.isEmpty { covers.append(cover) }
+            }
+        }
+        CoverImagePrefetcher.shared.prefetch(
+            avatars,
+            targetPointSize: CGSize(width: 40, height: 40),
+            quality: 75
+        )
+        let contentWidth = DynamicLayout.contentWidth(cardWidth: cardWidth)
+        CoverImagePrefetcher.shared.prefetch(
+            covers,
+            targetPointSize: CGSize(
+                width: contentWidth,
+                height: (contentWidth / VideoCoverView.aspectRatio).rounded()
+            ),
+            quality: 78
+        )
+    }
+}
+
+enum DynamicSplitTransition {
+    static func identity(_ item: DynamicItemDTO) -> FeedStableIdentity? {
+        if let video = item.video ?? item.orig?.video {
+            if video.isPGC, video.epID > 0 {
+                return FeedStableIdentity(epID: video.epID)
+            }
+            let identity = FeedStableIdentity(aid: video.aid, bvid: video.bvid, cid: video.cid)
+            return identity.isValid ? identity : nil
+        }
+        if let live = item.live ?? item.orig?.live, live.roomID > 0 {
+            return FeedStableIdentity(roomID: live.roomID)
+        }
+        return nil
+    }
+
+    static func targets(_ item: DynamicItemDTO) -> Set<SplitFeedTransitionTarget> {
+        var targets: Set<SplitFeedTransitionTarget> = [.dynamic(item.idStr)]
+        if item.author.mid > 0 {
+            targets.insert(.userSpace(item.author.mid))
+        }
+        if let identity = identity(item) {
+            targets.insert(.media(identity))
+        }
+        for article in [item.article, item.orig?.article].compactMap({ $0 }) where !article.id.isEmpty {
+            targets.insert(.article(id: article.id, kind: article.kind == "opus" ? "opus" : "read"))
+        }
+        return targets
+    }
+}
+
 enum DynamicFeedScope: String, CaseIterable, Identifiable {
     case all
     case video
@@ -261,13 +325,10 @@ private struct DynamicFeedPage: View {
                     Task { await vm.loadMore() }
                 },
                 onPrefetch: { items, itemWidth in
-                    prefetchDynamicMedia(
-                        items,
-                        contentWidth: DynamicLayout.contentWidth(cardWidth: itemWidth)
-                    )
+                    DynamicMediaPrefetcher.prefetch(items, cardWidth: itemWidth)
                 },
-                splitTransitionIdentity: dynamicSplitTransitionIdentity,
-                splitTransitionTargets: dynamicSplitTransitionTargets
+                splitTransitionIdentity: DynamicSplitTransition.identity,
+                splitTransitionTargets: DynamicSplitTransition.targets
             ) { item, itemWidth in
                 AnyView(
                     DynamicItemCard(
@@ -313,63 +374,6 @@ private struct DynamicFeedPage: View {
         return nil
     }
 
-    private func prefetchDynamicMedia(_ items: [DynamicItemDTO], contentWidth: CGFloat) {
-        var avatars: [String] = []
-        var covers: [String] = []
-        for item in items {
-            if !item.author.face.isEmpty { avatars.append(item.author.face) }
-            if let cover = item.video?.cover, !cover.isEmpty { covers.append(cover) }
-            if let cover = item.live?.cover, !cover.isEmpty { covers.append(cover) }
-            if let cover = item.article?.cover, !cover.isEmpty { covers.append(cover) }
-            if let orig = item.orig {
-                if !orig.author.face.isEmpty { avatars.append(orig.author.face) }
-                if let cover = orig.video?.cover, !cover.isEmpty { covers.append(cover) }
-                if let cover = orig.live?.cover, !cover.isEmpty { covers.append(cover) }
-                if let cover = orig.article?.cover, !cover.isEmpty { covers.append(cover) }
-            }
-        }
-        CoverImagePrefetcher.shared.prefetch(
-            avatars,
-            targetPointSize: CGSize(width: 40, height: 40),
-            quality: 75
-        )
-        CoverImagePrefetcher.shared.prefetch(
-            covers,
-            targetPointSize: CGSize(
-                width: contentWidth,
-                height: (contentWidth / VideoCoverView.aspectRatio).rounded()
-            ),
-            quality: 78
-        )
-    }
-
-    private func dynamicSplitTransitionIdentity(_ item: DynamicItemDTO) -> FeedStableIdentity? {
-        if let video = item.video ?? item.orig?.video {
-            if video.isPGC, video.epID > 0 {
-                return FeedStableIdentity(epID: video.epID)
-            }
-            let identity = FeedStableIdentity(aid: video.aid, bvid: video.bvid, cid: video.cid)
-            return identity.isValid ? identity : nil
-        }
-        if let live = item.live ?? item.orig?.live, live.roomID > 0 {
-            return FeedStableIdentity(roomID: live.roomID)
-        }
-        return nil
-    }
-
-    private func dynamicSplitTransitionTargets(_ item: DynamicItemDTO) -> Set<SplitFeedTransitionTarget> {
-        var targets: Set<SplitFeedTransitionTarget> = [.dynamic(item.idStr)]
-        if item.author.mid > 0 {
-            targets.insert(.userSpace(item.author.mid))
-        }
-        if let identity = dynamicSplitTransitionIdentity(item) {
-            targets.insert(.media(identity))
-        }
-        for article in [item.article, item.orig?.article].compactMap({ $0 }) where !article.id.isEmpty {
-            targets.insert(.article(id: article.id, kind: article.kind == "opus" ? "opus" : "read"))
-        }
-        return targets
-    }
 }
 
 // MARK: - Card

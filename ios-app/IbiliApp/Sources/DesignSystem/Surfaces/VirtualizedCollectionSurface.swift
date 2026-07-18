@@ -71,6 +71,11 @@ struct VirtualizedCollectionLayout: Equatable {
     }
 }
 
+struct VirtualizedCollectionBottomState: Equatable {
+    let isAtBottom: Bool
+    let isUserInteracting: Bool
+}
+
 /// Shared virtualized surface for pages that need UIKit reuse and diffing but
 /// should keep their existing SwiftUI card implementations. The scroll owner,
 /// snapshot, viewport and pagination behavior live here; feature modules only
@@ -86,6 +91,9 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
     var showsRefresh = false
     var isRefreshing = false
     var scrollToTopSignal = 0
+    var scrollToBottomSignal = 0
+    var scrollToBottomAnimated = true
+    var bottomProximity: CGFloat = 36
     var prefetchThreshold = 4
     var scrollState: FeedChromeScrollState? = nil
     var onRefresh: () -> Void = {}
@@ -94,6 +102,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
     var onPrefetch: ([Item], CGFloat) -> Void = { _, _ in }
     var onViewportChanged: ([Item]) -> Void = { _ in }
     var onScrollOffsetChanged: (CGFloat) -> Void = { _ in }
+    var onBottomStateChanged: (VirtualizedCollectionBottomState) -> Void = { _ in }
     var splitTransitionIdentity: ((Item) -> FeedStableIdentity?)? = nil
     var splitTransitionTargets: ((Item) -> Set<SplitFeedTransitionTarget>)? = nil
     var splitTransitionHeight: ((Item, CGFloat) -> CGFloat?)? = nil
@@ -113,6 +122,9 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
             showsRefresh: showsRefresh,
             isRefreshing: isRefreshing,
             scrollToTopSignal: scrollToTopSignal,
+            scrollToBottomSignal: scrollToBottomSignal,
+            scrollToBottomAnimated: scrollToBottomAnimated,
+            bottomProximity: bottomProximity,
             prefetchThreshold: prefetchThreshold,
             scrollState: scrollState,
             onRefresh: onRefresh,
@@ -121,6 +133,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
             onPrefetch: onPrefetch,
             onViewportChanged: onViewportChanged,
             onScrollOffsetChanged: onScrollOffsetChanged,
+            onBottomStateChanged: onBottomStateChanged,
             splitTransitionCoordinator: splitTransitionCoordinator,
             splitTransitionConfiguration: splitTransitionConfiguration,
             splitTransitionIdentity: splitTransitionIdentity,
@@ -162,6 +175,10 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var contentProvider: (Item, CGFloat) -> AnyView = { _, _ in AnyView(EmptyView()) }
     private var prefetchThreshold = 4
     private var lastScrollToTopSignal = 0
+    private var lastScrollToBottomSignal = 0
+    private var bottomProximity: CGFloat = 36
+    private var lastBottomState: VirtualizedCollectionBottomState?
+    private var bottomScrollWork: DispatchWorkItem?
     private var visibleIDs: Set<Item.ID> = []
     private var viewportPublishScheduled = false
     private weak var scrollState: FeedChromeScrollState?
@@ -182,6 +199,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var onPrefetch: ([Item], CGFloat) -> Void = { _, _ in }
     private var onViewportChanged: ([Item]) -> Void = { _ in }
     private var onScrollOffsetChanged: (CGFloat) -> Void = { _ in }
+    private var onBottomStateChanged: (VirtualizedCollectionBottomState) -> Void = { _ in }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -239,6 +257,9 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         showsRefresh: Bool,
         isRefreshing: Bool,
         scrollToTopSignal: Int,
+        scrollToBottomSignal: Int,
+        scrollToBottomAnimated: Bool,
+        bottomProximity: CGFloat,
         prefetchThreshold: Int,
         scrollState: FeedChromeScrollState?,
         onRefresh: @escaping () -> Void,
@@ -247,6 +268,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         onPrefetch: @escaping ([Item], CGFloat) -> Void,
         onViewportChanged: @escaping ([Item]) -> Void,
         onScrollOffsetChanged: @escaping (CGFloat) -> Void,
+        onBottomStateChanged: @escaping (VirtualizedCollectionBottomState) -> Void,
         splitTransitionCoordinator: SplitFeedTransitionCoordinator?,
         splitTransitionConfiguration: SplitFeedTransitionConfiguration?,
         splitTransitionIdentity: ((Item) -> FeedStableIdentity?)?,
@@ -273,6 +295,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         footerProvider = footer
         contentProvider = content
         self.prefetchThreshold = max(1, prefetchThreshold)
+        self.bottomProximity = max(0, bottomProximity)
         self.scrollState = scrollState
         self.onRefresh = onRefresh
         self.onLoadMore = onLoadMore
@@ -280,6 +303,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         self.onPrefetch = onPrefetch
         self.onViewportChanged = onViewportChanged
         self.onScrollOffsetChanged = onScrollOffsetChanged
+        self.onBottomStateChanged = onBottomStateChanged
         if self.splitTransitionCoordinator !== splitTransitionCoordinator {
             self.splitTransitionCoordinator?.unregister(source: self)
         }
@@ -322,6 +346,12 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         if lastScrollToTopSignal != scrollToTopSignal {
             lastScrollToTopSignal = scrollToTopSignal
             scrollToTop(animated: true)
+        }
+        if lastScrollToBottomSignal != scrollToBottomSignal {
+            lastScrollToBottomSignal = scrollToBottomSignal
+            scheduleScrollToBottom(animated: scrollToBottomAnimated)
+        } else {
+            publishBottomStateIfNeeded()
         }
     }
 
@@ -484,9 +514,67 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     }
 
     private func scrollToTop(animated: Bool) {
+        bottomScrollWork?.cancel()
         let y = -collectionView.adjustedContentInset.top
         collectionView.setContentOffset(CGPoint(x: 0, y: y), animated: animated)
         scrollState?.reset()
+    }
+
+    private func scheduleScrollToBottom(animated: Bool) {
+        bottomScrollWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.scrollToBottom(animated: animated, remainingAttempts: 3)
+        }
+        bottomScrollWork = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func scrollToBottom(animated: Bool, remainingAttempts: Int) {
+        guard let lastID = orderedIDs.last else {
+            publishBottomStateIfNeeded()
+            return
+        }
+        collectionView.layoutIfNeeded()
+        let element = ElementID.item(lastID)
+        guard dataSource.snapshot().indexOfItem(element) != nil,
+              let itemIndex = orderedIDs.firstIndex(of: lastID) else {
+            retryScrollToBottom(animated: animated, remainingAttempts: remainingAttempts)
+            return
+        }
+        let indexPath = IndexPath(item: itemIndex, section: contentSectionIndex)
+        collectionView.scrollToItem(at: indexPath, at: .bottom, animated: animated)
+        if !animated {
+            publishBottomStateIfNeeded()
+        }
+    }
+
+    private func retryScrollToBottom(animated: Bool, remainingAttempts: Int) {
+        guard remainingAttempts > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            self?.scrollToBottom(
+                animated: animated,
+                remainingAttempts: remainingAttempts - 1
+            )
+        }
+    }
+
+    private func publishBottomStateIfNeeded() {
+        let distanceToBottom = collectionView.contentSize.height
+            + collectionView.adjustedContentInset.bottom
+            - collectionView.bounds.height
+            - collectionView.contentOffset.y
+        let state = VirtualizedCollectionBottomState(
+            isAtBottom: distanceToBottom <= bottomProximity,
+            isUserInteracting: collectionView.isTracking
+                || collectionView.isDragging
+                || collectionView.isDecelerating
+        )
+        guard state != lastBottomState else { return }
+        lastBottomState = state
+        let callback = onBottomStateChanged
+        DispatchQueue.main.async {
+            callback(state)
+        }
     }
 
     private func scheduleViewportPublish(force: Bool = false) {
@@ -508,18 +596,24 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         let rawOffset = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
         scrollState?.update(rawOffset: rawOffset)
         onScrollOffsetChanged(rawOffset)
+        publishBottomStateIfNeeded()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate { scheduleViewportPublish(force: true) }
+        if !decelerate {
+            scheduleViewportPublish(force: true)
+            publishBottomStateIfNeeded()
+        }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         scheduleViewportPublish(force: true)
+        publishBottomStateIfNeeded()
     }
 
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         scheduleViewportPublish(force: true)
+        publishBottomStateIfNeeded()
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
