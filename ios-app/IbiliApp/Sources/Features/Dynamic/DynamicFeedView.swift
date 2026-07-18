@@ -12,8 +12,16 @@ enum DynamicLayout {
     static let outerPad: CGFloat = 12
     static let cardPad: CGFloat = 14
 
+    static func cardWidth(containerWidth: CGFloat) -> CGFloat {
+        max(1, containerWidth - 2 * outerPad)
+    }
+
+    static func contentWidth(cardWidth: CGFloat) -> CGFloat {
+        max(1, cardWidth - 2 * cardPad)
+    }
+
     static func contentWidth(containerWidth: CGFloat) -> CGFloat {
-        max(1, containerWidth - 2 * outerPad - 2 * cardPad)
+        contentWidth(cardWidth: cardWidth(containerWidth: containerWidth))
     }
 
     static func authorSubtitle(pubLabel: String, pubTs: Int64) -> String {
@@ -229,7 +237,7 @@ private struct DynamicFeedPage: View {
             let usesPreviewWidth = isWidePad && previewWidth != nil
             let shouldCenterWideFeed = isWidePad && !splitRootIsActive
             let feedWidth = usesPreviewWidth ? (previewWidth ?? geo.size.width) : (shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width)
-            let contentWidth = DynamicLayout.contentWidth(containerWidth: feedWidth)
+            let cardWidth = DynamicLayout.cardWidth(containerWidth: feedWidth)
             VirtualizedCollectionSurface(
                 items: vm.items,
                 layout: .list(
@@ -238,7 +246,7 @@ private struct DynamicFeedPage: View {
                     bottomInset: 32,
                     spacing: 14,
                     estimatedHeight: 360,
-                    maximumItemWidth: contentWidth
+                    maximumItemWidth: cardWidth
                 ),
                 footer: dynamicFooter,
                 showsRefresh: true,
@@ -253,7 +261,10 @@ private struct DynamicFeedPage: View {
                     Task { await vm.loadMore() }
                 },
                 onPrefetch: { items, itemWidth in
-                    prefetchDynamicMedia(items, contentWidth: itemWidth)
+                    prefetchDynamicMedia(
+                        items,
+                        contentWidth: DynamicLayout.contentWidth(cardWidth: itemWidth)
+                    )
                 },
                 splitTransitionIdentity: dynamicSplitTransitionIdentity,
                 splitTransitionTargets: dynamicSplitTransitionTargets
@@ -261,7 +272,7 @@ private struct DynamicFeedPage: View {
                 AnyView(
                     DynamicItemCard(
                         item: item,
-                        contentWidth: itemWidth,
+                        contentWidth: DynamicLayout.contentWidth(cardWidth: itemWidth),
                         onOpenVideo: onOpenVideo,
                         onOpenDetail: onOpenDetail
                     )
@@ -452,7 +463,10 @@ struct DynamicItemCard: View {
             )
         }
         .padding(DynamicLayout.cardPad)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(
+            width: resolvedContentWidth + 2 * DynamicLayout.cardPad,
+            alignment: .leading
+        )
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(IbiliTheme.surface)

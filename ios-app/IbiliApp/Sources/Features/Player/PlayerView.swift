@@ -1910,6 +1910,59 @@ struct PlayerPageLayoutMetrics: Equatable {
     }
 }
 
+enum PlayerCollapseScrollAction: Equatable {
+    case collapse
+    case expandAtTop
+}
+
+final class PlayerCollapseScrollTracker {
+    private let collapseTriggerDistance: CGFloat
+    private let topRestoreOverscroll: CGFloat
+
+    private(set) var currentOffset: CGFloat = 0
+    private var collapseStartOffset: CGFloat?
+
+    init(collapseTriggerDistance: CGFloat = 56, topRestoreOverscroll: CGFloat = 36) {
+        self.collapseTriggerDistance = collapseTriggerDistance
+        self.topRestoreOverscroll = topRestoreOverscroll
+    }
+
+    func pauseBecameEligible() {
+        collapseStartOffset = max(0, currentOffset)
+    }
+
+    func update(
+        offset: CGFloat,
+        pauseEligible: Bool,
+        isCollapsed: Bool
+    ) -> PlayerCollapseScrollAction? {
+        currentOffset = offset
+
+        if isCollapsed {
+            guard offset <= -topRestoreOverscroll else { return nil }
+            collapseStartOffset = 0
+            return .expandAtTop
+        }
+
+        guard pauseEligible else {
+            collapseStartOffset = nil
+            return nil
+        }
+
+        let clampedOffset = max(0, offset)
+        let startOffset = collapseStartOffset ?? clampedOffset
+        collapseStartOffset = startOffset
+        guard clampedOffset - startOffset >= collapseTriggerDistance else { return nil }
+        collapseStartOffset = nil
+        return .collapse
+    }
+
+    func reset() {
+        currentOffset = 0
+        collapseStartOffset = nil
+    }
+}
+
 struct PlayerView: View {
     private static let deferredDetailMountDelay: TimeInterval = 0.24
     private static let danmakuSegmentLengthSec: Double = 6 * 60
@@ -1963,9 +2016,8 @@ struct PlayerView: View {
     /// Only `VideoTimelineSection` down in the detail area observes it.
     @State private var detailTimelineClock = PlaybackTimelineClock()
     @State private var nextPartCandidate: PlayerNextPartCandidate?
-    @State private var detailScrollOffsetForPlayerCollapse: CGFloat = 0
-    @State private var isPlayerCollapseArmed = false
-    @State private var playerCollapseAnchorOffset: CGFloat = 0
+    @State private var playerCollapseScrollTracker = PlayerCollapseScrollTracker()
+    @State private var isPlayerCollapsed = false
     @StateObject private var pageScrollContext = InterruptibleScrollContext()
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var router: DeepLinkRouter
@@ -2044,48 +2096,50 @@ struct PlayerView: View {
         !offlineOnly
             && shouldMountDetailContent
             && vm.isPausedForDetailCollapse
-            && isPlayerCollapseArmed
     }
 
     private func collapsedPlayerHeight(expandedHeight: CGFloat) -> CGFloat {
         min(expandedHeight, 72)
     }
 
-    private func playerCollapseProgress(expandedHeight: CGFloat) -> CGFloat {
-        guard canCollapsePlayerForDetailScroll else { return 0 }
-        let collapsedHeight = collapsedPlayerHeight(expandedHeight: expandedHeight)
-        let scrollDistance = max(60, expandedHeight - collapsedHeight)
-        let scrollDeltaAfterPause = detailScrollOffsetForPlayerCollapse - playerCollapseAnchorOffset
-        return min(max(scrollDeltaAfterPause / scrollDistance, 0), 1)
+    private func playerCollapseProgress() -> CGFloat {
+        isPlayerCollapsed ? 1 : 0
     }
 
     private func playerHeight(expandedHeight: CGFloat) -> CGFloat {
         let collapsedHeight = collapsedPlayerHeight(expandedHeight: expandedHeight)
-        let progress = playerCollapseProgress(expandedHeight: expandedHeight)
+        let progress = playerCollapseProgress()
         return expandedHeight - (expandedHeight - collapsedHeight) * progress
     }
 
     private func handleDetailScrollOffsetForPlayerCollapse(_ offset: CGFloat) {
-        let clamped = max(0, offset)
-        detailScrollOffsetForPlayerCollapse = clamped
-        if vm.isPausedForDetailCollapse, !isPlayerCollapseArmed {
-            isPlayerCollapseArmed = true
-            playerCollapseAnchorOffset = clamped
+        let action = playerCollapseScrollTracker.update(
+            offset: offset,
+            pauseEligible: canCollapsePlayerForDetailScroll,
+            isCollapsed: isPlayerCollapsed
+        )
+        switch action {
+        case .collapse:
+            setPlayerCollapsed(true)
+        case .expandAtTop:
+            setPlayerCollapsed(false)
+        case nil:
+            break
         }
     }
 
-    private func armPlayerCollapseFromCurrentScrollPosition() {
-        guard vm.isPausedForDetailCollapse else {
-            resetPlayerCollapseAnchor()
-            return
+    private func setPlayerCollapsed(_ collapsed: Bool) {
+        guard isPlayerCollapsed != collapsed else { return }
+        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9, blendDuration: 0.1)) {
+            isPlayerCollapsed = collapsed
         }
-        isPlayerCollapseArmed = true
-        playerCollapseAnchorOffset = detailScrollOffsetForPlayerCollapse
     }
 
-    private func resetPlayerCollapseAnchor() {
-        isPlayerCollapseArmed = false
-        playerCollapseAnchorOffset = detailScrollOffsetForPlayerCollapse
+    private func resetPlayerCollapseState() {
+        playerCollapseScrollTracker.reset()
+        if isPlayerCollapsed {
+            isPlayerCollapsed = false
+        }
     }
 
     private func configurePageScroll(
@@ -2105,10 +2159,8 @@ struct PlayerView: View {
     }
 
     private func expandCollapsedPlayerAndPlay() {
-        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9, blendDuration: 0.12)) {
-            playerCollapseAnchorOffset = detailScrollOffsetForPlayerCollapse
-            isPlayerCollapseArmed = true
-        }
+        setPlayerCollapsed(false)
+        playerCollapseScrollTracker.pauseBecameEligible()
         vm.handle(.playbackIntentChanged(.play))
     }
 
@@ -2317,7 +2369,7 @@ struct PlayerView: View {
             let expandedPlayerHeight = layoutMetrics.expandedPlayerHeight
             let collapseProgress = layoutMetrics.usesLandscapePageScroll
                 ? 0
-                : playerCollapseProgress(expandedHeight: expandedPlayerHeight)
+                : playerCollapseProgress()
             let visiblePlayerHeight = layoutMetrics.usesLandscapePageScroll
                 ? expandedPlayerHeight
                 : playerHeight(expandedHeight: expandedPlayerHeight)
@@ -2384,7 +2436,6 @@ struct PlayerView: View {
                         }
                         .frame(width: playerWidth, height: visiblePlayerHeight, alignment: .top)
                         .clipped()
-                        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.9, blendDuration: 0.08), value: vm.isPausedForDetailCollapse)
 
                         Group {
                             if offlineOnly {
@@ -2432,6 +2483,9 @@ struct PlayerView: View {
                     )
                 }
                 .onChange(of: layoutMetrics.usesLandscapePageScroll) { landscapeEnabled in
+                    if landscapeEnabled {
+                        resetPlayerCollapseState()
+                    }
                     configurePageScroll(
                         pageScrollProxy,
                         landscapeEnabled: landscapeEnabled
@@ -2461,6 +2515,7 @@ struct PlayerView: View {
             }
 
             if loadedMediaKey != mediaLoadKey {
+                resetPlayerCollapseState()
                 scheduleDeferredDetailMount(for: mediaLoadKey)
             } else if !shouldMountDetailContent {
                 shouldMountDetailContent = true
@@ -2524,9 +2579,9 @@ struct PlayerView: View {
         }
         .onChange(of: vm.isPausedForDetailCollapse) { paused in
             if paused {
-                armPlayerCollapseFromCurrentScrollPosition()
-            } else {
-                resetPlayerCollapseAnchor()
+                playerCollapseScrollTracker.pauseBecameEligible()
+            } else if !isPlayerCollapsed {
+                playerCollapseScrollTracker.reset()
             }
         }
         .onChange(of: vm.playbackCompletionSignal) { _ in

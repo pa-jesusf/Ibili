@@ -755,7 +755,7 @@ struct VideoDetailContent: View {
     private func handleDetailScrollOffsetChange(_ newValue: CGFloat) {
         let clampedOffset = max(0, newValue)
         detailScrollOffset = clampedOffset
-        onScrollOffsetChange?(clampedOffset)
+        onScrollOffsetChange?(newValue)
 
         guard tab == .intro else {
             if clampedOffset <= Self.upwardRefreshResetOffset {
