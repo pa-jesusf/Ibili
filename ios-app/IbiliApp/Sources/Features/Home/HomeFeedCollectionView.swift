@@ -530,18 +530,8 @@ extension HomeFeedCollectionViewController: SplitFeedTransitionSource {
     }
 
     private var isEligibleSplitTransitionSource: Bool {
-        guard isViewLoaded, view.window != nil, view.bounds.width > 1, view.bounds.height > 1 else {
-            return false
-        }
-        var candidate: UIView? = view
-        while let current = candidate {
-            if current.isHidden || current.alpha < 0.01 { return false }
-            candidate = current.superview
-        }
-        guard let window = view.window else { return false }
-        let frame = view.convert(view.bounds, to: window)
-        let intersection = frame.intersection(window.bounds)
-        return !intersection.isNull && intersection.width > 1 && intersection.height > 1
+        guard isViewLoaded, let window = collectionView.window else { return false }
+        return SplitFeedTransitionVisibility.isVisible(collectionView, in: window)
     }
 
     private func topRightVisibleEntry(

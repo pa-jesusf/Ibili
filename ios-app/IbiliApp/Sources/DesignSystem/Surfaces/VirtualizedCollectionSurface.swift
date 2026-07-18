@@ -226,7 +226,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         if abs(width - lastLaidOutWidth) > 0.5 {
             lastLaidOutWidth = width
             collectionView.collectionViewLayout.invalidateLayout()
-            reconfigureContentItems()
+            reconfigureContentItems(reloadData: true)
         }
         applyPendingAnchorIfPossible()
     }
@@ -308,7 +308,11 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         if layoutChanged {
             collectionView.setCollectionViewLayout(makeLayout(), animated: false)
         }
-        applySnapshot(structureChanged: structureChanged, changedIDs: changedIDs)
+        applySnapshot(
+            structureChanged: structureChanged,
+            changedIDs: changedIDs,
+            reloadData: layoutChanged
+        )
         registerSplitTransitionSource()
         applyPendingAnchorIfPossible()
 
@@ -346,7 +350,11 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         }
     }
 
-    private func applySnapshot(structureChanged: Bool, changedIDs: [Item.ID]) {
+    private func applySnapshot(
+        structureChanged: Bool,
+        changedIDs: [Item.ID],
+        reloadData: Bool = false
+    ) {
         if structureChanged {
             visibleIDs.removeAll(keepingCapacity: true)
             onViewportChanged([])
@@ -364,22 +372,32 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             snapshot.appendItems([.footer], toSection: .footer)
         }
 
-        let currentItems = Set(dataSource.snapshot().itemIdentifiers)
-        var reconfigured = changedIDs.map(ElementID.item)
-        if hasHeader { reconfigured.append(.header) }
-        if hasFooter { reconfigured.append(.footer) }
-        let existing = reconfigured.filter {
-            currentItems.contains($0) && snapshot.indexOfItem($0) != nil
+        if !reloadData {
+            let currentItems = Set(dataSource.snapshot().itemIdentifiers)
+            var reconfigured = changedIDs.map(ElementID.item)
+            if hasHeader { reconfigured.append(.header) }
+            if hasFooter { reconfigured.append(.footer) }
+            let existing = reconfigured.filter {
+                currentItems.contains($0) && snapshot.indexOfItem($0) != nil
+            }
+            if !existing.isEmpty {
+                snapshot.reconfigureItems(existing)
+            }
         }
-        if !existing.isEmpty {
-            snapshot.reconfigureItems(existing)
-        }
-        snapshotCoordinator.apply(snapshot, to: dataSource)
+        snapshotCoordinator.apply(
+            snapshot,
+            to: dataSource,
+            mode: reloadData ? .reloadData : .diff
+        )
     }
 
-    private func reconfigureContentItems() {
+    private func reconfigureContentItems(reloadData: Bool = false) {
         guard dataSource != nil, !orderedIDs.isEmpty else { return }
-        applySnapshot(structureChanged: false, changedIDs: orderedIDs)
+        applySnapshot(
+            structureChanged: false,
+            changedIDs: orderedIDs,
+            reloadData: reloadData
+        )
     }
 
     private func updateRefreshControlAttachment(showsRefresh: Bool, hasContent: Bool) {
@@ -659,19 +677,8 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
     }
 
     private var isEligibleSplitTransitionSource: Bool {
-        guard isViewLoaded, view.window != nil, view.bounds.width > 1, view.bounds.height > 1 else {
-            return false
-        }
-        var candidate: UIView? = view
-        while let current = candidate {
-            if current.isHidden || current.alpha < 0.01 { return false }
-            candidate = current.superview
-        }
-        guard let window = view.window else { return false }
-        let frame = view.convert(view.bounds, to: window)
-        return !frame.intersection(window.bounds).isNull
-            && frame.intersection(window.bounds).width > 1
-            && frame.intersection(window.bounds).height > 1
+        guard isViewLoaded, let window = collectionView.window else { return false }
+        return SplitFeedTransitionVisibility.isVisible(collectionView, in: window)
     }
 
     private func topRightVisibleEntry(

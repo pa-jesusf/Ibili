@@ -117,6 +117,99 @@ final class HomeFeedGridLayoutTests: XCTestCase {
 }
 
 @MainActor
+final class SplitFeedTransitionCoordinatorTests: XCTestCase {
+    private final class Source: SplitFeedTransitionSource {
+        var canEnter = false
+        var canExit = false
+        var hiddenStates: [Bool] = []
+        var exitRequestCount = 0
+
+        func makeSnapshots(
+            direction: SplitFeedTransitionDirection,
+            selectedTarget: SplitFeedTransitionTarget?,
+            configuration: SplitFeedTransitionConfiguration
+        ) -> [SplitFeedCardSnapshot] {
+            switch direction {
+            case .entering:
+                guard canEnter else { return [] }
+            case .exiting:
+                exitRequestCount += 1
+                guard canExit else { return [] }
+            }
+            return [SplitFeedCardSnapshot(
+                view: UIView(frame: CGRect(x: 0, y: 0, width: 100, height: 80)),
+                startFrame: CGRect(x: 0, y: 0, width: 100, height: 80),
+                endFrame: CGRect(x: 20, y: 20, width: 120, height: 90)
+            )]
+        }
+
+        func setTransitionCardsHidden(_ hidden: Bool) {
+            hiddenStates.append(hidden)
+        }
+    }
+
+    func testExitFallsBackToCurrentPageWhenEnteringSourceIsNoLongerVisible() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+        window.isHidden = false
+        let coordinator = SplitFeedTransitionCoordinator(
+            windowProvider: { window },
+            animationDuration: 0.01
+        )
+        let configuration = SplitFeedTransitionConfiguration(
+            containerSize: window.bounds.size,
+            targetLeftWidth: 500,
+            fullColumns: 4,
+            splitColumns: 2
+        )
+        let enteringSource = Source()
+        enteringSource.canEnter = true
+        coordinator.register(source: enteringSource, configuration: configuration)
+
+        XCTAssertTrue(coordinator.prepareEntering(target: .media(FeedStableIdentity(aid: 1))))
+        waitForAnimations()
+
+        let currentPageSource = Source()
+        currentPageSource.canExit = true
+        coordinator.register(source: currentPageSource, configuration: configuration)
+
+        XCTAssertTrue(coordinator.prepareExiting())
+        XCTAssertEqual(enteringSource.exitRequestCount, 1)
+        XCTAssertEqual(currentPageSource.exitRequestCount, 1)
+        XCTAssertEqual(currentPageSource.hiddenStates.last, true)
+        waitForAnimations()
+        XCTAssertEqual(currentPageSource.hiddenStates.last, false)
+    }
+
+    func testVisibilityRejectsAnOccludedBackgroundPage() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+        let root = UIViewController()
+        root.view.frame = window.bounds
+        window.rootViewController = root
+        window.isHidden = false
+        defer {
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+
+        let backgroundPage = UIView(frame: root.view.bounds)
+        let foregroundPage = UIView(frame: root.view.bounds)
+        root.view.addSubview(backgroundPage)
+        root.view.addSubview(foregroundPage)
+
+        XCTAssertFalse(SplitFeedTransitionVisibility.isVisible(backgroundPage, in: window))
+        XCTAssertTrue(SplitFeedTransitionVisibility.isVisible(foregroundPage, in: window))
+    }
+
+    private func waitForAnimations() {
+        let completed = expectation(description: "transition animation completed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 1)
+    }
+}
+
+@MainActor
 final class HomeFeedCollectionLifecycleTests: XCTestCase {
     func testRefreshControlIsDetachedUntilHomeFeedHasContent() {
         let controller = HomeFeedCollectionViewController()
@@ -230,6 +323,76 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         controller.view.layoutIfNeeded()
     }
 
+    func testGridWidthChangeRebuildsVisibleContentWithCurrentWidth() {
+        let controller = VirtualizedCollectionViewController<Item>()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 1200))
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.beginAppearanceTransition(true, animated: false)
+        controller.endAppearanceTransition()
+        defer {
+            controller.beginAppearanceTransition(false, animated: false)
+            controller.endAppearanceTransition()
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+
+        let items = makeItems(0..<8)
+        var observedWidths: [Int: [CGFloat]] = [:]
+        let splitLayout = VirtualizedCollectionLayout.grid(
+            columns: 2,
+            height: .absolute(180)
+        )
+        update(
+            controller,
+            items: items,
+            layout: splitLayout,
+            content: { item, width in
+                observedWidths[item.id, default: []].append(width)
+                return AnyView(Text(item.title).frame(width: width))
+            }
+        )
+        controller.view.layoutIfNeeded()
+
+        let expanded = expectation(description: "expanded layout applied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            window.frame = CGRect(x: 0, y: 0, width: 1600, height: 1200)
+            controller.view.frame = window.bounds
+            let fullLayout = VirtualizedCollectionLayout.grid(
+                columns: 4,
+                height: .absolute(180)
+            )
+            self.update(
+                controller,
+                items: items,
+                layout: fullLayout,
+                content: { item, width in
+                    observedWidths[item.id, default: []].append(width)
+                    return AnyView(Text(item.title).frame(width: width))
+                }
+            )
+            controller.view.layoutIfNeeded()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                let expectedWidth = fullLayout.itemWidth(containerWidth: window.bounds.width)
+                for item in items {
+                    guard let lastWidth = observedWidths[item.id]?.last else {
+                        XCTFail("Item \(item.id) was not reconfigured after the width change")
+                        continue
+                    }
+                    XCTAssertEqual(
+                        lastWidth,
+                        expectedWidth,
+                        accuracy: 0.5,
+                        "Item \(item.id) retained a stale split-mode width"
+                    )
+                }
+                expanded.fulfill()
+            }
+        }
+        wait(for: [expanded], timeout: 1)
+    }
+
     func testRefreshControlIsOnlyAttachedWhenRefreshableContentExists() throws {
         let controller = VirtualizedCollectionViewController<Item>()
         controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
@@ -275,7 +438,8 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         layout: VirtualizedCollectionLayout,
         footerText: String? = nil,
         showsRefresh: Bool = false,
-        isRefreshing: Bool = false
+        isRefreshing: Bool = false,
+        content: ((Item, CGFloat) -> AnyView)? = nil
     ) {
         controller.update(
             items: items,
@@ -299,7 +463,7 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
             splitTransitionTargets: nil,
             splitTransitionHeight: nil,
             contentVersion: 0,
-            content: { item, _ in AnyView(Text(item.title)) }
+            content: content ?? { item, _ in AnyView(Text(item.title)) }
         )
     }
 

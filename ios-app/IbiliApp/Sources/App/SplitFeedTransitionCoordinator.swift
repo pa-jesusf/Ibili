@@ -101,8 +101,18 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
     private weak var activeSource: (any SplitFeedTransitionSource)?
     private var animator: UIViewPropertyAnimator?
     private weak var overlayView: UIView?
+    private let windowProvider: @MainActor () -> UIWindow?
+    private let animationDuration: TimeInterval
 
     private(set) var isAnimating = false
+
+    init(
+        windowProvider: @escaping @MainActor () -> UIWindow? = SplitFeedTransitionCoordinator.foregroundWindow,
+        animationDuration: TimeInterval = 0.34
+    ) {
+        self.windowProvider = windowProvider
+        self.animationDuration = animationDuration
+    }
 
     func register(
         source: SplitFeedTransitionSource,
@@ -151,7 +161,7 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
         direction: SplitFeedTransitionDirection,
         selectedTarget: SplitFeedTransitionTarget?
     ) -> Bool {
-        guard !isAnimating, let window = foregroundWindow() else { return false }
+        guard !isAnimating, let window = windowProvider() else { return false }
         registrations.removeAll { $0.source == nil }
 
         let candidates: [Registration]
@@ -159,7 +169,9 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
         case .entering:
             candidates = registrations.reversed()
         case .exiting:
-            candidates = registrations.filter { $0.source === activeSource }
+            let active = registrations.first { $0.source === activeSource }
+            let fallbacks = registrations.reversed().filter { $0.source !== activeSource }
+            candidates = active.map { [$0] + fallbacks } ?? Array(fallbacks)
         }
 
         var resolvedSource: (any SplitFeedTransitionSource)?
@@ -177,9 +189,7 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
             break
         }
         guard let source = resolvedSource else { return false }
-        if direction == .entering {
-            activeSource = source
-        }
+        activeSource = source
 
         let overlay = UIView(frame: window.bounds)
         overlay.backgroundColor = .clear
@@ -195,7 +205,7 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
         source.setTransitionCardsHidden(true)
         isAnimating = true
 
-        let animator = UIViewPropertyAnimator(duration: 0.34, dampingRatio: 0.92)
+        let animator = UIViewPropertyAnimator(duration: animationDuration, dampingRatio: 0.92)
         animator.addAnimations {
             for snapshot in snapshots {
                 snapshot.view.frame = snapshot.endFrame
@@ -217,12 +227,44 @@ final class SplitFeedTransitionCoordinator: ObservableObject {
         return true
     }
 
-    private func foregroundWindow() -> UIWindow? {
+    private static func foregroundWindow() -> UIWindow? {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive })?
             .windows
             .first(where: \.isKeyWindow)
+    }
+}
+
+enum SplitFeedTransitionVisibility {
+    static func isVisible(_ view: UIView, in window: UIWindow) -> Bool {
+        guard view.window === window, view.bounds.width > 1, view.bounds.height > 1 else {
+            return false
+        }
+
+        var candidate: UIView? = view
+        while let current = candidate {
+            if current.isHidden || current.alpha < 0.01 || !current.isUserInteractionEnabled {
+                return false
+            }
+            candidate = current.superview
+        }
+
+        let frame = view.convert(view.bounds, to: window)
+        let intersection = frame.intersection(window.bounds)
+        guard !intersection.isNull, intersection.width > 1, intersection.height > 1 else {
+            return false
+        }
+
+        let samplePoints = [
+            CGPoint(x: intersection.midX, y: intersection.midY),
+            CGPoint(x: intersection.midX, y: intersection.minY + intersection.height * 0.25),
+            CGPoint(x: intersection.midX, y: intersection.minY + intersection.height * 0.75),
+        ]
+        return samplePoints.contains { point in
+            guard let hitView = window.hitTest(point, with: nil) else { return false }
+            return hitView === view || hitView.isDescendant(of: view)
+        }
     }
 }
 
