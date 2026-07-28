@@ -461,6 +461,7 @@ struct RootView: View {
         if newValue != .search {
             lastStableMainTab = newValue
         }
+        syncRootContentMediaSessions()
     }
 
     private var activeRootContentPath: [RootContentRoute] {
@@ -498,15 +499,24 @@ struct RootView: View {
     private func syncRootContentMediaSessions() {
         let rootContentPlayerRoutes = allRootContentPaths.flatMap { $0.compactMap(\.playerRoute) }
         let rootContentLiveRoutes = allRootContentPaths.flatMap { $0.compactMap(\.liveRoute) }
+        // Only one navigation world can own foreground media. When the
+        // session host is presented, the tab-local path remains mounted
+        // underneath and must not keep its player active.
+        let foregroundPlayerRouteID = router.pending != nil
+            ? router.foregroundPlayerRouteID
+            : foregroundRootContentPlayerRouteID
+        let foregroundLiveRouteID = router.pending != nil
+            ? router.foregroundLiveRouteID
+            : foregroundRootContentLiveRouteID
         PlayerRuntimeCoordinator.shared.retainSessions(
             root: nil,
             stack: router.playerPath + rootContentPlayerRoutes,
-            foregroundRouteID: foregroundRootContentPlayerRouteID ?? router.foregroundPlayerRouteID
+            foregroundRouteID: foregroundPlayerRouteID
         )
         LiveRuntimeCoordinator.shared.retainSessions(
             root: nil,
             stack: router.livePath + rootContentLiveRoutes,
-            foregroundRouteID: foregroundRootContentLiveRouteID ?? router.foregroundLiveRouteID
+            foregroundRouteID: foregroundLiveRouteID
         )
     }
 }

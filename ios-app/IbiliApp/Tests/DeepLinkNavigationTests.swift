@@ -135,6 +135,17 @@ final class DeepLinkNavigationTests: XCTestCase {
         XCTAssertEqual(router.foregroundPlayerRouteID, originalPath.last?.id)
     }
 
+    func testPlayerRetainedBelowUserSpaceIsNotForegroundMedia() throws {
+        let router = DeepLinkRouter()
+        router.open(DeepLinkRouter.makeShell(aid: 2, bvid: "BV2"))
+        let playerRouteID = try XCTUnwrap(router.foregroundPlayerRouteID)
+
+        router.openUserSpace(mid: 100)
+
+        XCTAssertEqual(router.playerPath.map(\.id), [playerRouteID])
+        XCTAssertNil(router.foregroundPlayerRouteID)
+    }
+
     func testFullscreenExitRejectsRootContentForegroundPlayerPathShrink() {
         let item = DeepLinkRouter.makeShell(aid: 3, bvid: "BV3")
         let rootPath: [RootContentRoute] = [

@@ -13,17 +13,22 @@ struct SearchLandingView: View {
     @State private var isClearHistoryConfirmationPresented = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                if !history.entries.isEmpty {
-                    historySection
+        GeometryReader { proxy in
+            let contentWidth = max(0, proxy.size.width - 32)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if !history.entries.isEmpty {
+                        historySection
+                    }
+                    categoriesSection
+                    Spacer(minLength: 8)
                 }
-                categoriesSection
-                Spacer(minLength: 8)
+                .frame(width: contentWidth, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 32)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 32)
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .background(IbiliTheme.background)
     }

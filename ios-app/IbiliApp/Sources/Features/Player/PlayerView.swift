@@ -183,6 +183,8 @@ final class PlayerViewModel: ObservableObject {
             return "interfaceDeactivated"
         case .pictureInPictureChanged(let isActive):
             return "pictureInPictureChanged(\(isActive))"
+        case .systemTransitionChanged(let isActive):
+            return "systemTransitionChanged(\(isActive))"
         case .playbackIntentChanged(let intent):
             return "playbackIntentChanged(\(intent.rawValue))"
         case .prepareAutoplayForMediaReplacement:
@@ -415,15 +417,14 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// Re-runs `load(...)` for the most recently loaded item. Used by
-    /// scene-phase recovery when the local HLS proxy has been killed in
-    /// the background and the existing AVPlayer can no longer pull from
-    /// `127.0.0.1:<dead port>`.
-    func reload() async {
+    /// Re-runs `load(...)` for the most recently loaded item after an
+    /// automatic playback recovery decides the current source is unusable.
+    func reload(trigger: String = "automatic-recovery") async {
         guard !isClosing, let item = lastLoadedItem else { return }
-        AppLog.info("player", "检测到本地代理失效，重新加载", metadata: [
+        AppLog.info("player", "重新加载播放源", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
+            "trigger": trigger,
         ])
         // Force `load` past its idempotency check by clearing the
         // currently-loaded coordinates and tearing down the player.
@@ -470,6 +471,8 @@ final class PlayerViewModel: ObservableObject {
                 PlayerPlaybackCoordinator.shared.activate(self)
                 PlayerNowPlayingCoordinator.shared.activate(self)
             }
+        case .systemTransitionChanged:
+            break
         case .playbackIntentChanged(.pause):
             endTemporarySpeedBoost()
         case .observedTimeControlStatus(.paused):
@@ -494,6 +497,11 @@ final class PlayerViewModel: ObservableObject {
         case .interfaceActivated, .interfaceDeactivated, .pictureInPictureChanged, .playbackIntentChanged:
             applyPlaybackIntent()
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
+        case .systemTransitionChanged(let isActive):
+            if !isActive {
+                applyPlaybackIntent()
+                PlayerNowPlayingCoordinator.shared.refresh(for: self)
+            }
         case .observedTimeControlStatus:
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
@@ -624,13 +632,78 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func recoverFromInactiveEngineIfNeeded(trigger: String) async {
+    func beginSystemTransition() {
         guard !isClosing else { return }
-        guard !isEngineAlive else { return }
+        endTemporarySpeedBoost()
+        handle(.systemTransitionChanged(true))
+    }
+
+    func completeSystemTransition() {
+        guard !isClosing else { return }
+        handle(.systemTransitionChanged(false))
+    }
+
+    func recoverAfterSystemTransitionIfNeeded(trigger: String,
+                                               inactiveDuration: TimeInterval) async {
+        guard !isClosing else { return }
+        guard behaviorState.isInterfacePresentingPlayer else { return }
+        guard let trackedPlayer = player else { return }
+
+        if !isEngineAlive {
+            await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-engine-dead")
+            return
+        }
+
+        // A brief app switch should not churn a healthy HLS source. Longer
+        // suspension can leave AVPlayer waiting forever even though the
+        // in-process proxy listener itself has rebound successfully.
+        guard inactiveDuration >= 6,
+              shouldHoldAudioSession,
+              !isCurrentSourceOffline else { return }
+
+        let trackedItem = trackedPlayer.currentItem
+        let baselineSeconds = trackedPlayer.currentTime().seconds
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        guard !Task.isCancelled,
+              !isClosing,
+              player === trackedPlayer,
+              trackedPlayer.currentItem === trackedItem,
+              shouldHoldAudioSession else { return }
+
+        let currentSeconds = trackedPlayer.currentTime().seconds
+        let madeProgress = baselineSeconds.isFinite
+            && currentSeconds.isFinite
+            && currentSeconds - baselineSeconds >= 0.2
+        guard !madeProgress else { return }
+
+        AppLog.warning("player", "前台恢复后播放无进度，刷新播放源", metadata: playbackDebugMetadata(for: trackedPlayer, extra: [
+            "trigger": trigger,
+            "inactiveMs": String(Int(inactiveDuration * 1000)),
+            "itemStatus": String(trackedItem?.status.rawValue ?? -1),
+            "bufferEmpty": String(trackedItem?.isPlaybackBufferEmpty ?? false),
+            "likelyToKeepUp": String(trackedItem?.isPlaybackLikelyToKeepUp ?? false),
+        ]))
+        await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-stalled")
+    }
+
+    private func rebuildPlaybackSourcePreservingPosition(trigger: String) async {
+        let resumeAt = currentPlaybackTimeForRecovery()
         if await recoverPlaybackFromPageCacheIfPossible(trigger: trigger) {
             return
         }
-        await reload()
+
+        let expectedAid = aid
+        let expectedCid = cid
+        await reload(trigger: trigger)
+        guard !isClosing,
+              aid == expectedAid,
+              cid == expectedCid,
+              let player,
+              resumeAt.isValid,
+              !resumeAt.isIndefinite,
+              CMTimeGetSeconds(resumeAt) > 0 else { return }
+        await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 1, preferredTimescale: 600))
+        applyPlaybackIntent(to: player)
     }
 
     /// Read-only flag mirroring the internal PiP state. Used by the
@@ -2598,8 +2671,7 @@ struct PlayerView: View {
                 phase,
                 didBootstrap: didBootstrap,
                 viewModel: vm,
-                playerBox: playerVCRef,
-                reloadPlayer: { await vm.recoverFromInactiveEngineIfNeeded(trigger: "foreground-active") }
+                playerBox: playerVCRef
             )
         }
         .onAppear {

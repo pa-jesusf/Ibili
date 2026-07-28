@@ -17,6 +17,7 @@ enum PlayerSessionEvent: Equatable {
     case interfaceActivated
     case interfaceDeactivated
     case pictureInPictureChanged(Bool)
+    case systemTransitionChanged(Bool)
     case playbackIntentChanged(PlayerIntent)
     case prepareAutoplayForMediaReplacement
     case suppressNextObservedIntent(PlayerIntent)
@@ -28,6 +29,7 @@ struct PlayerSessionBehaviorState: Equatable {
     private(set) var hasPlaybackFocus = false
     private(set) var interfaceIsActive = false
     private(set) var pictureInPictureIsActive = false
+    private(set) var systemTransitionIsActive = false
     private var suppressedObservedIntent: PlayerIntent?
     private var suppressedObservedIntentExpiresAt: Date?
 
@@ -45,6 +47,7 @@ struct PlayerSessionBehaviorState: Equatable {
             "hasPlaybackFocus": String(hasPlaybackFocus),
             "interfaceIsActive": String(interfaceIsActive),
             "pictureInPictureIsActive": String(pictureInPictureIsActive),
+            "systemTransitionIsActive": String(systemTransitionIsActive),
             "suppressedObservedIntent": suppressedObservedIntent?.rawValue ?? "nil",
             "suppressedObservedIntentExpired": String(isSuppressedObservedIntentExpired),
             "shouldHoldAudioSession": String(shouldHoldAudioSession),
@@ -62,6 +65,9 @@ struct PlayerSessionBehaviorState: Equatable {
             return true
         case .pictureInPictureChanged(let isActive):
             setPictureInPictureActive(isActive)
+            return true
+        case .systemTransitionChanged(let isActive):
+            systemTransitionIsActive = isActive
             return true
         case .playbackIntentChanged(let intent):
             setIntent(intent)
@@ -128,7 +134,9 @@ struct PlayerSessionBehaviorState: Equatable {
                 return false
             }
         }
-        guard hasPlaybackFocus, interfaceIsActive || pictureInPictureIsActive else { return false }
+        guard !systemTransitionIsActive,
+              hasPlaybackFocus,
+              interfaceIsActive || pictureInPictureIsActive else { return false }
         intent = observedIntent
         return true
     }

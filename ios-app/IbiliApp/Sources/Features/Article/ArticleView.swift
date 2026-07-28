@@ -1,5 +1,32 @@
 import SwiftUI
 
+private struct ArticleVirtualBlock: Identifiable, Hashable {
+    let index: Int
+    let block: ArticleBlockDTO
+
+    var id: Int { index }
+}
+
+private struct ArticleHeaderVersion: Hashable {
+    let id: String
+    let title: String
+    let author: ArticleAuthorDTO
+    let stat: ArticleStatDTO
+    let pubTs: Int64
+    let url: String
+    let contentWidth: Int
+
+    init(detail: ArticleDetailDTO, contentWidth: Int) {
+        id = detail.id
+        title = detail.title
+        author = detail.author
+        stat = detail.stat
+        pubTs = detail.pubTs
+        url = detail.url
+        self.contentWidth = contentWidth
+    }
+}
+
 struct ArticleView: View {
     let articleID: String
     let kind: String
@@ -44,84 +71,153 @@ struct ArticleView: View {
         GeometryReader { proxy in
             let pageWidth = max(1, proxy.size.width)
             let contentWidth = max(1, pageWidth - 32)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(detail.title.isEmpty ? "无标题专栏" : detail.title)
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(IbiliTheme.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(width: contentWidth, alignment: .leading)
-
-                        Button {
-                            openUser(mid: detail.author.mid)
-                        } label: {
-                            HStack(spacing: 10) {
-                                RemoteImage(url: detail.author.face,
-                                            contentMode: .fill,
-                                            targetPointSize: CGSize(width: 40, height: 40),
-                                            quality: 80)
-                                    .frame(width: 40, height: 40)
-                                    .clipShape(Circle())
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(detail.author.name.isEmpty ? "未知作者" : detail.author.name)
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(IbiliTheme.textPrimary)
-                                        .lineLimit(1)
-                                    if detail.pubTs > 0 {
-                                        Text(BiliFormat.relativeDate(detail.pubTs))
-                                            .font(.caption)
-                                            .foregroundStyle(IbiliTheme.textSecondary)
-                                    }
-                                }
-                                Spacer(minLength: 0)
-                            }
+            Group {
+                if detail.commentId > 0 && detail.commentType > 0 {
+                    CommentListView(
+                        oid: detail.commentId,
+                        kind: detail.commentType,
+                        usesVirtualizedScroll: true,
+                        bottomContentInset: 32,
+                        virtualizedHeader: {
+                            AnyView(articleMetadata(detail, contentWidth: contentWidth).padding(.bottom, 16))
+                        },
+                        virtualizedHeaderVersion: ArticleHeaderVersion(
+                            detail: detail,
+                            contentWidth: Int(contentWidth.rounded())
+                        ),
+                        virtualizedLeadingRows: articleCommentLeadingRows(detail),
+                        virtualizedRefreshAction: {
+                            await vm.load(id: articleID, kind: kind, force: true)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(detail.author.mid <= 0)
-                        .frame(width: contentWidth, alignment: .leading)
+                    )
+                } else {
+                    articleOnlyContent(detail, contentWidth: contentWidth)
+                }
+            }
+            .frame(width: pageWidth, height: max(1, proxy.size.height))
+            .environment(\.commentViewportHeight, max(1, proxy.size.height))
+            .environment(\.commentContentWidth, contentWidth)
+        }
+    }
 
-                        ArticleStatRow(detail: detail, onShare: {
-                            shareSheet = ShareSheetItem(url: detail.url)
-                        })
-                        .frame(width: contentWidth, alignment: .leading)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(detail.blocks.enumerated()), id: \.offset) { _, block in
-                            ArticleBlockView(block: block, contentWidth: contentWidth, onOpenImage: openImage)
-                                .frame(width: contentWidth, alignment: .leading)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-
-                    Divider()
-                        .padding(.horizontal, 16)
-                        .padding(.top, 4)
-
-                    if detail.commentId > 0 && detail.commentType > 0 {
-                        CommentListView(oid: detail.commentId, kind: detail.commentType)
-                            .padding(.horizontal, 16)
-                    } else {
+    private func articleOnlyContent(_ detail: ArticleDetailDTO, contentWidth: CGFloat) -> some View {
+        VirtualizedCollectionSurface(
+            items: articleBlocks(detail),
+            layout: .list(
+                horizontalInset: 16,
+                topInset: 0,
+                bottomInset: 0,
+                spacing: 14,
+                estimatedHeight: 120
+            ),
+            header: {
+                AnyView(articleMetadata(detail, contentWidth: contentWidth).padding(.bottom, 16))
+            },
+            headerVersion: ArticleHeaderVersion(
+                detail: detail,
+                contentWidth: Int(contentWidth.rounded())
+            ),
+            footer: {
+                AnyView(
+                    VStack(spacing: 0) {
+                        Divider().padding(.horizontal, 16)
                         Text("此专栏不支持评论")
                             .font(.footnote)
                             .foregroundStyle(IbiliTheme.textSecondary)
-                            .frame(width: contentWidth, alignment: .center)
-                            .padding(.horizontal, 16)
+                            .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 20)
                     }
-                }
-                .frame(width: pageWidth, alignment: .leading)
-                .padding(.bottom, 32)
+                    .padding(.bottom, 32)
+                )
+            },
+            showsRefresh: true,
+            isRefreshing: vm.isLoading,
+            onRefresh: {
+                Task { await vm.load(id: articleID, kind: kind, force: true) }
             }
-            .environment(\.commentViewportHeight, max(1, proxy.size.height))
-            .environment(\.commentContentWidth, contentWidth)
-            .refreshable {
-                await vm.load(id: articleID, kind: kind, force: true)
+        ) { item, width in
+            AnyView(
+                ArticleBlockView(block: item.block, contentWidth: width, onOpenImage: openImage)
+                    .frame(width: width, alignment: .leading)
+            )
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .modifier(ProMotionScrollHint())
+    }
+
+    private func articleMetadata(_ detail: ArticleDetailDTO, contentWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(detail.title.isEmpty ? "无标题专栏" : detail.title)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(IbiliTheme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: contentWidth, alignment: .leading)
+
+            Button {
+                openUser(mid: detail.author.mid)
+            } label: {
+                HStack(spacing: 10) {
+                    RemoteImage(url: detail.author.face,
+                                contentMode: .fill,
+                                targetPointSize: CGSize(width: 40, height: 40),
+                                quality: 80)
+                        .frame(width: 40, height: 40)
+                        .clipShape(Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(detail.author.name.isEmpty ? "未知作者" : detail.author.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(IbiliTheme.textPrimary)
+                            .lineLimit(1)
+                        if detail.pubTs > 0 {
+                            Text(BiliFormat.relativeDate(detail.pubTs))
+                                .font(.caption)
+                                .foregroundStyle(IbiliTheme.textSecondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(detail.author.mid <= 0)
+            .frame(width: contentWidth, alignment: .leading)
+
+            ArticleStatRow(detail: detail, onShare: {
+                shareSheet = ShareSheetItem(url: detail.url)
+            })
+            .frame(width: contentWidth, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+    }
+
+    private func articleBlocks(_ detail: ArticleDetailDTO) -> [ArticleVirtualBlock] {
+        detail.blocks.enumerated().map { ArticleVirtualBlock(index: $0.offset, block: $0.element) }
+    }
+
+    private func articleCommentLeadingRows(_ detail: ArticleDetailDTO) -> [CommentVirtualizedLeadingRow] {
+        var rows = articleBlocks(detail).map { item in
+            CommentVirtualizedLeadingRow(
+                id: "article-block-\(item.index)",
+                version: item.block
+            ) { width in
+                AnyView(
+                    ArticleBlockView(block: item.block, contentWidth: width, onOpenImage: openImage)
+                        .frame(width: width, alignment: .leading)
+                        .padding(.bottom, 14)
+                )
             }
         }
+        rows.append(CommentVirtualizedLeadingRow(
+            id: "article-comment-divider",
+            version: detail.id
+        ) { width in
+            AnyView(
+                Divider()
+                    .padding(.top, 4)
+                    .frame(width: width)
+            )
+        })
+        return rows
     }
 
     private func openImage(_ url: String) {

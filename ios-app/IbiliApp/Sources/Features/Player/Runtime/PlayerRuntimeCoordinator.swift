@@ -53,12 +53,14 @@ final class PlayerRuntimeCoordinator {
 
     func retainSessions(root: DeepLinkRouter.PlayerRoute?,
                         stack: [DeepLinkRouter.PlayerRoute],
-                        foregroundRouteID: PlayerSessionID? = nil) {
+                        foregroundRouteID: PlayerSessionID?) {
         var retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
         if let pictureInPictureRouteID {
             retainedIDs.insert(pictureInPictureRouteID)
         }
-        let activeForegroundRouteID = foregroundRouteID ?? stack.last?.id ?? root?.id
+        // `nil` is meaningful: media routes may still be retained below a
+        // user/search/article route, but none of them is currently visible.
+        let activeForegroundRouteID = foregroundRouteID
         for routeID in retainedIDs {
             cancelPendingTeardown(for: routeID)
         }

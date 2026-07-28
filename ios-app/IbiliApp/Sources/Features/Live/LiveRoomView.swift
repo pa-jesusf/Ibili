@@ -30,9 +30,9 @@ final class LiveRuntimeCoordinator {
 
     func retainSessions(root: DeepLinkRouter.LiveRoute?,
                         stack: [DeepLinkRouter.LiveRoute],
-                        foregroundRouteID: PlayerSessionID? = nil) {
+                        foregroundRouteID: PlayerSessionID?) {
         let retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
-        let activeForegroundRouteID = foregroundRouteID ?? stack.last?.id ?? root?.id
+        let activeForegroundRouteID = foregroundRouteID
         for routeID in retainedIDs {
             cancelPendingTeardown(for: routeID)
         }

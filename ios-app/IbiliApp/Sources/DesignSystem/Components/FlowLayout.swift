@@ -55,7 +55,7 @@ struct FlowLayout: Layout {
         var rows: [Row] = []
         var current = Row()
         for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
+            let size = constrainedSize(for: subviews[index], maxWidth: maxWidth)
             let projected = current.indices.isEmpty
                 ? size.width
                 : current.width + spacing + size.width
@@ -74,5 +74,19 @@ struct FlowLayout: Layout {
         }
         if !current.indices.isEmpty { rows.append(current) }
         return rows
+    }
+
+    private func constrainedSize(for subview: LayoutSubview, maxWidth: CGFloat) -> CGSize {
+        let ideal = subview.sizeThatFits(.unspecified)
+        guard maxWidth.isFinite, maxWidth > 0, ideal.width > maxWidth else {
+            return ideal
+        }
+        let constrained = subview.sizeThatFits(
+            ProposedViewSize(width: maxWidth, height: nil)
+        )
+        return CGSize(
+            width: min(maxWidth, constrained.width),
+            height: constrained.height
+        )
     }
 }

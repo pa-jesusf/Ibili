@@ -50,4 +50,26 @@ final class PlayerSessionBehaviorTests: XCTestCase {
         state.apply(.playbackIntentChanged(.play))
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
     }
+
+    func testSystemPauseDoesNotOverwritePlayingIntentWhileAppIsInactive() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.systemTransitionChanged(true))
+
+        XCTAssertFalse(state.apply(.observedTimeControlStatus(.paused)))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
+
+        state.apply(.systemTransitionChanged(false))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
+    }
+
+    func testExplicitPauseDuringSystemTransitionRemainsPausedOnReturn() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.systemTransitionChanged(true))
+        state.apply(.playbackIntentChanged(.pause))
+        state.apply(.systemTransitionChanged(false))
+
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
+    }
 }

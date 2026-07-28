@@ -34,13 +34,41 @@ private struct CommentComposerContext: Identifiable {
     }
 }
 
+struct CommentVirtualizedLeadingRow: Identifiable, Hashable {
+    let id: AnyHashable
+    let version: AnyHashable
+    private let contentProvider: (CGFloat) -> AnyView
+
+    init<ID: Hashable, Version: Hashable>(
+        id: ID,
+        version: Version,
+        content: @escaping (CGFloat) -> AnyView
+    ) {
+        self.id = AnyHashable(id)
+        self.version = AnyHashable(version)
+        self.contentProvider = content
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.version == rhs.version
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(version)
+    }
+
+    func content(width: CGFloat) -> AnyView {
+        contentProvider(width)
+    }
+}
+
 /// Top-level comment list. Each row taps into a `CommentThreadSheet`
 /// when the comment has nested replies.
 ///
-/// Video-detail comments use the shared UIKit virtualized collection so
-/// rows are reused and diffed. Embedded article/dynamic comments retain the
-/// lazy inline mode because their parent owns the page scroll. Avatar fetches
-/// are cache-backed, while rich text parsing remains local to each reused row.
+/// Full-page comments use the shared UIKit virtualized collection so rows are
+/// reused and diffed. Feature pages can prepend independently reusable rows to
+/// the same scroll owner; inline mode remains available for parent-owned scrolls.
 struct CommentListView: View {
     let oid: Int64
     /// `kind` arg for the comment API. 1 = video, 11 = image post,
@@ -54,6 +82,9 @@ struct CommentListView: View {
     private let bottomContentInset: CGFloat
     private let onScrollOffsetChange: ((CGFloat) -> Void)?
     private let virtualizedHeader: (() -> AnyView)?
+    private let virtualizedHeaderVersion: AnyHashable?
+    private let virtualizedLeadingRows: [CommentVirtualizedLeadingRow]
+    private let virtualizedRefreshAction: (() async -> Void)?
     @State private var thread: ReplyItemDTO?
     @State private var composer: CommentComposerContext?
     @EnvironmentObject private var session: AppSession
@@ -66,7 +97,10 @@ struct CommentListView: View {
          scrollToTopSignal: Int = 0,
          bottomContentInset: CGFloat = 24,
          onScrollOffsetChange: ((CGFloat) -> Void)? = nil,
-         virtualizedHeader: (() -> AnyView)? = nil) {
+         virtualizedHeader: (() -> AnyView)? = nil,
+         virtualizedHeaderVersion: AnyHashable? = nil,
+         virtualizedLeadingRows: [CommentVirtualizedLeadingRow] = [],
+         virtualizedRefreshAction: (() async -> Void)? = nil) {
         self.oid = oid
         self.kind = kind
         self.providedViewModel = viewModel
@@ -75,6 +109,9 @@ struct CommentListView: View {
         self.bottomContentInset = bottomContentInset
         self.onScrollOffsetChange = onScrollOffsetChange
         self.virtualizedHeader = virtualizedHeader
+        self.virtualizedHeaderVersion = virtualizedHeaderVersion
+        self.virtualizedLeadingRows = virtualizedLeadingRows
+        self.virtualizedRefreshAction = virtualizedRefreshAction
     }
 
     private var currentViewModel: CommentListViewModel {
@@ -96,7 +133,10 @@ struct CommentListView: View {
                     scrollToTopSignal: scrollToTopSignal,
                     bottomContentInset: bottomContentInset,
                     onScrollOffsetChange: onScrollOffsetChange,
-                    virtualizedHeader: virtualizedHeader
+                    virtualizedHeader: virtualizedHeader,
+                    virtualizedHeaderVersion: virtualizedHeaderVersion,
+                    virtualizedLeadingRows: virtualizedLeadingRows,
+                    virtualizedRefreshAction: virtualizedRefreshAction
                 )
             } else {
                 CommentListContent(
@@ -111,7 +151,10 @@ struct CommentListView: View {
                     scrollToTopSignal: scrollToTopSignal,
                     bottomContentInset: bottomContentInset,
                     onScrollOffsetChange: onScrollOffsetChange,
-                    virtualizedHeader: virtualizedHeader
+                    virtualizedHeader: virtualizedHeader,
+                    virtualizedHeaderVersion: virtualizedHeaderVersion,
+                    virtualizedLeadingRows: virtualizedLeadingRows,
+                    virtualizedRefreshAction: virtualizedRefreshAction
                 )
             }
         }
@@ -157,20 +200,32 @@ struct CommentListView: View {
     }
 }
 
+private enum CommentVirtualItemID: Hashable {
+    case leading(AnyHashable)
+    case commentHeader
+    case pinned(Int64)
+    case reply(Int64)
+}
+
 private enum CommentVirtualItem: Identifiable, Hashable {
+    case leading(CommentVirtualizedLeadingRow)
+    case commentHeader(CommentVirtualizedSectionVersion)
     case pinned(ReplyItemDTO)
     case reply(ReplyItemDTO)
 
-    var id: String {
+    var id: CommentVirtualItemID {
         switch self {
-        case .pinned(let item): return "pinned-\(item.rpid)"
-        case .reply(let item): return "reply-\(item.rpid)"
+        case .leading(let item): return .leading(item.id)
+        case .commentHeader: return .commentHeader
+        case .pinned(let item): return .pinned(item.rpid)
+        case .reply(let item): return .reply(item.rpid)
         }
     }
 
-    var reply: ReplyItemDTO {
+    var reply: ReplyItemDTO? {
         switch self {
         case .pinned(let item), .reply(let item): return item
+        case .leading, .commentHeader: return nil
         }
     }
 
@@ -178,6 +233,14 @@ private enum CommentVirtualItem: Identifiable, Hashable {
         if case .pinned = self { return true }
         return false
     }
+}
+
+private struct CommentVirtualizedSectionVersion: Hashable {
+    let total: Int64
+    let sort: Int32
+    let hasComments: Bool
+    let isLoading: Bool
+    let isLoggedIn: Bool
 }
 
 private struct CommentListContent: View {
@@ -193,6 +256,9 @@ private struct CommentListContent: View {
     let bottomContentInset: CGFloat
     let onScrollOffsetChange: ((CGFloat) -> Void)?
     let virtualizedHeader: (() -> AnyView)?
+    let virtualizedHeaderVersion: AnyHashable?
+    let virtualizedLeadingRows: [CommentVirtualizedLeadingRow]
+    let virtualizedRefreshAction: (() async -> Void)?
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.commentViewportHeight) private var commentViewportHeight
@@ -272,41 +338,29 @@ private struct CommentListContent: View {
                 spacing: 0,
                 estimatedHeight: 180
             ),
-            header: {
-                AnyView(
-                    VStack(spacing: 0) {
-                        if let virtualizedHeader {
-                            virtualizedHeader()
-                        }
-                        commentHeader
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                        if virtualizedHeader != nil,
-                           viewModel.items.isEmpty,
-                           viewModel.top == nil {
-                            if viewModel.isLoading {
-                                InitialLoadingView(fillsAvailableSpace: false)
-                            } else {
-                                emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
-                                    .padding(.vertical, 30)
-                            }
-                        }
-                    }
-                )
-            },
+            header: virtualizedHeader,
+            headerVersion: virtualizedHeaderVersion,
             footer: commentFooter,
             showsRefresh: true,
             isRefreshing: viewModel.isLoading,
             scrollToTopSignal: scrollToTopSignal,
             prefetchThreshold: 4,
             onRefresh: {
-                Task { await viewModel.refresh(oid: oid, kind: kind) }
+                Task {
+                    if let virtualizedRefreshAction {
+                        async let headerRefresh: Void = virtualizedRefreshAction()
+                        async let commentRefresh: Void = viewModel.refresh(oid: oid, kind: kind)
+                        _ = await (headerRefresh, commentRefresh)
+                    } else {
+                        await viewModel.refresh(oid: oid, kind: kind)
+                    }
+                }
             },
             onLoadMore: {
                 Task { await viewModel.loadMore() }
             },
             onPrefetch: { items, _ in
-                let faces = items.map(\.reply.face).filter { !$0.isEmpty }
+                let faces = items.compactMap { $0.reply?.face }.filter { !$0.isEmpty }
                 CoverImagePrefetcher.shared.prefetch(
                     faces,
                     targetPointSize: CGSize(width: 64, height: 64),
@@ -317,33 +371,19 @@ private struct CommentListContent: View {
                 onScrollOffsetChange?(offset)
             }
         ) { element, width in
-            let item = element.reply
-            return AnyView(
-                VStack(spacing: 0) {
-                    CommentRow(
-                        item: item,
-                        upperMid: viewModel.upperMid,
-                        isPinned: element.isPinned,
-                        onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } },
-                        onReply: session.isLoggedIn ? { onReply(item, item) } : nil,
-                        onOpenUser: onOpenUser
-                ) { thread = item }
-                Divider()
-            }
-                .environmentObject(settings)
-                .environment(\.commentViewportHeight, commentViewportHeight)
-                .environment(\.commentContentWidth, max(1, width))
-            )
+            virtualizedRow(element, width: width)
         }
         .ignoresSafeArea(.container, edges: .bottom)
         .modifier(ProMotionScrollHint())
         .overlay {
             if virtualizedHeader == nil,
+               virtualizedLeadingRows.isEmpty,
                viewModel.items.isEmpty,
                viewModel.top == nil,
                viewModel.isLoading {
                 InitialLoadingView()
             } else if virtualizedHeader == nil,
+                      virtualizedLeadingRows.isEmpty,
                       viewModel.items.isEmpty,
                       viewModel.top == nil {
                 emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
@@ -353,10 +393,60 @@ private struct CommentListContent: View {
     }
 
     private var virtualItems: [CommentVirtualItem] {
-        var result: [CommentVirtualItem] = []
+        var result = virtualizedLeadingRows.map(CommentVirtualItem.leading)
+        result.append(.commentHeader(commentSectionVersion))
         if let top = viewModel.top { result.append(.pinned(top)) }
         result.append(contentsOf: viewModel.items.map(CommentVirtualItem.reply))
         return result
+    }
+
+    private var commentSectionVersion: CommentVirtualizedSectionVersion {
+        CommentVirtualizedSectionVersion(
+            total: viewModel.total,
+            sort: viewModel.sort,
+            hasComments: viewModel.top != nil || !viewModel.items.isEmpty,
+            isLoading: viewModel.isLoading,
+            isLoggedIn: session.isLoggedIn
+        )
+    }
+
+    private func virtualizedRow(_ element: CommentVirtualItem, width: CGFloat) -> AnyView {
+        switch element {
+        case .leading(let row):
+            return row.content(width: width)
+        case .commentHeader:
+            return AnyView(
+                VStack(spacing: 0) {
+                    commentHeader
+                        .padding(.top, 12)
+                    if virtualizedHeader != nil || !virtualizedLeadingRows.isEmpty {
+                        if viewModel.items.isEmpty, viewModel.top == nil, viewModel.isLoading {
+                            InitialLoadingView(fillsAvailableSpace: false)
+                        } else if viewModel.items.isEmpty, viewModel.top == nil {
+                            emptyState(title: "暂无评论", symbol: "bubble.left.and.bubble.right")
+                                .padding(.vertical, 30)
+                        }
+                    }
+                }
+            )
+        case .pinned(let item), .reply(let item):
+            return AnyView(
+                VStack(spacing: 0) {
+                    CommentRow(
+                        item: item,
+                        upperMid: viewModel.upperMid,
+                        isPinned: element.isPinned,
+                        onLike: { Task { await viewModel.toggleLike(rpid: item.rpid) } },
+                        onReply: session.isLoggedIn ? { onReply(item, item) } : nil,
+                        onOpenUser: onOpenUser
+                    ) { thread = item }
+                    Divider()
+                }
+                .environmentObject(settings)
+                .environment(\.commentViewportHeight, commentViewportHeight)
+                .environment(\.commentContentWidth, max(1, width))
+            )
+        }
     }
 
     private var commentFooter: (() -> AnyView)? {
