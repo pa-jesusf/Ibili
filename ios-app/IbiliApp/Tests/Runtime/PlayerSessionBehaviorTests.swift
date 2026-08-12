@@ -28,14 +28,89 @@ final class PlayerSessionBehaviorTests: XCTestCase {
         var state = PlayerSessionBehaviorState()
 
         state.apply(.interfaceActivated)
-        state.apply(.pictureInPictureChanged(true))
+        state.apply(.pictureInPictureTransition(.started))
         state.apply(.interfaceDeactivated)
 
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
 
-        state.apply(.pictureInPictureChanged(false))
+        state.apply(.pictureInPictureTransition(.stopped(.restored)))
 
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
+    }
+
+    func testClosingPictureInPicturePausesEvenWhenPlayerInterfaceIsStillActive() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.pictureInPictureTransition(.started))
+
+        state.apply(.pictureInPictureTransition(.stopped(.closed)))
+
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
+        XCTAssertFalse(state.pictureInPictureIsActive)
+    }
+
+    func testRestoringPictureInPicturePreservesPlayingIntent() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.pictureInPictureTransition(.started))
+
+        state.apply(.pictureInPictureTransition(.stopped(.restored)))
+
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
+        XCTAssertFalse(state.pictureInPictureIsActive)
+    }
+
+    func testFailedPictureInPictureStartDoesNotPauseInlinePlayback() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+
+        state.apply(.pictureInPictureTransition(.stopped(.failedToStart)))
+
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
+    }
+
+    func testLongSuspensionRebuildsPausedRemoteSource() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.playbackIntentChanged(.pause))
+
+        XCTAssertEqual(
+            state.systemTransitionRecoveryAction(
+                inactiveDuration: 31,
+                engineIsAlive: true,
+                sourceIsOffline: false
+            ),
+            .rebuildSource
+        )
+    }
+
+    func testBriefSuspensionKeepsPausedRemoteSource() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.playbackIntentChanged(.pause))
+
+        XCTAssertEqual(
+            state.systemTransitionRecoveryAction(
+                inactiveDuration: 29,
+                engineIsAlive: true,
+                sourceIsOffline: false
+            ),
+            .none
+        )
+    }
+
+    func testPlayingSourceUsesProgressProbeAfterSuspension() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+
+        XCTAssertEqual(
+            state.systemTransitionRecoveryAction(
+                inactiveDuration: 6,
+                engineIsAlive: true,
+                sourceIsOffline: false
+            ),
+            .verifyPlaybackProgress
+        )
     }
 
     func testExplicitPlaybackIntentChangeUpdatesDesiredCommand() {

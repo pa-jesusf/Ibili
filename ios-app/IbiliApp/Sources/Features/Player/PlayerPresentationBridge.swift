@@ -20,7 +20,7 @@ enum PlayerTransientPauseSuppressionContext: String {
 }
 
 enum PlayerPresentationEvent {
-    case pictureInPictureChanged(Bool, PlayerPresentationIdentity)
+    case pictureInPictureTransition(PlayerPictureInPictureTransition, PlayerPresentationIdentity)
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
     case nativeFullscreenWillBegin(PlayerPresentationIdentity)
     case nativeFullscreenDidBegin(PlayerPresentationIdentity)
@@ -255,6 +255,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         var assignedPlayerID: ObjectIdentifier?
         private var holdSpeedBadgeIsVisible = false
         private var isDismantled = false
+        private var pictureInPictureRestoreSucceeded = false
 
         init(parent: PlayerContainer) {
             self.parent = parent
@@ -328,8 +329,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
             guard !isDismantled else { return }
+            pictureInPictureRestoreSucceeded = false
             AppLog.info("player", "PiP 即将开始")
-            parent.onPresentationEvent(.pictureInPictureChanged(true, presentationIdentity(for: playerViewController)))
+            parent.onPresentationEvent(.pictureInPictureTransition(.started, presentationIdentity(for: playerViewController)))
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,
@@ -338,13 +340,21 @@ struct PlayerContainer: UIViewControllerRepresentable {
             AppLog.warning("player", "PiP 启动失败", metadata: [
                 "error": error.localizedDescription,
             ])
-            parent.onPresentationEvent(.pictureInPictureChanged(false, presentationIdentity(for: playerViewController)))
+            parent.onPresentationEvent(.pictureInPictureTransition(
+                .stopped(.failedToStart),
+                presentationIdentity(for: playerViewController)
+            ))
         }
 
         func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
             guard !isDismantled else { return }
-            AppLog.info("player", "PiP 已停止")
-            parent.onPresentationEvent(.pictureInPictureChanged(false, presentationIdentity(for: playerViewController)))
+            let reason: PlayerPictureInPictureStopReason = pictureInPictureRestoreSucceeded ? .restored : .closed
+            pictureInPictureRestoreSucceeded = false
+            AppLog.info("player", "PiP 已停止", metadata: ["reason": reason.rawValue])
+            parent.onPresentationEvent(.pictureInPictureTransition(
+                .stopped(reason),
+                presentationIdentity(for: playerViewController)
+            ))
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,
@@ -354,7 +364,13 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 return
             }
             AppLog.info("player", "PiP 请求恢复原播放器界面")
-            parent.onPresentationEvent(.pictureInPictureRestoreRequested(presentationIdentity(for: playerViewController), completionHandler))
+            parent.onPresentationEvent(.pictureInPictureRestoreRequested(
+                presentationIdentity(for: playerViewController),
+                { [weak self] restored in
+                    self?.pictureInPictureRestoreSucceeded = restored
+                    completionHandler(restored)
+                }
+            ))
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,

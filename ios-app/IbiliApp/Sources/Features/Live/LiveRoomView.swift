@@ -693,8 +693,11 @@ struct LiveRoomView: View {
         switch event {
         case .pictureInPictureRestoreRequested(_, let completion):
             completion(false)
-        case .pictureInPictureChanged:
-            break
+        case .pictureInPictureTransition(let transition, let identity):
+            guard identity.sessionID == vm.sessionID else { return }
+            if case .stopped(.closed) = transition {
+                vm.suspendPlayback()
+            }
         case .nativeFullscreenWillBegin(let identity):
             guard identity.sessionID == vm.sessionID else { return }
             beginNativePlayerFullscreenExit()

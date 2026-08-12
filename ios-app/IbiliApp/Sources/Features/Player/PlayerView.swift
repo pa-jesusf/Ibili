@@ -181,8 +181,13 @@ final class PlayerViewModel: ObservableObject {
             return "interfaceActivated"
         case .interfaceDeactivated:
             return "interfaceDeactivated"
-        case .pictureInPictureChanged(let isActive):
-            return "pictureInPictureChanged(\(isActive))"
+        case .pictureInPictureTransition(let transition):
+            switch transition {
+            case .started:
+                return "pictureInPictureStarted"
+            case .stopped(let reason):
+                return "pictureInPictureStopped(\(reason.rawValue))"
+            }
         case .systemTransitionChanged(let isActive):
             return "systemTransitionChanged(\(isActive))"
         case .playbackIntentChanged(let intent):
@@ -460,13 +465,13 @@ final class PlayerViewModel: ObservableObject {
     var isEngineAlive: Bool { HLSProxyEngine.shared.isAlive }
 
     func handle(_ event: PlayerSessionEvent) {
-        guard !isClosing || event == .interfaceDeactivated || event == .pictureInPictureChanged(false) else { return }
+        guard !isClosing || event == .interfaceDeactivated || event.isPictureInPictureStop else { return }
         switch event {
         case .interfaceActivated:
             PlayerPlaybackCoordinator.shared.activate(self)
             PlayerNowPlayingCoordinator.shared.activate(self)
-        case .pictureInPictureChanged(let isActive):
-            if isActive {
+        case .pictureInPictureTransition(let transition):
+            if transition.isActive {
                 endTemporarySpeedBoost()
                 PlayerPlaybackCoordinator.shared.activate(self)
                 PlayerNowPlayingCoordinator.shared.activate(self)
@@ -494,7 +499,7 @@ final class PlayerViewModel: ObservableObject {
         guard applied else { return }
 
         switch event {
-        case .interfaceActivated, .interfaceDeactivated, .pictureInPictureChanged, .playbackIntentChanged:
+        case .interfaceActivated, .interfaceDeactivated, .pictureInPictureTransition, .playbackIntentChanged:
             applyPlaybackIntent()
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
         case .systemTransitionChanged(let isActive):
@@ -649,17 +654,21 @@ final class PlayerViewModel: ObservableObject {
         guard behaviorState.isInterfacePresentingPlayer else { return }
         guard let trackedPlayer = player else { return }
 
-        if !isEngineAlive {
-            await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-engine-dead")
+        let recoveryAction = behaviorState.systemTransitionRecoveryAction(
+            inactiveDuration: inactiveDuration,
+            engineIsAlive: isEngineAlive,
+            sourceIsOffline: isCurrentSourceOffline
+        )
+        switch recoveryAction {
+        case .none:
             return
+        case .rebuildSource:
+            let reason = isEngineAlive ? "long-paused-suspension" : "engine-dead"
+            await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-\(reason)")
+            return
+        case .verifyPlaybackProgress:
+            break
         }
-
-        // A brief app switch should not churn a healthy HLS source. Longer
-        // suspension can leave AVPlayer waiting forever even though the
-        // in-process proxy listener itself has rebound successfully.
-        guard inactiveDuration >= 6,
-              shouldHoldAudioSession,
-              !isCurrentSourceOffline else { return }
 
         let trackedItem = trackedPlayer.currentItem
         let baselineSeconds = trackedPlayer.currentTime().seconds
@@ -2045,7 +2054,7 @@ struct PlayerView: View {
     let item: FeedItemDTO
     let offlineOnly: Bool
     @StateObject private var vm: PlayerViewModel
-    private let onPictureInPictureActiveChange: ((Bool) -> Void)?
+    private let onPictureInPictureTransition: ((PlayerPictureInPictureTransition) -> Void)?
     private let onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))?
     /// Plain reference type — see `DanmakuController` notes.
     @State private var danmaku = DanmakuController()
@@ -2103,11 +2112,11 @@ struct PlayerView: View {
     init(item: FeedItemDTO,
          offlineOnly: Bool = false,
          viewModel: PlayerViewModel? = nil,
-         onPictureInPictureActiveChange: ((Bool) -> Void)? = nil,
+         onPictureInPictureTransition: ((PlayerPictureInPictureTransition) -> Void)? = nil,
          onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))? = nil) {
         self.item = item
         self.offlineOnly = offlineOnly
-        self.onPictureInPictureActiveChange = onPictureInPictureActiveChange
+        self.onPictureInPictureTransition = onPictureInPictureTransition
         self.onPictureInPictureRestore = onPictureInPictureRestore
         _vm = StateObject(wrappedValue: viewModel ?? PlayerViewModel())
     }
@@ -2118,7 +2127,7 @@ struct PlayerView: View {
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
-        case .pictureInPictureChanged(let isActive, let identity):
+        case .pictureInPictureTransition(let transition, let identity):
             guard presentationIdentityMatchesCurrentRoute(identity) else {
                 AppLog.debug("player", "忽略旧播放器 PiP 回调", metadata: [
                     "eventSessionID": identity.sessionID.uuidString,
@@ -2126,10 +2135,10 @@ struct PlayerView: View {
                 ])
                 return
             }
-            if let onPictureInPictureActiveChange {
-                onPictureInPictureActiveChange(isActive)
+            if let onPictureInPictureTransition {
+                onPictureInPictureTransition(transition)
             } else {
-                vm.handle(.pictureInPictureChanged(isActive))
+                vm.handle(.pictureInPictureTransition(transition))
             }
         case .pictureInPictureRestoreRequested(let identity, let completion):
             guard presentationIdentityMatchesCurrentRoute(identity) else {

@@ -13,18 +13,48 @@ enum PlayerDesiredPlaybackCommand: Equatable {
     case pause
 }
 
+enum PlayerPictureInPictureStopReason: String, Equatable {
+    case closed
+    case restored
+    case failedToStart
+}
+
+enum PlayerPictureInPictureTransition: Equatable {
+    case started
+    case stopped(PlayerPictureInPictureStopReason)
+
+    var isActive: Bool {
+        if case .started = self { return true }
+        return false
+    }
+}
+
+enum PlayerSystemTransitionRecoveryAction: Equatable {
+    case none
+    case rebuildSource
+    case verifyPlaybackProgress
+}
+
 enum PlayerSessionEvent: Equatable {
     case interfaceActivated
     case interfaceDeactivated
-    case pictureInPictureChanged(Bool)
+    case pictureInPictureTransition(PlayerPictureInPictureTransition)
     case systemTransitionChanged(Bool)
     case playbackIntentChanged(PlayerIntent)
     case prepareAutoplayForMediaReplacement
     case suppressNextObservedIntent(PlayerIntent)
     case observedTimeControlStatus(AVPlayer.TimeControlStatus)
+
+    var isPictureInPictureStop: Bool {
+        if case .pictureInPictureTransition(.stopped) = self { return true }
+        return false
+    }
 }
 
 struct PlayerSessionBehaviorState: Equatable {
+    private static let playingRecoveryProbeDelay: TimeInterval = 6
+    private static let pausedSourceRebuildDelay: TimeInterval = 30
+
     private(set) var intent: PlayerIntent = .play
     private(set) var hasPlaybackFocus = false
     private(set) var interfaceIsActive = false
@@ -63,8 +93,8 @@ struct PlayerSessionBehaviorState: Equatable {
         case .interfaceDeactivated:
             deactivateInterface()
             return true
-        case .pictureInPictureChanged(let isActive):
-            setPictureInPictureActive(isActive)
+        case .pictureInPictureTransition(let transition):
+            applyPictureInPictureTransition(transition)
             return true
         case .systemTransitionChanged(let isActive):
             systemTransitionIsActive = isActive
@@ -101,13 +131,42 @@ struct PlayerSessionBehaviorState: Equatable {
         }
     }
 
-    mutating func setPictureInPictureActive(_ isActive: Bool) {
-        pictureInPictureIsActive = isActive
-        if isActive {
+    mutating func applyPictureInPictureTransition(_ transition: PlayerPictureInPictureTransition) {
+        pictureInPictureIsActive = transition.isActive
+        if transition.isActive {
             hasPlaybackFocus = true
-        } else if !interfaceIsActive {
+            return
+        }
+
+        if !interfaceIsActive {
             hasPlaybackFocus = false
         }
+        if case .stopped(.closed) = transition {
+            intent = .pause
+            suppressedObservedIntent = nil
+            suppressedObservedIntentExpiresAt = nil
+        }
+    }
+
+    func systemTransitionRecoveryAction(
+        inactiveDuration: TimeInterval,
+        engineIsAlive: Bool,
+        sourceIsOffline: Bool
+    ) -> PlayerSystemTransitionRecoveryAction {
+        guard isInterfacePresentingPlayer else { return .none }
+        if !engineIsAlive { return .rebuildSource }
+        guard !sourceIsOffline else { return .none }
+
+        if intent == .play, inactiveDuration >= Self.playingRecoveryProbeDelay {
+            return .verifyPlaybackProgress
+        }
+        // A paused AVPlayer performs no segment requests while iOS suspends
+        // the app, so neither AVPlayer nor the proxy can report a stale source.
+        // Recreate the item before the next user play after a real suspension.
+        if intent == .pause, inactiveDuration >= Self.pausedSourceRebuildDelay {
+            return .rebuildSource
+        }
+        return .none
     }
 
     mutating func setIntent(_ intent: PlayerIntent) {

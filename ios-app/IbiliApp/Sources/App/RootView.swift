@@ -827,7 +827,7 @@ private struct DeepLinkPlayerHost: View {
     private func destinationView(for route: DeepLinkRouter.SessionRoute) -> some View {
         DeepLinkRouteContent.destinationView(
             for: route,
-            onPictureInPictureActiveChange: handlePictureInPictureChange,
+            onPictureInPictureTransition: handlePictureInPictureTransition,
             onPictureInPictureRestore: restorePictureInPicture
         )
     }
@@ -866,12 +866,14 @@ private struct DeepLinkPlayerHost: View {
         }
     }
 
-    private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
-        PlayerRuntimeCoordinator.shared.handle(.pictureInPictureChanged(isActive), for: routeID)
-        PlayerRuntimeCoordinator.shared.setPictureInPictureActive(
-            isActive,
+    private func handlePictureInPictureTransition(
+        _ transition: PlayerPictureInPictureTransition,
+        routeID: UUID
+    ) {
+        PlayerRuntimeCoordinator.shared.handlePictureInPictureTransition(
+            transition,
             for: routeID,
-            snapshot: isActive ? router.snapshot : nil
+            snapshot: transition.isActive ? router.snapshot : nil
         )
         syncPlayerSessions()
     }
@@ -1012,14 +1014,14 @@ struct DeepLinkRouteContent {
     @MainActor
     static func destinationView(
         for route: DeepLinkRouter.SessionRoute,
-        onPictureInPictureActiveChange: @escaping (Bool, UUID) -> Void,
+        onPictureInPictureTransition: @escaping (PlayerPictureInPictureTransition, UUID) -> Void,
         onPictureInPictureRestore: @escaping (UUID, @escaping (Bool) -> Void) -> Void
     ) -> some View {
         switch route {
         case .player(let playerRoute):
             playerDestination(
                 for: playerRoute,
-                onPictureInPictureActiveChange: onPictureInPictureActiveChange,
+                onPictureInPictureTransition: onPictureInPictureTransition,
                 onPictureInPictureRestore: onPictureInPictureRestore
             )
             .id(playerRoute.navigationContentIdentity)
@@ -1060,15 +1062,15 @@ struct DeepLinkRouteContent {
     @MainActor
     static func playerDestination(
         for route: DeepLinkRouter.PlayerRoute,
-        onPictureInPictureActiveChange: @escaping (Bool, UUID) -> Void,
+        onPictureInPictureTransition: @escaping (PlayerPictureInPictureTransition, UUID) -> Void,
         onPictureInPictureRestore: @escaping (UUID, @escaping (Bool) -> Void) -> Void
     ) -> some View {
         PlayerView(
             item: route.item,
             offlineOnly: route.offlineOnly,
             viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id),
-            onPictureInPictureActiveChange: { isActive in
-                onPictureInPictureActiveChange(isActive, route.id)
+            onPictureInPictureTransition: { transition in
+                onPictureInPictureTransition(transition, route.id)
             },
             onPictureInPictureRestore: { completion in
                 onPictureInPictureRestore(route.id, completion)
@@ -1100,7 +1102,7 @@ private struct DeepLinkSplitHost: View {
             .navigationDestination(for: DeepLinkRouter.SessionRoute.self) { route in
                 DeepLinkRouteContent.destinationView(
                     for: route,
-                    onPictureInPictureActiveChange: handlePictureInPictureChange,
+                    onPictureInPictureTransition: handlePictureInPictureTransition,
                     onPictureInPictureRestore: restorePictureInPicture
                 )
                 .id(route.navigationContentIdentity)
@@ -1194,12 +1196,14 @@ private struct DeepLinkSplitHost: View {
         )
     }
 
-    private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
-        PlayerRuntimeCoordinator.shared.handle(.pictureInPictureChanged(isActive), for: routeID)
-        PlayerRuntimeCoordinator.shared.setPictureInPictureActive(
-            isActive,
+    private func handlePictureInPictureTransition(
+        _ transition: PlayerPictureInPictureTransition,
+        routeID: UUID
+    ) {
+        PlayerRuntimeCoordinator.shared.handlePictureInPictureTransition(
+            transition,
             for: routeID,
-            snapshot: isActive ? router.snapshot : nil
+            snapshot: transition.isActive ? router.snapshot : nil
         )
         syncPlayerSessions()
     }

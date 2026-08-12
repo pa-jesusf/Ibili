@@ -472,8 +472,8 @@ struct RootContentNavigationStack<Root: View>: View {
         case .player(let playerRoute):
             DeepLinkRouteContent.playerDestination(
                 for: playerRoute,
-                onPictureInPictureActiveChange: { isActive, routeID in
-                    handlePictureInPictureChange(isActive, routeID: routeID)
+                onPictureInPictureTransition: { transition, routeID in
+                    handlePictureInPictureTransition(transition, routeID: routeID)
                 },
                 onPictureInPictureRestore: { routeID, completion in
                     restorePictureInPicture(routeID: routeID, completion: completion)
@@ -524,12 +524,14 @@ struct RootContentNavigationStack<Root: View>: View {
         }
     }
 
-    private func handlePictureInPictureChange(_ isActive: Bool, routeID: UUID) {
-        PlayerRuntimeCoordinator.shared.handle(.pictureInPictureChanged(isActive), for: routeID)
-        PlayerRuntimeCoordinator.shared.setPictureInPictureActive(
-            isActive,
+    private func handlePictureInPictureTransition(
+        _ transition: PlayerPictureInPictureTransition,
+        routeID: UUID
+    ) {
+        PlayerRuntimeCoordinator.shared.handlePictureInPictureTransition(
+            transition,
             for: routeID,
-            snapshot: isActive ? DeepLinkRouter.SessionSnapshot(
+            snapshot: transition.isActive ? DeepLinkRouter.SessionSnapshot(
                 pending: path.first?.sessionRoute?.rootRoute,
                 path: path.compactMap(\.sessionRoute)
             ) : nil

@@ -23,10 +23,13 @@ final class PlayerRuntimeCoordinator {
         return viewModel
     }
 
-    func setPictureInPictureActive(_ isActive: Bool,
-                                   for routeID: PlayerSessionID,
-                                   snapshot: DeepLinkRouter.SessionSnapshot? = nil) {
-        if isActive {
+    func handlePictureInPictureTransition(
+        _ transition: PlayerPictureInPictureTransition,
+        for routeID: PlayerSessionID,
+        snapshot: DeepLinkRouter.SessionSnapshot? = nil
+    ) {
+        viewModels[routeID]?.handle(.pictureInPictureTransition(transition))
+        if transition.isActive {
             cancelPendingTeardown(for: routeID)
             pictureInPictureRouteID = routeID
             pictureInPictureSnapshot = snapshot
@@ -39,11 +42,6 @@ final class PlayerRuntimeCoordinator {
     func pictureInPictureSnapshot(for routeID: PlayerSessionID) -> DeepLinkRouter.SessionSnapshot? {
         guard pictureInPictureRouteID == routeID else { return nil }
         return pictureInPictureSnapshot
-    }
-
-    func handle(_ event: PlayerSessionEvent, for routeID: PlayerSessionID) {
-        guard let viewModel = viewModels[routeID] else { return }
-        viewModel.handle(event)
     }
 
     func prepareForDismissal(routeID: PlayerSessionID) {
