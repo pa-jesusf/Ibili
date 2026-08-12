@@ -236,6 +236,34 @@ final class HomeFeedCollectionLifecycleTests: XCTestCase {
         controller.view.layoutIfNeeded()
     }
 
+    func testRotationResolvesCardWidthFromFinalLayoutAttributes() {
+        let controller = HomeFeedCollectionViewController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer {
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+
+        update(controller, items: makeItems(range: 1...12), isLoading: false, isEnd: false)
+        controller.view.layoutIfNeeded()
+
+        window.frame = CGRect(x: 0, y: 0, width: 844, height: 390)
+        controller.view.frame = window.bounds
+        controller.view.layoutIfNeeded()
+        let collectionView = collectionView(in: controller)
+        collectionView.collectionViewLayout.invalidateLayout()
+        collectionView.layoutIfNeeded()
+
+        let indexPath = IndexPath(item: 0, section: 0)
+        guard let finalWidth = collectionView.collectionViewLayout
+            .layoutAttributesForItem(at: indexPath)?.bounds.width else {
+            return XCTFail("Expected final home feed layout attributes")
+        }
+        XCTAssertEqual(controller.cardWidth(at: indexPath), finalWidth, accuracy: 0.5)
+    }
+
     private func update(
         _ controller: HomeFeedCollectionViewController,
         items: [FeedItemDTO],

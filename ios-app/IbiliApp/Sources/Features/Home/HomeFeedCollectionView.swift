@@ -88,6 +88,7 @@ final class HomeFeedCollectionViewController: UIViewController {
     private var footerState: HomeFeedFooterState?
     private var configuredColumns = 1
     private var layoutConfiguration: HomeFeedGridLayoutMetrics?
+    private var layoutReconfigurationWork: DispatchWorkItem?
     private var lastScrollToTopSignal = 0
     private var visibleIndices: Set<Int> = []
     private var viewportPublishScheduled = false
@@ -138,6 +139,12 @@ final class HomeFeedCollectionViewController: UIViewController {
         super.viewDidLayoutSubviews()
         updateLayoutIfNeeded()
         applyPendingAnchorIfPossible()
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        guard isViewLoaded, collectionView != nil else { return }
+        updateLayoutIfNeeded()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -234,18 +241,8 @@ final class HomeFeedCollectionViewController: UIViewController {
     }
 
     private func configureDataSource() {
-        let cardRegistration = UICollectionView.CellRegistration<HomeFeedCardCell, FeedStableIdentity> { [weak self] cell, _, id in
-            guard let self,
-                  let item = self.itemByID[id],
-                  let model = self.modelByID[id] else { return }
-            cell.configure(
-                item: item,
-                model: model,
-                targetWidth: self.layoutConfiguration?.cardWidth ?? 180,
-                menuAction: { [weak self] action in
-                    self?.onMenuAction(item, action)
-                }
-            )
+        let cardRegistration = UICollectionView.CellRegistration<HomeFeedCardCell, FeedStableIdentity> { [weak self] cell, indexPath, id in
+            self?.configure(cell, id: id, at: indexPath)
         }
         let footerRegistration = UICollectionView.CellRegistration<HomeFeedFooterCell, HomeFeedFooterState> { cell, _, state in
             cell.configure(state)
@@ -345,14 +342,68 @@ final class HomeFeedCollectionViewController: UIViewController {
 
     private func updateLayoutIfNeeded() {
         guard isViewLoaded else { return }
-        let width = max(collectionView.bounds.width, 1)
+        let width = max(
+            collectionView.bounds.width
+                - collectionView.adjustedContentInset.left
+                - collectionView.adjustedContentInset.right,
+            1
+        )
         let next = HomeFeedGridLayoutMetrics(containerWidth: width, columns: configuredColumns, meta: meta)
         guard next != layoutConfiguration else { return }
+        let layoutDefinitionChanged = layoutConfiguration?.columns != next.columns
+            || layoutConfiguration?.meta != next.meta
         layoutConfiguration = next
-        collectionView.setCollectionViewLayout(makeLayout(), animated: false)
-        if !orderedIDs.isEmpty {
-            applySnapshot(structureChanged: false, changedIDs: orderedIDs)
+        if layoutDefinitionChanged {
+            collectionView.setCollectionViewLayout(makeLayout(), animated: false)
+        } else {
+            collectionView.collectionViewLayout.invalidateLayout()
         }
+        scheduleVisibleCardReconfiguration(expectedBoundsWidth: collectionView.bounds.width)
+    }
+
+    private func scheduleVisibleCardReconfiguration(expectedBoundsWidth: CGFloat) {
+        guard expectedBoundsWidth.isFinite, expectedBoundsWidth > 0 else { return }
+        layoutReconfigurationWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  abs(self.collectionView.bounds.width - expectedBoundsWidth) <= 0.5 else { return }
+            self.collectionView.collectionViewLayout.invalidateLayout()
+            self.collectionView.layoutIfNeeded()
+            for indexPath in self.collectionView.indexPathsForVisibleItems where indexPath.section == 0 {
+                guard self.orderedIDs.indices.contains(indexPath.item),
+                      let cell = self.collectionView.cellForItem(at: indexPath) as? HomeFeedCardCell else { continue }
+                self.configure(cell, id: self.orderedIDs[indexPath.item], at: indexPath)
+            }
+        }
+        layoutReconfigurationWork = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func configure(
+        _ cell: HomeFeedCardCell,
+        id: FeedStableIdentity,
+        at indexPath: IndexPath
+    ) {
+        guard let item = itemByID[id], let model = modelByID[id] else { return }
+        cell.configure(
+            item: item,
+            model: model,
+            targetWidth: cardWidth(at: indexPath),
+            menuAction: { [weak self] action in
+                self?.onMenuAction(item, action)
+            }
+        )
+    }
+
+    func cardWidth(at indexPath: IndexPath?) -> CGFloat {
+        if let indexPath,
+           let width = collectionView.collectionViewLayout
+            .layoutAttributesForItem(at: indexPath)?.bounds.width,
+           width.isFinite,
+           width > 0 {
+            return width
+        }
+        return layoutConfiguration?.cardWidth ?? 180
     }
 
     private func scrollToTop(animated: Bool) {
@@ -434,12 +485,15 @@ extension HomeFeedCollectionViewController: UICollectionViewDelegate {
 
 extension HomeFeedCollectionViewController: UICollectionViewDataSourcePrefetching {
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
-        let indices = indexPaths
+        let validIndexPaths = indexPaths
             .filter { $0.section == 0 && orderedIDs.indices.contains($0.item) }
+        let indices = validIndexPaths
             .map(\.item)
         guard !indices.isEmpty else { return }
         let covers = indices.compactMap { itemByID[orderedIDs[$0]]?.cover }
-        let width = layoutConfiguration?.cardWidth ?? 180
+        let width = validIndexPaths.compactMap { cardWidth(at: $0) }.max()
+            ?? layoutConfiguration?.cardWidth
+            ?? 180
         CoverImagePrefetcher.shared.prefetch(
             covers,
             targetPointSize: CGSize(width: width, height: (width / VideoCoverView.aspectRatio).rounded()),

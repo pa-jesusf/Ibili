@@ -141,7 +141,7 @@ final class DynamicLayoutTests: XCTestCase {
         )
     }
 
-    func testPhoneLandscapeAlwaysUsesItsActualContainerWidth() {
+    func testPhoneLandscapeUsesCompactReadingWidth() {
         XCTAssertEqual(
             DynamicLayout.feedWidth(
                 containerSize: CGSize(width: 844, height: 390),
@@ -149,7 +149,31 @@ final class DynamicLayoutTests: XCTestCase {
                 splitRootIsActive: false,
                 splitPreviewLeftWidth: 560
             ),
-            844
+            DynamicLayout.phoneLandscapeMaxFeedWidth
+        )
+    }
+
+    func testNarrowPhoneLandscapeDoesNotAddArtificialWidth() {
+        XCTAssertEqual(
+            DynamicLayout.feedWidth(
+                containerSize: CGSize(width: 568, height: 320),
+                isPad: false,
+                splitRootIsActive: false,
+                splitPreviewLeftWidth: nil
+            ),
+            568
+        )
+    }
+
+    func testPhonePortraitStillUsesItsActualContainerWidth() {
+        XCTAssertEqual(
+            DynamicLayout.feedWidth(
+                containerSize: CGSize(width: 390, height: 844),
+                isPad: false,
+                splitRootIsActive: false,
+                splitPreviewLeftWidth: 620
+            ),
+            390
         )
     }
 }

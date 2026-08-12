@@ -11,6 +11,7 @@ import UIKit
 enum DynamicLayout {
     static let outerPad: CGFloat = 12
     static let cardPad: CGFloat = 14
+    static let phoneLandscapeMaxFeedWidth: CGFloat = 620
 
     static func cardWidth(containerWidth: CGFloat) -> CGFloat {
         max(1, validDimension(containerWidth) - 2 * outerPad)
@@ -32,6 +33,9 @@ enum DynamicLayout {
     ) -> CGFloat {
         let width = validDimension(containerSize.width)
         let height = validDimension(containerSize.height)
+        if !isPad, width > height {
+            return min(width, phoneLandscapeMaxFeedWidth)
+        }
         let isWidePad = isPad && width > height && width >= 900
         guard isWidePad else { return width }
 

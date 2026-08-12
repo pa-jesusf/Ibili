@@ -6,7 +6,7 @@ extension EnvironmentValues {
         set { self[CommentViewportHeightKey.self] = newValue }
     }
 
-    var commentContentWidth: CGFloat? {
+    var commentContentWidth: CGFloat {
         get { self[CommentContentWidthKey.self] }
         set { self[CommentContentWidthKey.self] = newValue }
     }
@@ -17,7 +17,8 @@ private struct CommentViewportHeightKey: EnvironmentKey {
 }
 
 private struct CommentContentWidthKey: EnvironmentKey {
-    static let defaultValue: CGFloat? = nil
+    // Production comment surfaces override this with their final cell width.
+    static let defaultValue: CGFloat = 358
 }
 
 private struct CommentComposerContext: Identifiable {
@@ -877,8 +878,7 @@ struct ReplyPictureGrid: View {
         // fixed avatar column used by CommentRow so image tiles no longer need
         // their own GeometryReader while scrolling.
         let rowAccessoryWidth: CGFloat = 32 + 10
-        let fallback = UIScreen.main.bounds.width - 32
-        return max(1, (commentContentWidth ?? fallback) - rowAccessoryWidth)
+        return max(1, commentContentWidth - rowAccessoryWidth)
     }
 
     private func previewImages(tileSide: CGFloat) -> [CommentImagePreviewItem] {

@@ -54,6 +54,8 @@ struct UserSpaceView: View {
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.prefersSplitRootSelection) private var prefersSplitRootSelection
     @Environment(\.rootContentNavigation) private var rootNavigation
+    @Environment(\.splitRootIsActive) private var splitRootIsActive
+    @Environment(\.splitPreviewLeftWidth) private var splitPreviewLeftWidth
     @State private var tab: Tab = .archives
     @State private var keyword: String = ""
 
@@ -72,7 +74,7 @@ struct UserSpaceView: View {
         GeometryReader { proxy in
             VirtualizedCollectionSurface(
                 items: collectionItems,
-                layout: collectionLayout(containerWidth: proxy.size.width),
+                layout: collectionLayout(containerSize: proxy.size),
                 header: { AnyView(collectionHeader) },
                 headerVersion: collectionHeaderVersion,
                 footer: collectionFooter,
@@ -272,7 +274,7 @@ struct UserSpaceView: View {
         )
     }
 
-    private func collectionLayout(containerWidth: CGFloat) -> VirtualizedCollectionLayout {
+    private func collectionLayout(containerSize: CGSize) -> VirtualizedCollectionLayout {
         switch tab {
         case .archives:
             return .list(
@@ -282,13 +284,19 @@ struct UserSpaceView: View {
                 estimatedHeight: 112
             )
         case .dynamics:
+            let feedWidth = DynamicLayout.feedWidth(
+                containerSize: containerSize,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad,
+                splitRootIsActive: splitRootIsActive,
+                splitPreviewLeftWidth: splitPreviewLeftWidth
+            )
             return .list(
                 horizontalInset: DynamicLayout.outerPad,
                 topInset: 8,
                 bottomInset: 32,
                 spacing: 14,
                 estimatedHeight: 360,
-                maximumItemWidth: DynamicLayout.cardWidth(containerWidth: containerWidth)
+                maximumItemWidth: DynamicLayout.cardWidth(containerWidth: feedWidth)
             )
         }
     }
