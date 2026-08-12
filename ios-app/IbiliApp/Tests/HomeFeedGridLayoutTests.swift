@@ -393,6 +393,70 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         wait(for: [expanded], timeout: 1)
     }
 
+    func testListBoundsOnlyRotationRebuildsVisibleContentWithFinalWidth() {
+        let controller = VirtualizedCollectionViewController<Item>()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.beginAppearanceTransition(true, animated: false)
+        controller.endAppearanceTransition()
+        defer {
+            controller.beginAppearanceTransition(false, animated: false)
+            controller.endAppearanceTransition()
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+
+        let items = makeItems(0..<8)
+        let layout = VirtualizedCollectionLayout.list(
+            horizontalInset: 12,
+            spacing: 14,
+            estimatedHeight: 120,
+            maximumItemWidth: 608
+        )
+        var observedWidths: [Int: [CGFloat]] = [:]
+        update(
+            controller,
+            items: items,
+            layout: layout,
+            content: { item, width in
+                observedWidths[item.id, default: []].append(width)
+                return AnyView(Text(item.title).frame(width: width, height: 80))
+            }
+        )
+        controller.view.layoutIfNeeded()
+
+        // UIKit can publish one or more intermediate bounds during rotation.
+        // Only the final width is allowed to survive the coalesced refresh.
+        window.frame = CGRect(x: 0, y: 0, width: 700, height: 534)
+        controller.view.frame = window.bounds
+        controller.view.layoutIfNeeded()
+        window.frame = CGRect(x: 0, y: 0, width: 844, height: 390)
+        controller.view.frame = window.bounds
+        controller.view.layoutIfNeeded()
+
+        let reconfigured = expectation(description: "final landscape width applied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            let expectedWidth = layout.itemWidth(containerWidth: 844)
+            let visibleIDs = self.collectionView(in: controller).indexPathsForVisibleItems.map(\.item)
+            XCTAssertFalse(visibleIDs.isEmpty)
+            for id in visibleIDs {
+                guard let lastWidth = observedWidths[id]?.last else {
+                    XCTFail("Visible item \(id) was not rebuilt after rotation")
+                    continue
+                }
+                XCTAssertEqual(
+                    lastWidth,
+                    expectedWidth,
+                    accuracy: 0.5,
+                    "Visible item \(id) retained its portrait width after a bounds-only rotation"
+                )
+            }
+            reconfigured.fulfill()
+        }
+        wait(for: [reconfigured], timeout: 1)
+    }
+
     func testStableHeaderVersionSurvivesContentLayoutChanges() {
         let controller = VirtualizedCollectionViewController<Item>()
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 1200))

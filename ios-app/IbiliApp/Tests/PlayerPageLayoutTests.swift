@@ -92,4 +92,64 @@ final class DynamicLayoutTests: XCTestCase {
             390
         )
     }
+
+    func testActiveSplitUsesActualContainerInsteadOfPreviewWidth() {
+        XCTAssertEqual(
+            DynamicLayout.feedWidth(
+                containerSize: CGSize(width: 1024, height: 768),
+                isPad: true,
+                splitRootIsActive: true,
+                splitPreviewLeftWidth: 780
+            ),
+            1024
+        )
+    }
+
+    func testActiveSplitIgnoresNarrowStalePreviewWidth() {
+        XCTAssertEqual(
+            DynamicLayout.feedWidth(
+                containerSize: CGSize(width: 1024, height: 768),
+                isPad: true,
+                splitRootIsActive: true,
+                splitPreviewLeftWidth: 390
+            ),
+            1024
+        )
+    }
+
+    func testPortraitIgnoresStaleLandscapePreviewWidth() {
+        XCTAssertEqual(
+            DynamicLayout.feedWidth(
+                containerSize: CGSize(width: 768, height: 1024),
+                isPad: true,
+                splitRootIsActive: false,
+                splitPreviewLeftWidth: 640
+            ),
+            768
+        )
+    }
+
+    func testWidePadPreviewWidthIsClampedToCurrentContainer() {
+        XCTAssertEqual(
+            DynamicLayout.feedWidth(
+                containerSize: CGSize(width: 1024, height: 768),
+                isPad: true,
+                splitRootIsActive: false,
+                splitPreviewLeftWidth: 1200
+            ),
+            1024
+        )
+    }
+
+    func testPhoneLandscapeAlwaysUsesItsActualContainerWidth() {
+        XCTAssertEqual(
+            DynamicLayout.feedWidth(
+                containerSize: CGSize(width: 844, height: 390),
+                isPad: false,
+                splitRootIsActive: false,
+                splitPreviewLeftWidth: 560
+            ),
+            844
+        )
+    }
 }

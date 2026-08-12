@@ -13,15 +13,41 @@ enum DynamicLayout {
     static let cardPad: CGFloat = 14
 
     static func cardWidth(containerWidth: CGFloat) -> CGFloat {
-        max(1, containerWidth - 2 * outerPad)
+        max(1, validDimension(containerWidth) - 2 * outerPad)
     }
 
     static func contentWidth(cardWidth: CGFloat) -> CGFloat {
-        max(1, cardWidth - 2 * cardPad)
+        max(1, validDimension(cardWidth) - 2 * cardPad)
     }
 
     static func contentWidth(containerWidth: CGFloat) -> CGFloat {
         contentWidth(cardWidth: cardWidth(containerWidth: containerWidth))
+    }
+
+    static func feedWidth(
+        containerSize: CGSize,
+        isPad: Bool,
+        splitRootIsActive: Bool,
+        splitPreviewLeftWidth: CGFloat?
+    ) -> CGFloat {
+        let width = validDimension(containerSize.width)
+        let height = validDimension(containerSize.height)
+        let isWidePad = isPad && width > height && width >= 900
+        guard isWidePad else { return width }
+
+        // An active split already constrains GeometryReader to the real left
+        // column. Preview width is only valid before that frame is installed.
+        guard !splitRootIsActive else { return width }
+        if let splitPreviewLeftWidth,
+           splitPreviewLeftWidth.isFinite,
+           splitPreviewLeftWidth > 0 {
+            return min(width, splitPreviewLeftWidth)
+        }
+        return min(width * 0.5, 640)
+    }
+
+    private static func validDimension(_ value: CGFloat) -> CGFloat {
+        value.isFinite ? max(1, value) : 1
     }
 
     static func authorSubtitle(pubLabel: String, pubTs: Int64) -> String {
@@ -294,13 +320,12 @@ private struct DynamicFeedPage: View {
 
     var body: some View {
         GeometryReader { geo in
-            let isWidePad = UIDevice.current.userInterfaceIdiom == .pad
-                && geo.size.width > geo.size.height
-                && geo.size.width >= 900
-            let previewWidth = splitPreviewLeftWidth.map { min($0, geo.size.width) }
-            let usesPreviewWidth = isWidePad && previewWidth != nil
-            let shouldCenterWideFeed = isWidePad && !splitRootIsActive
-            let feedWidth = usesPreviewWidth ? (previewWidth ?? geo.size.width) : (shouldCenterWideFeed ? min(geo.size.width * 0.5, 640) : geo.size.width)
+            let feedWidth = DynamicLayout.feedWidth(
+                containerSize: geo.size,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad,
+                splitRootIsActive: splitRootIsActive,
+                splitPreviewLeftWidth: splitPreviewLeftWidth
+            )
             let cardWidth = DynamicLayout.cardWidth(containerWidth: feedWidth)
             VirtualizedCollectionSurface(
                 items: vm.items,
@@ -380,7 +405,7 @@ private struct DynamicFeedPage: View {
 
 struct DynamicItemCard: View {
     let item: DynamicItemDTO
-    var contentWidth: CGFloat? = nil
+    let contentWidth: CGFloat
     /// When non-nil, video taps inside the card route through the
     /// parent. Root feeds use this to start the shared media session
     /// from the tab that owns the tap.
@@ -406,7 +431,7 @@ struct DynamicItemCard: View {
     @State private var likeBusy = false
 
     var body: some View {
-        let resolvedContentWidth = contentWidth ?? DynamicLayout.contentWidth(containerWidth: UIScreen.main.bounds.width)
+        let resolvedContentWidth = contentWidth.isFinite ? max(1, contentWidth) : 1
         cardContent(resolvedContentWidth: resolvedContentWidth)
             .fullScreenCover(item: $preview) { state in
                 ImagePreviewSheet(urls: state.urls, initialIndex: state.index)

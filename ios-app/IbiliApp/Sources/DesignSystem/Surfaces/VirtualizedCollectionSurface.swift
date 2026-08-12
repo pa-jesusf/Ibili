@@ -194,6 +194,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var reflowsAcrossSplit = false
     private var contentVersion: AnyHashable = 0
     private var lastLaidOutWidth: CGFloat = 0
+    private var widthReconfigurationWork: DispatchWorkItem?
+    private var widthReconfigurationIncludesStructuralCells = false
     private let refreshControl = UIRefreshControl()
 
     private var onRefresh: () -> Void = {}
@@ -244,12 +246,25 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let width = collectionView.bounds.width
-        if abs(width - lastLaidOutWidth) > 0.5 {
+        if width.isFinite, width > 0, abs(width - lastLaidOutWidth) > 0.5 {
             lastLaidOutWidth = width
             collectionView.collectionViewLayout.invalidateLayout()
-            reconfigureContentItems()
+            scheduleWidthReconfiguration(
+                expectedWidth: width,
+                includesStructuralCells: true
+            )
         }
         applyPendingAnchorIfPossible()
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        guard isViewLoaded, collectionView != nil else { return }
+        collectionView.collectionViewLayout.invalidateLayout()
+        scheduleWidthReconfiguration(
+            expectedWidth: collectionView.bounds.width,
+            includesStructuralCells: true
+        )
     }
 
     func update(
@@ -341,6 +356,10 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
 
         if layoutChanged {
             collectionView.setCollectionViewLayout(makeLayout(), animated: false)
+            scheduleWidthReconfiguration(
+                expectedWidth: collectionView.bounds.width,
+                includesStructuralCells: false
+            )
         }
         applySnapshot(
             structureChanged: structureChanged,
@@ -367,23 +386,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     }
 
     private func configureDataSource() {
-        let registration = UICollectionView.CellRegistration<UICollectionViewCell, ElementID> { [weak self] cell, _, element in
-            guard let self else { return }
-            cell.backgroundColor = .clear
-            let hosted: AnyView
-            switch element {
-            case .header:
-                hosted = self.headerProvider?() ?? AnyView(EmptyView())
-            case .footer:
-                hosted = self.footerProvider?() ?? AnyView(EmptyView())
-            case .item(let id):
-                guard let item = self.itemByID[id] else { return }
-                hosted = self.contentProvider(item, self.currentItemWidth)
-            }
-            cell.contentConfiguration = UIHostingConfiguration {
-                hosted
-            }
-            .margins(.all, 0)
+        let registration = UICollectionView.CellRegistration<UICollectionViewCell, ElementID> { [weak self] cell, indexPath, element in
+            self?.configure(cell, for: element, at: indexPath)
         }
         dataSource = UICollectionViewDiffableDataSource<Section, ElementID>(collectionView: collectionView) {
             collectionView, indexPath, element in
@@ -431,14 +435,76 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         )
     }
 
-    private func reconfigureContentItems() {
-        guard dataSource != nil, !orderedIDs.isEmpty else { return }
-        applySnapshot(
-            structureChanged: false,
-            changedIDs: orderedIDs,
-            reconfigureHeader: false,
-            reconfigureFooter: false
-        )
+    private func configure(
+        _ cell: UICollectionViewCell,
+        for element: ElementID,
+        at indexPath: IndexPath? = nil
+    ) {
+        cell.backgroundColor = .clear
+        let hosted: AnyView
+        switch element {
+        case .header:
+            hosted = headerProvider?() ?? AnyView(EmptyView())
+        case .footer:
+            hosted = footerProvider?() ?? AnyView(EmptyView())
+        case .item(let id):
+            guard let item = itemByID[id] else { return }
+            hosted = contentProvider(item, itemWidth(at: indexPath))
+        }
+        cell.contentConfiguration = UIHostingConfiguration {
+            hosted
+        }
+        .margins(.all, 0)
+    }
+
+    private func scheduleWidthReconfiguration(
+        expectedWidth: CGFloat,
+        includesStructuralCells: Bool
+    ) {
+        guard expectedWidth.isFinite, expectedWidth > 0 else { return }
+        widthReconfigurationIncludesStructuralCells =
+            widthReconfigurationIncludesStructuralCells || includesStructuralCells
+        widthReconfigurationWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  abs(self.collectionView.bounds.width - expectedWidth) <= 0.5 else { return }
+            let includeStructuralCells = self.widthReconfigurationIncludesStructuralCells
+            self.widthReconfigurationIncludesStructuralCells = false
+            self.collectionView.collectionViewLayout.invalidateLayout()
+            self.collectionView.layoutIfNeeded()
+            self.reconfigureVisibleCellsForCurrentWidth(
+                includesStructuralCells: includeStructuralCells
+            )
+            self.collectionView.collectionViewLayout.invalidateLayout()
+            self.collectionView.layoutIfNeeded()
+            self.applyPendingAnchorIfPossible()
+        }
+        widthReconfigurationWork = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func reconfigureVisibleCellsForCurrentWidth(includesStructuralCells: Bool) {
+        guard dataSource != nil else { return }
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard let element = dataSource.itemIdentifier(for: indexPath),
+                  let cell = collectionView.cellForItem(at: indexPath) else { continue }
+            if !includesStructuralCells {
+                guard case .item = element else { continue }
+            }
+            configure(cell, for: element, at: indexPath)
+            cell.setNeedsLayout()
+        }
+    }
+
+    private func itemWidth(at indexPath: IndexPath?) -> CGFloat {
+        if let indexPath,
+           let width = collectionView.collectionViewLayout
+            .layoutAttributesForItem(at: indexPath)?.bounds.width,
+           width.isFinite,
+           width > 0 {
+            return width
+        }
+        return currentItemWidth
     }
 
     private func updateRefreshControlAttachment(showsRefresh: Bool, hasContent: Bool) {
@@ -517,7 +583,9 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     }
 
     private var currentItemWidth: CGFloat {
-        layoutConfiguration.itemWidth(containerWidth: max(1, collectionView.bounds.width))
+        let insets = collectionView.adjustedContentInset
+        let width = collectionView.bounds.width - insets.left - insets.right
+        return layoutConfiguration.itemWidth(containerWidth: max(1, width))
     }
 
     @objc private func refreshRequested() {
