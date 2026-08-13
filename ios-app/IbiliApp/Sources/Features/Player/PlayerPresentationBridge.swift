@@ -530,7 +530,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
                             ownerController: playerViewController,
                             orientationController: fullscreenController,
                             target: currentOrientation.isPortrait ? .portrait : .landscape,
-                            entryOrientation: self.entryInterfaceOrientation ?? .portrait
+                            entryOrientation: self.entryInterfaceOrientation ?? .portrait,
+                            preferredLandscapeOrientation: currentOrientation
                         )
                         if let owner = self.fullscreenOrientationOwner {
                             PlayerFullscreenOrientationPolicy.shared.beginInteractiveRotation(owner: owner)

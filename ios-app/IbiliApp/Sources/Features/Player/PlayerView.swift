@@ -2199,6 +2199,15 @@ struct PlayerView: View {
         UIDevice.current.userInterfaceIdiom == .phone && verticalSizeClass == .compact
     }
 
+    private var hidesPhoneLandscapeNavigationBar: Bool {
+        usesPhoneLandscapePresentation && !pageScrollContext.isPastVerticalOffsetThreshold
+    }
+
+    private var playerPageIgnoredSafeAreaEdges: Edge.Set {
+        guard usesPhoneLandscapePresentation else { return .bottom }
+        return hidesPhoneLandscapeNavigationBar ? .all : [.horizontal, .bottom]
+    }
+
     private func collapsedPlayerHeight(expandedHeight: CGFloat) -> CGFloat {
         min(expandedHeight, 72)
     }
@@ -2250,6 +2259,10 @@ struct PlayerView: View {
         pageScrollContext.configureUserScrolling(
             enabled: landscapeEnabled,
             alwaysBounceVertical: landscapeEnabled
+        )
+        pageScrollContext.configureVerticalOffsetThreshold(
+            showAfter: landscapeEnabled ? 32 : nil,
+            resetBelow: 0
         )
         proxy.interruptingScrollTo(
             Self.playerPageTopAnchorID,
@@ -2598,13 +2611,14 @@ struct PlayerView: View {
         }
         .ignoresSafeArea(
             .container,
-            edges: usesPhoneLandscapePresentation ? .all : .bottom
+            edges: playerPageIgnoredSafeAreaEdges
         )
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(
-            usesPhoneLandscapePresentation ? Visibility.hidden : Visibility.automatic,
+        .toolbar(
+            hidesPhoneLandscapeNavigationBar ? Visibility.hidden : Visibility.visible,
             for: .navigationBar
         )
+        .toolbarBackground(.automatic, for: .navigationBar)
         .toolbar {
             playerToolbar
         }

@@ -64,6 +64,33 @@ final class PlayerFullscreenOrientationResolverTests: XCTestCase {
         )
     }
 
+    func testLandscapePreservesLandscapeEntryDirection() {
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.targetInterfaceOrientation(
+                for: .landscape,
+                preferredLandscapeOrientation: .landscapeLeft
+            ),
+            .landscapeLeft
+        )
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.targetInterfaceOrientation(
+                for: .landscape,
+                preferredLandscapeOrientation: .landscapeRight
+            ),
+            .landscapeRight
+        )
+    }
+
+    func testPortraitContentIgnoresLandscapeEntryDirection() {
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.targetInterfaceOrientation(
+                for: .portrait,
+                preferredLandscapeOrientation: .landscapeLeft
+            ),
+            .portrait
+        )
+    }
+
     func testInterfaceOrientationMasksAreExact() {
         XCTAssertEqual(PlayerFullscreenOrientationResolver.mask(for: .portrait), .portrait)
         XCTAssertEqual(PlayerFullscreenOrientationResolver.mask(for: .landscapeLeft), .landscapeLeft)

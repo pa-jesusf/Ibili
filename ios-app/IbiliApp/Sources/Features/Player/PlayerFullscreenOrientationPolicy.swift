@@ -33,12 +33,17 @@ struct PlayerFullscreenOrientationResolver {
     }
 
     static func targetInterfaceOrientation(
-        for orientation: PlayerFullscreenContentOrientation
+        for orientation: PlayerFullscreenContentOrientation,
+        preferredLandscapeOrientation: UIInterfaceOrientation? = nil
     ) -> UIInterfaceOrientation {
         switch orientation {
         case .portrait:
             return .portrait
         case .landscape:
+            if let preferredLandscapeOrientation,
+               preferredLandscapeOrientation.isLandscape {
+                return preferredLandscapeOrientation
+            }
             return .landscapeRight
         }
     }
@@ -309,7 +314,8 @@ final class PlayerFullscreenOrientationPolicy {
         ownerController: AVPlayerViewController,
         orientationController: UIViewController,
         target: PlayerFullscreenContentOrientation,
-        entryOrientation: UIInterfaceOrientation
+        entryOrientation: UIInterfaceOrientation,
+        preferredLandscapeOrientation: UIInterfaceOrientation? = nil
     ) -> PlayerFullscreenOrientationOwner? {
         guard UIDevice.current.userInterfaceIdiom == .phone,
               let scene = orientationController.viewIfLoaded?.window?.windowScene
@@ -329,7 +335,10 @@ final class PlayerFullscreenOrientationPolicy {
             orientationController: orientationController,
             entryOrientation: entryOrientation
         )
-        let targetOrientation = PlayerFullscreenOrientationResolver.targetInterfaceOrientation(for: target)
+        let targetOrientation = PlayerFullscreenOrientationResolver.targetInterfaceOrientation(
+            for: target,
+            preferredLandscapeOrientation: preferredLandscapeOrientation ?? entryOrientation
+        )
         store.acquire(owner: owner, target: targetOrientation, phase: .entering, renew: true)
         refreshDeviceOrientationObservation()
         observeEffectiveGeometryIfAvailable(reference: sceneReferences[sceneID])
@@ -359,8 +368,14 @@ final class PlayerFullscreenOrientationPolicy {
               reference.ownerController === ownerController,
               let scene = reference.scene,
               ObjectIdentifier(ownerController) == owner.controllerID else { return }
-        let targetOrientation = PlayerFullscreenOrientationResolver.targetInterfaceOrientation(for: target)
-        guard store.lease(for: owner)?.phase == .entering else { return }
+        guard let lease = store.lease(for: owner), lease.phase == .entering else { return }
+        let preferredLandscapeOrientation = lease.target.isLandscape
+            ? lease.target
+            : reference.entryOrientation
+        let targetOrientation = PlayerFullscreenOrientationResolver.targetInterfaceOrientation(
+            for: target,
+            preferredLandscapeOrientation: preferredLandscapeOrientation
+        )
         let targetChanged = store.acquire(owner: owner, target: targetOrientation, phase: .entering)
         guard targetChanged else { return }
         invalidateSupportedOrientations(controller: reference.orientationController, scene: scene)
