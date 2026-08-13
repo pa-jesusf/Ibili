@@ -2113,6 +2113,7 @@ struct PlayerView: View {
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.rootContentNavigation) private var rootNavigation
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.beginNativePlayerFullscreenExit) private var beginNativePlayerFullscreenExit
     @Environment(\.endNativePlayerFullscreenExit) private var endNativePlayerFullscreenExit
 
@@ -2192,6 +2193,10 @@ struct PlayerView: View {
         !offlineOnly
             && shouldMountDetailContent
             && vm.isPausedForDetailCollapse
+    }
+
+    private var usesPhoneLandscapePresentation: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && verticalSizeClass == .compact
     }
 
     private func collapsedPlayerHeight(expandedHeight: CGFloat) -> CGFloat {
@@ -2589,10 +2594,17 @@ struct PlayerView: View {
                     )
                 }
             }
-            .background(IbiliTheme.background.ignoresSafeArea(.container, edges: .bottom))
-            .ignoresSafeArea(.container, edges: .bottom)
+            .background(IbiliTheme.background)
         }
+        .ignoresSafeArea(
+            .container,
+            edges: usesPhoneLandscapePresentation ? .all : .bottom
+        )
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(
+            usesPhoneLandscapePresentation ? Visibility.hidden : Visibility.automatic,
+            for: .navigationBar
+        )
         .toolbar {
             playerToolbar
         }

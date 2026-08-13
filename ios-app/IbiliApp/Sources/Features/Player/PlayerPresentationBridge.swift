@@ -471,7 +471,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
                     return
                 }
                 if let owner = self.fullscreenOrientationOwner {
-                    PlayerFullscreenOrientationPolicy.shared.retryAfterFullscreenEntryIfNeeded(owner: owner)
+                    PlayerFullscreenOrientationPolicy.shared.beginInteractiveRotation(owner: owner)
                 } else {
                     let fullscreenController = context.viewController(forKey: .to) ?? playerViewController
                     self.fullscreenOrientationOwner = PlayerFullscreenOrientationPolicy.shared.acquire(
@@ -481,6 +481,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
                         target: self.resolvedFullscreenOrientation(for: playerViewController),
                         entryOrientation: self.entryInterfaceOrientation ?? .portrait
                     )
+                    if let owner = self.fullscreenOrientationOwner {
+                        PlayerFullscreenOrientationPolicy.shared.beginInteractiveRotation(owner: owner)
+                    }
                 }
                 if self.fullscreenOrientationOwner == nil,
                    UIDevice.current.userInterfaceIdiom == .phone {
@@ -498,12 +501,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
             let identity = presentationIdentity(for: playerViewController)
             let transitionRevision = fullscreenTransitionState.beginExit()
             let shouldResumePlayback = parent.shouldResumePlaybackAfterNativeFullscreenExit()
-            let exitingTarget = resolvedFullscreenOrientation(for: playerViewController)
             let fullscreenController = fullscreenOrientationOwner.flatMap {
                 PlayerFullscreenOrientationPolicy.shared.orientationController(for: $0)
             } ?? coordinator.viewController(forKey: .from) ?? playerViewController
             if let owner = fullscreenOrientationOwner {
-                PlayerFullscreenOrientationPolicy.shared.beginRestoringEntryOrientation(owner: owner)
+                PlayerFullscreenOrientationPolicy.shared.beginRestoringExitOrientation(owner: owner)
             }
             AppLog.debug("player", "AVKit 原生全屏即将退出", metadata: [
                 "sessionID": identity.sessionID.uuidString,
@@ -518,18 +520,21 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 ) else { return }
                 if context.isCancelled {
                     if let owner = self.fullscreenOrientationOwner {
-                        PlayerFullscreenOrientationPolicy.shared.resumeFullscreenOrientation(
-                            owner: owner,
-                            target: exitingTarget
-                        )
+                        PlayerFullscreenOrientationPolicy.shared.resumeInteractiveRotation(owner: owner)
                     } else {
+                        let currentOrientation = PlayerFullscreenOrientationPolicy.shared.currentInterfaceOrientation(
+                            for: playerViewController
+                        ) ?? self.entryInterfaceOrientation ?? .portrait
                         self.fullscreenOrientationOwner = PlayerFullscreenOrientationPolicy.shared.acquire(
                             sessionID: identity.sessionID,
                             ownerController: playerViewController,
                             orientationController: fullscreenController,
-                            target: exitingTarget,
+                            target: currentOrientation.isPortrait ? .portrait : .landscape,
                             entryOrientation: self.entryInterfaceOrientation ?? .portrait
                         )
+                        if let owner = self.fullscreenOrientationOwner {
+                            PlayerFullscreenOrientationPolicy.shared.beginInteractiveRotation(owner: owner)
+                        }
                     }
                     self.parent.onPresentationEvent(.nativeFullscreenExitWasCancelled(
                         identity,
@@ -538,7 +543,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
                     return
                 }
                 if let owner = self.fullscreenOrientationOwner {
-                    PlayerFullscreenOrientationPolicy.shared.finishRestoringEntryOrientation(owner: owner)
+                    PlayerFullscreenOrientationPolicy.shared.finishRestoringExitOrientation(owner: owner)
                 }
                 self.entryInterfaceOrientation = nil
                 self.parent.onPresentationEvent(.nativeFullscreenExitDidEnd(identity, shouldResumePlayback: shouldResumePlayback))

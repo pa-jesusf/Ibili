@@ -53,7 +53,7 @@ final class PlayerFullscreenOrientationResolverTests: XCTestCase {
         )
     }
 
-    func testLandscapeUsesFixedRightOrientation() {
+    func testLandscapeInitiallyUsesRightOrientation() {
         XCTAssertEqual(
             PlayerFullscreenOrientationResolver.targetMask(for: .landscape),
             .landscapeRight
@@ -69,6 +69,90 @@ final class PlayerFullscreenOrientationResolverTests: XCTestCase {
         XCTAssertEqual(PlayerFullscreenOrientationResolver.mask(for: .landscapeLeft), .landscapeLeft)
         XCTAssertEqual(PlayerFullscreenOrientationResolver.mask(for: .landscapeRight), .landscapeRight)
         XCTAssertNil(PlayerFullscreenOrientationResolver.mask(for: .unknown))
+    }
+
+    func testDeviceLandscapeOrientationMapsToOppositeInterfaceOrientation() {
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.interfaceOrientation(for: .landscapeLeft),
+            .landscapeRight
+        )
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.interfaceOrientation(for: .landscapeRight),
+            .landscapeLeft
+        )
+        XCTAssertNil(PlayerFullscreenOrientationResolver.interfaceOrientation(for: .faceUp))
+    }
+
+    func testPortraitEntryAlwaysRestoresPortrait() {
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.exitOrientation(
+                entryOrientation: .portrait,
+                fullscreenOrientation: .landscapeLeft
+            ),
+            .portrait
+        )
+    }
+
+    func testLandscapeEntryKeepsLastFullscreenOrientationOnExit() {
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.exitOrientation(
+                entryOrientation: .landscapeRight,
+                fullscreenOrientation: .landscapeLeft
+            ),
+            .landscapeLeft
+        )
+        XCTAssertEqual(
+            PlayerFullscreenOrientationResolver.exitOrientation(
+                entryOrientation: .landscapeLeft,
+                fullscreenOrientation: .portrait
+            ),
+            .portrait
+        )
+    }
+
+    func testInteractiveLeaseAllowsAllNormalOrientations() {
+        let token = NSObject()
+        let owner = PlayerFullscreenOrientationOwner(
+            sessionID: UUID(),
+            controllerID: ObjectIdentifier(token),
+            sceneID: ObjectIdentifier(token)
+        )
+        let lease = PlayerFullscreenOrientationLeaseState(
+            owner: owner,
+            target: .landscapeRight,
+            phase: .interactive,
+            revision: 1
+        )
+
+        XCTAssertEqual(lease.supportedMask, .allButUpsideDown)
+    }
+
+    func testEnteringAndRestoringLeasesUseExactTargetMask() {
+        let token = NSObject()
+        let owner = PlayerFullscreenOrientationOwner(
+            sessionID: UUID(),
+            controllerID: ObjectIdentifier(token),
+            sceneID: ObjectIdentifier(token)
+        )
+
+        XCTAssertEqual(
+            PlayerFullscreenOrientationLeaseState(
+                owner: owner,
+                target: .landscapeRight,
+                phase: .entering,
+                revision: 1
+            ).supportedMask,
+            .landscapeRight
+        )
+        XCTAssertEqual(
+            PlayerFullscreenOrientationLeaseState(
+                owner: owner,
+                target: .portrait,
+                phase: .restoring,
+                revision: 2
+            ).supportedMask,
+            .portrait
+        )
     }
 }
 
@@ -126,20 +210,35 @@ final class PlayerFullscreenOrientationLeaseStoreTests: XCTestCase {
         XCTAssertNotEqual(store.lease(for: owner)?.revision, landscapeRevision)
     }
 
+    func testPhaseChangeCreatesNewLeaseRevisionWithoutChangingTarget() {
+        let owner = owner(scene: Token(), controller: Token())
+        var store = PlayerFullscreenOrientationLeaseStore()
+
+        store.acquire(owner: owner, target: .landscapeRight, phase: .entering)
+        let enteringRevision = store.lease(for: owner)?.revision
+
+        XCTAssertTrue(
+            store.acquire(owner: owner, target: .landscapeRight, phase: .interactive)
+        )
+        XCTAssertEqual(store.lease(for: owner)?.phase, .interactive)
+        XCTAssertNotEqual(store.lease(for: owner)?.revision, enteringRevision)
+    }
+
     func testExitRestoreAndCancelledExitUseFreshExactOrientations() {
         let owner = owner(scene: Token(), controller: Token())
         var store = PlayerFullscreenOrientationLeaseStore()
 
         store.acquire(owner: owner, target: .landscapeRight)
         let fullscreenRevision = store.lease(for: owner)?.revision
-        store.acquire(owner: owner, target: .portrait, renew: true)
+        store.acquire(owner: owner, target: .portrait, phase: .restoring, renew: true)
         let restorationRevision = store.lease(for: owner)?.revision
 
         XCTAssertEqual(store.lease(for: owner)?.target, .portrait)
         XCTAssertNotEqual(restorationRevision, fullscreenRevision)
 
-        store.acquire(owner: owner, target: .landscapeRight, renew: true)
+        store.acquire(owner: owner, target: .landscapeRight, phase: .interactive, renew: true)
         XCTAssertEqual(store.lease(for: owner)?.target, .landscapeRight)
+        XCTAssertEqual(store.lease(for: owner)?.phase, .interactive)
         XCTAssertNotEqual(store.lease(for: owner)?.revision, restorationRevision)
     }
 

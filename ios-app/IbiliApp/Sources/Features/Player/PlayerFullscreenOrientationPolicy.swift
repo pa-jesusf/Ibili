@@ -7,7 +7,7 @@ enum PlayerFullscreenContentOrientation: Equatable {
 }
 
 struct PlayerFullscreenOrientationResolver {
-    static let fixedLandscapeMask: UIInterfaceOrientationMask = .landscapeRight
+    static let initialLandscapeMask: UIInterfaceOrientationMask = .landscapeRight
 
     static func contentOrientation(
         presentationSize: CGSize,
@@ -28,7 +28,7 @@ struct PlayerFullscreenOrientationResolver {
         case .portrait:
             return .portrait
         case .landscape:
-            return fixedLandscapeMask
+            return initialLandscapeMask
         }
     }
 
@@ -54,6 +54,37 @@ struct PlayerFullscreenOrientationResolver {
         }
     }
 
+    static func interfaceOrientation(for deviceOrientation: UIDeviceOrientation) -> UIInterfaceOrientation? {
+        switch deviceOrientation {
+        case .portrait:
+            return .portrait
+        case .landscapeLeft:
+            return .landscapeRight
+        case .landscapeRight:
+            return .landscapeLeft
+        case .portraitUpsideDown, .faceUp, .faceDown, .unknown:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    static func exitOrientation(
+        entryOrientation: UIInterfaceOrientation,
+        fullscreenOrientation: UIInterfaceOrientation?
+    ) -> UIInterfaceOrientation {
+        if entryOrientation.isPortrait {
+            return .portrait
+        }
+        if entryOrientation.isLandscape,
+           let fullscreenOrientation,
+           fullscreenOrientation != .unknown,
+           fullscreenOrientation != .portraitUpsideDown {
+            return fullscreenOrientation
+        }
+        return entryOrientation.isLandscape ? entryOrientation : .portrait
+    }
+
     private static func normalizedSize(_ size: CGSize) -> CGSize? {
         let width = abs(size.width)
         let height = abs(size.height)
@@ -69,10 +100,26 @@ struct PlayerFullscreenOrientationOwner: Hashable {
 }
 
 struct PlayerFullscreenOrientationLeaseState: Equatable {
+    enum Phase: Equatable {
+        case entering
+        case interactive
+        case restoring
+    }
+
     let owner: PlayerFullscreenOrientationOwner
     var target: UIInterfaceOrientation
+    var phase: Phase
     let revision: UInt64
     var releasesWhenTargetIsReached = false
+
+    var supportedMask: UIInterfaceOrientationMask {
+        switch phase {
+        case .interactive:
+            return .allButUpsideDown
+        case .entering, .restoring:
+            return PlayerFullscreenOrientationResolver.mask(for: target) ?? .allButUpsideDown
+        }
+    }
 }
 
 struct PlayerFullscreenOrientationLeaseStore {
@@ -83,14 +130,15 @@ struct PlayerFullscreenOrientationLeaseStore {
     mutating func acquire(
         owner: PlayerFullscreenOrientationOwner,
         target: UIInterfaceOrientation,
+        phase: PlayerFullscreenOrientationLeaseState.Phase = .entering,
         renew: Bool = false
     ) -> Bool {
         if !renew, let existing = leases[owner.sceneID], existing.owner == owner {
-            guard existing.target != target else { return false }
-            leases[owner.sceneID] = makeLease(owner: owner, target: target)
+            guard existing.target != target || existing.phase != phase else { return false }
+            leases[owner.sceneID] = makeLease(owner: owner, target: target, phase: phase)
             return true
         }
-        leases[owner.sceneID] = makeLease(owner: owner, target: target)
+        leases[owner.sceneID] = makeLease(owner: owner, target: target, phase: phase)
         return true
     }
 
@@ -126,12 +174,14 @@ struct PlayerFullscreenOrientationLeaseStore {
 
     private mutating func makeLease(
         owner: PlayerFullscreenOrientationOwner,
-        target: UIInterfaceOrientation
+        target: UIInterfaceOrientation,
+        phase: PlayerFullscreenOrientationLeaseState.Phase
     ) -> PlayerFullscreenOrientationLeaseState {
         nextRevision &+= 1
         return PlayerFullscreenOrientationLeaseState(
             owner: owner,
             target: target,
+            phase: phase,
             revision: nextRevision
         )
     }
@@ -223,6 +273,8 @@ final class PlayerFullscreenOrientationPolicy {
     private var sceneReferences: [ObjectIdentifier: SceneReference] = [:]
     private var pendingGeometryRequests: [ObjectIdentifier: PendingGeometryRequest] = [:]
     private var nextGeometryRequestRevision: UInt64 = 0
+    private var deviceOrientationObserver: NSObjectProtocol?
+    private var lastObservedDeviceOrientation: UIDeviceOrientation?
 
     private init() {}
 
@@ -235,7 +287,7 @@ final class PlayerFullscreenOrientationPolicy {
             lease = store.soleLease
         }
         guard let lease else { return .allButUpsideDown }
-        return PlayerFullscreenOrientationResolver.mask(for: lease.target) ?? .allButUpsideDown
+        return lease.supportedMask
     }
 
     func supportedInterfaceOrientations(for scene: UIWindowScene) -> UIInterfaceOrientationMask {
@@ -243,7 +295,7 @@ final class PlayerFullscreenOrientationPolicy {
         guard let lease = store.lease(sceneID: ObjectIdentifier(scene)) else {
             return .allButUpsideDown
         }
-        return PlayerFullscreenOrientationResolver.mask(for: lease.target) ?? .allButUpsideDown
+        return lease.supportedMask
     }
 
     func currentInterfaceOrientation(for controller: UIViewController) -> UIInterfaceOrientation? {
@@ -278,7 +330,8 @@ final class PlayerFullscreenOrientationPolicy {
             entryOrientation: entryOrientation
         )
         let targetOrientation = PlayerFullscreenOrientationResolver.targetInterfaceOrientation(for: target)
-        store.acquire(owner: owner, target: targetOrientation, renew: true)
+        store.acquire(owner: owner, target: targetOrientation, phase: .entering, renew: true)
+        refreshDeviceOrientationObservation()
         observeEffectiveGeometryIfAvailable(reference: sceneReferences[sceneID])
         invalidateSupportedOrientations(controller: orientationController, scene: scene)
         let currentOrientation = currentInterfaceOrientation(in: scene)
@@ -307,49 +360,67 @@ final class PlayerFullscreenOrientationPolicy {
               let scene = reference.scene,
               ObjectIdentifier(ownerController) == owner.controllerID else { return }
         let targetOrientation = PlayerFullscreenOrientationResolver.targetInterfaceOrientation(for: target)
-        let targetChanged = store.acquire(owner: owner, target: targetOrientation)
+        guard store.lease(for: owner)?.phase == .entering else { return }
+        let targetChanged = store.acquire(owner: owner, target: targetOrientation, phase: .entering)
         guard targetChanged else { return }
         invalidateSupportedOrientations(controller: reference.orientationController, scene: scene)
         requestGeometryUpdate(owner: owner)
     }
 
-    func retryAfterFullscreenEntryIfNeeded(owner: PlayerFullscreenOrientationOwner) {
+    func beginInteractiveRotation(owner: PlayerFullscreenOrientationOwner) {
         guard let lease = store.lease(for: owner),
-              let scene = sceneReferences[owner.sceneID]?.scene else { return }
-        guard currentInterfaceOrientation(in: scene) != lease.target else {
-            pendingGeometryRequests.removeValue(forKey: owner.sceneID)
-            return
-        }
+              let reference = sceneReferences[owner.sceneID],
+              let scene = reference.scene else { return }
+        let entryTarget = lease.target
+        let current = currentInterfaceOrientation(in: scene)
+        store.acquire(owner: owner, target: entryTarget, phase: .interactive, renew: true)
         pendingGeometryRequests.removeValue(forKey: owner.sceneID)
-        AppLog.debug("player", "重试原生全屏方向", metadata: [
+        refreshDeviceOrientationObservation()
+        invalidateSupportedOrientations(controller: reference.orientationController, scene: scene)
+        if current != entryTarget {
+            requestGeometryUpdate(owner: owner)
+        }
+        AppLog.debug("player", "原生全屏已进入自由旋转阶段", metadata: [
             "sessionID": owner.sessionID.uuidString,
-            "target": interfaceOrientationDescription(lease.target),
-            "current": interfaceOrientationDescription(currentInterfaceOrientation(in: scene)),
+            "entryTarget": interfaceOrientationDescription(entryTarget),
+            "current": interfaceOrientationDescription(current),
         ])
-        requestGeometryUpdate(owner: owner)
     }
 
     @discardableResult
-    func beginRestoringEntryOrientation(owner: PlayerFullscreenOrientationOwner) -> Bool {
+    func beginRestoringExitOrientation(owner: PlayerFullscreenOrientationOwner) -> Bool {
         guard store.lease(for: owner) != nil,
               let reference = sceneReferences[owner.sceneID],
               let scene = reference.scene else { return false }
-        store.acquire(owner: owner, target: reference.entryOrientation, renew: true)
+        let sceneOrientation = currentInterfaceOrientation(in: scene)
+        let fullscreenOrientation: UIInterfaceOrientation?
+        if let sceneOrientation, sceneOrientation != .unknown {
+            fullscreenOrientation = sceneOrientation
+        } else {
+            fullscreenOrientation = store.lease(for: owner)?.target
+        }
+        let target = PlayerFullscreenOrientationResolver.exitOrientation(
+            entryOrientation: reference.entryOrientation,
+            fullscreenOrientation: fullscreenOrientation
+        )
+        store.acquire(owner: owner, target: target, phase: .restoring, renew: true)
+        refreshDeviceOrientationObservation()
         invalidateSupportedOrientations(controller: reference.orientationController, scene: scene)
-        AppLog.debug("player", "开始恢复进入全屏前方向", metadata: [
+        AppLog.debug("player", "开始恢复全屏退出方向", metadata: [
             "sessionID": owner.sessionID.uuidString,
-            "target": interfaceOrientationDescription(reference.entryOrientation),
-            "current": interfaceOrientationDescription(currentInterfaceOrientation(in: scene)),
+            "entry": interfaceOrientationDescription(reference.entryOrientation),
+            "fullscreen": interfaceOrientationDescription(fullscreenOrientation),
+            "target": interfaceOrientationDescription(target),
         ])
         requestGeometryUpdate(owner: owner)
         return true
     }
 
-    func finishRestoringEntryOrientation(owner: PlayerFullscreenOrientationOwner) {
-        guard store.lease(for: owner) != nil,
-              let reference = sceneReferences[owner.sceneID],
-              let scene = reference.scene else { return }
-        if currentInterfaceOrientation(in: scene) == reference.entryOrientation {
+    func finishRestoringExitOrientation(owner: PlayerFullscreenOrientationOwner) {
+        guard let lease = store.lease(for: owner),
+              lease.phase == .restoring,
+              let scene = sceneReferences[owner.sceneID]?.scene else { return }
+        if currentInterfaceOrientation(in: scene) == lease.target {
             release(owner: owner)
             return
         }
@@ -360,25 +431,28 @@ final class PlayerFullscreenOrientationPolicy {
         requestGeometryUpdate(owner: owner)
     }
 
-    func resumeFullscreenOrientation(
-        owner: PlayerFullscreenOrientationOwner,
-        target: PlayerFullscreenContentOrientation
-    ) {
-        guard store.lease(for: owner) != nil,
+    func resumeInteractiveRotation(owner: PlayerFullscreenOrientationOwner) {
+        guard let lease = store.lease(for: owner),
               let reference = sceneReferences[owner.sceneID],
               let scene = reference.scene else { return }
+        let current = currentInterfaceOrientation(in: scene) ?? lease.target
         store.acquire(
             owner: owner,
-            target: PlayerFullscreenOrientationResolver.targetInterfaceOrientation(for: target),
+            target: current,
+            phase: .interactive,
             renew: true
         )
+        refreshDeviceOrientationObservation()
         invalidateSupportedOrientations(controller: reference.orientationController, scene: scene)
-        requestGeometryUpdate(owner: owner)
     }
 
     func enforceActiveOrientationIfNeeded(in scene: UIWindowScene) {
         let sceneID = ObjectIdentifier(scene)
         guard let lease = store.lease(sceneID: sceneID) else { return }
+        guard lease.phase != .interactive else {
+            pendingGeometryRequests.removeValue(forKey: sceneID)
+            return
+        }
         guard currentInterfaceOrientation(in: scene) != lease.target else {
             pendingGeometryRequests.removeValue(forKey: sceneID)
             if lease.releasesWhenTargetIsReached {
@@ -398,6 +472,7 @@ final class PlayerFullscreenOrientationPolicy {
     func release(owner: PlayerFullscreenOrientationOwner) {
         let releasedLease = store.lease(for: owner)
         guard store.release(owner: owner) else { return }
+        refreshDeviceOrientationObservation()
         pendingGeometryRequests.removeValue(forKey: owner.sceneID)
         let reference = sceneReferences.removeValue(forKey: owner.sceneID)
         if let scene = reference?.scene {
@@ -465,6 +540,57 @@ final class PlayerFullscreenOrientationPolicy {
         }
     }
 
+    private func refreshDeviceOrientationObservation() {
+        let needsObservation = store.leases.values.contains { $0.phase == .interactive }
+        if needsObservation, deviceOrientationObserver == nil {
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            lastObservedDeviceOrientation = UIDevice.current.orientation
+            deviceOrientationObserver = NotificationCenter.default.addObserver(
+                forName: UIDevice.orientationDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.handleDeviceOrientationChange()
+                }
+            }
+        } else if !needsObservation, let deviceOrientationObserver {
+            NotificationCenter.default.removeObserver(deviceOrientationObserver)
+            self.deviceOrientationObserver = nil
+            lastObservedDeviceOrientation = nil
+            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+        }
+    }
+
+    private func handleDeviceOrientationChange() {
+        let deviceOrientation = UIDevice.current.orientation
+        guard deviceOrientation != lastObservedDeviceOrientation else { return }
+        lastObservedDeviceOrientation = deviceOrientation
+        guard let target = PlayerFullscreenOrientationResolver.interfaceOrientation(
+            for: deviceOrientation
+        ) else { return }
+
+        let interactiveOwners = store.leases.values.compactMap { lease in
+            lease.phase == .interactive ? lease.owner : nil
+        }
+        for owner in interactiveOwners {
+            applyInteractiveOrientation(target, owner: owner)
+        }
+    }
+
+    private func applyInteractiveOrientation(
+        _ target: UIInterfaceOrientation,
+        owner: PlayerFullscreenOrientationOwner
+    ) {
+        guard store.lease(for: owner)?.phase == .interactive,
+              let reference = sceneReferences[owner.sceneID],
+              let scene = reference.scene else { return }
+        _ = store.acquire(owner: owner, target: target, phase: .interactive)
+        invalidateSupportedOrientations(controller: reference.orientationController, scene: scene)
+        guard currentInterfaceOrientation(in: scene) != target else { return }
+        requestGeometryUpdate(owner: owner)
+    }
+
     private func observeEffectiveGeometryIfAvailable(reference: SceneReference?) {
         guard #available(iOS 26.0, *),
               let reference,
@@ -473,9 +599,19 @@ final class PlayerFullscreenOrientationPolicy {
         reference.effectiveGeometryObservation = scene.observe(\.effectiveGeometry, options: [.new]) { [weak self, weak scene] _, _ in
             DispatchQueue.main.async {
                 guard let self, let scene else { return }
+                self.recordInteractiveOrientationIfNeeded(in: scene)
                 self.enforceActiveOrientationIfNeeded(in: scene)
             }
         }
+    }
+
+    private func recordInteractiveOrientationIfNeeded(in scene: UIWindowScene) {
+        let sceneID = ObjectIdentifier(scene)
+        guard let lease = store.lease(sceneID: sceneID),
+              lease.phase == .interactive,
+              let current = currentInterfaceOrientation(in: scene),
+              current != .unknown else { return }
+        _ = store.acquire(owner: lease.owner, target: current, phase: .interactive)
     }
 
     private func currentInterfaceOrientation(in scene: UIWindowScene) -> UIInterfaceOrientation? {
