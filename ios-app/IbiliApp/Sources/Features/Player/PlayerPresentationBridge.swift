@@ -24,8 +24,10 @@ enum PlayerPresentationEvent {
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
     case nativeFullscreenWillBegin(PlayerPresentationIdentity)
     case nativeFullscreenDidBegin(PlayerPresentationIdentity)
+    case nativeFullscreenEntryWasCancelled(PlayerPresentationIdentity)
     case nativeFullscreenExitWillBegin(PlayerPresentationIdentity, shouldResumePlayback: Bool)
     case nativeFullscreenExitDidEnd(PlayerPresentationIdentity, shouldResumePlayback: Bool)
+    case nativeFullscreenExitWasCancelled(PlayerPresentationIdentity, shouldResumePlayback: Bool)
 }
 
 private final class PlayerHoldSpeedGestureMaskView: UIView {
@@ -124,6 +126,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let danmakuStrokeWidth: Double
     let danmakuFontWeight: Int
     let danmakuFontScale: Double
+    var sourceVideoSizeHint: CGSize? = nil
     let isTemporarySpeedBoostActive: () -> Bool
     let canBeginTemporarySpeedBoost: () -> Bool
     let beginTemporarySpeedBoost: () -> Bool
@@ -143,6 +146,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.title = title
         vc.updatesNowPlayingInfoCenter = false
         context.coordinator.assignedPlayerID = ObjectIdentifier(player)
+        context.coordinator.observePresentationSize(of: player)
         vc.delegate = context.coordinator
         DispatchQueue.main.async {
             onCreated(vc)
@@ -232,7 +236,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
         if context.coordinator.assignedPlayerID != incomingPlayerID {
             vc.player = player
             context.coordinator.assignedPlayerID = incomingPlayerID
+            context.coordinator.observePresentationSize(of: player)
         }
+        context.coordinator.refreshFullscreenOrientationIfNeeded(controller: vc)
         context.coordinator.danmakuCanvas?.blockLevel = danmakuBlockLevel
         context.coordinator.danmakuCanvas?.preferredFrameRate = danmakuFrameRate
         context.coordinator.danmakuCanvas?.normalStrokeWidth = CGFloat(danmakuStrokeWidth)
@@ -256,6 +262,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
         private var holdSpeedBadgeIsVisible = false
         private var isDismantled = false
         private var pictureInPictureRestoreSucceeded = false
+        private var currentItemObservation: NSKeyValueObservation?
+        private var presentationSizeObservation: NSKeyValueObservation?
+        private var fullscreenOrientationOwner: PlayerFullscreenOrientationOwner?
+        private var fullscreenTransitionState = PlayerFullscreenTransitionState()
+        private var entryInterfaceOrientation: UIInterfaceOrientation?
 
         init(parent: PlayerContainer) {
             self.parent = parent
@@ -267,6 +278,13 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func prepareForDismantle(controller vc: AVPlayerViewController) {
             isDismantled = true
+            fullscreenTransitionState.reset()
+            entryInterfaceOrientation = nil
+            releaseFullscreenOrientationLease()
+            currentItemObservation?.invalidate()
+            currentItemObservation = nil
+            presentationSizeObservation?.invalidate()
+            presentationSizeObservation = nil
             let playerWasAttached = vc.player != nil
             setHoldSpeedBadgeVisible(false, animated: false)
             holdSpeedBadgeView?.removeFromSuperview()
@@ -283,6 +301,46 @@ struct PlayerContainer: UIViewControllerRepresentable {
                     "sessionID": parent.sessionID.uuidString,
                 ])
             }
+        }
+
+        func observePresentationSize(of player: AVPlayer) {
+            currentItemObservation?.invalidate()
+            presentationSizeObservation?.invalidate()
+            observePresentationSize(of: player.currentItem)
+            currentItemObservation = player.observe(\.currentItem, options: [.new]) { [weak self] player, _ in
+                DispatchQueue.main.async {
+                    guard let self,
+                          !self.isDismantled,
+                          self.assignedPlayerID == ObjectIdentifier(player) else { return }
+                    self.observePresentationSize(of: player.currentItem)
+                    self.refreshFullscreenOrientationIfNeeded()
+                }
+            }
+        }
+
+        private func observePresentationSize(of item: AVPlayerItem?) {
+            presentationSizeObservation?.invalidate()
+            presentationSizeObservation = nil
+            guard let item else { return }
+            presentationSizeObservation = item.observe(\.presentationSize, options: [.initial, .new]) { [weak self] _, _ in
+                DispatchQueue.main.async {
+                    self?.refreshFullscreenOrientationIfNeeded()
+                }
+            }
+        }
+
+        func refreshFullscreenOrientationIfNeeded(controller: AVPlayerViewController? = nil) {
+            guard !isDismantled,
+                  fullscreenTransitionState.isFullscreen,
+                  let owner = fullscreenOrientationOwner,
+                  let controller = controller ?? PlayerFullscreenOrientationPolicy.shared.controller(for: owner) else {
+                return
+            }
+            PlayerFullscreenOrientationPolicy.shared.update(
+                owner: owner,
+                ownerController: controller,
+                target: resolvedFullscreenOrientation(for: controller)
+            )
         }
 
         func setHoldSpeedBadgeVisible(_ visible: Bool, animated: Bool) {
@@ -377,12 +435,59 @@ struct PlayerContainer: UIViewControllerRepresentable {
                                   willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
             guard !isDismantled else { return }
             let identity = presentationIdentity(for: playerViewController)
+            let transitionRevision = fullscreenTransitionState.beginEntry()
+            entryInterfaceOrientation = PlayerFullscreenOrientationPolicy.shared.currentInterfaceOrientation(
+                for: playerViewController
+            )
+            releaseFullscreenOrientationLease()
+            let fullscreenController = coordinator.viewController(forKey: .to) ?? playerViewController
+            fullscreenOrientationOwner = PlayerFullscreenOrientationPolicy.shared.acquire(
+                sessionID: identity.sessionID,
+                ownerController: playerViewController,
+                orientationController: fullscreenController,
+                target: resolvedFullscreenOrientation(for: playerViewController),
+                entryOrientation: entryInterfaceOrientation ?? .portrait
+            )
+            if fullscreenOrientationOwner == nil,
+               UIDevice.current.userInterfaceIdiom == .phone {
+                AppLog.warning("player", "原生全屏开始时未找到所属 windowScene", metadata: [
+                    "sessionID": identity.sessionID.uuidString,
+                ])
+            }
             AppLog.debug("player", "AVKit 原生全屏即将进入", metadata: [
                 "sessionID": identity.sessionID.uuidString,
             ])
             parent.onPresentationEvent(.nativeFullscreenWillBegin(identity))
             coordinator.animate(alongsideTransition: nil) { [weak self] context in
-                guard let self, !self.isDismantled, !context.isCancelled else { return }
+                guard let self, !self.isDismantled else { return }
+                guard self.fullscreenTransitionState.finishEntry(
+                    revision: transitionRevision,
+                    cancelled: context.isCancelled
+                ) else { return }
+                guard !context.isCancelled else {
+                    self.releaseFullscreenOrientationLease()
+                    self.entryInterfaceOrientation = nil
+                    self.parent.onPresentationEvent(.nativeFullscreenEntryWasCancelled(identity))
+                    return
+                }
+                if let owner = self.fullscreenOrientationOwner {
+                    PlayerFullscreenOrientationPolicy.shared.retryAfterFullscreenEntryIfNeeded(owner: owner)
+                } else {
+                    let fullscreenController = context.viewController(forKey: .to) ?? playerViewController
+                    self.fullscreenOrientationOwner = PlayerFullscreenOrientationPolicy.shared.acquire(
+                        sessionID: identity.sessionID,
+                        ownerController: playerViewController,
+                        orientationController: fullscreenController,
+                        target: self.resolvedFullscreenOrientation(for: playerViewController),
+                        entryOrientation: self.entryInterfaceOrientation ?? .portrait
+                    )
+                }
+                if self.fullscreenOrientationOwner == nil,
+                   UIDevice.current.userInterfaceIdiom == .phone {
+                    AppLog.warning("player", "原生全屏完成后仍未找到所属 windowScene", metadata: [
+                        "sessionID": identity.sessionID.uuidString,
+                    ])
+                }
                 self.parent.onPresentationEvent(.nativeFullscreenDidBegin(identity))
             }
         }
@@ -391,16 +496,69 @@ struct PlayerContainer: UIViewControllerRepresentable {
                                   willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
             guard !isDismantled else { return }
             let identity = presentationIdentity(for: playerViewController)
+            let transitionRevision = fullscreenTransitionState.beginExit()
             let shouldResumePlayback = parent.shouldResumePlaybackAfterNativeFullscreenExit()
+            let exitingTarget = resolvedFullscreenOrientation(for: playerViewController)
+            let fullscreenController = fullscreenOrientationOwner.flatMap {
+                PlayerFullscreenOrientationPolicy.shared.orientationController(for: $0)
+            } ?? coordinator.viewController(forKey: .from) ?? playerViewController
+            if let owner = fullscreenOrientationOwner {
+                PlayerFullscreenOrientationPolicy.shared.beginRestoringEntryOrientation(owner: owner)
+            }
             AppLog.debug("player", "AVKit 原生全屏即将退出", metadata: [
                 "sessionID": identity.sessionID.uuidString,
                 "shouldResumePlayback": String(shouldResumePlayback),
             ])
             parent.onPresentationEvent(.nativeFullscreenExitWillBegin(identity, shouldResumePlayback: shouldResumePlayback))
             coordinator.animate(alongsideTransition: nil) { [weak self] context in
-                guard let self, !self.isDismantled, !context.isCancelled else { return }
+                guard let self, !self.isDismantled else { return }
+                guard self.fullscreenTransitionState.finishExit(
+                    revision: transitionRevision,
+                    cancelled: context.isCancelled
+                ) else { return }
+                if context.isCancelled {
+                    if let owner = self.fullscreenOrientationOwner {
+                        PlayerFullscreenOrientationPolicy.shared.resumeFullscreenOrientation(
+                            owner: owner,
+                            target: exitingTarget
+                        )
+                    } else {
+                        self.fullscreenOrientationOwner = PlayerFullscreenOrientationPolicy.shared.acquire(
+                            sessionID: identity.sessionID,
+                            ownerController: playerViewController,
+                            orientationController: fullscreenController,
+                            target: exitingTarget,
+                            entryOrientation: self.entryInterfaceOrientation ?? .portrait
+                        )
+                    }
+                    self.parent.onPresentationEvent(.nativeFullscreenExitWasCancelled(
+                        identity,
+                        shouldResumePlayback: shouldResumePlayback
+                    ))
+                    return
+                }
+                if let owner = self.fullscreenOrientationOwner {
+                    PlayerFullscreenOrientationPolicy.shared.finishRestoringEntryOrientation(owner: owner)
+                }
+                self.entryInterfaceOrientation = nil
                 self.parent.onPresentationEvent(.nativeFullscreenExitDidEnd(identity, shouldResumePlayback: shouldResumePlayback))
             }
+        }
+
+        private func resolvedFullscreenOrientation(
+            for controller: AVPlayerViewController
+        ) -> PlayerFullscreenContentOrientation {
+            PlayerFullscreenOrientationResolver.contentOrientation(
+                presentationSize: controller.player?.currentItem?.presentationSize ?? .zero,
+                sourceSizeHint: parent.sourceVideoSizeHint,
+                unknownFallback: .landscape
+            )
+        }
+
+        private func releaseFullscreenOrientationLease() {
+            guard let owner = fullscreenOrientationOwner else { return }
+            PlayerFullscreenOrientationPolicy.shared.release(owner: owner)
+            fullscreenOrientationOwner = nil
         }
 
         private func presentationIdentity(for vc: AVPlayerViewController) -> PlayerPresentationIdentity {

@@ -49,6 +49,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentAudioQn: Int64 = 0
     @Published private(set) var availableSubtitles: [VideoSubtitleDTO] = []
     @Published private(set) var viewPoints: [VideoViewPointDTO] = []
+    @Published private(set) var currentVideoSizeHint: CGSize?
     @Published var rate: Float = 1.0 { didSet { applyRate() } }
     @Published private(set) var isTemporarySpeedBoostActive = false
     @Published private(set) var isPausedForDetailCollapse = false
@@ -899,6 +900,7 @@ final class PlayerViewModel: ObservableObject {
         behaviorState = PlayerSessionBehaviorState()
         isPlaybackCompleted = false
         isVideoReady = false
+        currentVideoSizeHint = nil
     }
 
     func prepareForDismissal() {
@@ -1537,6 +1539,11 @@ final class PlayerViewModel: ObservableObject {
 
     private func rememberActivePlayURL(_ info: PlayUrlDTO) {
         currentVideoCodec = info.videoCodec
+        if let width = info.videoWidth, let height = info.videoHeight, width > 0, height > 0 {
+            currentVideoSizeHint = CGSize(width: width, height: height)
+        } else {
+            currentVideoSizeHint = nil
+        }
         isCurrentSourceOffline = info.url.hasPrefix("file://")
         availableSubtitles = info.subtitles
         viewPoints = info.viewPoints
@@ -2156,11 +2163,18 @@ struct PlayerView: View {
         case .nativeFullscreenDidBegin(let identity):
             guard presentationIdentityMatchesCurrentRoute(identity) else { return }
             endNativePlayerFullscreenExit()
+        case .nativeFullscreenEntryWasCancelled(let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            endNativePlayerFullscreenExit()
         case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
             guard presentationIdentityMatchesCurrentRoute(identity) else { return }
             beginNativePlayerFullscreenExit()
             vm.prepareForNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
         case .nativeFullscreenExitDidEnd(let identity, let shouldResumePlayback):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
+            endNativePlayerFullscreenExit()
+        case .nativeFullscreenExitWasCancelled(let identity, let shouldResumePlayback):
             guard presentationIdentityMatchesCurrentRoute(identity) else { return }
             vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
             endNativePlayerFullscreenExit()
@@ -2484,6 +2498,7 @@ struct PlayerView: View {
                                         danmakuStrokeWidth: settings.resolvedDanmakuStrokeWidth(),
                                         danmakuFontWeight: settings.resolvedDanmakuFontWeight(),
                                         danmakuFontScale: settings.resolvedDanmakuFontScale(),
+                                        sourceVideoSizeHint: vm.currentVideoSizeHint,
                                         isTemporarySpeedBoostActive: { vm.isTemporarySpeedBoostActive },
                                         canBeginTemporarySpeedBoost: { vm.canBeginTemporarySpeedBoost },
                                         beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },

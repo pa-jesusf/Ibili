@@ -704,11 +704,18 @@ struct LiveRoomView: View {
         case .nativeFullscreenDidBegin(let identity):
             guard identity.sessionID == vm.sessionID else { return }
             endNativePlayerFullscreenExit()
+        case .nativeFullscreenEntryWasCancelled(let identity):
+            guard identity.sessionID == vm.sessionID else { return }
+            endNativePlayerFullscreenExit()
         case .nativeFullscreenExitWillBegin(let identity, let shouldResumePlayback):
             guard identity.sessionID == vm.sessionID else { return }
             beginNativePlayerFullscreenExit()
             vm.prepareForNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
         case .nativeFullscreenExitDidEnd(let identity, let shouldResumePlayback):
+            guard identity.sessionID == vm.sessionID else { return }
+            vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
+            endNativePlayerFullscreenExit()
+        case .nativeFullscreenExitWasCancelled(let identity, let shouldResumePlayback):
             guard identity.sessionID == vm.sessionID else { return }
             vm.completeNativeFullscreenExit(shouldResumePlayback: shouldResumePlayback)
             endNativePlayerFullscreenExit()
