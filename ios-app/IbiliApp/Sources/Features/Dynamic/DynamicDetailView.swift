@@ -15,6 +15,7 @@ struct DynamicDetailView: View {
     @State private var preview: DynamicDetailPreviewState?
     @State private var isLiked = false
     @State private var likeCount: Int64 = 0
+    @State private var didInitializeLikeState = false
     @State private var likeBusy = false
     @State private var shareSheetURL: ShareSheetItem?
     @State private var commentSendSheet = false
@@ -85,10 +86,9 @@ struct DynamicDetailView: View {
             }
         }
         .onAppear {
-            // Initialise local like state from the item's stats. Real
-            // "is_liked" needs an extra account-scoped query that the
-            // current dynamic feed doesn't carry; for now we expose
-            // the count and let the user toggle.
+            guard !didInitializeLikeState else { return }
+            didInitializeLikeState = true
+            isLiked = item.stat.liked
             likeCount = item.stat.like
         }
     }

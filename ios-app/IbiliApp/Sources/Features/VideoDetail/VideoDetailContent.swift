@@ -335,7 +335,8 @@ struct VideoDetailContent: View {
             play: view.stat.view,
             danmaku: view.stat.danmaku,
             pubdate: view.pubdate,
-            ownerMID: view.owner.mid
+            ownerMID: view.owner.mid,
+            dimension: page.dimension
         )
         let part = page.part.trimmingCharacters(in: .whitespacesAndNewlines)
         return PlayerNextPartCandidate(
@@ -583,6 +584,7 @@ struct VideoDetailContent: View {
                 } else if v.pages.count > 1 {
                     VideoSeasonCard(source: .pages(aid: v.aid, bvid: v.bvid, pages: v.pages, currentCid: activeCid)) { aid, bvid, cid in
                         guard cid != activeCid else { return }
+                        guard let page = v.pages.first(where: { $0.cid == cid }) else { return }
                         AppLog.info("player", "播放页分P切换请求", metadata: [
                             "fromCid": String(activeCid),
                             "toCid": String(cid),
@@ -593,8 +595,15 @@ struct VideoDetailContent: View {
                             aid: aid ?? v.aid,
                             bvid: (bvid?.isEmpty == false ? bvid : v.bvid) ?? "",
                             cid: cid,
-                            title: "", cover: "", author: "",
-                            durationSec: 0, play: 0, danmaku: 0
+                            title: v.title,
+                            cover: v.cover,
+                            author: v.owner.name,
+                            durationSec: page.durationSec,
+                            play: v.stat.view,
+                            danmaku: v.stat.danmaku,
+                            pubdate: v.pubdate,
+                            ownerMID: v.owner.mid,
+                            dimension: page.dimension
                         )
                         openPlayer(next, mode: .replaceCurrent)
                     }

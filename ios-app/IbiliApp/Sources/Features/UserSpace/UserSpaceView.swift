@@ -43,6 +43,7 @@ private struct UserSpaceHeaderVersion: Hashable {
     let card: UserCardDTO?
     let live: UserLiveRoomDTO?
     let isFollowed: Bool
+    let relationEditable: Bool
     let followBusy: Bool
 }
 
@@ -188,6 +189,7 @@ struct UserSpaceView: View {
             HStack(spacing: 4) {
                 if vm.followBusy { ProgressView().tint(.white) }
                 else if vm.isFollowed { Image(systemName: "checkmark") }
+                else if !vm.relationEditable { Image(systemName: "nosign") }
                 else { Image(systemName: "plus") }
                 Text(vm.isFollowed ? "已关注" : "关注")
                     .font(.subheadline.weight(.semibold))
@@ -195,9 +197,9 @@ struct UserSpaceView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
-            .background(Capsule().fill(vm.isFollowed ? Color.gray : IbiliTheme.accent))
+            .background(Capsule().fill(vm.isFollowed || !vm.relationEditable ? Color.gray : IbiliTheme.accent))
         }
-        .disabled(vm.followBusy)
+        .disabled(vm.followBusy || !vm.relationEditable)
     }
 
     private var statsRow: some View {
@@ -270,6 +272,7 @@ struct UserSpaceView: View {
             card: vm.card,
             live: vm.userLive,
             isFollowed: vm.isFollowed,
+            relationEditable: vm.relationEditable,
             followBusy: vm.followBusy
         )
     }
@@ -543,6 +546,7 @@ final class UserSpaceViewModel: ObservableObject {
     @Published var card: UserCardDTO?
     @Published var userLive: UserLiveRoomDTO?
     @Published var isFollowed = false
+    @Published var relationEditable = true
     @Published var followBusy = false
 
     @Published var archives: [SpaceArcItemDTO] = []
@@ -579,6 +583,7 @@ final class UserSpaceViewModel: ObservableObject {
         let loadedCard = await cardResult
         self.card = loadedCard
         self.isFollowed = loadedCard?.isFollowed ?? false
+        self.relationEditable = loadedCard?.relationEditable ?? true
         AppLog.debug("profile", "用户空间关注态加载完成", metadata: [
             "mid": String(mid),
             "hasCard": String(loadedCard != nil),

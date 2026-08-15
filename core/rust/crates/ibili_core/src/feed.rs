@@ -47,6 +47,8 @@ struct FeedRawItem {
     player_args: Option<PlayerArgs>,
     #[serde(default)]
     ad_info: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    can_play: Option<i64>,
     #[serde(default, deserialize_with = "lenient_string")]
     rcmd_reason: Option<String>,
     #[serde(default)]
@@ -384,6 +386,7 @@ impl Core {
             // Match PiliPlus filtering: drop ads + non-video cards.
             .filter(|i| i.ad_info.is_none())
             .filter(|i| !matches!(i.card_goto.as_str(), "ad_av" | "ad_web_s" | "ad" | "banner"))
+            .filter(|i| i.can_play == Some(1))
             .filter(|i| matches!(i.goto.as_str(), "av" | "bangumi") || i.card_goto == "av")
             .filter_map(|i| {
                 let pa = i.player_args.as_ref()?;
@@ -635,4 +638,21 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(lenient_i64(de)?.map(|v| v != 0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FeedRawItem;
+
+    fn parse_item(json: &str) -> FeedRawItem {
+        serde_json::from_str(json).expect("app feed item should deserialize")
+    }
+
+    #[test]
+    fn app_feed_can_play_is_lenient_but_requires_one() {
+        assert_eq!(parse_item(r#"{"can_play":1}"#).can_play, Some(1));
+        assert_eq!(parse_item(r#"{"can_play":"1"}"#).can_play, Some(1));
+        assert_ne!(parse_item(r#"{"can_play":0}"#).can_play, Some(1));
+        assert_ne!(parse_item(r#"{}"#).can_play, Some(1));
+    }
 }

@@ -504,6 +504,12 @@ pub struct VideoOwner {
     pub face: String,
 }
 
+#[derive(Debug, Serialize, Clone, Default, PartialEq, Eq)]
+pub struct VideoDimension {
+    pub width: i64,
+    pub height: i64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct VideoPage {
     pub cid: i64,
@@ -511,6 +517,7 @@ pub struct VideoPage {
     pub part: String,
     pub duration_sec: i64,
     pub first_frame: String,
+    pub dimension: Option<VideoDimension>,
 }
 
 #[derive(Debug, Serialize, Clone)]

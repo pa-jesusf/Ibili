@@ -53,6 +53,7 @@ pub struct DynamicStat {
     pub like: i64,
     pub comment: i64,
     pub forward: i64,
+    pub liked: bool,
 }
 
 /// Embedded video card (used for both standalone video dynamics and
@@ -275,6 +276,11 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         like: stat_mod.like.as_ref().and_then(|c| c.count).unwrap_or(0),
         comment: stat_mod.comment.as_ref().and_then(|c| c.count).unwrap_or(0),
         forward: stat_mod.forward.as_ref().and_then(|c| c.count).unwrap_or(0),
+        liked: stat_mod
+            .like
+            .as_ref()
+            .and_then(|count| count.status)
+            .unwrap_or(false),
     };
 
     let major = dynamic_mod.major.unwrap_or_default();
@@ -737,6 +743,8 @@ struct DynStatWire {
 struct DynCountWire {
     #[serde(default, deserialize_with = "lenient_i64")]
     count: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_like_status")]
+    status: Option<bool>,
 }
 
 fn null_as_empty_vec<'de, D, T>(de: D) -> Result<Vec<T>, D::Error>
@@ -786,4 +794,40 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(lenient_i64(de)?.map(|v| v as i32))
+}
+
+fn lenient_like_status<'de, D>(de: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let value = Option::<Value>::deserialize(de)?;
+    Ok(match value {
+        Some(Value::Bool(value)) => Some(value),
+        Some(Value::Number(value)) => value.as_i64().map(|value| value == 1),
+        Some(Value::String(value)) => Some(value == "STATE_LIKE"),
+        Some(Value::Null) | None => None,
+        _ => Some(false),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DynCountWire;
+
+    fn parse_status(value: &str) -> Option<bool> {
+        serde_json::from_str::<DynCountWire>(value)
+            .expect("dynamic count should deserialize")
+            .status
+    }
+
+    #[test]
+    fn dynamic_like_status_accepts_bool_number_and_enum_string() {
+        assert_eq!(parse_status(r#"{"status":true}"#), Some(true));
+        assert_eq!(parse_status(r#"{"status":1}"#), Some(true));
+        assert_eq!(parse_status(r#"{"status":0}"#), Some(false));
+        assert_eq!(parse_status(r#"{"status":"STATE_LIKE"}"#), Some(true));
+        assert_eq!(parse_status(r#"{"status":"STATE_NONE"}"#), Some(false));
+        assert_eq!(parse_status(r#"{}"#), None);
+    }
 }

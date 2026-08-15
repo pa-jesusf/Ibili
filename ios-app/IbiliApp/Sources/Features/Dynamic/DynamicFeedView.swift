@@ -443,6 +443,10 @@ struct DynamicItemCard: View {
             .sheet(item: $shareSheetURL) { item in
                 ActivityViewController(activityItems: [item.url])
             }
+            .onAppear {
+                guard likeCount == nil else { return }
+                isLiked = item.stat.liked
+            }
     }
 
     private func cardContent(resolvedContentWidth: CGFloat) -> some View {

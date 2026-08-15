@@ -28,7 +28,9 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
         feedGoto: item.feedGoto,
         feedID: item.feedID,
         dislikeReasons: item.dislikeReasons,
-        feedbackReasons: item.feedbackReasons
+        feedbackReasons: item.feedbackReasons,
+        resumePositionMs: item.resumePositionMs,
+        dimension: item.dimension
     )
 }
 
@@ -76,7 +78,7 @@ final class PlayerViewModel: ObservableObject {
     /// Captured from `playurl.last_play_time_ms` and consumed once when
     /// the AVPlayerItem first reaches `.readyToPlay` so we don't fight
     /// AVPlayer's own initial seek behaviour.
-    private var pendingResumeMs: Int64 = 0
+    private var pendingResumeMs: Int64?
     /// Snapshot of the current bvid so the heartbeat call carries the
     /// same identifier upstream PiliPlus uses (`bvid` for ugc).
     private var bvid: String = ""
@@ -276,6 +278,8 @@ final class PlayerViewModel: ObservableObject {
             // Keep the logical playback intent as `.play` so the audio
             // session stays claimed throughout the hand-off.
             resetCurrentPlaybackForMediaSwitch()
+            pendingResumeMs = item.resumePositionMs.map { max(0, $0) }
+            currentVideoSizeHint = videoSizeHint(from: item.dimension)
         }
         isPlaybackCompleted = false
         currentAudioQn = requestedAudioQn
@@ -352,7 +356,7 @@ final class PlayerViewModel: ObservableObject {
             self.currentAudioQn = info.audioQuality
             // Capture server-recorded resume position. Treated as a
             // single-shot — `observeItemStatus` consumes it on the
-            // first `.readyToPlay`, then zeroes the field so future
+            // first `.readyToPlay`, then clears the field so future
             // quality switches don't re-seek backward.
             //
             // `lastPlayTimeMs` is aid-level: the server reports the most
@@ -360,10 +364,12 @@ final class PlayerViewModel: ObservableObject {
             // identifying which part it belongs to. Only honor it when
             // it belongs to the part we are loading, otherwise switching
             // 分P would inherit another part's progress.
-            if info.lastPlayCid == 0 || info.lastPlayCid == item.cid {
-                self.pendingResumeMs = info.lastPlayTimeMs
-            } else {
-                self.pendingResumeMs = 0
+            if !isSameVideo, self.pendingResumeMs == nil {
+                if info.lastPlayCid == 0 || info.lastPlayCid == item.cid {
+                    self.pendingResumeMs = max(0, info.lastPlayTimeMs)
+                } else {
+                    self.pendingResumeMs = 0
+                }
             }
 
             let prep = try await engine.makeItem(for: info)
@@ -901,6 +907,7 @@ final class PlayerViewModel: ObservableObject {
         isPlaybackCompleted = false
         isVideoReady = false
         currentVideoSizeHint = nil
+        pendingResumeMs = nil
     }
 
     func prepareForDismissal() {
@@ -1286,7 +1293,6 @@ final class PlayerViewModel: ObservableObject {
             : qualities
         availableAudioQualities = normalizedAudioQualities(from: info)
         currentAudioQn = info.audioQuality
-        pendingResumeMs = 0
         rememberPlayURL(info)
 
         let prep = try await engine.makeItem(for: info)
@@ -1340,15 +1346,14 @@ final class PlayerViewModel: ObservableObject {
                     // exactly once per load. Cleared so a later
                     // quality-switch readyToPlay event keeps the
                     // user's current position intact.
-                    if self.pendingResumeMs > 0 {
-                        let ms = self.pendingResumeMs
-                        self.pendingResumeMs = 0
+                    if let ms = self.pendingResumeMs {
+                        self.pendingResumeMs = nil
                         // Discard if effectively at end (within 3s of
                         // duration) — bilibili reports the *terminal*
                         // position when the user finished the video.
                         let durationSec = item.duration.isNumeric ? CMTimeGetSeconds(item.duration) : 0
                         let resumeSec = Double(ms) / 1000.0
-                        if durationSec <= 0 || resumeSec < durationSec - 3 {
+                        if ms > 0, durationSec <= 0 || resumeSec < durationSec - 3 {
                             let target = CMTime(seconds: resumeSec, preferredTimescale: 600)
                             Task { @MainActor in
                                 guard !self.isClosing, self.loadGeneration == generation else { return }
@@ -1541,12 +1546,15 @@ final class PlayerViewModel: ObservableObject {
         currentVideoCodec = info.videoCodec
         if let width = info.videoWidth, let height = info.videoHeight, width > 0, height > 0 {
             currentVideoSizeHint = CGSize(width: width, height: height)
-        } else {
-            currentVideoSizeHint = nil
         }
         isCurrentSourceOffline = info.url.hasPrefix("file://")
         availableSubtitles = info.subtitles
         viewPoints = info.viewPoints
+    }
+
+    private func videoSizeHint(from dimension: VideoDimensionDTO?) -> CGSize? {
+        guard let dimension, dimension.isValid else { return nil }
+        return CGSize(width: CGFloat(dimension.width), height: CGFloat(dimension.height))
     }
 
     private func playURLCacheVariant(codecPreference: String? = nil) -> String {
@@ -1555,7 +1563,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func currentPlaybackTimeForRecovery() -> CMTime {
         guard let player else {
-            if pendingResumeMs > 0 {
+            if let pendingResumeMs, pendingResumeMs > 0 {
                 return CMTime(seconds: Double(pendingResumeMs) / 1000.0, preferredTimescale: 600)
             }
             return .zero
@@ -1564,7 +1572,7 @@ final class PlayerViewModel: ObservableObject {
         if current.isValid, !current.isIndefinite {
             return current
         }
-        if pendingResumeMs > 0 {
+        if let pendingResumeMs, pendingResumeMs > 0 {
             return CMTime(seconds: Double(pendingResumeMs) / 1000.0, preferredTimescale: 600)
         }
         return .zero

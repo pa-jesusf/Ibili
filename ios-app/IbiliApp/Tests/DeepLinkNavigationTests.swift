@@ -3,6 +3,38 @@ import XCTest
 
 @MainActor
 final class DeepLinkNavigationTests: XCTestCase {
+    func testFeedItemRoundTripPreservesExplicitZeroResumeAndDimension() throws {
+        let item = FeedItemDTO(
+            aid: 7,
+            bvid: "BV7",
+            cid: 70,
+            title: "history",
+            cover: "",
+            author: "",
+            durationSec: 120,
+            play: 0,
+            danmaku: 0,
+            resumePositionMs: 0,
+            dimension: VideoDimensionDTO(width: 1080, height: 1920)
+        )
+
+        let decoded = try JSONDecoder().decode(
+            FeedItemDTO.self,
+            from: JSONEncoder().encode(item)
+        )
+
+        XCTAssertEqual(decoded.resumePositionMs, 0)
+        XCTAssertEqual(decoded.dimension, VideoDimensionDTO(width: 1080, height: 1920))
+    }
+
+    func testHistoryProgressConvertsSecondsAndCompletionToResumeMilliseconds() throws {
+        let partial = try decodeHistory(progress: 37)
+        let complete = try decodeHistory(progress: -1)
+
+        XCTAssertEqual(partial.resumePositionMs, 37_000)
+        XCTAssertEqual(complete.resumePositionMs, 0)
+    }
+
     func testRootContentMediaRoutesRoundTripThroughSessionRoutes() {
         let playerID = UUID()
         let item = DeepLinkRouter.makeShell(aid: 10, bvid: "BV10")
@@ -26,6 +58,23 @@ final class DeepLinkNavigationTests: XCTestCase {
         XCTAssertEqual(liveRootRoute.liveRoute?.id, liveID)
         XCTAssertEqual(liveRootRoute.liveRoute?.roomID, 123)
         XCTAssertEqual(liveRootRoute.sessionRoute?.id, liveID)
+    }
+
+    private func decodeHistory(progress: Int64) throws -> HistoryItemDTO {
+        let json = """
+        {
+          "aid": 1,
+          "bvid": "BV1",
+          "cid": 11,
+          "title": "history",
+          "cover": "",
+          "author": "",
+          "duration_sec": 120,
+          "progress_sec": \(progress),
+          "view_at": 0
+        }
+        """
+        return try JSONDecoder().decode(HistoryItemDTO.self, from: Data(json.utf8))
     }
 
     func testRootContentOpenPlayerDispatchesPushAndReplace() {

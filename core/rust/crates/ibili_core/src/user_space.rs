@@ -53,6 +53,8 @@ pub struct UserCard {
     pub archive_count: i64,
     /// 当前登录用户是否已关注该 UP。
     pub is_followed: bool,
+    /// 当前关系是否允许通过关注按钮修改。
+    pub relation_editable: bool,
     /// 0 = 普通; 1+ = 大会员等级 (vip.type)
     pub vip_type: i64,
     /// VIP 状态：0 = 非会员; 1 = 大会员
@@ -726,6 +728,7 @@ fn space_app_params(mid: i64, access_key: Option<String>) -> Vec<(String, String
 }
 
 fn user_card_from_wire(mid: i64, raw: UserCardWire) -> UserCard {
+    let relation_editable = !(raw.relation == Some(-999) && raw.guest_relation == Some(-1));
     let card = raw.card.unwrap_or_default();
     let parsed_mid = card
         .mid
@@ -737,8 +740,8 @@ fn user_card_from_wire(mid: i64, raw: UserCardWire) -> UserCard {
         .archive_count
         .or_else(|| raw.archive.and_then(|archive| archive.count))
         .unwrap_or(0);
-    let is_followed =
-        user_card_relation_is_followed(raw.relation, raw.rel_special, card.relation.as_ref());
+    let is_followed = relation_editable
+        && user_card_relation_is_followed(raw.relation, raw.rel_special, card.relation.as_ref());
     let vip = card.vip.unwrap_or_default();
     UserCard {
         mid: parsed_mid,
@@ -749,6 +752,7 @@ fn user_card_from_wire(mid: i64, raw: UserCardWire) -> UserCard {
         following,
         archive_count,
         is_followed,
+        relation_editable,
         vip_type: vip.kind.unwrap_or(0),
         vip_status: vip.status.unwrap_or(0),
         vip_label: vip.label.and_then(|l| l.text).unwrap_or_default(),
@@ -767,6 +771,8 @@ struct UserCardWire {
     archive: Option<SpaceArchiveSummaryWire>,
     #[serde(default)]
     relation: Option<i64>,
+    #[serde(default)]
+    guest_relation: Option<i64>,
     #[serde(default)]
     rel_special: Option<i64>,
 }
@@ -1448,5 +1454,47 @@ mod tests {
             Some(0),
             Some(&blocked)
         ));
+    }
+
+    #[test]
+    fn guest_block_relation_is_not_followed_or_editable() {
+        let card = parse_card(
+            r#"{
+                "card": {
+                    "mid": "42",
+                    "relation": { "attribute": 2, "is_follow": 1 }
+                },
+                "relation": -999,
+                "guest_relation": -1
+            }"#,
+        );
+
+        assert!(!card.is_followed);
+        assert!(!card.relation_editable);
+    }
+
+    #[test]
+    fn history_progress_preserves_seconds_and_watched_to_end_sentinel() {
+        let raw: HistoryWire = serde_json::from_str(
+            r#"{
+                "list": [
+                    {
+                        "title": "partial",
+                        "progress": 37,
+                        "history": { "oid": 1, "cid": 11, "business": "archive" }
+                    },
+                    {
+                        "title": "complete",
+                        "progress": -1,
+                        "history": { "oid": 2, "cid": 22, "business": "archive" }
+                    }
+                ]
+            }"#,
+        )
+        .expect("history response should deserialize");
+
+        let items = history_items_from_wire(raw.list);
+        assert_eq!(items[0].progress_sec, 37);
+        assert_eq!(items[1].progress_sec, -1);
     }
 }

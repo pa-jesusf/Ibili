@@ -82,6 +82,13 @@ public struct FeedDislikeReasonDTO: Codable, Identifiable, Hashable {
     }
 }
 
+public struct VideoDimensionDTO: Codable, Hashable {
+    public let width: Int64
+    public let height: Int64
+
+    public var isValid: Bool { width > 0 && height > 0 }
+}
+
 public struct FeedItemDTO: Codable, Identifiable, Hashable {
     public var id: Int64 { isPGC ? (epID > 0 ? epID : aid) : aid }
     public let aid: Int64
@@ -105,6 +112,10 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
     public let feedID: Int64
     public let dislikeReasons: [FeedDislikeReasonDTO]
     public let feedbackReasons: [FeedDislikeReasonDTO]
+    /// Explicit one-shot resume instruction. `0` intentionally suppresses
+    /// account-level playurl progress and starts from the beginning.
+    public let resumePositionMs: Int64?
+    public let dimension: VideoDimensionDTO?
 
     enum CodingKeys: String, CodingKey {
         case aid, bvid, cid, title, cover, author, play, danmaku, pubdate
@@ -118,6 +129,8 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         case feedID = "feed_id"
         case dislikeReasons = "dislike_reasons"
         case feedbackReasons = "feedback_reasons"
+        case resumePositionMs = "resume_position_ms"
+        case dimension
     }
 
     public init(from decoder: Decoder) throws {
@@ -141,6 +154,8 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         feedID = try c.decodeIfPresent(Int64.self, forKey: .feedID) ?? aid
         dislikeReasons = try c.decodeIfPresent([FeedDislikeReasonDTO].self, forKey: .dislikeReasons) ?? []
         feedbackReasons = try c.decodeIfPresent([FeedDislikeReasonDTO].self, forKey: .feedbackReasons) ?? []
+        resumePositionMs = try c.decodeIfPresent(Int64.self, forKey: .resumePositionMs)
+        dimension = try c.decodeIfPresent(VideoDimensionDTO.self, forKey: .dimension)
     }
 
     /// Memberwise convenience init for synthetic feed items (related,
@@ -157,7 +172,9 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         feedGoto: String = "",
         feedID: Int64 = 0,
         dislikeReasons: [FeedDislikeReasonDTO] = [],
-        feedbackReasons: [FeedDislikeReasonDTO] = []
+        feedbackReasons: [FeedDislikeReasonDTO] = [],
+        resumePositionMs: Int64? = nil,
+        dimension: VideoDimensionDTO? = nil
     ) {
         self.aid = aid; self.bvid = bvid; self.cid = cid
         self.epID = epID; self.seasonID = seasonID; self.isPGC = isPGC
@@ -170,6 +187,8 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         self.feedID = feedID > 0 ? feedID : aid
         self.dislikeReasons = dislikeReasons
         self.feedbackReasons = feedbackReasons
+        self.resumePositionMs = resumePositionMs
+        self.dimension = dimension
     }
 }
 
@@ -1121,8 +1140,9 @@ public struct VideoPageDTO: Decodable, Hashable, Identifiable {
     public let part: String
     public let durationSec: Int64
     public let firstFrame: String
+    public let dimension: VideoDimensionDTO?
     enum CodingKeys: String, CodingKey {
-        case cid, page, part
+        case cid, page, part, dimension
         case durationSec = "duration_sec"
         case firstFrame = "first_frame"
     }
@@ -1533,6 +1553,7 @@ public struct UserCardDTO: Decodable, Hashable {
     public let following: Int64
     public let archiveCount: Int64
     public let isFollowed: Bool
+    public let relationEditable: Bool
     public let vipType: Int64
     public let vipStatus: Int64
     public let vipLabel: String
@@ -1541,6 +1562,7 @@ public struct UserCardDTO: Decodable, Hashable {
         case mid, name, face, sign, follower, following
         case archiveCount = "archive_count"
         case isFollowed = "is_followed"
+        case relationEditable = "relation_editable"
         case vipType = "vip_type"
         case vipStatus = "vip_status"
         case vipLabel = "vip_label"
@@ -1556,6 +1578,7 @@ public struct UserCardDTO: Decodable, Hashable {
         following = try c.decode(Int64.self, forKey: .following)
         archiveCount = try c.decode(Int64.self, forKey: .archiveCount)
         isFollowed = try c.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
+        relationEditable = try c.decodeIfPresent(Bool.self, forKey: .relationEditable) ?? true
         vipType = try c.decode(Int64.self, forKey: .vipType)
         vipStatus = try c.decode(Int64.self, forKey: .vipStatus)
         vipLabel = try c.decode(String.self, forKey: .vipLabel)
@@ -1583,6 +1606,11 @@ public struct UserLiveRoomDTO: Decodable, Hashable {
 
 public struct HistoryItemDTO: Decodable, Identifiable, Hashable {
     public var id: Int64 { aid }
+    public var resumePositionMs: Int64 {
+        guard progressSec > 0 else { return 0 }
+        let (milliseconds, overflow) = progressSec.multipliedReportingOverflow(by: 1_000)
+        return overflow ? Int64.max : milliseconds
+    }
     public let aid: Int64
     public let bvid: String
     public let cid: Int64
@@ -1875,6 +1903,26 @@ public struct DynamicStatDTO: Decodable, Hashable {
     public let like: Int64
     public let comment: Int64
     public let forward: Int64
+    public let liked: Bool
+
+    public init(like: Int64, comment: Int64, forward: Int64, liked: Bool = false) {
+        self.like = like
+        self.comment = comment
+        self.forward = forward
+        self.liked = liked
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case like, comment, forward, liked
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        like = try container.decodeIfPresent(Int64.self, forKey: .like) ?? 0
+        comment = try container.decodeIfPresent(Int64.self, forKey: .comment) ?? 0
+        forward = try container.decodeIfPresent(Int64.self, forKey: .forward) ?? 0
+        liked = try container.decodeIfPresent(Bool.self, forKey: .liked) ?? false
+    }
 }
 
 public struct DynamicVideoDTO: Decodable, Hashable {

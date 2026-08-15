@@ -13,12 +13,14 @@ private func pushVideo(
     aid: Int64, bvid: String, cid: Int64,
     title: String, cover: String, author: String,
     durationSec: Int64, play: Int64 = 0, danmaku: Int64 = 0,
+    resumePositionMs: Int64? = nil,
     prefersSplitRootSelection: Bool = false
 ) {
     let item = FeedItemDTO(
         aid: aid, bvid: bvid, cid: cid,
         title: title, cover: cover, author: author,
-        durationSec: durationSec, play: play, danmaku: danmaku
+        durationSec: durationSec, play: play, danmaku: danmaku,
+        resumePositionMs: resumePositionMs
     )
     if prefersSplitRootSelection && !isInPlayerHostNavigation {
         router.select(item)
@@ -275,6 +277,7 @@ struct HistoryListView: View {
                                       aid: item.aid, bvid: item.bvid, cid: item.cid,
                                       title: item.title, cover: item.cover,
                                       author: item.author, durationSec: item.durationSec,
+                                      resumePositionMs: item.resumePositionMs,
                                       prefersSplitRootSelection: prefersSplitRootSelection)
                         } label: {
                             CompactVideoRow(
@@ -301,8 +304,9 @@ struct HistoryListView: View {
     }
 
     private func progressFraction(_ item: HistoryItemDTO) -> Double {
-        guard item.durationSec > 0, item.progressSec > 0 else { return 0 }
+        guard item.durationSec > 0 else { return 0 }
         if item.progressSec < 0 { return 1 } // -1 = 已看完
+        guard item.progressSec > 0 else { return 0 }
         return min(1, Double(item.progressSec) / Double(item.durationSec))
     }
 
@@ -497,8 +501,9 @@ struct WatchLaterListView: View {
     }
 
     private func fraction(_ item: WatchLaterItemDTO) -> Double {
-        guard item.durationSec > 0, item.progressSec > 0 else { return 0 }
+        guard item.durationSec > 0 else { return 0 }
         if item.progressSec < 0 { return 1 }
+        guard item.progressSec > 0 else { return 0 }
         return min(1, Double(item.progressSec) / Double(item.durationSec))
     }
 

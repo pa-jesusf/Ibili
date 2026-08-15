@@ -2,7 +2,8 @@ use crate::cdn::rank_urls_for_selection;
 use crate::dto::{OfflinePlayUrl, PlayUrl, VideoSubtitle, VideoViewPoint};
 use crate::dto::{
     PgcEpisode, PgcSeason, PgcStat, RelatedVideoItem, UgcSeason, UgcSeasonEpisode,
-    UgcSeasonSection, VideoDescNode, VideoHonor, VideoOwner, VideoPage, VideoStat, VideoView,
+    UgcSeasonSection, VideoDescNode, VideoDimension, VideoHonor, VideoOwner, VideoPage, VideoStat,
+    VideoView,
 };
 use crate::error::{CoreError, CoreResult};
 use crate::signer::{WbiKey, WbiSigner};
@@ -1920,6 +1921,18 @@ struct ViewPageWire {
     duration: i64,
     #[serde(default)]
     first_frame: String,
+    #[serde(default)]
+    dimension: Option<ViewDimensionWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct ViewDimensionWire {
+    #[serde(default)]
+    width: i64,
+    #[serde(default)]
+    height: i64,
+    #[serde(default)]
+    rotate: i64,
 }
 
 #[derive(Deserialize)]
@@ -2097,17 +2110,7 @@ fn map_view_full(r: ViewFullRoot, tags: Vec<String>) -> VideoView {
             name: r.owner.name,
             face: r.owner.face,
         },
-        pages: r
-            .pages
-            .into_iter()
-            .map(|p| VideoPage {
-                cid: p.cid,
-                page: p.page,
-                part: p.part,
-                duration_sec: p.duration,
-                first_frame: p.first_frame,
-            })
-            .collect(),
+        pages: r.pages.into_iter().map(video_page_from_wire).collect(),
         tags,
         honor: r
             .honor_reply
@@ -2151,6 +2154,25 @@ fn map_view_full(r: ViewFullRoot, tags: Vec<String>) -> VideoView {
     }
 }
 
+fn video_page_from_wire(page: ViewPageWire) -> VideoPage {
+    let dimension = page.dimension.and_then(|dimension| {
+        let (width, height) = if dimension.rotate == 1 {
+            (dimension.height, dimension.width)
+        } else {
+            (dimension.width, dimension.height)
+        };
+        (width > 0 && height > 0).then_some(VideoDimension { width, height })
+    });
+    VideoPage {
+        cid: page.cid,
+        page: page.page,
+        part: page.part,
+        duration_sec: page.duration,
+        first_frame: page.first_frame,
+        dimension,
+    }
+}
+
 fn map_related_item(r: RelatedItemWire) -> RelatedVideoItem {
     RelatedVideoItem {
         aid: r.aid,
@@ -2170,7 +2192,8 @@ fn map_related_item(r: RelatedItemWire) -> RelatedVideoItem {
 
 #[cfg(test)]
 mod tests {
-    use super::{DashAudio, DashVideo};
+    use super::{video_page_from_wire, DashAudio, DashVideo, ViewPageWire};
+    use crate::dto::VideoDimension;
 
     #[test]
     fn dash_video_accepts_snake_and_camel_fields_together() {
@@ -2217,5 +2240,29 @@ mod tests {
             vec!["https://example.com/audio-backup.m4s"]
         );
         assert_eq!(audio.bandwidth, 192000);
+    }
+
+    #[test]
+    fn video_page_preserves_title_and_normalizes_rotated_dimension() {
+        let wire: ViewPageWire = serde_json::from_str(
+            r#"{
+                "cid": 123,
+                "page": 2,
+                "part": "竖屏片段",
+                "duration": 42,
+                "dimension": { "width": 1920, "height": 1080, "rotate": 1 }
+            }"#,
+        )
+        .expect("video page should deserialize");
+
+        let page = video_page_from_wire(wire);
+        assert_eq!(page.part, "竖屏片段");
+        assert_eq!(
+            page.dimension,
+            Some(VideoDimension {
+                width: 1080,
+                height: 1920,
+            })
+        );
     }
 }
