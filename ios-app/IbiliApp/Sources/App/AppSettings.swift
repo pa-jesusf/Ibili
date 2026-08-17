@@ -231,6 +231,9 @@ final class AppSettings: ObservableObject {
     /// (≈ 40 dB SPL at min system volume), which the user reported
     /// is otherwise ~15 dB louder than peers.
     @AppStorage("ibili.player.audioGainDb") var audioGainDb: Double = -15
+    /// Applies Bilibili's per-video loudness analysis on top of the base
+    /// attenuation. The result never exceeds AVPlayer's unity gain.
+    @AppStorage("ibili.player.loudnessNormalizationEnabled") var loudnessNormalizationEnabled: Bool = true
     @AppStorage("ibili.player.completionBehavior") private var completionBehaviorRaw: String = PlayerCompletionBehavior.pause.rawValue
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
     @AppStorage("ibili.home.recommendSource") private var homeRecommendSourceRaw: String = HomeRecommendSource.web.rawValue
@@ -426,12 +429,6 @@ final class AppSettings: ObservableObject {
             audioGainDb = resolved
         }
         return resolved
-    }
-
-    /// Linear `AVPlayer.volume` value derived from `audioGainDb`.
-    /// `1.0` means unattenuated, `0.316` is roughly -10 dB.
-    func resolvedAudioVolumeLinear() -> Float {
-        Float(pow(10.0, resolvedAudioGainDb() / 20.0))
     }
 
 }

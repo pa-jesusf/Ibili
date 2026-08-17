@@ -158,6 +158,29 @@ pub struct LiveDanmakuHistory {
     pub items: Vec<LiveDanmakuMessage>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlayUrlVolume {
+    /// Integrated loudness measured by Bilibili, in LUFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_i: Option<f64>,
+    /// Loudness range measured by Bilibili, in LU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_lra: Option<f64>,
+    /// True peak measured by Bilibili, in dBTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_tp: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_offset: Option<f64>,
+    /// Target integrated loudness, in LUFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_i: Option<f64>,
+    /// Target true peak, in dBTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_tp: Option<f64>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct PlayUrl {
     pub url: String,
@@ -219,6 +242,10 @@ pub struct PlayUrl {
     /// Human-readable labels for `accept_audio_quality`, 1:1.
     #[serde(default)]
     pub accept_audio_description: Vec<String>,
+    /// Optional loudness analysis returned when `voice_balance=1`.
+    /// The native player uses it to derive a per-video volume correction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<PlayUrlVolume>,
     /// Server-recorded resume position for the *current cid*, in
     /// milliseconds. 0 when the account has no history for this cid
     /// or the response did not carry it (anonymous playback). The

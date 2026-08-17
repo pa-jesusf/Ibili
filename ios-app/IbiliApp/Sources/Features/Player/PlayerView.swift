@@ -58,11 +58,12 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var playbackCompletionSignal = 0
     private let holdSpeedRate: Float = 2.0
     private var temporaryPlaybackRateOverride: Float?
-    /// Linear `AVPlayer.volume` value derived from the user's
-    /// `audioGainDb` setting. Updated from SwiftUI via
-    /// ``setAudioVolumeLinear(_:)`` and applied to the active
-    /// AVPlayer (and any subsequently-attached one).
+    /// Resolved native player volume after combining the user's base
+    /// attenuation with Bilibili's per-video loudness analysis.
     private var audioVolumeLinear: Float = 1.0
+    private var baseAudioGainDb: Double = 0
+    private var loudnessNormalizationEnabled = true
+    private var activeLoudnessVolume: PlayUrlVolumeDTO?
     private var aid: Int64 = 0
     private var cid: Int64 = 0
     /// Public read-only accessors so views (e.g. the danmaku-send sheet)
@@ -129,6 +130,7 @@ final class PlayerViewModel: ObservableObject {
     private var pausedForDetailCollapseConfirmationWork: DispatchWorkItem?
     private var isClosing = false
     private var dismissalFadeTask: Task<Void, Never>?
+    private var audioVolumeRampTask: Task<Void, Never>?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -142,6 +144,7 @@ final class PlayerViewModel: ObservableObject {
             clearTransientPauseSuppression()
             clearPausedForDetailCollapse()
             dismissalFadeTask?.cancel()
+            audioVolumeRampTask?.cancel()
             stopHeartbeat()
             clearPlaybackCompletionObserver()
             itemStatusObservation = nil
@@ -766,15 +769,48 @@ final class PlayerViewModel: ObservableObject {
         applyRate(to: targetPlayer)
     }
 
-    /// Sets the global player gain (linear multiplier). Idempotent.
-    /// SwiftUI calls this whenever ``AppSettings.audioGainDb`` changes
-    /// or a fresh AVPlayer is mounted.
-    func setAudioVolumeLinear(_ linear: Float) {
-        let clamped = min(max(linear, 0), 1)
-        guard audioVolumeLinear != clamped else { return }
-        audioVolumeLinear = clamped
-        guard !isClosing else { return }
-        player?.volume = clamped
+    /// Applies user playback preferences to the current AVPlayer. A
+    /// short ramp avoids an audible step when the setting changes while
+    /// a video is already playing.
+    func setAudioConfiguration(
+        baseGainDb: Double,
+        normalizationEnabled: Bool,
+        animated: Bool = true
+    ) {
+        self.baseAudioGainDb = min(max(baseGainDb, -20), 0)
+        loudnessNormalizationEnabled = normalizationEnabled
+        applyResolvedAudioVolume(animated: animated)
+    }
+
+    private func applyResolvedAudioVolume(animated: Bool) {
+        let resolution = PlaybackLoudnessNormalizer.resolve(
+            baseGainDb: baseAudioGainDb,
+            normalizationEnabled: loudnessNormalizationEnabled,
+            volume: activeLoudnessVolume
+        )
+        let targetVolume = resolution.linearVolume
+        audioVolumeLinear = targetVolume
+        audioVolumeRampTask?.cancel()
+        audioVolumeRampTask = nil
+
+        guard !isClosing, let player else { return }
+        let startVolume = player.volume
+        guard animated, abs(startVolume - targetVolume) >= 0.002 else {
+            player.volume = targetVolume
+            return
+        }
+
+        audioVolumeRampTask = Task { @MainActor [weak self, weak player] in
+            guard let self, let player else { return }
+            let steps = 8
+            for step in 1...steps {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                guard !Task.isCancelled, !self.isClosing, self.player === player else { return }
+                let progress = Float(step) / Float(steps)
+                player.volume = startVolume + (targetVolume - startVolume) * progress
+            }
+            self.audioVolumeRampTask = nil
+        }
     }
 
     func switchQuality(to qn: Int64) async {
@@ -880,6 +916,8 @@ final class PlayerViewModel: ObservableObject {
         isClosing = true
         dismissalFadeTask?.cancel()
         dismissalFadeTask = nil
+        audioVolumeRampTask?.cancel()
+        audioVolumeRampTask = nil
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
@@ -963,6 +1001,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func setPlayer(_ newPlayer: AVPlayer?) {
+        audioVolumeRampTask?.cancel()
+        audioVolumeRampTask = nil
         playerTimeControlObservation?.invalidate()
         playerTimeControlObservation = nil
         clearPlaybackCompletionObserver()
@@ -1018,6 +1058,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func fadeOutAndPauseForDismissal() {
+        audioVolumeRampTask?.cancel()
+        audioVolumeRampTask = nil
         dismissalFadeTask?.cancel()
         guard let player else {
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
@@ -1544,6 +1586,8 @@ final class PlayerViewModel: ObservableObject {
 
     private func rememberActivePlayURL(_ info: PlayUrlDTO) {
         currentVideoCodec = info.videoCodec
+        activeLoudnessVolume = info.volume
+        applyResolvedAudioVolume(animated: player != nil)
         if let width = info.videoWidth, let height = info.videoHeight, width > 0, height > 0 {
             currentVideoSizeHint = CGSize(width: width, height: height)
         }
@@ -2641,6 +2685,11 @@ struct PlayerView: View {
             ])
         }
         .task(id: mediaLoadKey) {
+            vm.setAudioConfiguration(
+                baseGainDb: settings.resolvedAudioGainDb(),
+                normalizationEnabled: settings.loudnessNormalizationEnabled,
+                animated: false
+            )
             if !didBootstrap {
                 didBootstrap = true
             }
@@ -2686,7 +2735,11 @@ struct PlayerView: View {
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer {
-                vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
+                vm.setAudioConfiguration(
+                    baseGainDb: settings.resolvedAudioGainDb(),
+                    normalizationEnabled: settings.loudnessNormalizationEnabled,
+                    animated: false
+                )
                 danmaku.attach(p)
                 subtitle.attach(p)
                 configureDanmakuSegmentObserver(for: p)
@@ -2722,7 +2775,16 @@ struct PlayerView: View {
             PlayUrlPrefetcher.shared.clear()
         }
         .onChange(of: settings.audioGainDb) { _ in
-            vm.setAudioVolumeLinear(settings.resolvedAudioVolumeLinear())
+            vm.setAudioConfiguration(
+                baseGainDb: settings.resolvedAudioGainDb(),
+                normalizationEnabled: settings.loudnessNormalizationEnabled
+            )
+        }
+        .onChange(of: settings.loudnessNormalizationEnabled) { enabled in
+            vm.setAudioConfiguration(
+                baseGainDb: settings.resolvedAudioGainDb(),
+                normalizationEnabled: enabled
+            )
         }
         .onChange(of: scenePhase) { phase in
             PlayerViewLifecycleController.handleScenePhaseChange(
@@ -2741,7 +2803,8 @@ struct PlayerView: View {
                 didBootstrap: didBootstrap,
                 viewModel: vm,
                 danmaku: danmaku,
-                resolvedAudioVolumeLinear: settings.resolvedAudioVolumeLinear()
+                baseAudioGainDb: settings.resolvedAudioGainDb(),
+                loudnessNormalizationEnabled: settings.loudnessNormalizationEnabled
             )
         }
         .onDisappear {

@@ -228,9 +228,10 @@ struct SettingsView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                Toggle("音量平衡", isOn: $settings.loudnessNormalizationEnabled)
                 VStack(alignment: .leading) {
                     HStack {
-                        Text("音量增益")
+                        Text("基础音量")
                         Spacer()
                         Text(audioGainLabel)
                             .foregroundStyle(.secondary)

@@ -345,6 +345,44 @@ public struct LiveDanmakuHistoryDTO: Decodable {
     public let items: [LiveDanmakuMessageDTO]
 }
 
+public struct PlayUrlVolumeDTO: Codable, Equatable {
+    public let measuredI: Double?
+    public let measuredLra: Double?
+    public let measuredTp: Double?
+    public let measuredThreshold: Double?
+    public let targetOffset: Double?
+    public let targetI: Double?
+    public let targetTp: Double?
+
+    public init(
+        measuredI: Double?,
+        measuredLra: Double? = nil,
+        measuredTp: Double? = nil,
+        measuredThreshold: Double? = nil,
+        targetOffset: Double? = nil,
+        targetI: Double? = nil,
+        targetTp: Double? = nil
+    ) {
+        self.measuredI = measuredI
+        self.measuredLra = measuredLra
+        self.measuredTp = measuredTp
+        self.measuredThreshold = measuredThreshold
+        self.targetOffset = targetOffset
+        self.targetI = targetI
+        self.targetTp = targetTp
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case measuredI = "measured_i"
+        case measuredLra = "measured_lra"
+        case measuredTp = "measured_tp"
+        case measuredThreshold = "measured_threshold"
+        case targetOffset = "target_offset"
+        case targetI = "target_i"
+        case targetTp = "target_tp"
+    }
+}
+
 public struct PlayUrlDTO: Codable {
     public let url: String
     public let audioUrl: String?
@@ -375,6 +413,8 @@ public struct PlayUrlDTO: Codable {
     public let audioQualityLabel: String
     public let acceptAudioQuality: [Int64]
     public let acceptAudioDescription: [String]
+    /// Bilibili's optional per-video loudness analysis.
+    public let volume: PlayUrlVolumeDTO?
     /// Server-recorded resume position for this cid, in milliseconds.
     /// Zero when the account has no history for the cid (or playback
     /// is anonymous). The player seeks to it on first ready.
@@ -410,6 +450,7 @@ public struct PlayUrlDTO: Codable {
         acceptAudioDescription: [String],
         lastPlayTimeMs: Int64,
         lastPlayCid: Int64,
+        volume: PlayUrlVolumeDTO? = nil,
         subtitles: [VideoSubtitleDTO] = [],
         viewPoints: [VideoViewPointDTO] = []
     ) {
@@ -434,6 +475,7 @@ public struct PlayUrlDTO: Codable {
         self.audioQualityLabel = audioQualityLabel
         self.acceptAudioQuality = acceptAudioQuality
         self.acceptAudioDescription = acceptAudioDescription
+        self.volume = volume
         self.lastPlayTimeMs = lastPlayTimeMs
         self.lastPlayCid = lastPlayCid
         self.subtitles = subtitles
@@ -459,6 +501,7 @@ public struct PlayUrlDTO: Codable {
         case audioQualityLabel = "audio_quality_label"
         case acceptAudioQuality = "accept_audio_quality"
         case acceptAudioDescription = "accept_audio_description"
+        case volume
         case lastPlayTimeMs = "last_play_time_ms"
         case lastPlayCid = "last_play_cid"
         case subtitles
@@ -500,6 +543,7 @@ public struct PlayUrlDTO: Codable {
         audioQualityLabel = try c.decodeIfPresent(String.self, forKey: .audioQualityLabel) ?? ""
         acceptAudioQuality = try c.decodeIfPresent([Int64].self, forKey: .acceptAudioQuality) ?? []
         acceptAudioDescription = try c.decodeIfPresent([String].self, forKey: .acceptAudioDescription) ?? []
+        volume = try c.decodeIfPresent(PlayUrlVolumeDTO.self, forKey: .volume)
         lastPlayTimeMs = try c.decodeIfPresent(Int64.self, forKey: .lastPlayTimeMs) ?? 0
         lastPlayCid = try c.decodeIfPresent(Int64.self, forKey: .lastPlayCid) ?? 0
         subtitles = try c.decodeIfPresent([VideoSubtitleDTO].self, forKey: .subtitles) ?? []
@@ -529,6 +573,7 @@ public struct PlayUrlDTO: Codable {
         try c.encode(audioQualityLabel, forKey: .audioQualityLabel)
         try c.encode(acceptAudioQuality, forKey: .acceptAudioQuality)
         try c.encode(acceptAudioDescription, forKey: .acceptAudioDescription)
+        try c.encodeIfPresent(volume, forKey: .volume)
         try c.encode(lastPlayTimeMs, forKey: .lastPlayTimeMs)
         try c.encode(lastPlayCid, forKey: .lastPlayCid)
         try c.encode(subtitles, forKey: .subtitles)
@@ -560,6 +605,7 @@ public struct PlayUrlDTO: Codable {
             acceptAudioDescription: acceptAudioDescription,
             lastPlayTimeMs: 0,
             lastPlayCid: lastPlayCid,
+            volume: volume,
             subtitles: subtitles,
             viewPoints: viewPoints
         )

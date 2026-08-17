@@ -107,8 +107,13 @@ enum PlayerViewLifecycleController {
     static func handleAppear(didBootstrap: Bool,
                              viewModel: PlayerViewModel,
                              danmaku: DanmakuController,
-                             resolvedAudioVolumeLinear: Float) {
-        viewModel.setAudioVolumeLinear(resolvedAudioVolumeLinear)
+                             baseAudioGainDb: Double,
+                             loudnessNormalizationEnabled: Bool) {
+        viewModel.setAudioConfiguration(
+            baseGainDb: baseAudioGainDb,
+            normalizationEnabled: loudnessNormalizationEnabled,
+            animated: false
+        )
         guard didBootstrap else { return }
         viewModel.handle(.interfaceActivated)
         if let player = viewModel.player {

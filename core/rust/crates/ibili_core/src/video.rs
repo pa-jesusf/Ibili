@@ -1,5 +1,5 @@
 use crate::cdn::rank_urls_for_selection;
-use crate::dto::{OfflinePlayUrl, PlayUrl, VideoSubtitle, VideoViewPoint};
+use crate::dto::{OfflinePlayUrl, PlayUrl, PlayUrlVolume, VideoSubtitle, VideoViewPoint};
 use crate::dto::{
     PgcEpisode, PgcSeason, PgcStat, RelatedVideoItem, UgcSeason, UgcSeasonEpisode,
     UgcSeasonSection, VideoDescNode, VideoDimension, VideoHonor, VideoOwner, VideoPage, VideoStat,
@@ -36,6 +36,8 @@ struct PlayUrlRoot {
     accept_description: Vec<String>,
     #[serde(default)]
     dash: Option<Dash>,
+    #[serde(default)]
+    volume: Option<PlayUrlVolume>,
     /// Bilibili-recorded resume position in milliseconds. Present
     /// for logged-in playback when the user previously watched this
     /// cid; absent / 0 otherwise.
@@ -966,7 +968,9 @@ impl Core {
             ("fnval".into(), "4048".into()),
             ("fourk".into(), "1".into()),
             ("fnver".into(), "0".into()),
-            ("voice_balance".into(), "0".into()),
+            // Ask for Bilibili's loudness analysis. Playback remains the
+            // original stream; iOS decides locally whether to apply it.
+            ("voice_balance".into(), "1".into()),
             ("gaia_source".into(), "pre-load".into()),
             ("isGaiaAvoided".into(), "true".into()),
             ("web_location".into(), "1315873".into()),
@@ -1018,7 +1022,7 @@ impl Core {
             ("fnval".into(), "4048".into()),
             ("fourk".into(), "1".into()),
             ("fnver".into(), "0".into()),
-            ("voice_balance".into(), "0".into()),
+            ("voice_balance".into(), "1".into()),
             ("gaia_source".into(), "pre-load".into()),
             ("isGaiaAvoided".into(), "true".into()),
             ("web_location".into(), "1315873".into()),
@@ -1149,6 +1153,7 @@ impl Core {
             audio_quality_label: String::new(),
             accept_audio_quality: Vec::new(),
             accept_audio_description: Vec::new(),
+            volume: r.volume,
             last_play_time_ms: r.last_play_time,
             last_play_cid: r.last_play_cid,
             subtitles: map_subtitles(r.subtitle),
@@ -1219,6 +1224,7 @@ impl Core {
             audio_quality_label: String::new(),
             accept_audio_quality: Vec::new(),
             accept_audio_description: Vec::new(),
+            volume: r.volume,
             last_play_time_ms: r.last_play_time,
             last_play_cid: r.last_play_cid,
             subtitles: map_subtitles(r.subtitle),
@@ -1459,6 +1465,7 @@ fn build_playurl_from_web_response(
 ) -> CoreResult<PlayUrl> {
     let subtitles = map_subtitles(response.subtitle);
     let view_points = map_view_points(response.view_points);
+    let volume = response.volume;
     let accept_quality = if response.accept_quality.is_empty() {
         response
             .dash
@@ -1522,6 +1529,7 @@ fn build_playurl_from_web_response(
                     audio_quality_label: audio_quality_label(picked_audio_qn),
                     accept_audio_quality,
                     accept_audio_description,
+                    volume,
                     last_play_time_ms: response.last_play_time,
                     last_play_cid: response.last_play_cid,
                     subtitles,
@@ -1564,6 +1572,7 @@ fn build_playurl_from_web_response(
         audio_quality_label: String::new(),
         accept_audio_quality: Vec::new(),
         accept_audio_description: Vec::new(),
+        volume,
         last_play_time_ms: response.last_play_time,
         last_play_cid: response.last_play_cid,
         subtitles,
@@ -2192,7 +2201,10 @@ fn map_related_item(r: RelatedItemWire) -> RelatedVideoItem {
 
 #[cfg(test)]
 mod tests {
-    use super::{video_page_from_wire, DashAudio, DashVideo, ViewPageWire};
+    use super::{
+        build_playurl_from_web_response, video_page_from_wire, DashAudio, DashVideo, PlayUrlRoot,
+        ViewPageWire,
+    };
     use crate::dto::VideoDimension;
 
     #[test]
@@ -2264,5 +2276,36 @@ mod tests {
                 height: 1920,
             })
         );
+    }
+
+    #[test]
+    fn playurl_preserves_loudness_analysis() {
+        let wire: PlayUrlRoot = serde_json::from_str(
+            r#"{
+                "quality": 80,
+                "format": "mp4",
+                "timelength": 120000,
+                "durl": [{ "url": "https://example.com/video.mp4" }],
+                "volume": {
+                    "measured_i": -23.4,
+                    "measured_lra": 7.2,
+                    "measured_tp": -3.1,
+                    "measured_threshold": -34.0,
+                    "target_offset": 0.2,
+                    "target_i": -16.0,
+                    "target_tp": -1.5
+                }
+            }"#,
+        )
+        .expect("playurl should deserialize");
+
+        let play = build_playurl_from_web_response(wire, 80, 0, "auto", "auto")
+            .expect("playurl should remain playable");
+        let volume = play.volume.expect("volume analysis should be preserved");
+        assert_eq!(volume.measured_i, Some(-23.4));
+        assert_eq!(volume.measured_lra, Some(7.2));
+        assert_eq!(volume.measured_tp, Some(-3.1));
+        assert_eq!(volume.target_i, Some(-16.0));
+        assert_eq!(volume.target_tp, Some(-1.5));
     }
 }
