@@ -27,6 +27,11 @@ extension EnvironmentValues {
         set { self[SplitPreviewLeftWidthKey.self] = newValue }
     }
 
+    var rootBottomSafeAreaInset: CGFloat {
+        get { self[RootBottomSafeAreaInsetKey.self] }
+        set { self[RootBottomSafeAreaInsetKey.self] = newValue }
+    }
+
     var dismissPlayerHost: () -> Void {
         get { self[DismissPlayerHostKey.self] }
         set { self[DismissPlayerHostKey.self] = newValue }
@@ -62,6 +67,10 @@ private struct SplitFeedColumnLimitKey: EnvironmentKey {
 
 private struct SplitPreviewLeftWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat? = nil
+}
+
+private struct RootBottomSafeAreaInsetKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
 }
 
 private struct DismissPlayerHostKey: EnvironmentKey {
@@ -147,6 +156,7 @@ struct RootView: View {
                         .zIndex(1)
                 }
             }
+            .environment(\.rootBottomSafeAreaInset, proxy.safeAreaInsets.bottom)
             .onChange(of: usesSplit) { splitActive in
                 if splitActive {
                     releaseDismissedPlayerHostWork?.cancel()

@@ -31,6 +31,7 @@ struct VideoDetailContent: View {
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.rootContentNavigation) private var rootNavigation
+    @Environment(\.rootBottomSafeAreaInset) private var rootBottomSafeAreaInset
     @State private var tab: Tab = .intro
     @State private var mountedTabs: Set<Tab> = [.intro]
     @StateObject private var scrollContexts = VideoDetailScrollContexts()
@@ -104,7 +105,7 @@ struct VideoDetailContent: View {
         GeometryReader { viewportProxy in
             let bottomContentInset = max(
                 24,
-                floatingControlsHeight + viewportProxy.safeAreaInsets.bottom + 12
+                floatingControlsHeight + 12
             )
             ScrollViewReader { proxy in
                 scrollContent(bottomContentInset: bottomContentInset)
@@ -116,6 +117,7 @@ struct VideoDetailContent: View {
                         PlayerDetailFloatingControlCluster(
                             tabs: visibleTabs,
                             selection: $tab,
+                            bottomSafeAreaInset: rootBottomSafeAreaInset,
                             onReselectCurrentTab: {
                                 if tab == .replies {
                                     commentScrollToTopSignal += 1
@@ -824,6 +826,7 @@ private final class VideoDetailScrollContexts: ObservableObject {
 private struct PlayerDetailFloatingControlCluster: View {
     let tabs: [VideoDetailContent.Tab]
     @Binding var selection: VideoDetailContent.Tab
+    let bottomSafeAreaInset: CGFloat
     let onReselectCurrentTab: () -> Void
 
     var body: some View {
@@ -832,6 +835,7 @@ private struct PlayerDetailFloatingControlCluster: View {
             title: { $0.rawValue },
             systemImage: { $0.systemImage },
             selection: $selection,
+            bottomSafeAreaInset: bottomSafeAreaInset,
             onReselectCurrentTab: onReselectCurrentTab
         )
         .frame(maxWidth: .infinity)

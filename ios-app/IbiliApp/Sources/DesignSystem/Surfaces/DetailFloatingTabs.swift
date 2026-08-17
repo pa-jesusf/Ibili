@@ -3,8 +3,6 @@ import UIKit
 
 private enum DetailFloatingTabsMetrics {
     static let systemTabBarHeight: CGFloat = 50
-    static let systemTabBarIPadVisualLift: CGFloat = 8
-    static let systemTabBarPhoneVisualLift: CGFloat = 16
 }
 
 /// Unified floating tab bar for detail-like surfaces:
@@ -18,15 +16,10 @@ struct DetailFloatingTabs<Tab: Hashable & Identifiable>: View {
     let title: (Tab) -> String
     let systemImage: (Tab) -> String?
     @Binding var selection: Tab
+    let bottomSafeAreaInset: CGFloat
     var maxWidth: CGFloat? = nil
     var onReselectCurrentTab: () -> Void = {}
     @State private var hasAppeared = false
-
-    private var systemTabBarVisualLift: CGFloat {
-        UIDevice.current.userInterfaceIdiom == .phone
-            ? DetailFloatingTabsMetrics.systemTabBarPhoneVisualLift
-            : DetailFloatingTabsMetrics.systemTabBarIPadVisualLift
-    }
 
     var body: some View {
         content
@@ -47,23 +40,18 @@ struct DetailFloatingTabs<Tab: Hashable & Identifiable>: View {
     @ViewBuilder
     private var content: some View {
         if #available(iOS 26.0, *) {
-            GeometryReader { proxy in
-                let availableHeight = max(1, proxy.size.height)
-                let barHeight = min(DetailFloatingTabsMetrics.systemTabBarHeight, availableHeight)
-                let centeredY = max(0, (availableHeight - barHeight) / 2)
-                let y = min(max(0, centeredY + systemTabBarVisualLift), max(0, availableHeight - barHeight))
-                DetailSystemTabBar(
-                    tabs: tabs,
-                    title: title,
-                    systemImage: systemImage,
-                    selection: $selection,
-                    onReselectCurrentTab: onReselectCurrentTab
-                )
-                .frame(maxWidth: maxWidth ?? .infinity)
-                .frame(height: barHeight)
-                .offset(y: y)
-            }
-            .frame(height: DetailFloatingTabsMetrics.systemTabBarHeight + systemTabBarVisualLift * 2)
+            DetailSystemTabBar(
+                tabs: tabs,
+                title: title,
+                systemImage: systemImage,
+                selection: $selection,
+                onReselectCurrentTab: onReselectCurrentTab
+            )
+            .frame(maxWidth: maxWidth ?? .infinity)
+            .frame(
+                height: DetailFloatingTabsMetrics.systemTabBarHeight
+                    + max(0, bottomSafeAreaInset)
+            )
         } else {
             DetailPillTabs(
                 tabs: tabs,
@@ -73,7 +61,7 @@ struct DetailFloatingTabs<Tab: Hashable & Identifiable>: View {
                 onReselectCurrentTab: onReselectCurrentTab
             )
             .padding(.horizontal, 16)
-            .padding(.bottom, 10)
+            .padding(.bottom, max(10, bottomSafeAreaInset))
         }
     }
 }
