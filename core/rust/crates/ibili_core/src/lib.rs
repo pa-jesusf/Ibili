@@ -12,6 +12,7 @@ pub mod dto;
 pub mod dynamic;
 pub mod error;
 pub mod feed;
+mod grpc;
 pub mod http;
 pub mod interaction;
 pub mod live;

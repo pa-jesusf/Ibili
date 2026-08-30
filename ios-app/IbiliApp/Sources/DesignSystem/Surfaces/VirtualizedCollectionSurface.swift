@@ -94,6 +94,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
     var scrollToTopSignal = 0
     var scrollToBottomSignal = 0
     var scrollToBottomAnimated = true
+    var scrollToItemID: Item.ID? = nil
     var bottomProximity: CGFloat = 36
     var prefetchThreshold = 4
     var scrollState: FeedChromeScrollState? = nil
@@ -126,6 +127,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
             scrollToTopSignal: scrollToTopSignal,
             scrollToBottomSignal: scrollToBottomSignal,
             scrollToBottomAnimated: scrollToBottomAnimated,
+            scrollToItemID: scrollToItemID,
             bottomProximity: bottomProximity,
             prefetchThreshold: prefetchThreshold,
             scrollState: scrollState,
@@ -179,6 +181,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var prefetchThreshold = 4
     private var lastScrollToTopSignal = 0
     private var lastScrollToBottomSignal = 0
+    private var completedScrollToItemID: Item.ID?
     private var bottomProximity: CGFloat = 36
     private var lastBottomState: VirtualizedCollectionBottomState?
     private var bottomScrollWork: DispatchWorkItem?
@@ -278,6 +281,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         scrollToTopSignal: Int,
         scrollToBottomSignal: Int,
         scrollToBottomAnimated: Bool,
+        scrollToItemID: Item.ID? = nil,
         bottomProximity: CGFloat,
         prefetchThreshold: Int,
         scrollState: FeedChromeScrollState?,
@@ -382,6 +386,11 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             scheduleScrollToBottom(animated: scrollToBottomAnimated)
         } else {
             publishBottomStateIfNeeded()
+        }
+        if scrollToItemID == nil {
+            completedScrollToItemID = nil
+        } else if completedScrollToItemID != scrollToItemID {
+            scheduleScrollToItem(id: scrollToItemID)
         }
     }
 
@@ -606,6 +615,23 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         }
         bottomScrollWork = work
         DispatchQueue.main.async(execute: work)
+    }
+
+    private func scheduleScrollToItem(id: Item.ID?) {
+        guard let id else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.completedScrollToItemID != id,
+                  let itemIndex = self.orderedIDs.firstIndex(of: id),
+                  self.dataSource.snapshot().indexOfItem(.item(id)) != nil else { return }
+            self.collectionView.layoutIfNeeded()
+            self.collectionView.scrollToItem(
+                at: IndexPath(item: itemIndex, section: self.contentSectionIndex),
+                at: .centeredVertically,
+                animated: true
+            )
+            self.completedScrollToItemID = id
+        }
     }
 
     private func scrollToBottom(animated: Bool, remainingAttempts: Int) {

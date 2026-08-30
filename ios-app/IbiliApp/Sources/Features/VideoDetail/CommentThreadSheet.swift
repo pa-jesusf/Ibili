@@ -2,13 +2,15 @@ import SwiftUI
 
 /// Sheet showing the full reply thread (楼中楼) for a single root comment.
 ///
-/// The sheet uses the shared virtualized collection and a small page-based
-/// loader. Avatars and rich content still reuse the same `RemoteImage` /
-/// `RichReplyText` pipeline as the main list.
+/// The sheet uses the shared virtualized collection. Ordinary entry uses the
+/// Web page API; notification entry uses the server-positioned gRPC window and
+/// its opaque continuation offset.
 struct CommentThreadSheet: View {
     let root: ReplyItemDTO
     var kind: Int32 = 1
     var upperMid: Int64 = 0
+    var focusedReplyRpid: Int64 = 0
+    var initialFocusedPage: ReplyPageDTO? = nil
     var onOpenUser: ((Int64) -> Void)? = nil
     var onLocalReply: ((ReplyItemDTO, Int64) -> Void)? = nil
 
@@ -18,6 +20,9 @@ struct CommentThreadSheet: View {
     @State private var isLoading = false
     @State private var isEnd = false
     @State private var total: Int64 = 0
+    @State private var targetedNextOffset = ""
+    @State private var serverUpperMid: Int64 = 0
+    @State private var hasStartedLoading = false
     @State private var composer: CommentThreadComposerContext?
     @EnvironmentObject private var session: AppSession
 
@@ -46,14 +51,23 @@ struct CommentThreadSheet: View {
                     ),
                     header: threadHeader,
                     footer: threadFooter,
+                    scrollToItemID: focusedReplyRpid > 0 && focusedReplyRpid != root.rpid
+                        ? focusedReplyRpid
+                        : nil,
                     prefetchThreshold: 2,
                     onLoadMore: {
+                        guard hasStartedLoading else { return }
                         Task { await loadMore() }
                     }
                 ) { reply, _ in
                     AnyView(
                         VStack(spacing: 0) {
                             threadRow(for: reply)
+                                .background(
+                                    reply.rpid == focusedReplyRpid
+                                        ? IbiliTheme.accent.opacity(0.10)
+                                        : Color.clear
+                                )
                             Divider()
                         }
                     )
@@ -68,8 +82,13 @@ struct CommentThreadSheet: View {
             .environment(\.commentContentWidth, max(1, proxy.size.width - 32))
         }
         .task {
-            guard root.replyCount > 0 else { return }
-            await loadMore()
+            guard root.replyCount > 0 || focusedReplyRpid > 0 else { return }
+            hasStartedLoading = true
+            if let initialFocusedPage, focusedReplyRpid > 0 {
+                applyInitialFocusedPage(initialFocusedPage)
+            } else {
+                await loadMore()
+            }
         }
         .sheet(item: $composer) { context in
             CommentSendSheet(
@@ -124,7 +143,7 @@ struct CommentThreadSheet: View {
     private func threadRow(for item: ReplyItemDTO) -> AnyView {
         AnyView(
             CommentRow(item: item,
-                       upperMid: upperMid,
+                       upperMid: serverUpperMid > 0 ? serverUpperMid : upperMid,
                        isPinned: false,
                        messageLineLimit: nil,
                        allowsThreadPresentation: false,
@@ -148,17 +167,46 @@ struct CommentThreadSheet: View {
         do {
             let rootRpid = currentRootItem.rpid
             let oid = currentRootItem.oid
-            let p = try await Task.detached(priority: .userInitiated) { [oid, kind, rootRpid, page] in
-                try CoreClient.shared.replyDetail(oid: oid, kind: kind, root: rootRpid, page: page)
-            }.value
-            if page == 1 { total = p.total }
-            replies.append(contentsOf: p.items)
+            let p: ReplyPageDTO
+            if focusedReplyRpid > 0 {
+                let target = targetedNextOffset.isEmpty && replies.isEmpty ? focusedReplyRpid : 0
+                let offset = targetedNextOffset
+                p = try await Task.detached(priority: .userInitiated) { [oid, kind, rootRpid] in
+                    try CoreClient.shared.replyDetailTarget(
+                        oid: oid,
+                        kind: kind,
+                        root: rootRpid,
+                        targetRpid: target,
+                        nextOffset: offset
+                    )
+                }.value
+                targetedNextOffset = p.cursorNext
+                if p.upperMid > 0 { serverUpperMid = p.upperMid }
+                if let serverRoot = p.top { rootState = serverRoot }
+            } else {
+                p = try await Task.detached(priority: .userInitiated) { [oid, kind, rootRpid, page] in
+                    try CoreClient.shared.replyDetail(oid: oid, kind: kind, root: rootRpid, page: page)
+                }.value
+                page += 1
+            }
+            if replies.isEmpty { total = p.total }
+            let existing = Set(replies.map(\.rpid))
+            replies.append(contentsOf: p.items.filter { !existing.contains($0.rpid) })
             isEnd = p.isEnd
-            page += 1
         } catch {
             isEnd = true
             AppLog.error("comments", "评论详情加载失败", error: error)
         }
+    }
+
+    @MainActor
+    private func applyInitialFocusedPage(_ page: ReplyPageDTO) {
+        rootState = page.top ?? root
+        replies = page.items
+        total = page.total
+        targetedNextOffset = page.cursorNext
+        serverUpperMid = page.upperMid
+        isEnd = page.isEnd
     }
 
     /// Optimistic toggle for the thread sheet — same shape as

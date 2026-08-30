@@ -1836,6 +1836,8 @@ public struct MessageItemDTO: Decodable, Identifiable, Hashable {
     public let secondaryContent: String
     public let image: String
     public let nativeUri: String
+    public let subjectID: Int64?
+    public let businessID: Int64?
     public let timestamp: Int64
     public let timeText: String
     public let count: Int64
@@ -1847,6 +1849,8 @@ public struct MessageItemDTO: Decodable, Identifiable, Hashable {
         case userAvatar = "user_avatar"
         case secondaryContent = "secondary_content"
         case nativeUri = "native_uri"
+        case subjectID = "subject_id"
+        case businessID = "business_id"
         case timeText = "time_text"
     }
 }
@@ -1891,6 +1895,37 @@ public struct MessageSessionPageDTO: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case items
+        case hasMore = "has_more"
+    }
+}
+
+public struct MessageChatItemDTO: Decodable, Identifiable, Hashable {
+    public let id: String
+    public let senderID: Int64
+    public let isSelf: Bool
+    public let kind: String
+    public let text: String
+    public let image: String
+    public let timestamp: Int64
+    public let sequence: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, text, image, timestamp, sequence
+        case senderID = "sender_id"
+        case isSelf = "is_self"
+    }
+}
+
+public struct MessageConversationPageDTO: Decodable {
+    public let items: [MessageChatItemDTO]
+    public let nextSequence: Int64
+    public let ackSequence: Int64
+    public let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case nextSequence = "next_sequence"
+        case ackSequence = "ack_sequence"
         case hasMore = "has_more"
     }
 }

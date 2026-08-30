@@ -7,7 +7,7 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
     guard !item.isPGC else { return item }
     guard item.cid == 0 else { return item }
     let resolvedCid: Int64 = try await Task.detached(priority: .userInitiated) {
-        try CoreClient.shared.videoViewCid(bvid: item.bvid)
+        try CoreClient.shared.videoViewCid(aid: item.aid, bvid: item.bvid)
     }.value
     return FeedItemDTO(
         aid: item.aid,
@@ -2112,6 +2112,7 @@ struct PlayerView: View {
 
     let item: FeedItemDTO
     let offlineOnly: Bool
+    let commentTarget: PlayerCommentTarget?
     @StateObject private var vm: PlayerViewModel
     private let onPictureInPictureTransition: ((PlayerPictureInPictureTransition) -> Void)?
     private let onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))?
@@ -2171,11 +2172,13 @@ struct PlayerView: View {
 
     init(item: FeedItemDTO,
          offlineOnly: Bool = false,
+         commentTarget: PlayerCommentTarget? = nil,
          viewModel: PlayerViewModel? = nil,
          onPictureInPictureTransition: ((PlayerPictureInPictureTransition) -> Void)? = nil,
          onPictureInPictureRestore: (((@escaping (Bool) -> Void) -> Void))? = nil) {
         self.item = item
         self.offlineOnly = offlineOnly
+        self.commentTarget = commentTarget
         self.onPictureInPictureTransition = onPictureInPictureTransition
         self.onPictureInPictureRestore = onPictureInPictureRestore
         _vm = StateObject(wrappedValue: viewModel ?? PlayerViewModel())
@@ -2612,6 +2615,7 @@ struct PlayerView: View {
                                                    currentCid: vm.currentCid,
                                                    currentSeasonID: vm.currentSeasonID,
                                                    currentEpisodeID: vm.currentEpisodeID,
+                                               commentTarget: commentTarget,
                                                detailViewModel: vm.pageCache.detailViewModel,
                                                commentListViewModel: vm.pageCache.commentListViewModel,
                                                interactionService: vm.pageCache.interactionService,

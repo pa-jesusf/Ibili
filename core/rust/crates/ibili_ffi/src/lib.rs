@@ -218,6 +218,25 @@ struct MessageFeedArgs {
     cursor_time: i64,
 }
 
+#[derive(Deserialize)]
+struct MessageConversationArgs {
+    talker_id: i64,
+    #[serde(default)]
+    end_sequence: i64,
+}
+
+#[derive(Deserialize)]
+struct MessageConversationAckArgs {
+    talker_id: i64,
+    ack_sequence: i64,
+}
+
+#[derive(Deserialize)]
+struct MessageSendTextArgs {
+    talker_id: i64,
+    message: String,
+}
+
 fn default_qn() -> i64 {
     0
 }
@@ -278,6 +297,18 @@ struct ReplyDetailArgs {
     root: i64,
     #[serde(default = "default_page")]
     page: i64,
+}
+
+#[derive(Deserialize)]
+struct ReplyDetailTargetArgs {
+    oid: i64,
+    #[serde(default = "default_reply_type")]
+    kind: i32,
+    root: i64,
+    #[serde(default)]
+    target_rpid: i64,
+    #[serde(default)]
+    next_offset: String,
 }
 fn default_page() -> i64 {
     1
@@ -729,7 +760,7 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         }
         "video.view_cid" => {
             let a: VideoViewArgs = serde_json::from_value(args)?;
-            let cid = c.inner.video_view_cid(&a.bvid)?;
+            let cid = c.inner.video_view_cid(a.aid, &a.bvid)?;
             Ok(json!({ "cid": cid }))
         }
         "video.view_full" => {
@@ -747,6 +778,16 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
         "reply.detail" => {
             let a: ReplyDetailArgs = serde_json::from_value(args)?;
             to_value(c.inner.reply_detail(a.oid, a.kind, a.root, a.page)?)
+        }
+        "reply.detail_target" => {
+            let a: ReplyDetailTargetArgs = serde_json::from_value(args)?;
+            to_value(c.inner.reply_detail_target(
+                a.oid,
+                a.kind,
+                a.root,
+                a.target_rpid,
+                &a.next_offset,
+            )?)
         }
         "interaction.like" => {
             let a: LikeArgs = serde_json::from_value(args)?;
@@ -954,6 +995,20 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             to_value(c.inner.message_feed(&a.kind, a.cursor_id, a.cursor_time)?)
         }
         "message.sessions" => to_value(c.inner.message_sessions()?),
+        "message.conversation" => {
+            let a: MessageConversationArgs = serde_json::from_value(args)?;
+            to_value(c.inner.message_conversation(a.talker_id, a.end_sequence)?)
+        }
+        "message.conversation_ack" => {
+            let a: MessageConversationAckArgs = serde_json::from_value(args)?;
+            c.inner
+                .message_ack_conversation(a.talker_id, a.ack_sequence)?;
+            Ok(Value::Object(Default::default()))
+        }
+        "message.send_text" => {
+            let a: MessageSendTextArgs = serde_json::from_value(args)?;
+            to_value(c.inner.message_send_text(a.talker_id, &a.message)?)
+        }
         "user.watchlater_list" => {
             let a: WatchLaterListArgs =
                 serde_json::from_value(args).unwrap_or(WatchLaterListArgs {

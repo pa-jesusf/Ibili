@@ -16,11 +16,15 @@ import SwiftUI
 /// "定位" toolbar button so users who scroll away can jump back.
 struct UgcSeasonSheet: View {
     let season: UgcSeasonDTO
-    let currentCid: Int64
+    let current: UgcSeasonPlaybackIdentity
     let onPick: (_ aid: Int64, _ bvid: String, _ cid: Int64) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var scrollContext = InterruptibleScrollContext()
+
+    private var currentEpisodeID: UgcSeasonEpisodeDTO.ID? {
+        season.episode(matching: current)?.id
+    }
 
     var body: some View {
         NavigationStack {
@@ -48,12 +52,12 @@ struct UgcSeasonSheet: View {
                                 EpisodeRow(
                                     episode: ep,
                                     index: ei + 1,
-                                    isCurrent: ep.cid == currentCid
+                                    isCurrent: current.matches(ep)
                                 )
-                                .id(ep.cid)
+                                .id(ep.id)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    if ep.cid == currentCid {
+                                    if current.matches(ep) {
                                         dismiss()
                                     } else {
                                         onPick(ep.aid, ep.bvid, ep.cid)
@@ -79,7 +83,7 @@ struct UgcSeasonSheet: View {
                                 .labelStyle(.titleAndIcon)
                                 .font(.footnote.weight(.medium))
                         }
-                        .disabled(currentCid == 0)
+                        .disabled(currentEpisodeID == nil)
                     }
                 }
                 .onAppear {
@@ -95,9 +99,9 @@ struct UgcSeasonSheet: View {
     }
 
     private func scrollToCurrent(_ proxy: ScrollViewProxy) {
-        guard currentCid != 0 else { return }
+        guard let currentEpisodeID else { return }
         proxy.interruptingScrollTo(
-            currentCid,
+            currentEpisodeID,
             anchor: .center,
             context: scrollContext,
             animation: .easeInOut(duration: 0.25)

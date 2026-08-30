@@ -86,7 +86,10 @@ struct CommentListView: View {
     private let virtualizedHeaderVersion: AnyHashable?
     private let virtualizedLeadingRows: [CommentVirtualizedLeadingRow]
     private let virtualizedRefreshAction: (() async -> Void)?
+    private let focusTarget: PlayerCommentTarget?
     @State private var thread: ReplyItemDTO?
+    @State private var focusedThreadReplyRpid: Int64 = 0
+    @State private var focusedThreadInitialPage: ReplyPageDTO?
     @State private var composer: CommentComposerContext?
     @EnvironmentObject private var session: AppSession
     @Environment(\.rootContentNavigation) private var rootNavigation
@@ -101,7 +104,8 @@ struct CommentListView: View {
          virtualizedHeader: (() -> AnyView)? = nil,
          virtualizedHeaderVersion: AnyHashable? = nil,
          virtualizedLeadingRows: [CommentVirtualizedLeadingRow] = [],
-         virtualizedRefreshAction: (() async -> Void)? = nil) {
+         virtualizedRefreshAction: (() async -> Void)? = nil,
+         focusTarget: PlayerCommentTarget? = nil) {
         self.oid = oid
         self.kind = kind
         self.providedViewModel = viewModel
@@ -113,6 +117,7 @@ struct CommentListView: View {
         self.virtualizedHeaderVersion = virtualizedHeaderVersion
         self.virtualizedLeadingRows = virtualizedLeadingRows
         self.virtualizedRefreshAction = virtualizedRefreshAction
+        self.focusTarget = focusTarget
     }
 
     private var currentViewModel: CommentListViewModel {
@@ -159,11 +164,19 @@ struct CommentListView: View {
                 )
             }
         }
-        .sheet(item: $thread) { root in
+        .task(id: focusTarget) {
+            await openFocusedCommentIfNeeded()
+        }
+        .sheet(item: $thread, onDismiss: {
+            focusedThreadReplyRpid = 0
+            focusedThreadInitialPage = nil
+        }) { root in
             CommentThreadSheet(
                 root: root,
                 kind: kind,
                 upperMid: currentViewModel.upperMid,
+                focusedReplyRpid: focusedThreadReplyRpid,
+                initialFocusedPage: focusedThreadInitialPage,
                 onOpenUser: { mid in
                     thread = nil
                     DispatchQueue.main.async {
@@ -198,6 +211,32 @@ struct CommentListView: View {
     private func openUserSpace(mid: Int64) {
         guard mid > 0 else { return }
         rootNavigation.openUserSpace(mid: mid)
+    }
+
+    private func openFocusedCommentIfNeeded() async {
+        guard let focusTarget,
+              focusTarget.oid == oid,
+              focusTarget.kind == kind,
+              focusTarget.rootRpid > 0 else { return }
+        do {
+            let page = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.shared.replyDetailTarget(
+                    oid: focusTarget.oid,
+                    kind: focusTarget.kind,
+                    root: focusTarget.rootRpid,
+                    targetRpid: focusTarget.replyRpid
+                )
+            }.value
+            guard let root = page.top else { return }
+            focusedThreadInitialPage = page
+            focusedThreadReplyRpid = focusTarget.replyRpid
+            thread = root
+        } catch {
+            AppLog.error("comments", "目标评论加载失败", error: error, metadata: [
+                "oid": String(focusTarget.oid),
+                "rootRpid": String(focusTarget.rootRpid),
+            ])
+        }
     }
 }
 

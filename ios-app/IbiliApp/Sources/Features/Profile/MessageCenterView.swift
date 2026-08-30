@@ -70,7 +70,7 @@ struct MessageCenterView: View {
                     VStack(spacing: 0) {
                         ForEach(vm.sessions) { session in
                             Button {
-                                rootNavigation.openUserSpace(mid: session.talkerID)
+                                rootNavigation.openMessageConversation(session)
                             } label: {
                                 MessageSessionRow(session: session)
                             }
@@ -214,6 +214,13 @@ struct MessageFeedListView: View {
     }
 
     private func openMessageItem(_ item: MessageItemDTO) {
+        if let destination = MessageLinkMapper.playerDestination(for: item) {
+            rootNavigation.openPlayer(
+                destination.item,
+                commentTarget: destination.commentTarget
+            )
+            return
+        }
         let mapped = MessageLinkMapper.internalURLString(from: item.nativeUri)
         if let url = URL(string: mapped), url.scheme?.lowercased() == "ibili" {
             openURL(url)
@@ -591,7 +598,19 @@ private struct MessageUnreadBadge: View {
     }
 }
 
-private enum MessageLinkMapper {
+struct MessagePlayerDestination: Equatable {
+    let item: FeedItemDTO
+    let commentTarget: PlayerCommentTarget?
+}
+
+enum MessageLinkMapper {
+    static func playerDestination(for item: MessageItemDTO) -> MessagePlayerDestination? {
+        playerDestination(
+            from: item.nativeUri,
+            fallbackOID: item.businessID == 1 ? item.subjectID : nil
+        )
+    }
+
     static func internalURLString(from raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "about:blank" }
@@ -618,7 +637,7 @@ private enum MessageLinkMapper {
             if let bvid = queryValue("bvid") ?? LinkRouter.extractBV(from: full) {
                 return "ibili://bv/\(bvid)"
             }
-            if let aid = firstNumber(in: full) {
+            if let aid = firstNumber(in: components.path) {
                 return "ibili://av/\(aid)"
             }
         case "space", "user", "author":
@@ -652,6 +671,61 @@ private enum MessageLinkMapper {
             break
         }
         return nil
+    }
+
+    private static func playerDestination(
+        from raw: String,
+        fallbackOID: Int64?
+    ) -> MessagePlayerDestination? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              components.scheme?.lowercased() == "bilibili" else { return nil }
+        let host = (components.host ?? "").lowercased()
+        let queryItems = components.queryItems ?? []
+        let queryValue: (String) -> String? = { name in
+            queryItems.first { $0.name == name }?.value
+        }
+
+        if host == "video" {
+            let path = components.path.removingPercentEncoding ?? components.path
+            let bvid = queryValue("bvid") ?? LinkRouter.extractBV(from: path)
+            let pathAid = bvid == nil ? firstNumber(in: path).flatMap(Int64.init) : nil
+            let aid = fallbackOID.flatMap { $0 > 0 ? $0 : nil } ?? pathAid ?? 0
+            guard aid > 0 || !(bvid ?? "").isEmpty else { return nil }
+            let shell = DeepLinkRouter.makeShell(aid: aid, bvid: bvid ?? "")
+            let rootRpid = queryValue("comment_root_id").flatMap(Int64.init) ?? 0
+            let replyRpid = queryValue("comment_secondary_id").flatMap(Int64.init) ?? rootRpid
+            let commentTarget = rootRpid > 0 && aid > 0
+                ? PlayerCommentTarget(oid: aid, kind: 1, rootRpid: rootRpid, replyRpid: replyRpid)
+                : nil
+            return MessagePlayerDestination(item: shell, commentTarget: commentTarget)
+        }
+
+        guard host == "comment" else { return nil }
+        let segments = components.path.split(separator: "/").map(String.init)
+        guard segments.count >= 4,
+              segments[0] == "detail" || segments[0] == "msg_fold",
+              let kind = Int32(segments[1]),
+              let oid = Int64(segments[2]),
+              let rootRpid = Int64(segments[3]),
+              kind == 1 else { return nil }
+        let replyRpid = queryValue("anchor").flatMap(Int64.init)
+            ?? queryValue("comment_secondary_id").flatMap(Int64.init)
+            ?? (segments.count > 4 ? Int64(segments[4]) : nil)
+            ?? rootRpid
+        let nested = queryValue("enterUri").flatMap {
+            playerDestination(from: $0, fallbackOID: oid)
+        }
+        let shell = nested?.item ?? DeepLinkRouter.makeShell(aid: oid)
+        return MessagePlayerDestination(
+            item: shell,
+            commentTarget: PlayerCommentTarget(
+                oid: oid,
+                kind: kind,
+                rootRpid: rootRpid,
+                replyRpid: replyRpid
+            )
+        )
     }
 
     private static func firstNumber(in raw: String) -> String? {

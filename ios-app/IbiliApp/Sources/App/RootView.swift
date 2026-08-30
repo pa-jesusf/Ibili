@@ -933,7 +933,7 @@ private struct DeepLinkPlayerHost: View {
                 router.openArticle(id: id, kind: kind)
             case .search(let keyword):
                 router.openSearch(keyword: keyword)
-            case .profileList, .messageCenter, .messageFeed:
+            case .profileList, .messageCenter, .messageFeed, .messageConversation:
                 // Profile and message pages are only reachable from the Profile tab
                 // (root-content world); the session host has no
                 // representation for them.
@@ -1078,6 +1078,7 @@ struct DeepLinkRouteContent {
         PlayerView(
             item: route.item,
             offlineOnly: route.offlineOnly,
+            commentTarget: route.commentTarget,
             viewModel: PlayerRuntimeCoordinator.shared.viewModel(for: route.id),
             onPictureInPictureTransition: { transition in
                 onPictureInPictureTransition(transition, route.id)
@@ -1263,7 +1264,7 @@ private struct DeepLinkSplitHost: View {
                 router.openArticle(id: id, kind: kind)
             case .search(let keyword):
                 router.openSearch(keyword: keyword)
-            case .profileList, .messageCenter, .messageFeed:
+            case .profileList, .messageCenter, .messageFeed, .messageConversation:
                 // Profile and message pages are only reachable from the Profile tab
                 // (root-content world); the session host has no
                 // representation for them.

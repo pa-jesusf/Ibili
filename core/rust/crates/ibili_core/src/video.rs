@@ -653,13 +653,21 @@ fn normalize_pgc_duration_sec(duration: i64) -> i64 {
     }
 }
 
+fn video_identity_params(aid: i64, bvid: &str) -> CoreResult<Vec<(String, String)>> {
+    if !bvid.trim().is_empty() {
+        Ok(vec![("bvid".into(), bvid.trim().to_string())])
+    } else if aid > 0 {
+        Ok(vec![("aid".into(), aid.to_string())])
+    } else {
+        Err(CoreError::InvalidArgument("aid/bvid invalid".into()))
+    }
+}
+
 impl Core {
-    /// Resolve the default page `cid` for a `bvid` via
-    /// `/x/web-interface/view`. Used by callers that only have a bvid
-    /// (e.g. the search results screen — `searchByType` does not return
-    /// cids on video rows). Returns the cid of `pages[0]` which is what
-    /// the playurl endpoint expects for a single-part video.
-    pub fn video_view_cid(&self, bvid: &str) -> CoreResult<i64> {
+    /// Resolve the default page `cid` from either canonical UGC identity.
+    /// Message notifications commonly carry only an aid, while search rows
+    /// commonly carry only a bvid.
+    pub fn video_view_cid(&self, aid: i64, bvid: &str) -> CoreResult<i64> {
         const URL_VIEW: &str = "https://api.bilibili.com/x/web-interface/view";
 
         #[derive(Deserialize)]
@@ -675,9 +683,8 @@ impl Core {
             cid: i64,
         }
 
-        let data: ViewData = self
-            .http
-            .get_web(URL_VIEW, &[("bvid".to_string(), bvid.to_string())])?;
+        let identity = video_identity_params(aid, bvid)?;
+        let data: ViewData = self.http.get_web(URL_VIEW, &identity)?;
         if data.cid > 0 {
             return Ok(data.cid);
         }
@@ -687,7 +694,7 @@ impl Core {
             }
         }
         Err(CoreError::Internal(format!(
-            "view returned no cid for bvid={bvid}"
+            "view returned no cid for aid={aid} bvid={bvid}"
         )))
     }
 
@@ -2202,8 +2209,8 @@ fn map_related_item(r: RelatedItemWire) -> RelatedVideoItem {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_playurl_from_web_response, video_page_from_wire, DashAudio, DashVideo, PlayUrlRoot,
-        ViewPageWire,
+        build_playurl_from_web_response, video_identity_params, video_page_from_wire, DashAudio,
+        DashVideo, PlayUrlRoot, ViewPageWire,
     };
     use crate::dto::VideoDimension;
 
@@ -2307,5 +2314,18 @@ mod tests {
         assert_eq!(volume.measured_tp, Some(-3.1));
         assert_eq!(volume.target_i, Some(-16.0));
         assert_eq!(volume.target_tp, Some(-1.5));
+    }
+
+    #[test]
+    fn video_identity_prefers_bvid_and_falls_back_to_aid() {
+        assert_eq!(
+            video_identity_params(123, " BV1example ").unwrap(),
+            vec![("bvid".to_string(), "BV1example".to_string())]
+        );
+        assert_eq!(
+            video_identity_params(123, "").unwrap(),
+            vec![("aid".to_string(), "123".to_string())]
+        );
+        assert!(video_identity_params(0, " ").is_err());
     }
 }

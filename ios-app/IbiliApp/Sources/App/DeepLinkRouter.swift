@@ -1,6 +1,13 @@
 import SwiftUI
 import Combine
 
+struct PlayerCommentTarget: Hashable {
+    let oid: Int64
+    let kind: Int32
+    let rootRpid: Int64
+    let replyRpid: Int64
+}
+
 /// Shared deep-link state. The video-detail tab handles `ibili://bv/<id>`
 /// and `ibili://av/<id>` URLs emitted by `RichReplyText` jump-links.
 ///
@@ -18,19 +25,30 @@ final class DeepLinkRouter: ObservableObject {
         let id: UUID
         var item: FeedItemDTO
         var offlineOnly: Bool
+        var commentTarget: PlayerCommentTarget?
 
-        init(id: UUID = UUID(), item: FeedItemDTO, offlineOnly: Bool = false) {
+        init(
+            id: UUID = UUID(),
+            item: FeedItemDTO,
+            offlineOnly: Bool = false,
+            commentTarget: PlayerCommentTarget? = nil
+        ) {
             self.id = id
             self.item = item
             self.offlineOnly = offlineOnly
+            self.commentTarget = commentTarget
         }
 
         func replacingItem(_ item: FeedItemDTO) -> Self {
-            Self(id: id, item: item, offlineOnly: offlineOnly)
+            Self(id: id, item: item, offlineOnly: offlineOnly, commentTarget: commentTarget)
         }
 
         func replacingOfflineOnly(_ offlineOnly: Bool) -> Self {
-            Self(id: id, item: item, offlineOnly: offlineOnly)
+            Self(id: id, item: item, offlineOnly: offlineOnly, commentTarget: commentTarget)
+        }
+
+        func replacingCommentTarget(_ commentTarget: PlayerCommentTarget?) -> Self {
+            Self(id: id, item: item, offlineOnly: offlineOnly, commentTarget: commentTarget)
         }
 
         func hash(into hasher: inout Hasher) {
@@ -42,6 +60,7 @@ final class DeepLinkRouter: ObservableObject {
             hasher.combine(item.seasonID)
             hasher.combine(item.isPGC)
             hasher.combine(offlineOnly)
+            hasher.combine(commentTarget)
         }
 
         static func == (lhs: Self, rhs: Self) -> Bool {
@@ -53,6 +72,7 @@ final class DeepLinkRouter: ObservableObject {
                 && lhs.item.seasonID == rhs.item.seasonID
                 && lhs.item.isPGC == rhs.item.isPGC
                 && lhs.offlineOnly == rhs.offlineOnly
+                && lhs.commentTarget == rhs.commentTarget
         }
     }
 

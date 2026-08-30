@@ -23,6 +23,48 @@ const URL_MSG_SYS: &str = "https://message.bilibili.com/x/sys-msg/query_notify_l
 const URL_SESSION_LIST: &str =
     "https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions";
 const URL_SESSION_ACCOUNTS: &str = "https://api.vc.bilibili.com/account/v1/user/cards";
+const URL_SESSION_MESSAGES: &str =
+    "https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs";
+const URL_SESSION_ACK: &str = "https://api.vc.bilibili.com/session_svr/v1/session_svr/update_ack";
+const GRPC_SEND_MESSAGE: &str = "/bilibili.im.interface.v1.ImInterface/SendMsg";
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct GrpcSendMessageRequest {
+    #[prost(message, optional, tag = "1")]
+    message: Option<GrpcIMMessage>,
+    #[prost(string, tag = "5")]
+    device_id: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct GrpcIMMessage {
+    #[prost(int64, tag = "1")]
+    sender_uid: i64,
+    #[prost(int32, tag = "2")]
+    receiver_type: i32,
+    #[prost(int64, tag = "3")]
+    receiver_id: i64,
+    #[prost(int32, tag = "5")]
+    message_type: i32,
+    #[prost(string, tag = "6")]
+    content: String,
+    #[prost(int64, tag = "8")]
+    timestamp: i64,
+    #[prost(int32, tag = "12")]
+    message_status: i32,
+    #[prost(int32, tag = "16")]
+    new_face_version: i32,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct GrpcSendMessageReply {
+    #[prost(int64, tag = "1")]
+    message_key: i64,
+    #[prost(string, tag = "3")]
+    message_content: String,
+    #[prost(int64, tag = "6")]
+    sequence: i64,
+}
 
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct MessageUnreadSummary {
@@ -47,6 +89,8 @@ pub struct MessageItem {
     pub secondary_content: String,
     pub image: String,
     pub native_uri: String,
+    pub subject_id: i64,
+    pub business_id: i64,
     pub timestamp: i64,
     pub time_text: String,
     pub count: i64,
@@ -75,6 +119,26 @@ pub struct MessageSession {
 #[derive(Debug, Serialize, Clone)]
 pub struct MessageSessionPage {
     pub items: Vec<MessageSession>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MessageChatItem {
+    pub id: String,
+    pub sender_id: i64,
+    pub is_self: bool,
+    pub kind: String,
+    pub text: String,
+    pub image: String,
+    pub timestamp: i64,
+    pub sequence: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MessageConversationPage {
+    pub items: Vec<MessageChatItem>,
+    pub next_sequence: i64,
+    pub ack_sequence: i64,
     pub has_more: bool,
 }
 
@@ -163,6 +227,150 @@ impl Core {
         Ok(MessageSessionPage {
             items,
             has_more: loose_bool(raw.has_more).unwrap_or(false),
+        })
+    }
+
+    pub fn message_conversation(
+        &self,
+        talker_id: i64,
+        end_sequence: i64,
+    ) -> CoreResult<MessageConversationPage> {
+        if talker_id <= 0 {
+            return Ok(MessageConversationPage {
+                items: vec![],
+                next_sequence: 0,
+                ack_sequence: 0,
+                has_more: false,
+            });
+        }
+        let self_mid = self.session.read().snapshot().mid;
+        if self_mid <= 0 {
+            return Ok(MessageConversationPage {
+                items: vec![],
+                next_sequence: 0,
+                ack_sequence: 0,
+                has_more: false,
+            });
+        }
+
+        let key = self.fetch_wbi_key_for_message()?;
+        let mut params = vec![
+            ("talker_id".into(), talker_id.to_string()),
+            ("session_type".into(), "1".into()),
+            ("size".into(), "30".into()),
+            ("sender_device_id".into(), "1".into()),
+            ("build".into(), "0".into()),
+            ("mobi_app".into(), "web".into()),
+            ("web_location".into(), "333.1296".into()),
+        ];
+        if end_sequence > 0 {
+            params.push(("end_seqno".into(), end_sequence.to_string()));
+        }
+        let raw: SessionMessagesWire =
+            self.http
+                .get_signed_web(URL_SESSION_MESSAGES, params, &key)?;
+        let ack_sequence = raw.max_seqno.unwrap_or_else(|| {
+            raw.messages
+                .iter()
+                .filter_map(|item| item.msg_seqno)
+                .max()
+                .unwrap_or(0)
+        });
+        let next_sequence = raw.min_seqno.unwrap_or_else(|| {
+            raw.messages
+                .iter()
+                .filter_map(|item| item.msg_seqno)
+                .min()
+                .unwrap_or(0)
+        });
+        let items = raw
+            .messages
+            .into_iter()
+            .filter(|item| item.msg_type.unwrap_or(0) != 5)
+            .map(|item| message_chat_item_from_wire(item, self_mid))
+            .collect();
+        Ok(MessageConversationPage {
+            items,
+            next_sequence,
+            ack_sequence,
+            has_more: loose_bool(raw.has_more).unwrap_or(false),
+        })
+    }
+
+    pub fn message_ack_conversation(&self, talker_id: i64, ack_sequence: i64) -> CoreResult<()> {
+        if talker_id <= 0 || ack_sequence <= 0 {
+            return Ok(());
+        }
+        let key = self.fetch_wbi_key_for_message()?;
+        let csrf = self.http.csrf_token().unwrap_or_default();
+        let params = vec![
+            ("talker_id".into(), talker_id.to_string()),
+            ("session_type".into(), "1".into()),
+            ("ack_seqno".into(), ack_sequence.to_string()),
+            ("build".into(), "0".into()),
+            ("mobi_app".into(), "web".into()),
+            ("csrf_token".into(), csrf.clone()),
+            ("csrf".into(), csrf),
+        ];
+        let _: Value = self.http.get_signed_web(URL_SESSION_ACK, params, &key)?;
+        Ok(())
+    }
+
+    pub fn message_send_text(&self, talker_id: i64, message: &str) -> CoreResult<MessageChatItem> {
+        let text = message.trim();
+        if talker_id <= 0 {
+            return Err(crate::error::CoreError::InvalidArgument(
+                "talker_id invalid".into(),
+            ));
+        }
+        if text.is_empty() {
+            return Err(crate::error::CoreError::InvalidArgument(
+                "message is empty".into(),
+            ));
+        }
+        let sender_id = self.session.read().snapshot().mid;
+        if sender_id <= 0 {
+            return Err(crate::error::CoreError::AuthRequired);
+        }
+        let timestamp = unix_timestamp();
+        let encoded_content = serde_json::json!({ "content": text }).to_string();
+        let request = GrpcSendMessageRequest {
+            message: Some(GrpcIMMessage {
+                sender_uid: sender_id,
+                receiver_type: 1,
+                receiver_id: talker_id,
+                message_type: 1,
+                content: encoded_content,
+                timestamp,
+                message_status: 0,
+                new_face_version: 1,
+            }),
+            device_id: message_device_id(),
+        };
+        let response: GrpcSendMessageReply =
+            self.grpc_request(GRPC_SEND_MESSAGE, &request, true)?;
+        let response_text = if response.message_content.is_empty() {
+            text.to_string()
+        } else {
+            decode_im_content(&response.message_content, 1).text
+        };
+        Ok(MessageChatItem {
+            id: if response.message_key > 0 {
+                response.message_key.to_string()
+            } else {
+                format!("sent-{timestamp}-{}", response.sequence)
+            },
+            sender_id,
+            is_self: true,
+            kind: "text".into(),
+            text: if response_text.is_empty() {
+                text.to_string()
+            } else {
+                response_text
+            },
+            image: String::new(),
+            timestamp,
+            sequence: response.sequence,
         })
     }
 
@@ -346,6 +554,8 @@ fn message_item_from_reply(raw: ReplyItemWire) -> MessageItem {
         secondary_content: item.root_reply_content.unwrap_or_default(),
         image: String::new(),
         native_uri: item.native_uri.unwrap_or_default(),
+        subject_id: item.subject_id.unwrap_or(0),
+        business_id: item.business_id.unwrap_or(0),
         timestamp: raw.reply_time.unwrap_or(0),
         time_text: String::new(),
         count: counts,
@@ -368,6 +578,8 @@ fn message_item_from_at(raw: AtItemWire) -> MessageItem {
         secondary_content: String::new(),
         image: item.image.unwrap_or_default(),
         native_uri: item.native_uri.unwrap_or_default(),
+        subject_id: 0,
+        business_id: 0,
         timestamp: raw.at_time.unwrap_or(0),
         time_text: String::new(),
         count: 0,
@@ -395,6 +607,8 @@ fn message_item_from_like(raw: LikeItemWire) -> MessageItem {
         secondary_content: String::new(),
         image: item.image.unwrap_or_default(),
         native_uri: item.native_uri.unwrap_or_default(),
+        subject_id: 0,
+        business_id: 0,
         timestamp: raw.like_time.unwrap_or(0),
         time_text: String::new(),
         count,
@@ -415,6 +629,8 @@ fn message_item_from_system(raw: SystemMessageWire) -> MessageItem {
         secondary_content: String::new(),
         image: String::new(),
         native_uri: String::new(),
+        subject_id: 0,
+        business_id: 0,
         timestamp: 0,
         time_text: raw.time_at.unwrap_or_default(),
         count: 0,
@@ -472,6 +688,131 @@ fn decode_im_message(raw: String) -> String {
     trimmed.to_string()
 }
 
+fn message_chat_item_from_wire(raw: SessionMessageWire, self_mid: i64) -> MessageChatItem {
+    let message_type = raw.msg_type.unwrap_or_default();
+    let content = decode_im_content(&raw.content.unwrap_or_default(), message_type);
+    let sequence = raw.msg_seqno.unwrap_or_default();
+    let message_key = raw.msg_key.unwrap_or_default();
+    let sender_id = raw.sender_uid.unwrap_or_default();
+    MessageChatItem {
+        id: if message_key > 0 {
+            message_key.to_string()
+        } else {
+            sequence.to_string()
+        },
+        sender_id,
+        is_self: sender_id == self_mid,
+        kind: content.kind,
+        text: content.text,
+        image: content.image,
+        timestamp: raw.timestamp.unwrap_or_default(),
+        sequence,
+    }
+}
+
+#[derive(Default)]
+struct DecodedImContent {
+    kind: String,
+    text: String,
+    image: String,
+}
+
+fn decode_im_content(raw: &str, message_type: i32) -> DecodedImContent {
+    let trimmed = raw.trim();
+    let value = serde_json::from_str::<Value>(trimmed).unwrap_or(Value::Null);
+    let string = |names: &[&str]| -> String {
+        names
+            .iter()
+            .find_map(|name| value.get(*name).and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    match message_type {
+        1 => DecodedImContent {
+            kind: "text".into(),
+            text: string(&["content", "text"]),
+            image: String::new(),
+        },
+        2 | 6 => DecodedImContent {
+            kind: "image".into(),
+            text: String::new(),
+            image: string(&["url", "image_url", "original"]),
+        },
+        18 => DecodedImContent {
+            kind: "notice".into(),
+            text: decode_im_notice(&value),
+            image: String::new(),
+        },
+        _ => {
+            let title = string(&["title", "headline", "source"]);
+            let description = string(&["desc", "description", "content", "text"]);
+            let text = [title, description]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            DecodedImContent {
+                kind: "card".into(),
+                text: if text.is_empty() {
+                    decode_im_message(trimmed.to_string())
+                } else {
+                    text
+                },
+                image: string(&["cover", "image", "thumb", "url"]),
+            }
+        }
+    }
+}
+
+fn decode_im_notice(value: &Value) -> String {
+    if let Some(content) = value.get("content").and_then(Value::as_array) {
+        return content
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("");
+    }
+    value
+        .get("content")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("text").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn message_device_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut seed = (unix_timestamp() as u64)
+        ^ COUNTER.fetch_add(1, Ordering::Relaxed)
+        ^ (std::process::id() as u64).rotate_left(17);
+    let mut bytes = [0u8; 16];
+    for byte in &mut bytes {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *byte = (seed >> 32) as u8;
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15]
+    )
+}
+
 fn loose_bool(value: Option<Value>) -> Option<bool> {
     match value {
         Some(Value::Bool(v)) => Some(v),
@@ -483,6 +824,14 @@ fn loose_bool(value: Option<Value>) -> Option<bool> {
         },
         _ => None,
     }
+}
+
+fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
 #[derive(Default, Deserialize)]
@@ -534,6 +883,8 @@ struct ReplyItemWire {
 
 #[derive(Default, Deserialize)]
 struct ReplyContentWire {
+    subject_id: Option<i64>,
+    business_id: Option<i64>,
     business: Option<String>,
     native_uri: Option<String>,
     root_reply_content: Option<String>,
@@ -623,6 +974,26 @@ struct SessionLastMessageWire {
 }
 
 #[derive(Default, Deserialize)]
+struct SessionMessagesWire {
+    #[serde(default, deserialize_with = "null_as_default")]
+    messages: Vec<SessionMessageWire>,
+    #[serde(default)]
+    has_more: Option<Value>,
+    min_seqno: Option<i64>,
+    max_seqno: Option<i64>,
+}
+
+#[derive(Default, Deserialize)]
+struct SessionMessageWire {
+    sender_uid: Option<i64>,
+    msg_type: Option<i32>,
+    content: Option<String>,
+    msg_seqno: Option<i64>,
+    timestamp: Option<i64>,
+    msg_key: Option<i64>,
+}
+
+#[derive(Default, Deserialize)]
 struct MessageUserCardWire {
     mid: Option<i64>,
     name: Option<String>,
@@ -641,4 +1012,78 @@ struct NavWbiImageWire {
     img_url: String,
     #[serde(default)]
     sub_url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reply_notification_preserves_navigation_ids() {
+        let raw: ReplyItemWire = serde_json::from_value(serde_json::json!({
+            "id": 7,
+            "item": {
+                "subject_id": 123,
+                "business_id": 1,
+                "native_uri": "bilibili://video/123?comment_root_id=456"
+            }
+        }))
+        .unwrap();
+
+        let item = message_item_from_reply(raw);
+        assert_eq!(item.subject_id, 123);
+        assert_eq!(item.business_id, 1);
+        assert_eq!(item.native_uri, "bilibili://video/123?comment_root_id=456");
+    }
+
+    #[test]
+    fn conversation_content_decodes_text_image_and_notice() {
+        let text = decode_im_content(r#"{"content":"hello"}"#, 1);
+        let image = decode_im_content(r#"{"url":"https://example.com/a.jpg"}"#, 2);
+        let notice = decode_im_content(r#"{"content":[{"text":"one"},{"text":"two"}]}"#, 18);
+
+        assert_eq!(text.kind, "text");
+        assert_eq!(text.text, "hello");
+        assert_eq!(image.kind, "image");
+        assert_eq!(image.image, "https://example.com/a.jpg");
+        assert_eq!(notice.kind, "notice");
+        assert_eq!(notice.text, "onetwo");
+    }
+
+    #[test]
+    fn conversation_messages_accept_null_list() {
+        let page: SessionMessagesWire = serde_json::from_value(serde_json::json!({
+            "messages": null,
+            "has_more": 0
+        }))
+        .unwrap();
+
+        assert!(page.messages.is_empty());
+        assert_eq!(loose_bool(page.has_more), Some(false));
+    }
+
+    #[test]
+    fn send_message_request_matches_upstream_im_shape() {
+        use prost::Message;
+
+        let request = GrpcSendMessageRequest {
+            message: Some(GrpcIMMessage {
+                sender_uid: 1,
+                receiver_type: 1,
+                receiver_id: 2,
+                message_type: 1,
+                content: r#"{"content":"hello"}"#.into(),
+                timestamp: 3,
+                message_status: 0,
+                new_face_version: 1,
+            }),
+            device_id: message_device_id(),
+        };
+        let decoded = GrpcSendMessageRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        let message = decoded.message.unwrap();
+        assert_eq!(message.sender_uid, 1);
+        assert_eq!(message.receiver_id, 2);
+        assert_eq!(message.content, r#"{"content":"hello"}"#);
+        assert_eq!(decoded.device_id.len(), 36);
+    }
 }

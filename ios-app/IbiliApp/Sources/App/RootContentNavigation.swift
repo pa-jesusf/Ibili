@@ -83,6 +83,7 @@ enum RootContentRoute: Hashable {
     case profileList(ProfileListKind)
     case messageCenter
     case messageFeed(MessageFeedKind)
+    case messageConversation(MessageSessionDTO)
 
     var playerRoute: DeepLinkRouter.PlayerRoute? {
         guard case .player(let route) = self else { return nil }
@@ -112,7 +113,7 @@ enum RootContentRoute: Hashable {
             return .article(DeepLinkRouter.ArticleRoute(articleID: id, kind: kind))
         case .search(let keyword):
             return .search(DeepLinkRouter.SearchRoute(keyword: keyword))
-        case .profileList, .messageCenter, .messageFeed:
+        case .profileList, .messageCenter, .messageFeed, .messageConversation:
             return nil
         }
     }
@@ -142,6 +143,7 @@ struct RootContentNavigationActions {
     @MainActor
     func openPlayer(_ item: FeedItemDTO,
                     offlineOnly: Bool = false,
+                    commentTarget: PlayerCommentTarget? = nil,
                     mode: DeepLinkRouter.OpenMode = .push) {
         NavigationTrace.log("根内容导航请求", metadata: [
             "request": "openPlayer",
@@ -154,13 +156,23 @@ struct RootContentNavigationActions {
             "transitionWorld": "root-content",
             "transitionMode": "intent",
         ], includeStack: true)
-        let route = RootContentRoute.player(DeepLinkRouter.PlayerRoute(item: item, offlineOnly: offlineOnly))
+        let route = RootContentRoute.player(DeepLinkRouter.PlayerRoute(
+            item: item,
+            offlineOnly: offlineOnly,
+            commentTarget: commentTarget
+        ))
         switch mode {
         case .push:
             open(route)
         case .replaceCurrent:
             replaceCurrent(route)
         }
+    }
+
+    @MainActor
+    func openMessageConversation(_ session: MessageSessionDTO) {
+        guard session.talkerID > 0 else { return }
+        open(.messageConversation(session))
     }
 
     @MainActor
@@ -499,6 +511,8 @@ struct RootContentNavigationStack<Root: View>: View {
             MessageCenterView()
         case .messageFeed(let kind):
             MessageFeedListView(kind: kind)
+        case .messageConversation(let session):
+            MessageConversationView(session: session)
         }
     }
 
@@ -572,7 +586,8 @@ struct RootContentNavigationStack<Root: View>: View {
             PlayerRuntimeCoordinator.shared.prepareForDismissal(routeID: playerRoute.id)
         case .live(let liveRoute):
             LiveRuntimeCoordinator.shared.prepareForDismissal(routeID: liveRoute.id)
-        case .userSpace, .dynamicDetail, .article, .search, .profileList, .messageCenter, .messageFeed:
+        case .userSpace, .dynamicDetail, .article, .search, .profileList,
+             .messageCenter, .messageFeed, .messageConversation:
             break
         }
     }
@@ -601,7 +616,12 @@ struct RootContentNavigationStack<Root: View>: View {
     private func preservingCurrentMediaSessionIfPossible(for route: RootContentRoute) -> RootContentRoute {
         switch (path.last, route) {
         case (.player(let oldRoute), .player(let newRoute)):
-            return .player(oldRoute.replacingItem(newRoute.item).replacingOfflineOnly(newRoute.offlineOnly))
+            return .player(
+                oldRoute
+                    .replacingItem(newRoute.item)
+                    .replacingOfflineOnly(newRoute.offlineOnly)
+                    .replacingCommentTarget(newRoute.commentTarget)
+            )
         case (.live(let oldRoute), .live(let newRoute)):
             return .live(oldRoute.replacingMetadata(
                 title: newRoute.title,
@@ -643,6 +663,8 @@ extension RootContentRoute {
             return "messageCenter"
         case .messageFeed(let kind):
             return "messageFeed:\(kind.rawValue)"
+        case .messageConversation(let session):
+            return "messageConversation:\(session.talkerID)"
         }
     }
 }

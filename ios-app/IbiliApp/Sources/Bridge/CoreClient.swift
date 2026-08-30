@@ -423,14 +423,13 @@ public final class CoreClient: @unchecked Sendable {
         return SubtitleTrackDTO(items: items)
     }
 
-    /// Resolve the canonical playback `cid` for a `bvid` via
-    /// `/x/web-interface/view`. Used when navigating from the search
-    /// results screen, where the search-by-type endpoint does not
-    /// return cids on video rows.
-    public func videoViewCid(bvid: String) throws -> Int64 {
-        struct A: Encodable { let bvid: String }
+    /// Resolve the canonical playback `cid` from whichever UGC identity the
+    /// entry point provides. Search usually has a bvid; notifications may
+    /// carry only an aid.
+    public func videoViewCid(aid: Int64 = 0, bvid: String = "") throws -> Int64 {
+        struct A: Encodable { let aid: Int64; let bvid: String }
         struct R: Decodable { let cid: Int64 }
-        return try call("video.view_cid", args: A(bvid: bvid), decoding: R.self).cid
+        return try call("video.view_cid", args: A(aid: aid, bvid: bvid), decoding: R.self).cid
     }
 
     /// Keyword search for videos. `page` is 1-based; `order`, `duration` and
@@ -589,6 +588,35 @@ public final class CoreClient: @unchecked Sendable {
         return try call(
             "reply.detail",
             args: A(oid: oid, kind: kind, root: root, page: page),
+            decoding: ReplyPageDTO.self
+        )
+    }
+
+    /// Server-positioned reply window containing `targetRpid`. Pagination
+    /// continues with the opaque offset returned by the preceding gRPC call.
+    public func replyDetailTarget(
+        oid: Int64,
+        kind: Int32 = 1,
+        root: Int64,
+        targetRpid: Int64,
+        nextOffset: String = ""
+    ) throws -> ReplyPageDTO {
+        struct A: Encodable {
+            let oid: Int64
+            let kind: Int32
+            let root: Int64
+            let target_rpid: Int64
+            let next_offset: String
+        }
+        return try call(
+            "reply.detail_target",
+            args: A(
+                oid: oid,
+                kind: kind,
+                root: root,
+                target_rpid: targetRpid,
+                next_offset: nextOffset
+            ),
             decoding: ReplyPageDTO.self
         )
     }
@@ -857,6 +885,41 @@ public final class CoreClient: @unchecked Sendable {
 
     public func messageSessions() throws -> MessageSessionPageDTO {
         try call("message.sessions", decoding: MessageSessionPageDTO.self)
+    }
+
+    public func messageConversation(talkerID: Int64, endSequence: Int64 = 0) throws -> MessageConversationPageDTO {
+        struct A: Encodable {
+            let talker_id: Int64
+            let end_sequence: Int64
+        }
+        return try call(
+            "message.conversation",
+            args: A(talker_id: talkerID, end_sequence: endSequence),
+            decoding: MessageConversationPageDTO.self
+        )
+    }
+
+    public func acknowledgeMessageConversation(talkerID: Int64, sequence: Int64) throws {
+        struct A: Encodable {
+            let talker_id: Int64
+            let ack_sequence: Int64
+        }
+        try callVoid(
+            "message.conversation_ack",
+            args: A(talker_id: talkerID, ack_sequence: sequence)
+        )
+    }
+
+    public func sendMessageText(talkerID: Int64, message: String) throws -> MessageChatItemDTO {
+        struct A: Encodable {
+            let talker_id: Int64
+            let message: String
+        }
+        return try call(
+            "message.send_text",
+            args: A(talker_id: talkerID, message: message),
+            decoding: MessageChatItemDTO.self
+        )
     }
 
     /// Rich watch-later list (title / cover / progress).

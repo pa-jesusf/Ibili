@@ -18,6 +18,7 @@ struct VideoDetailContent: View {
     let currentCid: Int64
     let currentSeasonID: Int64
     let currentEpisodeID: Int64
+    let commentTarget: PlayerCommentTarget?
     @ObservedObject private var vm: VideoDetailViewModel
     private let commentListViewModel: CommentListViewModel
     @ObservedObject private var interaction: VideoInteractionService
@@ -32,8 +33,8 @@ struct VideoDetailContent: View {
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.rootContentNavigation) private var rootNavigation
     @Environment(\.rootBottomSafeAreaInset) private var rootBottomSafeAreaInset
-    @State private var tab: Tab = .intro
-    @State private var mountedTabs: Set<Tab> = [.intro]
+    @State private var tab: Tab
+    @State private var mountedTabs: Set<Tab>
     @StateObject private var scrollContexts = VideoDetailScrollContexts()
     @State private var detailScrollOffset: CGFloat = 0
     @State private var toastWork: DispatchWorkItem?
@@ -57,6 +58,7 @@ struct VideoDetailContent: View {
          currentCid: Int64 = 0,
          currentSeasonID: Int64 = 0,
          currentEpisodeID: Int64 = 0,
+         commentTarget: PlayerCommentTarget? = nil,
          detailViewModel: VideoDetailViewModel,
          commentListViewModel: CommentListViewModel,
          interactionService: VideoInteractionService,
@@ -69,6 +71,10 @@ struct VideoDetailContent: View {
         self.currentCid = currentCid
         self.currentSeasonID = currentSeasonID
         self.currentEpisodeID = currentEpisodeID
+        self.commentTarget = commentTarget
+        let initialTab: Tab = commentTarget == nil ? .intro : .replies
+        self._tab = State(initialValue: initialTab)
+        self._mountedTabs = State(initialValue: [initialTab])
         self._vm = ObservedObject(wrappedValue: detailViewModel)
         self.commentListViewModel = commentListViewModel
         self._interaction = ObservedObject(wrappedValue: interactionService)
@@ -268,11 +274,17 @@ struct VideoDetailContent: View {
         }
         guard let view = vm.view else { return nil }
         let activeCid = currentCid > 0 ? currentCid : view.cid
-        if let season = view.ugcSeason, season.id > 0,
-           let candidate = nextUgcSeasonCandidate(in: season, after: activeCid) {
+        if let candidate = nextVideoPageCandidate(in: view, after: activeCid) {
             return candidate
         }
-        return nextVideoPageCandidate(in: view, after: activeCid)
+        if let season = view.ugcSeason, season.id > 0,
+           let candidate = nextUgcSeasonCandidate(
+               in: season,
+               after: ugcSeasonPlaybackIdentity(for: view, activeCid: activeCid)
+           ) {
+            return candidate
+        }
+        return nil
     }
 
     private func nextPgcEpisodeCandidate(in season: PgcSeasonDTO) -> PlayerNextPartCandidate? {
@@ -292,12 +304,13 @@ struct VideoDetailContent: View {
         )
     }
 
-    private func nextUgcSeasonCandidate(in season: UgcSeasonDTO, after currentCid: Int64) -> PlayerNextPartCandidate? {
+    private func nextUgcSeasonCandidate(
+        in season: UgcSeasonDTO,
+        after identity: UgcSeasonPlaybackIdentity
+    ) -> PlayerNextPartCandidate? {
+        guard let episode = season.nextEpisode(after: identity) else { return nil }
         let episodes = season.sections.flatMap(\.episodes)
-        guard let currentIndex = episodes.firstIndex(where: { $0.cid == currentCid }) else { return nil }
-        let nextIndex = episodes.index(after: currentIndex)
-        guard episodes.indices.contains(nextIndex) else { return nil }
-        let episode = episodes[nextIndex]
+        let nextIndex = episodes.firstIndex(where: { $0.id == episode.id }) ?? 0
         let title = episode.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let nextItem = FeedItemDTO(
             aid: episode.aid,
@@ -314,6 +327,17 @@ struct VideoDetailContent: View {
         return PlayerNextPartCandidate(
             item: nextItem,
             label: title.isEmpty ? "第 \(nextIndex + 1) 集" : title
+        )
+    }
+
+    private func ugcSeasonPlaybackIdentity(
+        for view: VideoViewDTO,
+        activeCid: Int64
+    ) -> UgcSeasonPlaybackIdentity {
+        UgcSeasonPlaybackIdentity(
+            aid: view.aid > 0 ? view.aid : item.aid,
+            bvid: view.bvid.isEmpty ? item.bvid : view.bvid,
+            cid: activeCid
         )
     }
 
@@ -444,7 +468,8 @@ struct VideoDetailContent: View {
                 usesVirtualizedScroll: true,
                 scrollToTopSignal: commentScrollToTopSignal,
                 bottomContentInset: bottomContentInset,
-                onScrollOffsetChange: handleDetailScrollOffsetChange
+                onScrollOffsetChange: handleDetailScrollOffsetChange,
+                focusTarget: commentTarget
             )
         } else {
             CommentListView(
@@ -453,7 +478,8 @@ struct VideoDetailContent: View {
                 usesVirtualizedScroll: true,
                 scrollToTopSignal: commentScrollToTopSignal,
                 bottomContentInset: bottomContentInset,
-                onScrollOffsetChange: handleDetailScrollOffsetChange
+                onScrollOffsetChange: handleDetailScrollOffsetChange,
+                focusTarget: commentTarget
             )
         }
     }
@@ -480,10 +506,19 @@ struct VideoDetailContent: View {
                     introBody
                 case .replies:
                     if item.isPGC {
-                        CommentListView(oid: pgcCommentOID, kind: pgcCommentKind, viewModel: commentListViewModel)
+                        CommentListView(
+                            oid: pgcCommentOID,
+                            kind: pgcCommentKind,
+                            viewModel: commentListViewModel,
+                            focusTarget: commentTarget
+                        )
                             .padding(.horizontal, 16)
                     } else {
-                        CommentListView(oid: commentOID, viewModel: commentListViewModel)
+                        CommentListView(
+                            oid: commentOID,
+                            viewModel: commentListViewModel,
+                            focusTarget: commentTarget
+                        )
                             .padding(.horizontal, 16)
                     }
                 case .related:
@@ -564,8 +599,9 @@ struct VideoDetailContent: View {
 
             if !item.isPGC, let v = vm.view {
                 let activeCid = currentCid > 0 ? currentCid : v.cid
+                let seasonIdentity = ugcSeasonPlaybackIdentity(for: v, activeCid: activeCid)
                 if let season = v.ugcSeason, season.id > 0 {
-                    VideoSeasonCard(source: .season(season, currentCid: activeCid)) { aid, bvid, cid in
+                    VideoSeasonCard(source: .season(season, current: seasonIdentity)) { aid, bvid, cid in
                         guard cid != activeCid else { return }
                         AppLog.info("player", "播放页合集切换请求", metadata: [
                             "fromCid": String(activeCid),
@@ -583,7 +619,8 @@ struct VideoDetailContent: View {
                         openPlayer(next, mode: .replaceCurrent)
                     }
                     .padding(.horizontal, 16)
-                } else if v.pages.count > 1 {
+                }
+                if v.pages.count > 1 {
                     VideoSeasonCard(source: .pages(aid: v.aid, bvid: v.bvid, pages: v.pages, currentCid: activeCid)) { aid, bvid, cid in
                         guard cid != activeCid else { return }
                         guard let page = v.pages.first(where: { $0.cid == cid }) else { return }

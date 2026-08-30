@@ -234,6 +234,10 @@ impl HttpClient {
             .and_then(|(_, v)| v.parse::<i64>().ok())
     }
 
+    pub(crate) fn buvid3(&self) -> String {
+        ensure_default_web_identity(&self.jar)
+    }
+
     pub fn web_session_identity_snapshot(
         &self,
         has_access_token: bool,

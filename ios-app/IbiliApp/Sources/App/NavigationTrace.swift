@@ -164,6 +164,7 @@ extension DeepLinkRouter.PlayerRoute {
             String(item.seasonID),
             String(item.isPGC),
             String(offlineOnly),
+            commentTarget.map { "\($0.kind):\($0.oid):\($0.rootRpid):\($0.replyRpid)" } ?? "no-comment-target",
         ].joined(separator: ":")
     }
 
@@ -323,6 +324,8 @@ extension RootContentRoute {
             return "messageCenter"
         case .messageFeed(let kind):
             return "messageFeed:\(kind.rawValue)"
+        case .messageConversation(let session):
+            return "messageConversation:\(session.talkerID)"
         }
     }
 
@@ -346,6 +349,8 @@ extension RootContentRoute {
             return "messageCenter"
         case .messageFeed(let kind):
             return "messageFeed(kind=\(kind.rawValue))"
+        case .messageConversation(let session):
+            return "messageConversation(talkerID=\(session.talkerID))"
         }
     }
 
@@ -369,6 +374,8 @@ extension RootContentRoute {
             return ["routeKind": "messageCenter"]
         case .messageFeed(let kind):
             return ["routeKind": "messageFeed", "kind": kind.rawValue]
+        case .messageConversation(let session):
+            return ["routeKind": "messageConversation", "talkerID": String(session.talkerID)]
         }
     }
 }

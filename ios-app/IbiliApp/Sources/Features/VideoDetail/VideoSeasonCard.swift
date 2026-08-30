@@ -4,7 +4,7 @@ import SwiftUI
 /// a sheet that lets the user pick an episode (合集) or a part (多 P).
 struct VideoSeasonCard: View {
     enum Source {
-        case season(UgcSeasonDTO, currentCid: Int64)
+        case season(UgcSeasonDTO, current: UgcSeasonPlaybackIdentity)
         case pages(aid: Int64, bvid: String, pages: [VideoPageDTO], currentCid: Int64)
     }
 
@@ -18,7 +18,7 @@ struct VideoSeasonCard: View {
             presented = true
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: title.contains("合集") ? "rectangle.stack.fill" : "list.bullet.rectangle")
+                Image(systemName: iconName)
                     .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(IbiliTheme.accent)
                     .frame(width: 30)
@@ -53,6 +53,13 @@ struct VideoSeasonCard: View {
         }
     }
 
+    private var iconName: String {
+        switch source {
+        case .season: return "rectangle.stack.fill"
+        case .pages: return "list.bullet.rectangle"
+        }
+    }
+
     private var subtitle: String {
         switch source {
         case .season(let s, _): return "共 \(s.epCount > 0 ? s.epCount : Int32(s.sections.flatMap(\.episodes).count)) 集"
@@ -68,8 +75,8 @@ struct VideoSeasonCard: View {
     @ViewBuilder
     private var sheet: some View {
         switch source {
-        case .season(let s, let currentCid):
-            UgcSeasonSheet(season: s, currentCid: currentCid) { aid, bvid, cid in
+        case .season(let s, let current):
+            UgcSeasonSheet(season: s, current: current) { aid, bvid, cid in
                 presented = false
                 onPick(aid, bvid, cid)
             }
