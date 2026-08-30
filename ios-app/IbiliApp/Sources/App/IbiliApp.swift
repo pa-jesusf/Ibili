@@ -5,6 +5,14 @@ import UIKit
 final class IbiliAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UIRefreshControl.appearance().tintColor = IbiliTheme.accentUIColor
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
         configurationForConnecting connectingSceneSession: UISceneSession,
         options: UIScene.ConnectionOptions
     ) -> UISceneConfiguration {

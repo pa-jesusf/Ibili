@@ -185,11 +185,11 @@ struct TitlePageChrome<Content: View>: View {
             .overlay(alignment: .top) {
                 FeedNavigationBackgroundOverlay(collapseProgress: headerCollapseProgress)
             }
-            .modifier(TitlePageChromeNavigationModifier(isHidden: hidesNavigationBar))
+            .pageChromeNavigationBarHidden(hidesNavigationBar)
     }
 }
 
-private struct TitlePageChromeNavigationModifier: ViewModifier {
+private struct PageChromeNavigationBarModifier: ViewModifier {
     let isHidden: Bool
 
     func body(content: Content) -> some View {
@@ -201,6 +201,12 @@ private struct TitlePageChromeNavigationModifier: ViewModifier {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(.hidden, for: .navigationBar)
         }
+    }
+}
+
+extension View {
+    func pageChromeNavigationBarHidden(_ isHidden: Bool = true) -> some View {
+        modifier(PageChromeNavigationBarModifier(isHidden: isHidden))
     }
 }
 

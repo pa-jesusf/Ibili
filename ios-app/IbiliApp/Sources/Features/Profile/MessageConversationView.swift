@@ -40,7 +40,6 @@ struct MessageConversationView: View {
             }
         }
         .background(IbiliTheme.background.ignoresSafeArea())
-        .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .top) { conversationHeader }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .task {
@@ -155,6 +154,7 @@ struct MessageConversationView: View {
         Task {
             if await viewModel.send(message) {
                 draft = ""
+                composerFocused = false
             }
         }
     }

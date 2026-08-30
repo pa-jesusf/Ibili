@@ -130,6 +130,7 @@ final class HomeFeedCollectionViewController: UIViewController {
         ])
 
         refreshControl.tintColor = IbiliTheme.accentUIColor
+        refreshControl.tintAdjustmentMode = .normal
         refreshControl.addTarget(self, action: #selector(refreshRequested), for: .valueChanged)
 
         configureDataSource()

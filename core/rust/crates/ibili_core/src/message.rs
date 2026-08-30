@@ -766,19 +766,30 @@ fn decode_im_content(raw: &str, message_type: i32) -> DecodedImContent {
 }
 
 fn decode_im_notice(value: &Value) -> String {
-    if let Some(content) = value.get("content").and_then(Value::as_array) {
-        return content
+    let content = value.get("content").unwrap_or(value);
+    decode_im_notice_value(content)
+}
+
+fn decode_im_notice_value(value: &Value) -> String {
+    match value {
+        Value::Array(items) => items
             .iter()
-            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .map(decode_im_notice_value)
+            .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
-            .join("");
+            .join("\n"),
+        Value::Object(object) => object
+            .get("text")
+            .or_else(|| object.get("content"))
+            .map(decode_im_notice_value)
+            .unwrap_or_default(),
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .map(|nested| decode_im_notice_value(&nested))
+            .filter(|decoded| !decoded.is_empty())
+            .unwrap_or_else(|| text.clone()),
+        _ => String::new(),
     }
-    value
-        .get("content")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("text").and_then(Value::as_str))
-        .unwrap_or_default()
-        .to_string()
 }
 
 fn unix_timestamp() -> i64 {
@@ -1041,13 +1052,19 @@ mod tests {
         let text = decode_im_content(r#"{"content":"hello"}"#, 1);
         let image = decode_im_content(r#"{"url":"https://example.com/a.jpg"}"#, 2);
         let notice = decode_im_content(r#"{"content":[{"text":"one"},{"text":"two"}]}"#, 18);
+        let encoded_notice = decode_im_content(
+            r##"{"content":"[{\"text\":\"first\",\"color_day\":\"#9499A0\"},{\"text\":\"second\"}]"}"##,
+            18,
+        );
 
         assert_eq!(text.kind, "text");
         assert_eq!(text.text, "hello");
         assert_eq!(image.kind, "image");
         assert_eq!(image.image, "https://example.com/a.jpg");
         assert_eq!(notice.kind, "notice");
-        assert_eq!(notice.text, "onetwo");
+        assert_eq!(notice.text, "one\ntwo");
+        assert_eq!(encoded_notice.kind, "notice");
+        assert_eq!(encoded_notice.text, "first\nsecond");
     }
 
     #[test]
