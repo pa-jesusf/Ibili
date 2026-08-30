@@ -231,7 +231,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
-        refreshControl.tintColor = IbiliTheme.accentUIColor
+        refreshControl.tintColor = IbiliTheme.refreshIndicatorUIColor
         refreshControl.tintAdjustmentMode = .normal
         refreshControl.addTarget(self, action: #selector(refreshRequested), for: .valueChanged)
         configureDataSource()

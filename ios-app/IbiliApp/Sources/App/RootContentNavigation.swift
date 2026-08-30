@@ -513,7 +513,6 @@ struct RootContentNavigationStack<Root: View>: View {
             MessageFeedListView(kind: kind)
         case .messageConversation(let session):
             MessageConversationView(session: session)
-                .pageChromeNavigationBarHidden()
                 .toolbar(.hidden, for: .tabBar)
         }
     }

@@ -3,7 +3,6 @@ import SwiftUI
 struct MessageConversationView: View {
     let session: MessageSessionDTO
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.rootContentNavigation) private var rootNavigation
     @StateObject private var viewModel: MessageConversationViewModel
     @State private var draft = ""
@@ -28,7 +27,7 @@ struct MessageConversationView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 66)
+                .padding(.top, 8)
                 .padding(.bottom, 12)
             }
             .scrollDismissesKeyboard(.interactively)
@@ -40,8 +39,16 @@ struct MessageConversationView: View {
             }
         }
         .background(IbiliTheme.background.ignoresSafeArea())
-        .overlay(alignment: .top) { conversationHeader }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                conversationIdentityButton
+            }
+        }
         .task {
             await viewModel.loadInitial()
         }
@@ -51,49 +58,27 @@ struct MessageConversationView: View {
         .tint(IbiliTheme.accent)
     }
 
-    private var conversationHeader: some View {
-        HStack(spacing: 10) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.headline.weight(.semibold))
-                    .frame(width: 42, height: 42)
-                    .contentShape(Circle())
+    private var conversationIdentityButton: some View {
+        Button {
+            rootNavigation.openUserSpace(mid: session.talkerID)
+        } label: {
+            HStack(spacing: 7) {
+                RemoteImage(
+                    url: session.avatar,
+                    contentMode: .fill,
+                    targetPointSize: CGSize(width: 28, height: 28),
+                    quality: 75
+                )
+                .frame(width: 28, height: 28)
+                .clipShape(Circle())
+
+                Text(session.name)
+                    .font(.headline)
+                    .foregroundStyle(IbiliTheme.textPrimary)
+                    .lineLimit(1)
             }
-            .buttonStyle(MessageGlassButtonStyle())
-            .accessibilityLabel("返回")
-
-            Button {
-                rootNavigation.openUserSpace(mid: session.talkerID)
-            } label: {
-                HStack(spacing: 8) {
-                    RemoteImage(
-                        url: session.avatar,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: 30, height: 30),
-                        quality: 75
-                    )
-                    .frame(width: 30, height: 30)
-                    .clipShape(Circle())
-
-                    Text(session.name)
-                        .font(.headline)
-                        .foregroundStyle(IbiliTheme.textPrimary)
-                        .lineLimit(1)
-                }
-                .padding(.leading, 6)
-                .padding(.trailing, 14)
-                .frame(height: 42)
-                .contentShape(Capsule())
-            }
-            .buttonStyle(MessageGlassButtonStyle())
-            .accessibilityLabel("查看\(session.name)的个人空间")
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
+        .accessibilityLabel("查看\(session.name)的个人空间")
     }
 
     private var composer: some View {
@@ -355,23 +340,5 @@ private struct MessageBubbleRow: View {
             )
         }
         .frame(maxWidth: 300, alignment: item.isSelf ? .trailing : .leading)
-    }
-}
-
-private struct MessageGlassButtonStyle: ButtonStyle {
-    @ViewBuilder
-    func makeBody(configuration: Configuration) -> some View {
-        if #available(iOS 26.0, *) {
-            configuration.label
-                .glassEffect(.regular.interactive(), in: Capsule())
-                .scaleEffect(configuration.isPressed ? 0.96 : 1)
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-        } else {
-            configuration.label
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(.white.opacity(0.10), lineWidth: 0.5))
-                .scaleEffect(configuration.isPressed ? 0.96 : 1)
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-        }
     }
 }

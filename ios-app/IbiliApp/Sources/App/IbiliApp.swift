@@ -7,7 +7,7 @@ final class IbiliAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        UIRefreshControl.appearance().tintColor = IbiliTheme.accentUIColor
+        UIRefreshControl.appearance().tintColor = IbiliTheme.refreshIndicatorUIColor
         return true
     }
 
