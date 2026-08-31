@@ -2036,7 +2036,7 @@ struct PlayerPageLayoutMetrics: Equatable {
     var videoSizeHint: CGSize? = nil
 
     private var maximumInlinePlayerHeight: CGFloat {
-        max(1, viewportSize.height * 0.6)
+        max(1, viewportSize.height * 0.5)
     }
 
     private var minimumInlinePlayerHeight: CGFloat {

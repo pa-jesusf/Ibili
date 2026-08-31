@@ -31,7 +31,7 @@ final class PlayerPageLayoutTests: XCTestCase {
         )
     }
 
-    func testPhonePortraitVerticalVideoKeepsFortyPercentForDetail() {
+    func testPhonePortraitVerticalVideoKeepsHalfForDetail() {
         let metrics = PlayerPageLayoutMetrics(
             viewportSize: CGSize(width: 390, height: 844),
             interfaceIdiom: .phone,
@@ -39,10 +39,10 @@ final class PlayerPageLayoutTests: XCTestCase {
         )
 
         XCTAssertFalse(metrics.usesLandscapePageScroll)
-        XCTAssertEqual(metrics.expandedPlayerHeight, 844 * 0.6, accuracy: 0.001)
+        XCTAssertEqual(metrics.expandedPlayerHeight, 844 * 0.5, accuracy: 0.001)
         XCTAssertEqual(
             metrics.detailViewportHeight(visiblePlayerHeight: metrics.expandedPlayerHeight),
-            844 * 0.4,
+            844 * 0.5,
             accuracy: 0.001
         )
     }
@@ -77,7 +77,7 @@ final class PlayerPageLayoutTests: XCTestCase {
         XCTAssertEqual(metrics.expandedPlayerHeight, 390 * 9.0 / 16.0, accuracy: 0.001)
     }
 
-    func testIPadLandscapeDoesNotUsePhonePageScrollAndKeepsDetailVisible() {
+    func testIPadLandscapeDoesNotUsePhonePageScrollAndKeepsHalfForDetail() {
         let metrics = PlayerPageLayoutMetrics(
             viewportSize: CGSize(width: 1194, height: 834),
             interfaceIdiom: .pad,
@@ -85,10 +85,10 @@ final class PlayerPageLayoutTests: XCTestCase {
         )
 
         XCTAssertFalse(metrics.usesLandscapePageScroll)
-        XCTAssertEqual(metrics.expandedPlayerHeight, 834 * 0.6, accuracy: 0.001)
+        XCTAssertEqual(metrics.expandedPlayerHeight, 834 * 0.5, accuracy: 0.001)
         XCTAssertEqual(
             metrics.detailViewportHeight(visiblePlayerHeight: metrics.expandedPlayerHeight),
-            834 * 0.4,
+            834 * 0.5,
             accuracy: 0.001
         )
     }

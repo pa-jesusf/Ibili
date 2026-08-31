@@ -170,7 +170,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
             NSLayoutConstraint.activate([
                 canvas.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
                 canvas.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
-                canvas.topAnchor.constraint(equalTo: overlay.topAnchor),
+                canvas.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor),
                 canvas.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
             ])
             context.coordinator.danmakuCanvas = canvas
