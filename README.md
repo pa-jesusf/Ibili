@@ -21,6 +21,16 @@ Xcode 16+ recommended. iOS deployment target: 16.0.
 # → dist/Ibili-unsigned.ipa
 ```
 
+The app version is split into a marketing version and an integer build number.
+The defaults are maintained in `ios-app/project.yml`; release builds can
+override them without editing the project:
+
+```bash
+IBILI_VERSION=0.2.0 IBILI_BUILD_NUMBER=12 ./tools/build_unsigned_ipa.sh
+```
+
+The installed app exposes both values in 设置 → 关于.
+
 The script runs:
 1. `cargo build` for `aarch64-apple-ios` → `ios-app/Frameworks/IbiliCore.xcframework`
 2. `xcodegen generate` → `ios-app/Ibili.xcodeproj`

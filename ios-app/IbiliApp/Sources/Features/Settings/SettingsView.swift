@@ -329,6 +329,11 @@ struct SettingsView: View {
             } footer: {
                 Text("封面图磁盘缓存。超出上限会按最久未使用淘汰。")
             }
+
+            Section("关于") {
+                LabeledContent("版本", value: AppVersion.current.displayString)
+                    .monospacedDigit()
+            }
         }
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)

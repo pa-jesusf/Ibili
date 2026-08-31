@@ -26,6 +26,22 @@ ARCHIVE="$ROOT/build/Ibili.xcarchive"
 DIST_DIR="$ROOT/dist"
 IPA="$DIST_DIR/Ibili-unsigned.ipa"
 
+# Keep the Xcode project as the default source of version values, while
+# allowing CI/release builds to override them without editing project files.
+default_marketing_version="$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\([^"]*\)".*$/\1/p' ios-app/project.yml | head -1)"
+default_build_number="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION:[[:space:]]*"\([^"]*\)".*$/\1/p' ios-app/project.yml | head -1)"
+MARKETING_VERSION="${IBILI_VERSION:-$default_marketing_version}"
+CURRENT_PROJECT_VERSION="${IBILI_BUILD_NUMBER:-$default_build_number}"
+
+if [[ ! "$MARKETING_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+  echo "invalid marketing version: $MARKETING_VERSION (expected e.g. 0.1.0)" >&2
+  exit 2
+fi
+if [[ ! "$CURRENT_PROJECT_VERSION" =~ ^[0-9]+$ ]]; then
+  echo "invalid build number: $CURRENT_PROJECT_VERSION (expected an integer)" >&2
+  exit 2
+fi
+
 # 1. Rust core
 echo "==> step 1/4  building Rust XCFramework"
 bash "$ROOT/tools/build_rust_xcframework.sh"
@@ -40,6 +56,7 @@ fi
 
 # 3. Archive (no codesign)
 echo "==> step 3/4  xcodebuild archive (unsigned)"
+echo "    version: $MARKETING_VERSION ($CURRENT_PROJECT_VERSION)"
 rm -rf "$ARCHIVE"
 XCB_LOG="$ROOT/build/xcodebuild-archive.log"
 mkdir -p "$ROOT/build"
@@ -51,6 +68,7 @@ if command -v xcpretty >/dev/null 2>&1; then
     -skipMacroValidation \
     CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_ENTITLEMENTS="" EXPANDED_CODE_SIGN_IDENTITY="" \
+    MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
     archive | tee "$XCB_LOG" | xcpretty --color
   XCB_RC=${PIPESTATUS[0]}
 else
@@ -60,6 +78,7 @@ else
     -skipMacroValidation \
     CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_ENTITLEMENTS="" EXPANDED_CODE_SIGN_IDENTITY="" \
+    MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
     archive 2>&1 | tee "$XCB_LOG" | grep -E "^(=== |\\*\\* |error:|warning:|note:|/.*: error:|.*\\.swift:.*error)" || true
   XCB_RC=${PIPESTATUS[0]}
 fi
