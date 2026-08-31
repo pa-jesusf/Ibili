@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @StateObject private var cacheVM = ImageCacheViewModel()
     @StateObject private var cdnSpeedVM = CDNSpeedTestViewModel()
+    @StateObject private var updateChecker = AppUpdateChecker()
     @State private var showsCDNSpeedSheet = false
 
     private let columnOptions: [(label: String, value: Int)] = [
@@ -333,6 +334,37 @@ struct SettingsView: View {
             Section("关于") {
                 LabeledContent("版本", value: AppVersion.current.displayString)
                     .monospacedDigit()
+
+                Button {
+                    Task { await updateChecker.check() }
+                } label: {
+                    HStack {
+                        Label("检查更新", systemImage: "arrow.triangle.2.circlepath")
+                        Spacer()
+                        updateStatusView
+                    }
+                }
+                .disabled(updateChecker.isChecking)
+
+                if case .available(let release) = updateChecker.state {
+                    Link(destination: release.htmlURL) {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "arrow.up.right.square")
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("发现新版本 \(release.displayVersion)")
+                                    .font(.callout.weight(.semibold))
+                                if !release.notes.isEmpty {
+                                    Text(release.notes)
+                                        .font(.footnote)
+                                        .foregroundStyle(IbiliTheme.textSecondary)
+                                        .lineLimit(5)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .foregroundStyle(IbiliTheme.accent)
+                }
             }
         }
         .navigationTitle("设置")
@@ -359,6 +391,27 @@ struct SettingsView: View {
         ("1 GB", 1024),
         ("2 GB", 2048),
     ]
+
+    @ViewBuilder
+    private var updateStatusView: some View {
+        switch updateChecker.state {
+        case .idle:
+            Text("检查")
+                .foregroundStyle(IbiliTheme.textSecondary)
+        case .checking:
+            ProgressView()
+                .controlSize(.small)
+        case .upToDate:
+            Text("已是最新")
+                .foregroundStyle(IbiliTheme.textSecondary)
+        case .available:
+            Text("有新版本")
+                .foregroundStyle(IbiliTheme.accent)
+        case .failed:
+            Text("重试")
+                .foregroundStyle(IbiliTheme.textSecondary)
+        }
+    }
 
     /// One reusable settings section per card screen — keeps Home and
     /// Search visually identical in 设置 while still letting users tune

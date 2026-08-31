@@ -26,12 +26,12 @@ ARCHIVE="$ROOT/build/Ibili.xcarchive"
 DIST_DIR="$ROOT/dist"
 IPA="$DIST_DIR/Ibili-unsigned.ipa"
 
-# Keep the Xcode project as the default source of version values, while
-# allowing CI/release builds to override them without editing project files.
+# The hard-coded values in project.yml are the single release-maintenance
+# point. The script reads them so a normal build needs no extra arguments.
 default_marketing_version="$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\([^"]*\)".*$/\1/p' ios-app/project.yml | head -1)"
 default_build_number="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION:[[:space:]]*"\([^"]*\)".*$/\1/p' ios-app/project.yml | head -1)"
-MARKETING_VERSION="${IBILI_VERSION:-$default_marketing_version}"
-CURRENT_PROJECT_VERSION="${IBILI_BUILD_NUMBER:-$default_build_number}"
+MARKETING_VERSION="$default_marketing_version"
+CURRENT_PROJECT_VERSION="$default_build_number"
 
 if [[ ! "$MARKETING_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
   echo "invalid marketing version: $MARKETING_VERSION (expected e.g. 0.1.0)" >&2
