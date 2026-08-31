@@ -2033,15 +2033,42 @@ private enum PlayerSheet: String, Identifiable {
 struct PlayerPageLayoutMetrics: Equatable {
     let viewportSize: CGSize
     let interfaceIdiom: UIUserInterfaceIdiom
+    var videoSizeHint: CGSize? = nil
+
+    private var maximumInlinePlayerHeight: CGFloat {
+        max(1, viewportSize.height * 0.6)
+    }
+
+    private var minimumInlinePlayerHeight: CGFloat {
+        min(
+            maximumInlinePlayerHeight,
+            max(180, viewportSize.width * 9.0 / 32.0)
+        )
+    }
 
     var usesLandscapePageScroll: Bool {
         interfaceIdiom == .phone && viewportSize.width > viewportSize.height
     }
 
     var expandedPlayerHeight: CGFloat {
-        usesLandscapePageScroll
-            ? max(1, viewportSize.height)
-            : max(1, viewportSize.width * 9.0 / 16.0)
+        guard !usesLandscapePageScroll else {
+            return max(1, viewportSize.height)
+        }
+
+        let fallbackHeight = viewportSize.width * 9.0 / 16.0
+        guard let videoSizeHint,
+              videoSizeHint.width.isFinite,
+              videoSizeHint.height.isFinite,
+              videoSizeHint.width > 0,
+              videoSizeHint.height > 0 else {
+            return min(maximumInlinePlayerHeight, max(1, fallbackHeight))
+        }
+
+        let aspectFittedHeight = viewportSize.width * videoSizeHint.height / videoSizeHint.width
+        return min(
+            maximumInlinePlayerHeight,
+            max(minimumInlinePlayerHeight, aspectFittedHeight)
+        )
     }
 
     func detailViewportHeight(visiblePlayerHeight: CGFloat) -> CGFloat {
@@ -2532,7 +2559,8 @@ struct PlayerView: View {
         GeometryReader { proxy in
             let layoutMetrics = PlayerPageLayoutMetrics(
                 viewportSize: proxy.size,
-                interfaceIdiom: UIDevice.current.userInterfaceIdiom
+                interfaceIdiom: UIDevice.current.userInterfaceIdiom,
+                videoSizeHint: vm.currentVideoSizeHint
             )
             let playerWidth = proxy.size.width
             let expandedPlayerHeight = layoutMetrics.expandedPlayerHeight

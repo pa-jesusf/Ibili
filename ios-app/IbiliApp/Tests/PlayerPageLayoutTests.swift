@@ -17,7 +17,8 @@ final class PlayerPageLayoutTests: XCTestCase {
     func testPhonePortraitKeepsExistingFixedPlayerAndDetailViewportLayout() {
         let metrics = PlayerPageLayoutMetrics(
             viewportSize: CGSize(width: 390, height: 844),
-            interfaceIdiom: .phone
+            interfaceIdiom: .phone,
+            videoSizeHint: CGSize(width: 1920, height: 1080)
         )
         let playerHeight = 390 * 9.0 / 16.0
 
@@ -30,14 +31,66 @@ final class PlayerPageLayoutTests: XCTestCase {
         )
     }
 
-    func testIPadLandscapeDoesNotUsePhonePageScrollMode() {
+    func testPhonePortraitVerticalVideoKeepsFortyPercentForDetail() {
         let metrics = PlayerPageLayoutMetrics(
-            viewportSize: CGSize(width: 1194, height: 834),
-            interfaceIdiom: .pad
+            viewportSize: CGSize(width: 390, height: 844),
+            interfaceIdiom: .phone,
+            videoSizeHint: CGSize(width: 1080, height: 1920)
         )
 
         XCTAssertFalse(metrics.usesLandscapePageScroll)
-        XCTAssertEqual(metrics.expandedPlayerHeight, 1194 * 9.0 / 16.0, accuracy: 0.001)
+        XCTAssertEqual(metrics.expandedPlayerHeight, 844 * 0.6, accuracy: 0.001)
+        XCTAssertEqual(
+            metrics.detailViewportHeight(visiblePlayerHeight: metrics.expandedPlayerHeight),
+            844 * 0.4,
+            accuracy: 0.001
+        )
+    }
+
+    func testPhonePortraitSquareVideoUsesFullAvailableWidth() {
+        let metrics = PlayerPageLayoutMetrics(
+            viewportSize: CGSize(width: 390, height: 844),
+            interfaceIdiom: .phone,
+            videoSizeHint: CGSize(width: 1080, height: 1080)
+        )
+
+        XCTAssertEqual(metrics.expandedPlayerHeight, 390, accuracy: 0.001)
+    }
+
+    func testVeryWideVideoKeepsMinimumHeightForNativeControls() {
+        let metrics = PlayerPageLayoutMetrics(
+            viewportSize: CGSize(width: 390, height: 844),
+            interfaceIdiom: .phone,
+            videoSizeHint: CGSize(width: 3840, height: 720)
+        )
+
+        XCTAssertEqual(metrics.expandedPlayerHeight, 180, accuracy: 0.001)
+    }
+
+    func testInvalidVideoSizeFallsBackToSixteenByNine() {
+        let metrics = PlayerPageLayoutMetrics(
+            viewportSize: CGSize(width: 390, height: 844),
+            interfaceIdiom: .phone,
+            videoSizeHint: CGSize(width: 0, height: 1080)
+        )
+
+        XCTAssertEqual(metrics.expandedPlayerHeight, 390 * 9.0 / 16.0, accuracy: 0.001)
+    }
+
+    func testIPadLandscapeDoesNotUsePhonePageScrollAndKeepsDetailVisible() {
+        let metrics = PlayerPageLayoutMetrics(
+            viewportSize: CGSize(width: 1194, height: 834),
+            interfaceIdiom: .pad,
+            videoSizeHint: CGSize(width: 1080, height: 1920)
+        )
+
+        XCTAssertFalse(metrics.usesLandscapePageScroll)
+        XCTAssertEqual(metrics.expandedPlayerHeight, 834 * 0.6, accuracy: 0.001)
+        XCTAssertEqual(
+            metrics.detailViewportHeight(visiblePlayerHeight: metrics.expandedPlayerHeight),
+            834 * 0.4,
+            accuracy: 0.001
+        )
     }
 }
 
