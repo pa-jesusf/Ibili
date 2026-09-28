@@ -12,6 +12,8 @@ final class PlayerRuntimeCoordinator {
     private var pendingTeardownTokens: [PlayerSessionID: UUID] = [:]
     private var pictureInPictureRouteID: PlayerSessionID?
     private var pictureInPictureSnapshot: DeepLinkRouter.SessionSnapshot?
+    private var hasSynchronizedForegroundRoute = false
+    private var foregroundRouteID: PlayerSessionID?
 
     func viewModel(for routeID: PlayerSessionID) -> PlayerViewModel {
         cancelPendingTeardown(for: routeID)
@@ -49,9 +51,21 @@ final class PlayerRuntimeCoordinator {
         viewModel.prepareForDismissal()
     }
 
+    /// Returns whether a player route is currently allowed to claim playback
+    /// focus. Before the first route synchronization we allow activation so
+    /// initial presentation can bootstrap normally; after that, a retained
+    /// player below another route must never reactivate from a late SwiftUI
+    /// update.
+    func isForeground(routeID: PlayerSessionID) -> Bool {
+        guard hasSynchronizedForegroundRoute else { return true }
+        return foregroundRouteID == routeID
+    }
+
     func retainSessions(root: DeepLinkRouter.PlayerRoute?,
                         stack: [DeepLinkRouter.PlayerRoute],
                         foregroundRouteID: PlayerSessionID?) {
+        hasSynchronizedForegroundRoute = true
+        self.foregroundRouteID = foregroundRouteID
         var retainedIDs = Set(([root].compactMap { $0?.id }) + stack.map(\.id))
         if let pictureInPictureRouteID {
             retainedIDs.insert(pictureInPictureRouteID)

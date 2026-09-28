@@ -116,7 +116,7 @@ enum PlayerViewLifecycleController {
             animated: false
         )
         guard didBootstrap else { return }
-        viewModel.handle(.interfaceActivated)
+        viewModel.activateInterfaceIfForeground()
         if let player = viewModel.player {
             danmaku.attach(player)
         }

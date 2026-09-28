@@ -597,6 +597,14 @@ final class PlayerViewModel: ObservableObject {
         sessionID
     }
 
+    func activateInterfaceIfForeground() {
+        guard PlayerRuntimeCoordinator.shared.isForeground(routeID: sessionID) else {
+            handle(.interfaceDeactivated)
+            return
+        }
+        handle(.interfaceActivated)
+    }
+
     var shouldExposeSystemMediaSession: Bool {
         guard player != nil, nowPlayingMetadata != nil else { return false }
         if behaviorState.isInterfacePresentingPlayer {
@@ -2850,10 +2858,10 @@ struct PlayerView: View {
             // starts loading so route-to-route navigation does not
             // momentarily release the shared audio session while the
             // new AVPlayer is still buffering.
-            vm.handle(.interfaceActivated)
+            vm.activateInterfaceIfForeground()
 
             guard loadedMediaKey != mediaLoadKey || vm.player == nil else {
-                vm.handle(.interfaceActivated)
+                vm.activateInterfaceIfForeground()
                 return
             }
 
@@ -2869,7 +2877,7 @@ struct PlayerView: View {
                           cdnSelection: settings.cdnService.rawValue,
                           cacheVariant: settings.playbackCacheVariantKey(),
                           offlineOnly: offlineOnly)
-            vm.handle(.interfaceActivated)
+            vm.activateInterfaceIfForeground()
         }
         .onChange(of: vm.isVideoReady) { ready in
             guard ready else { return }
@@ -2889,7 +2897,7 @@ struct PlayerView: View {
                 subtitle.attach(p)
                 configureDanmakuSegmentObserver(for: p)
                 configureDetailTimelineObserver(for: p)
-                vm.handle(.interfaceActivated)
+                vm.activateInterfaceIfForeground()
                 if vm.isVideoReady {
                     loadPendingDanmakuIfNeeded()
                 }
