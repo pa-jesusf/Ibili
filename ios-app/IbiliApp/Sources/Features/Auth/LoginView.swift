@@ -3,67 +3,52 @@ import SwiftUI
 struct LoginView: View {
     @EnvironmentObject private var session: AppSession
     @StateObject private var vm = LoginViewModel()
-    @FocusState private var inputIsFocused: Bool
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable { case username, password, country, phone, code, cookie, riskCode }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    Text("Ibili")
-                        .font(.system(size: 44, weight: .bold, design: .rounded))
-                        .foregroundStyle(IbiliTheme.accent)
-                        .padding(.top, 32)
-                    Picker("登录方式", selection: Binding(get: { vm.method }, set: {
-                        inputIsFocused = false
-                        vm.select($0)
-                    })) {
-                        ForEach(LoginMethod.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(vm.isSendingSMS)
-                    .accessibilityLabel("登录方式")
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(spacing: 28) {
+                        brand
+                            .padding(.top, min(44, max(24, geometry.size.height * 0.05)))
 
-                    GlassSurface(cornerRadius: 20) {
-                        VStack(spacing: 20) {
+                        IbiliSegmentedTabs(tabs: LoginMethod.allCases, title: { $0.rawValue },
+                            selection: Binding(get: { vm.method }, set: {
+                                focusedField = nil
+                                vm.select($0)
+                            }))
+                            .disabled(vm.isSendingSMS)
+                            .accessibilityLabel("登录方式")
+
+                        VStack(spacing: 22) {
                             if let risk = vm.phoneRisk {
                                 riskForm(risk)
                             } else {
                                 loginForm
+                                primaryAction(vm.method == .qr ? "刷新二维码" : "登录") {
+                                    submit()
+                                }
                             }
                             if let message = vm.message {
-                                Text(message).font(.footnote).foregroundStyle(.secondary)
+                                Text(message)
+                                    .font(.callout).foregroundStyle(.secondary)
                                     .multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
-                            if vm.isBusy { ProgressView("正在处理…") }
                         }
-                        .padding(24)
                     }
-
-                    if vm.phoneRisk == nil {
-                        Button {
-                            inputIsFocused = false
-                            vm.submit()
-                        } label: {
-                            Text(vm.method == .qr ? "刷新二维码" : "登录")
-                                .frame(maxWidth: .infinity).padding(.vertical, 8)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(vm.isBusy)
-
-                        Text(privacyNote)
-                            .font(.footnote).foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
+                    .frame(maxWidth: 420)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 32)
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: 440)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 32)
-                .frame(maxWidth: .infinity)
+                .scrollDismissesKeyboard(.interactively)
             }
-            .scrollDismissesKeyboard(.interactively)
             .background(IbiliTheme.background.ignoresSafeArea())
-            .navigationTitle("登录")
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             .tint(IbiliTheme.accent)
         }
         .onAppear {
@@ -73,84 +58,201 @@ struct LoginView: View {
         .onDisappear { vm.cancel() }
         .sheet(item: Binding(get: { vm.captcha }, set: { if $0 == nil { vm.cancelCaptcha() } })) { challenge in
             LoginCaptchaView(challenge: challenge, onSuccess: vm.completeCaptcha, onCancel: vm.cancelCaptcha)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
+    }
+
+    private var brand: some View {
+        VStack(spacing: 14) {
+            GlassSurface(cornerRadius: 22) {
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(IbiliTheme.accent)
+                    .frame(width: 72, height: 72)
+            }
+            Text("Ibili")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Ibili 登录")
     }
 
     @ViewBuilder
     private var loginForm: some View {
         switch vm.method {
         case .qr:
-            Text("使用哔哩哔哩 App 扫码登录").font(.headline)
-            qrCodeBlock
-        case .password:
-            Text("账号密码登录").font(.headline)
-            TextField("邮箱 / 手机号", text: $vm.username)
-                .textContentType(.username).keyboardType(.emailAddress)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder).focused($inputIsFocused).disabled(vm.isBusy)
-            SecureField("密码", text: $vm.password)
-                .textContentType(.password).textFieldStyle(.roundedBorder)
-                .focused($inputIsFocused).disabled(vm.isBusy)
-            Link("忘记密码？", destination: URL(string: "https://passport.bilibili.com/h5-app/passport/login/findPassword")!)
-                .font(.footnote)
-        case .sms:
-            Text("短信验证码登录").font(.headline)
-            HStack {
-                Text("+")
-                TextField("区号", text: $vm.countryCode)
-                    .frame(width: 60).keyboardType(.numberPad)
-                    .accessibilityLabel("国际区号")
-                TextField("手机号", text: $vm.phone)
-                    .textContentType(.telephoneNumber).keyboardType(.phonePad)
+            VStack(spacing: 20) {
+                Text("扫码登录").font(.title3.weight(.semibold))
+                qrCodeBlock
             }
-            .textFieldStyle(.roundedBorder).focused($inputIsFocused).disabled(vm.isBusy)
-            TextField("短信验证码", text: $vm.smsCode)
-                .textContentType(.oneTimeCode).keyboardType(.numberPad)
-                .textFieldStyle(.roundedBorder).focused($inputIsFocused).disabled(vm.isBusy)
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let remaining = vm.smsCooldownRemaining(at: context.date)
-                Button(remaining > 0 ? "\(remaining) 秒后重新获取" : "获取验证码") {
-                    inputIsFocused = false
-                    vm.sendSMS()
+            .frame(maxWidth: .infinity)
+        case .password:
+            VStack(spacing: 14) {
+                inputGroup {
+                    inputRow(symbol: "person", field: .username) {
+                        TextField("邮箱 / 手机号", text: $vm.username)
+                            .textContentType(.username).keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .focused($focusedField, equals: .username)
+                            .submitLabel(.next).onSubmit { focusedField = .password }
+                    }
+                    inputDivider
+                    inputRow(symbol: "lock", field: .password) {
+                        SecureField("密码", text: $vm.password)
+                            .textContentType(.password)
+                            .focused($focusedField, equals: .password)
+                            .submitLabel(.go).onSubmit(submit)
+                    }
                 }
-                .buttonStyle(.bordered).disabled(vm.isBusy || remaining > 0)
+                Link("忘记密码？", destination: URL(string: "https://passport.bilibili.com/h5-app/passport/login/findPassword")!)
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .trailing)
+            }
+        case .sms:
+            inputGroup {
+                inputRow(symbol: "iphone", field: .phone) {
+                    HStack(spacing: 10) {
+                        HStack(spacing: 2) {
+                            Text("+").foregroundStyle(.secondary)
+                            TextField("86", text: $vm.countryCode)
+                                .keyboardType(.numberPad)
+                                .focused($focusedField, equals: .country)
+                                .accessibilityLabel("国际区号")
+                        }
+                        .frame(width: 60)
+                        Divider().frame(height: 22)
+                        TextField("手机号", text: $vm.phone)
+                            .textContentType(.telephoneNumber).keyboardType(.phonePad)
+                            .focused($focusedField, equals: .phone)
+                    }
+                }
+                inputDivider
+                inputRow(symbol: "number", field: .code) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 12) { smsCodeField; smsButton }
+                        VStack(alignment: .leading, spacing: 12) { smsCodeField; smsButton }
+                    }
+                }
             }
         case .cookie:
-            Text("Cookie 登录").font(.headline)
-            Text("从你自己的哔哩哔哩登录会话导入，至少包含 SESSDATA；建议包含 bili_jct 和 DedeUserID。")
-                .font(.footnote).foregroundStyle(.secondary)
-            TextEditor(text: $vm.cookie)
-                .font(.system(.footnote, design: .monospaced))
-                .frame(minHeight: 150).scrollContentBackground(.hidden)
-                .padding(8).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .focused($inputIsFocused).disabled(vm.isBusy)
-                .privacySensitive().accessibilityLabel("Cookie")
+            inputGroup {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Cookie", systemImage: "key.horizontal")
+                        .font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                    ZStack(alignment: .topLeading) {
+                        if vm.cookie.isEmpty {
+                            Text("粘贴 Cookie")
+                                .foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5)
+                                .allowsHitTesting(false)
+                        }
+                        TextEditor(text: $vm.cookie)
+                            .frame(minHeight: 150).scrollContentBackground(.hidden)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .focused($focusedField, equals: .cookie)
+                            .privacySensitive().accessibilityLabel("Cookie")
+                    }
+                    .font(.system(.body, design: .monospaced))
+                }
+                .padding(20)
+            }
+        }
+    }
+
+    private var smsCodeField: some View {
+        TextField("验证码", text: $vm.smsCode)
+            .textContentType(.oneTimeCode).keyboardType(.numberPad)
+            .focused($focusedField, equals: .code)
+            .frame(minWidth: 72)
+    }
+
+    private var smsButton: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let remaining = vm.smsCooldownRemaining(at: context.date)
+            Button(remaining > 0 ? "\(remaining) 秒后重发" : "获取验证码") {
+                focusedField = nil
+                vm.sendSMS()
+            }
+            .font(.subheadline.weight(.semibold)).monospacedDigit()
+            .buttonStyle(.plain).foregroundStyle(IbiliTheme.accent)
+            .fixedSize().frame(minHeight: 44)
+            .disabled(vm.isBusy || remaining > 0)
+            .opacity(vm.isBusy || remaining > 0 ? 0.5 : 1)
         }
     }
 
     private func riskForm(_ risk: LoginPhoneRisk) -> some View {
-        VStack(spacing: 16) {
-            Text("验证绑定手机号").font(.headline)
-            Text(risk.phone).font(.title3)
-            TextField("安全验证短信", text: $vm.riskCode)
-                .textContentType(.oneTimeCode).keyboardType(.numberPad)
-                .textFieldStyle(.roundedBorder).focused($inputIsFocused).disabled(vm.isBusy)
+        VStack(spacing: 22) {
+            VStack(spacing: 8) {
+                Text("验证绑定手机号").font(.title3.weight(.semibold))
+                Text(risk.phone).font(.title2.monospacedDigit())
+            }
+            inputGroup {
+                inputRow(symbol: "lock.shield", field: .riskCode) {
+                    TextField("短信验证码", text: $vm.riskCode)
+                        .textContentType(.oneTimeCode).keyboardType(.numberPad)
+                        .focused($focusedField, equals: .riskCode)
+                }
+            }
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let remaining = vm.riskCooldownRemaining(at: context.date)
                 Button(remaining > 0 ? "\(remaining) 秒后重新获取" : "获取安全验证短信") {
-                    inputIsFocused = false
+                    focusedField = nil
                     vm.sendRiskSMS()
                 }
-                .buttonStyle(.bordered).disabled(vm.isBusy || remaining > 0)
+                .font(.subheadline.weight(.medium)).monospacedDigit()
+                .frame(minHeight: 44).disabled(vm.isBusy || remaining > 0)
             }
-            Button("验证并登录") { inputIsFocused = false; vm.verifyRiskSMS() }
-                .buttonStyle(.borderedProminent).disabled(vm.isBusy)
+            primaryAction("验证并登录") { focusedField = nil; vm.verifyRiskSMS() }
             Button("取消验证", action: vm.cancelRiskVerification)
-                .font(.footnote)
-                .disabled(vm.isSendingSMS)
+                .font(.subheadline).frame(minHeight: 44).disabled(vm.isSendingSMS)
         }
+    }
+
+    private func inputGroup<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
+        GlassSurface(cornerRadius: 24) {
+            VStack(spacing: 0, content: content)
+                .frame(maxWidth: .infinity)
+                .textFieldStyle(.plain)
+                .disabled(vm.isBusy)
+        }
+    }
+
+    private func inputRow<Content: View>(symbol: String, field: Field, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .font(.body.weight(.medium))
+                .foregroundStyle(focusedField == field ? IbiliTheme.accent : IbiliTheme.textSecondary)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            content().font(.body)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+        .frame(minHeight: 62)
+    }
+
+    private var inputDivider: some View {
+        Divider().padding(.leading, 56).padding(.trailing, 20)
+    }
+
+    private func primaryAction(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if vm.isBusy { ProgressView().tint(.white) }
+                Text(title).font(.headline)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+        .disabled(vm.isBusy)
+    }
+
+    private func submit() {
+        focusedField = nil
+        vm.submit()
     }
 
     @ViewBuilder
@@ -160,16 +262,16 @@ struct LoginView: View {
             ProgressView().frame(width: 220, height: 220)
         case .waiting(let url), .scanned(let url):
             QRCodeImage(payload: url)
-                .frame(width: 220, height: 220).padding(8)
-                .background(.white, in: RoundedRectangle(cornerRadius: 12))
-            Text(isScanned ? "已扫码，请在手机上确认" : "等待扫码")
+                .frame(width: 204, height: 204).padding(18)
+                .background(.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            Text(isScanned ? "已扫码，请在手机上确认" : "使用哔哩哔哩 App 扫码")
                 .font(.subheadline).foregroundStyle(.secondary)
         case .expired:
             Label("二维码已过期，请刷新", systemImage: "arrow.clockwise.circle")
-                .frame(minHeight: 180)
+                .frame(minHeight: 220)
         case .failed(let message):
-            Text(message).font(.footnote).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).frame(minHeight: 180)
+            Text(message).font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).frame(minHeight: 220)
         case .success:
             Label("登录成功", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         }
@@ -178,14 +280,5 @@ struct LoginView: View {
     private var isScanned: Bool {
         if case .scanned = vm.state { return true }
         return false
-    }
-
-    private var privacyNote: String {
-        switch vm.method {
-        case .password: return "密码使用哔哩哔哩提供的公钥在本地加密后传输，不保存账号密码；仅保存登录凭证。"
-        case .sms: return "手机号和验证码仅用于哔哩哔哩登录接口，不予保存。国际区号可直接修改。"
-        case .cookie: return "Cookie 等同于账号凭证，请勿分享给他人。Cookie 登录不含 App access_token，部分 App 专属功能可能不可用。"
-        case .qr: return "登录凭证仅保存在本机，请从可信渠道安装 Ibili。"
-        }
     }
 }
