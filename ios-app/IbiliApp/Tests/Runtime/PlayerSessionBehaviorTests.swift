@@ -113,6 +113,20 @@ final class PlayerSessionBehaviorTests: XCTestCase {
         )
     }
 
+    func testPlayingSourceProbesAfterShortRecoveryWindow() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+
+        XCTAssertEqual(
+            state.systemTransitionRecoveryAction(
+                inactiveDuration: 2.1,
+                engineIsAlive: true,
+                sourceIsOffline: false
+            ),
+            .verifyPlaybackProgress
+        )
+    }
+
     func testExplicitPlaybackIntentChangeUpdatesDesiredCommand() {
         var state = PlayerSessionBehaviorState()
 

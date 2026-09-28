@@ -129,6 +129,7 @@ final class PlayerViewModel: ObservableObject {
     private var transientPauseSuppressionContext: PlayerTransientPauseSuppressionContext?
     private var pausedForDetailCollapseConfirmationWork: DispatchWorkItem?
     private var isClosing = false
+    private var systemTransitionExpectedToResume = false
     private var dismissalFadeTask: Task<Void, Never>?
     private var audioVolumeRampTask: Task<Void, Never>?
     private var playbackRateReapplyTask: Task<Void, Never>?
@@ -492,6 +493,9 @@ final class PlayerViewModel: ObservableObject {
             break
         case .playbackIntentChanged(.pause):
             endTemporarySpeedBoost()
+            if behaviorState.isSystemTransitionActive {
+                systemTransitionExpectedToResume = false
+            }
         case .observedTimeControlStatus(.paused):
             endTemporarySpeedBoost()
         case .interfaceDeactivated,
@@ -651,13 +655,22 @@ final class PlayerViewModel: ObservableObject {
 
     func beginSystemTransition() {
         guard !isClosing else { return }
+        systemTransitionExpectedToResume = shouldHoldAudioSession
         endTemporarySpeedBoost()
         handle(.systemTransitionChanged(true))
     }
 
     func completeSystemTransition() {
         guard !isClosing else { return }
+        let expectedToResume = systemTransitionExpectedToResume
+        systemTransitionExpectedToResume = false
         handle(.systemTransitionChanged(false))
+        if expectedToResume {
+            // A late AVPlayer `.paused` observation can arrive just after the
+            // system transition ends. Restore the intent captured on entry
+            // before the recovery probe evaluates whether playback is alive.
+            handle(.playbackIntentChanged(.play))
+        }
         reapplyPlaybackRateAfterLifecycleTransition(trigger: "system-transition-complete")
     }
 
@@ -684,6 +697,14 @@ final class PlayerViewModel: ObservableObject {
         }
 
         let trackedItem = trackedPlayer.currentItem
+        if trackedItem?.status == .failed {
+            AppLog.warning("player", "前台恢复发现播放项已失败，立即刷新播放源", metadata: [
+                "trigger": trigger,
+                "inactiveMs": String(Int(inactiveDuration * 1000)),
+            ])
+            await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-item-failed")
+            return
+        }
         let baselineSeconds = trackedPlayer.currentTime().seconds
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         guard !Task.isCancelled,

@@ -52,7 +52,7 @@ enum PlayerSessionEvent: Equatable {
 }
 
 struct PlayerSessionBehaviorState: Equatable {
-    private static let playingRecoveryProbeDelay: TimeInterval = 6
+    private static let playingRecoveryProbeDelay: TimeInterval = 2
     private static let pausedSourceRebuildDelay: TimeInterval = 30
 
     private(set) var intent: PlayerIntent = .play
@@ -65,6 +65,10 @@ struct PlayerSessionBehaviorState: Equatable {
 
     var isInterfacePresentingPlayer: Bool {
         interfaceIsActive || pictureInPictureIsActive
+    }
+
+    var isSystemTransitionActive: Bool {
+        systemTransitionIsActive
     }
 
     var shouldHoldAudioSession: Bool {
