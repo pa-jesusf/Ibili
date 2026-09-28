@@ -250,8 +250,17 @@ struct HistoryListView: View {
                 if displayedItems.isEmpty && displayedIsLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if displayedItems.isEmpty {
-                    emptyState(title: isSearching ? "没有搜索结果" : "暂无观看记录", symbol: "clock")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ScrollView {
+                        emptyState(title: isSearching ? "没有搜索结果" : "暂无观看记录", symbol: "clock")
+                            .frame(maxWidth: .infinity, minHeight: 320)
+                    }
+                    .refreshable {
+                        if isSearching {
+                            await vm.search(keyword: normalizedProfileSearchQuery(searchText))
+                        } else {
+                            await vm.reload()
+                        }
+                    }
                 } else {
                     ProfileVideoListSurface(
                         items: displayedItems,
@@ -263,6 +272,15 @@ struct HistoryListView: View {
                                     await vm.loadMoreSearch(keyword: normalizedProfileSearchQuery(searchText))
                                 } else {
                                     await vm.loadMore()
+                                }
+                            }
+                        },
+                        onRefresh: {
+                            Task {
+                                if isSearching {
+                                    await vm.search(keyword: normalizedProfileSearchQuery(searchText))
+                                } else {
+                                    await vm.reload()
                                 }
                             }
                         },
@@ -354,6 +372,11 @@ final class HistoryListViewModel: ObservableObject {
     func loadMore() async {
         guard !isLoading, !isEnd else { return }
         await fetch(reset: false)
+    }
+
+    func reload() async {
+        guard !isLoading else { return }
+        await fetch(reset: true)
     }
 
     private func fetch(reset: Bool) async {
@@ -587,8 +610,11 @@ struct FavoritesFolderListView: View {
                 } else if folders.isEmpty && isLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if filteredFolders.isEmpty {
-                    emptyState(title: "暂无收藏夹", symbol: "star")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ScrollView {
+                        emptyState(title: "暂无收藏夹", symbol: "star")
+                            .frame(maxWidth: .infinity, minHeight: 320)
+                    }
+                    .refreshable { await reloadFolders() }
                 } else {
                     List {
                         ForEach(filteredFolders) { folder in
@@ -616,6 +642,9 @@ struct FavoritesFolderListView: View {
                     }
                     .listStyle(.insetGrouped)
                     .scrollContentBackground(.hidden)
+                    .refreshable {
+                        await reloadFolders()
+                    }
                 }
             }
         }
@@ -655,6 +684,19 @@ struct FavoritesFolderListView: View {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
             await searchVM.search(folderId: defaultFolderID, keyword: keyword, allFolders: true)
+        }
+    }
+
+    private func reloadFolders() async {
+        guard !isLoading else { return }
+        isLoading = true
+        let result: [FavFolderInfoDTO] = await Task.detached { [mid] in
+            (try? CoreClient.shared.favFolders(rid: 0, upMid: mid)) ?? []
+        }.value
+        folders = result
+        isLoading = false
+        if isSearching, defaultSearchFolderID > 0 {
+            await searchVM.search(folderId: defaultSearchFolderID, keyword: normalizedProfileSearchQuery(searchText), allFolders: true)
         }
     }
 }
@@ -735,8 +777,16 @@ struct FavoriteResourcesView: View {
                 if vm.items.isEmpty && vm.isLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if vm.items.isEmpty {
-                    emptyState(title: isSearching ? "没有搜索结果" : "收藏夹是空的", symbol: "star")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ScrollView {
+                        emptyState(title: isSearching ? "没有搜索结果" : "收藏夹是空的", symbol: "star")
+                            .frame(maxWidth: .infinity, minHeight: 320)
+                    }
+                    .refreshable {
+                        await vm.reload(
+                            folderId: folderId,
+                            keyword: normalizedProfileSearchQuery(searchText)
+                        )
+                    }
                 } else {
                     ProfileVideoListSurface(
                         items: vm.items,
@@ -745,6 +795,14 @@ struct FavoriteResourcesView: View {
                         onReachEnd: {
                             Task {
                                 await vm.loadMore(
+                                    folderId: folderId,
+                                    keyword: normalizedProfileSearchQuery(searchText)
+                                )
+                            }
+                        },
+                        onRefresh: {
+                            Task {
+                                await vm.reload(
                                     folderId: folderId,
                                     keyword: normalizedProfileSearchQuery(searchText)
                                 )
@@ -818,6 +876,15 @@ final class FavoriteResourcesViewModel: ObservableObject {
     func loadMore(folderId: Int64, keyword rawKeyword: String = "") async {
         guard !isLoading, !isEnd else { return }
         await fetch(folderId: folderId, keyword: normalizedProfileSearchQuery(rawKeyword))
+    }
+
+    func reload(folderId: Int64, keyword rawKeyword: String = "") async {
+        guard !isLoading else { return }
+        keyword = normalizedProfileSearchQuery(rawKeyword)
+        page = 1
+        isEnd = false
+        items.removeAll()
+        await fetch(folderId: folderId, keyword: keyword)
     }
 
     func loadMore(folderId: Int64, keyword rawKeyword: String = "", allFolders: Bool) async {
