@@ -35,6 +35,17 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
 }
 
 enum PlayerResumePolicy {
+    static func isMediaReplacement(from previous: FeedItemDTO?, to next: FeedItemDTO) -> Bool {
+        guard let previous else { return false }
+        if previous.cid != next.cid { return true }
+        if previous.aid > 0, next.aid > 0, previous.aid != next.aid { return true }
+        if !previous.bvid.isEmpty, !next.bvid.isEmpty, previous.bvid != next.bvid { return true }
+        if previous.epID != next.epID || previous.seasonID != next.seasonID || previous.isPGC != next.isPGC {
+            return true
+        }
+        return false
+    }
+
     static func isPartSwitch(from previous: FeedItemDTO?, to next: FeedItemDTO) -> Bool {
         guard let previous,
               previous.aid == next.aid,
@@ -55,7 +66,7 @@ enum PlayerResumePolicy {
         if let explicitMilliseconds {
             return max(0, explicitMilliseconds)
         }
-        if isPartSwitch(from: previous, to: next) {
+        if isMediaReplacement(from: previous, to: next) {
             return serverCid == next.cid ? max(0, serverMilliseconds) : 0
         }
         if serverCid == 0 || serverCid == next.cid {
