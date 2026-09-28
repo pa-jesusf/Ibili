@@ -826,7 +826,7 @@ final class PlayerViewModel: ObservableObject {
         ])
         playbackRateReapplyTask = Task { @MainActor [weak self, weak expectedPlayer] in
             guard let self, let expectedPlayer else { return }
-            for delay in [0.05, 0.20] {
+            for delay in [0.05, 0.20, 0.50, 1.00] {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 guard !Task.isCancelled,
                       !self.isClosing,
@@ -1215,6 +1215,12 @@ final class PlayerViewModel: ObservableObject {
                 // pause icon with no advancing playhead.
                 restartCurrentItem()
                 return
+            }
+            if status == .playing, let observedPlayer {
+                // AVKit may restore the item at its default 1x rate after
+                // fullscreen dismissal. This callback is the first reliable
+                // point where assigning `rate` is guaranteed to take effect.
+                applyRate(to: observedPlayer)
             }
         }
         handle(.observedTimeControlStatus(status))
