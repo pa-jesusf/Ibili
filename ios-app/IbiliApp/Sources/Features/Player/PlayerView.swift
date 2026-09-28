@@ -129,11 +129,10 @@ final class PlayerViewModel: ObservableObject {
     private var heartbeatObserverToken: Any?
     /// End-of-item observer token that sends the terminal heartbeat.
     private var heartbeatEndObserverToken: NSObjectProtocol?
+    private var heartbeatPlayer: AVPlayer?
+    private var heartbeatSession: PlayerHeartbeatSession?
     /// End-of-item observer token driving local completion behavior.
     private var playbackCompletionObserverToken: NSObjectProtocol?
-    /// Last reported playhead second — heartbeat skips repeats so we
-    /// don't spam the API when paused.
-    private var lastHeartbeatSec: Int64 = -1
     private var itemStatusObservation: NSKeyValueObservation?
     /// Snapshot of the most recent `load(...)` arguments, used by
     /// `reload()` to recover after the local proxy has been killed by
@@ -260,7 +259,7 @@ final class PlayerViewModel: ObservableObject {
         cacheVariant: String = MediaCDNService.auto.rawValue,
         offlineOnly: Bool = false
     ) async {
-        guard !isClosing else { return }
+        guard !isClosing, !Task.isCancelled else { return }
         // Some entry points (notably the search results grid) hand us
         // a `FeedItemDTO` with `cid == 0` because the upstream
         // search-by-type endpoint omits cids. Resolve it via the view
@@ -271,13 +270,13 @@ final class PlayerViewModel: ObservableObject {
             do {
                 item = try await resolvePlayableItemIfNeeded(item)
             } catch {
-                guard !isClosing else { return }
+                guard !isClosing, !Task.isCancelled else { return }
                 isLoading = false
                 errorText = "无法解析视频信息: \((error as NSError).localizedDescription)"
                 return
             }
         }
-        guard !isClosing else { return }
+        guard !isClosing, !Task.isCancelled else { return }
         if player != nil, aid == item.aid, cid == item.cid {
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
                 "aid": String(item.aid),
@@ -294,6 +293,8 @@ final class PlayerViewModel: ObservableObject {
         let previousItem = lastLoadedItem
         let isSameVideo = (previousItem?.aid == item.aid && previousItem?.cid == item.cid)
         let isPartSwitch = PlayerResumePolicy.isPartSwitch(from: previousItem, to: item)
+        // Flush the outgoing playhead before publishing the next media identity.
+        stopHeartbeat()
         aid = item.aid; cid = item.cid
         bvid = item.bvid
         lastLoadedItem = item
@@ -310,7 +311,6 @@ final class PlayerViewModel: ObservableObject {
             isCurrentSourceOffline = false
             didAttemptAVCRecovery = false
             pageCache.clearMediaData()
-            stopHeartbeat()
             // Switching to a different video/part inside the same
             // route should always auto-play the replacement source.
             // Do this before we tear the old player down so the audio
@@ -340,9 +340,6 @@ final class PlayerViewModel: ObservableObject {
         availableSubtitles = []
         viewPoints = []
         itemStatusObservation = nil
-        if isSameVideo {
-            stopHeartbeat()
-        }
         AppLog.info("player", "开始加载播放器", metadata: [
             "aid": String(item.aid),
             "cid": String(item.cid),
@@ -472,7 +469,7 @@ final class PlayerViewModel: ObservableObject {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
         } catch {
-            guard !isClosing else { return }
+            guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             errorText = error.localizedDescription
             AppLog.error("player", "播放器加载失败", error: error, metadata: [
                 "aid": String(item.aid),
@@ -934,6 +931,7 @@ final class PlayerViewModel: ObservableObject {
             "toQn": String(qn),
         ])
         do {
+            stopHeartbeat()
             // Detach the active item and its KVO BEFORE tearing the
             // proxy down. Otherwise the old item's resource loader
             // starts getting 404s the instant the token is gone, the
@@ -972,8 +970,8 @@ final class PlayerViewModel: ObservableObject {
             } else {
                 info = try await fetchPlayUrl(aid: aid, cid: cid, qn: qn)
             }
-            rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            rememberPlayURL(info)
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else {
                 prep.release()
@@ -982,12 +980,17 @@ final class PlayerViewModel: ObservableObject {
             if let item = lastLoadedItem {
                 applyPresentationMetadata(to: prep.item, for: item)
             }
+            // Another source switch may have completed while this request awaited.
+            // Retire its observers at the actual replacement boundary as well.
+            stopHeartbeat()
             activePreparation = prep
             rememberActivePlayURL(info)
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
             observePlaybackCompletion(for: player)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard isCurrentLoad(generation, aid: aid, cid: cid),
+                  self.player === player, player.currentItem === prep.item else { return }
             applyRate(to: player)
             applyPlaybackIntent(to: player)
             self.availableQualities = normalizedQualities(from: info)
@@ -1012,7 +1015,7 @@ final class PlayerViewModel: ObservableObject {
                 AppLog.warning("player", "core 返回调试信息", metadata: ["detail": msg])
             }
         } catch {
-            guard !isClosing else { return }
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             errorText = error.localizedDescription
             AppLog.error("player", "清晰度切换失败", error: error, metadata: [
                 "aid": String(aid),
@@ -1369,48 +1372,46 @@ final class PlayerViewModel: ObservableObject {
     /// — that's how the cloud "history / 继续观看" works.
     private func startHeartbeatIfNeeded() {
         guard !isCurrentSourceOffline else { return }
-        guard let player, heartbeatObserverToken == nil else { return }
-        guard lastLoadedItem?.isPGC != true else { return }
+        guard let player, let item = player.currentItem, heartbeatSession == nil else { return }
+        guard aid > 0, cid > 0, lastLoadedItem?.isPGC != true else { return }
         let interval = CMTime(seconds: 15, preferredTimescale: 1)
-        let aidSnap = aid
-        let bvidSnap = bvid
-        let cidSnap = cid
+        let session = PlayerHeartbeatSession(
+            aid: aid, bvid: bvid, cid: cid,
+            currentPosition: { [weak player, weak item] in
+                guard let player, let item, player.currentItem === item else { return nil }
+                return CMTimeGetSeconds(player.currentTime())
+            },
+            send: { report in
+                Task.detached(priority: .background) {
+                    try? CoreClient.shared.archiveHeartbeat(
+                        aid: report.aid, bvid: report.bvid, cid: report.cid,
+                        playedSeconds: report.playedSeconds
+                    )
+                }
+            }
+        )
+        heartbeatSession = session
+        heartbeatPlayer = player
         heartbeatObserverToken = player.addPeriodicTimeObserver(
             forInterval: interval, queue: .main
-        ) { [weak self] time in
-            guard let self else { return }
-            // Only beat while actually playing — paused users don't
-            // want their saved position racing forward.
-            guard self.player?.timeControlStatus == .playing else { return }
-            let sec = Int64(CMTimeGetSeconds(time))
-            guard sec >= 0, sec != self.lastHeartbeatSec else { return }
-            self.lastHeartbeatSec = sec
-            Task.detached(priority: .background) {
-                try? CoreClient.shared.archiveHeartbeat(
-                    aid: aidSnap, bvid: bvidSnap, cid: cidSnap, playedSeconds: sec
-                )
+        ) { [weak player, weak item] time in
+            MainActor.assumeIsolated {
+                guard let player, let item, player.currentItem === item,
+                      player.timeControlStatus == .playing else { return }
+                session.report(seconds: CMTimeGetSeconds(time))
             }
         }
         // Also send a final heartbeat when the item finishes naturally
         // — keeps the cloud history in sync with "watched to end" so
         // the user doesn't get re-prompted to resume next time.
-        if let token = heartbeatEndObserverToken {
-            NotificationCenter.default.removeObserver(token)
-            heartbeatEndObserverToken = nil
-        }
-        if let item = player.currentItem {
-            heartbeatEndObserverToken = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime,
-                object: item,
-                queue: .main
-            ) { [weak self] _ in
-                guard let self else { return }
-                let sec = Int64(CMTimeGetSeconds(item.duration))
-                Task.detached(priority: .background) {
-                    try? CoreClient.shared.archiveHeartbeat(
-                        aid: aidSnap, bvid: bvidSnap, cid: cidSnap, playedSeconds: sec
-                    )
-                }
+        heartbeatEndObserverToken = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak player, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let player, let item, player.currentItem === item else { return }
+                session.report(seconds: CMTimeGetSeconds(item.duration))
             }
         }
     }
@@ -1419,27 +1420,19 @@ final class PlayerViewModel: ObservableObject {
     /// and `deinit` so a stale closure can't keep firing on the next
     /// video.
     private func stopHeartbeat() {
+        // The final sample and tokens belong to the source that installed them,
+        // never to whichever video the route currently selects.
+        heartbeatSession?.finish()
+        heartbeatSession = nil
         if let token = heartbeatObserverToken {
-            player?.removeTimeObserver(token)
+            heartbeatPlayer?.removeTimeObserver(token)
             heartbeatObserverToken = nil
         }
         if let token = heartbeatEndObserverToken {
             NotificationCenter.default.removeObserver(token)
             heartbeatEndObserverToken = nil
         }
-        // Best-effort terminal beat for the *just-stopped* video so the
-        // cloud history matches the actual stop position even if the
-        // user dismissed without finishing.
-        if !isCurrentSourceOffline, aid > 0, cid > 0, let position = player?.currentTime() {
-            let sec = Int64(CMTimeGetSeconds(position))
-            let aidSnap = aid, bvidSnap = bvid, cidSnap = cid
-            Task.detached(priority: .background) {
-                try? CoreClient.shared.archiveHeartbeat(
-                    aid: aidSnap, bvid: bvidSnap, cid: cidSnap, playedSeconds: sec
-                )
-            }
-        }
-        lastHeartbeatSec = -1
+        heartbeatPlayer = nil
     }
 
     private func loadOfflineSource(
@@ -1505,10 +1498,14 @@ final class PlayerViewModel: ObservableObject {
     /// generation guard ensures stale loads (rapid quality switches /
     /// dismissals) cannot resurrect a closed player.
     private func observeItemStatus(_ item: AVPlayerItem, generation: UInt64) {
-        itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+        itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, change in
+            // Keep this event's status: a queued .unknown event must not become
+            // a second .readyToPlay handler while the first one is seeking.
+            let status = change.newValue ?? item.status
             Task { @MainActor in
-                guard let self, !self.isClosing, self.loadGeneration == generation else { return }
-                switch item.status {
+                guard let self, !self.isClosing, self.loadGeneration == generation,
+                      let player = self.player, player.currentItem === item else { return }
+                switch status {
                 case .readyToPlay:
                     self.isPlaybackCompleted = false
                     self.isVideoReady = true
@@ -1528,17 +1525,21 @@ final class PlayerViewModel: ObservableObject {
                             ? resumeSec
                             : 0
                         let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
-                        Task { @MainActor in
-                            guard !self.isClosing, self.loadGeneration == generation else { return }
-                            await self.player?.seek(
-                                to: target,
-                                toleranceBefore: .zero,
-                                toleranceAfter: targetSeconds > 0 ? .init(seconds: 1, preferredTimescale: 600) : .zero
-                            )
-                            AppLog.info("player", targetSeconds > 0 ? "已跳转到云端记录进度" : "已将新媒体进度归零", metadata: [
-                                "resumeMs": String(ms),
-                            ])
-                        }
+                        let finished = await player.seek(
+                            to: target,
+                            toleranceBefore: .zero,
+                            toleranceAfter: targetSeconds > 0 ? .init(seconds: 1, preferredTimescale: 600) : .zero
+                        )
+                        guard !self.isClosing, self.loadGeneration == generation,
+                              self.player === player, player.currentItem === item else { return }
+                        AppLog.info("player", "新媒体初始进度定位完成", metadata: [
+                            "aid": String(self.aid),
+                            "cid": String(self.cid),
+                            "requestedResumeMs": String(ms),
+                            "targetSeconds": String(targetSeconds),
+                            "actualSeconds": String(CMTimeGetSeconds(player.currentTime())),
+                            "finished": String(finished),
+                        ])
                     }
                     self.startHeartbeatIfNeeded()
                     self.refreshSystemMediaSession()
@@ -1676,7 +1677,6 @@ final class PlayerViewModel: ObservableObject {
                 codecPreference: codecPreference
             )
         }.value
-        rememberPlayURL(info)
         return info
     }
 
@@ -1709,7 +1709,6 @@ final class PlayerViewModel: ObservableObject {
                 codecPreference: codecPreference
             )
         }.value
-        rememberPlayURL(info)
         return info
     }
 
@@ -1831,9 +1830,11 @@ final class PlayerViewModel: ObservableObject {
             }
 
             await targetPlayer.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+            previousPreparation?.release()
+            guard isCurrentLoad(generation, aid: aid, cid: cid),
+                  self.player === targetPlayer, targetPlayer.currentItem === prep.item else { return true }
             applyRate(to: targetPlayer)
             applyPlaybackIntent(to: targetPlayer)
-            previousPreparation?.release()
             refreshSystemMediaSession()
 
             AppLog.info("player", "播放页缓存恢复成功", metadata: [
@@ -1846,7 +1847,7 @@ final class PlayerViewModel: ObservableObject {
             ])
             return true
         } catch {
-            guard !isClosing else { return true }
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return true }
             pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality, variant: cacheVariant)
             AppLog.warning("player", "播放页缓存恢复失败，已回退到常规重载路径", metadata: [
                 "aid": String(aid),
@@ -1862,7 +1863,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func isCurrentLoad(_ generation: UInt64, aid: Int64, cid: Int64) -> Bool {
-        !isClosing && generation == loadGeneration && self.aid == aid && self.cid == cid
+        !isClosing && !Task.isCancelled && generation == loadGeneration && self.aid == aid && self.cid == cid
     }
 
     private func normalizedQualities(from info: PlayUrlDTO) -> [(qn: Int64, label: String)] {
@@ -1996,6 +1997,7 @@ final class PlayerViewModel: ObservableObject {
             "toAudioQn": String(audioQn),
         ])
         do {
+            stopHeartbeat()
             isVideoReady = false
             itemStatusObservation = nil
             suppressNextObservedPlaybackIntent(.pause)
@@ -2025,8 +2027,8 @@ final class PlayerViewModel: ObservableObject {
             } else {
                 info = try await fetchPlayUrl(aid: aid, cid: cid, qn: currentQn, audioQn: audioQn)
             }
-            rememberPlayURL(info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
+            rememberPlayURL(info)
             let prep = try await engine.makeItem(for: info)
             guard isCurrentLoad(generation, aid: aid, cid: cid) else {
                 prep.release()
@@ -2035,12 +2037,15 @@ final class PlayerViewModel: ObservableObject {
             if let item = lastLoadedItem {
                 applyPresentationMetadata(to: prep.item, for: item)
             }
+            stopHeartbeat()
             activePreparation = prep
             rememberActivePlayURL(info)
             observeItemStatus(prep.item, generation: generation)
             player.replaceCurrentItem(with: prep.item)
             observePlaybackCompletion(for: player)
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard isCurrentLoad(generation, aid: aid, cid: cid),
+                  self.player === player, player.currentItem === prep.item else { return }
             applyRate(to: player)
             applyPlaybackIntent(to: player)
             self.currentAudioQn = info.audioQuality
@@ -2050,7 +2055,7 @@ final class PlayerViewModel: ObservableObject {
                 "audioQualityLabel": info.audioQualityLabel,
             ])
         } catch {
-            guard !isClosing else { return }
+            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return }
             errorText = error.localizedDescription
             AppLog.error("player", "音质切换失败", error: error, metadata: [
                 "aid": String(aid),
