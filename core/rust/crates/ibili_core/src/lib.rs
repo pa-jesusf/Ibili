@@ -54,16 +54,14 @@ impl Core {
     pub fn restore_session(&self, s: session::PersistedSession) {
         // Re-hydrate web cookies into the http jar so subsequent
         // wbi / nav / view requests authenticate as this user.
+        self.http.clear_web_cookies();
         self.http.install_web_cookies(&s.web_cookies);
-        let _ = self.http.ensure_web_identity_activated();
         *self.session.write() = session::Session::from_persisted(s);
     }
 
     pub fn logout(&self) {
         *self.session.write() = session::Session::default();
-        // Cookies remain in the in-memory jar until process restart; the iOS
-        // layer drops persisted cookies via SessionStore.clear() on logout,
-        // so on next launch the jar starts empty again.
+        self.http.clear_web_cookies();
     }
 
     pub fn packaging_offline_build(

@@ -155,6 +155,10 @@ public final class CoreClient: @unchecked Sendable {
         (try? call("session.snapshot", decoding: SessionSnapshotDTO.self)) ?? SessionSnapshotDTO(loggedIn: false, mid: 0, expiresAtSecs: 0)
     }
 
+    public func checkSession() throws -> SessionSnapshotDTO {
+        try call("session.check", decoding: SessionSnapshotDTO.self)
+    }
+
     public func restoreSession(_ p: PersistedSessionDTO) {
         try? callVoid("session.restore", args: p)
     }

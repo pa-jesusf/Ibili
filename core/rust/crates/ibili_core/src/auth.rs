@@ -40,6 +40,27 @@ struct CookiePair {
 }
 
 impl Core {
+    pub fn auth_check_session(&self) -> CoreResult<crate::session::SessionSnapshot> {
+        #[derive(Deserialize)]
+        struct Nav {
+            #[serde(rename = "isLogin")]
+            logged_in: bool,
+            #[serde(default)]
+            mid: i64,
+        }
+        let nav = match self.http.check_web_session::<Nav>() {
+            Ok(nav) => nav,
+            Err(CoreError::Api { code: -101, .. }) => return Ok(Default::default()),
+            Err(e) => return Err(e),
+        };
+        let local = self.session_snapshot();
+        Ok(crate::session::SessionSnapshot {
+            logged_in: nav.logged_in && nav.mid > 0 && nav.mid == local.mid,
+            mid: nav.mid,
+            expires_at_secs: local.expires_at_secs,
+        })
+    }
+
     pub fn auth_tv_qr_start(&self) -> CoreResult<TvQrStart> {
         // PiliPlus LoginHttp.getHDcode params (lib/http/login.dart).
         let params = vec![

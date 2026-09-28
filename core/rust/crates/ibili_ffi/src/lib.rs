@@ -641,6 +641,7 @@ struct PackagingOfflineBuildArgs {
 fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> {
     match method {
         "session.snapshot" => to_value(c.inner.session_snapshot()),
+        "session.check" => to_value(c.inner.auth_check_session()?),
         "session.restore" => {
             let s: ibili_core::session::PersistedSession = serde_json::from_value(args)?;
             c.inner.restore_session(s);

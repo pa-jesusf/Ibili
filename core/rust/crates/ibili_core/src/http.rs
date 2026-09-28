@@ -155,6 +155,24 @@ impl HttpClient {
         }
     }
 
+    pub fn clear_web_cookies(&self) {
+        let url: Url = "https://api.bilibili.com/".parse().expect("valid url");
+        for (name, _) in self.snapshot_cookies() {
+            self.jar.add_cookie_str(
+                &format!("{name}=; Domain=.bilibili.com; Path=/; Max-Age=0; Secure"), &url,
+            );
+        }
+        *self.web_identity_activation.lock() = WebIdentityActivationState::default();
+    }
+
+    /// A bounded startup probe; restoring local credentials never performs IO.
+    pub fn check_web_session<T: DeserializeOwned>(&self) -> CoreResult<T> {
+        let response = apply_default_web_headers(
+            self.client.get("https://api.bilibili.com/x/web-interface/nav"), self,
+        ).timeout(std::time::Duration::from_secs(8)).send()?;
+        unwrap_envelope(response.text()?)
+    }
+
     /// Match upstream PiliPlus's best-effort `buvid3` activation request.
     /// Bilibili sometimes gates web playback capabilities behind this risk
     /// fingerprint endpoint; failure is diagnostic only and must not block

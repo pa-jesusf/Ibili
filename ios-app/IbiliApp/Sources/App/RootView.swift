@@ -111,7 +111,6 @@ struct RootView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var router = DeepLinkRouter()
     @State private var selectedMainTab: MainTab = .home
-    @State private var isOfflineMode = false
     @State private var retainsDismissedPlayerHost = false
     @State private var releaseDismissedPlayerHostWork: DispatchWorkItem?
     @State private var splitDetailProgress: CGFloat = 0
@@ -128,26 +127,26 @@ struct RootView: View {
     var body: some View {
         GeometryReader { proxy in
             let canSplit = isIPadLandscapeSplitCandidate(size: proxy.size, stableBaseSize: splitLayoutBaseSize)
-            let usesSplit = canSplit && router.pending != nil && session.isLoggedIn
+            let usesSplit = canSplit && router.pending != nil && session.connectionState == .online
 
             ZStack {
-                if session.isLoggedIn {
+                switch session.connectionState {
+                case .online:
                     mainContent(size: proxy.size, canSplit: canSplit, usesSplit: usesSplit)
                         .transition(.opacity)
-                } else if isOfflineMode {
-                    OfflineModeRootView {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isOfflineMode = false
-                        }
-                    }
-                    .transition(.opacity)
-                } else {
-                    LoginView {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isOfflineMode = true
-                        }
-                    }
+                case .offline(let message):
+                    OfflineModeRootView(message: message)
                         .transition(.opacity)
+                case .login:
+                    LoginView()
+                        .transition(.opacity)
+                case .starting:
+                    VStack(spacing: 18) {
+                        Text("Ibili").font(.largeTitle.bold()).foregroundStyle(IbiliTheme.accent)
+                        ProgressView("正在连接…")
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(IbiliTheme.background.ignoresSafeArea())
                 }
 
                 // Player is presented as a horizontal-slide overlay above
@@ -189,6 +188,7 @@ struct RootView: View {
             }
         }
         .environmentObject(router)
+        .task { session.start() }
         .environment(\.openURL, OpenURLAction { url in
             NavigationTrace.log("Root openURL", metadata: [
                 "url": url.absoluteString,
@@ -227,9 +227,6 @@ struct RootView: View {
             splitDetailProgress = 0
             splitLayoutBaseSize = nil
             splitFeedTransition.cancel()
-            if session.isLoggedIn {
-                isOfflineMode = false
-            }
         }
         .onDisappear {
             router.onWillSelectContent = nil
@@ -547,20 +544,28 @@ struct RootView: View {
 }
 
 private struct OfflineModeRootView: View {
-    let onExit: () -> Void
+    @EnvironmentObject private var session: AppSession
+    let message: String
 
     var body: some View {
         NavigationStack {
             OfflineCacheListView()
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            onExit()
-                        } label: {
-                            Image(systemName: "chevron.backward")
+                .safeAreaInset(edge: .bottom) {
+                    VStack(spacing: 12) {
+                        Label(message, systemImage: "wifi.slash")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button(action: session.reconnect) {
+                            if session.isCheckingConnection {
+                                ProgressView("正在重新连接…")
+                            } else {
+                                Label("重新连接", systemImage: "arrow.clockwise")
+                            }
                         }
-                        .accessibilityLabel("退出离线模式")
+                        .buttonStyle(.borderedProminent)
+                        .disabled(session.isCheckingConnection)
                     }
+                    .frame(maxWidth: .infinity).padding()
+                    .background(.regularMaterial)
                 }
         }
         .tint(IbiliTheme.accent)
