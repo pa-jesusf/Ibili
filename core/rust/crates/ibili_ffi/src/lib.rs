@@ -652,6 +652,11 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             Ok(Value::Object(Default::default()))
         }
         "auth.tv_qr.start" => to_value(c.inner.auth_tv_qr_start()?),
+        "auth.password" | "auth.sms.send" | "auth.sms.login" | "auth.cookie"
+        | "auth.captcha" | "auth.risk.send" | "auth.risk.verify" => {
+            let request: ibili_core::auth::LoginRequest = serde_json::from_value(args)?;
+            to_value(c.inner.auth_login(method, request)?)
+        }
         "auth.tv_qr.poll" => {
             let a: PollArgs = serde_json::from_value(args)?;
             to_value(c.inner.auth_tv_qr_poll(&a.auth_code)?)

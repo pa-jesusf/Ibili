@@ -43,6 +43,36 @@ impl Session {
         }
     }
     pub fn access_key(&self) -> Option<String> {
-        self.persisted.as_ref().map(|p| p.access_token.clone())
+        self.persisted
+            .as_ref()
+            .filter(|p| !p.access_token.is_empty())
+            .map(|p| p.access_token.clone())
+    }
+
+    pub fn has_web_session(&self) -> bool {
+        self.persisted.as_ref().is_some_and(|p| {
+            p.mid > 0
+                && p.web_cookies
+                    .iter()
+                    .any(|(name, value)| name == "SESSDATA" && !value.is_empty())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_session_authenticates_web_but_not_app_endpoints() {
+        let session = Session::from_persisted(PersistedSession {
+            mid: 42,
+            web_cookies: vec![("SESSDATA".into(), "test".into())],
+            ..Default::default()
+        });
+        assert!(session.has_web_session());
+        assert!(session.access_key().is_none());
+        assert!(session.snapshot().logged_in);
+        assert!(!Session::default().has_web_session());
     }
 }

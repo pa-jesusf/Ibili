@@ -158,7 +158,7 @@ impl Core {
         _page: i64,
         offset: &str,
     ) -> CoreResult<DynamicFeedPage> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(DynamicFeedPage {
                 items: vec![],
                 offset: String::new(),

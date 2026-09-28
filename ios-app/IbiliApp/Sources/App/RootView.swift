@@ -563,6 +563,10 @@ private struct OfflineModeRootView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(session.isCheckingConnection)
+                        if session.isLoggedIn {
+                            Button("重新登录", action: session.requestLogin)
+                                .font(.footnote)
+                        }
                     }
                     .frame(maxWidth: .infinity).padding()
                     .background(.regularMaterial)

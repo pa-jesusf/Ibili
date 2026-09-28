@@ -243,18 +243,15 @@ impl Core {
     /// User profile card. Prefer the Android app space endpoint here:
     /// it carries the same relation fields PiliPlus uses for member
     /// pages (`card.relation.is_follow/status` + `rel_special`). The
-    /// web card endpoint is kept as a public fallback for anonymous or
-    /// degraded cases.
+    /// web card endpoint serves anonymous and cookie-only sessions.
     pub fn user_card(&self, mid: i64) -> CoreResult<UserCard> {
         if mid <= 0 {
             return Err(CoreError::InvalidArgument("mid required".into()));
         }
-        let has_access_key = self.session.read().access_key().is_some();
-        match self.user_card_from_space(mid) {
-            Ok(card) => Ok(card),
-            Err(err) if has_access_key => Err(err),
-            Err(_) => self.user_card_from_web(mid),
+        if self.session.read().access_key().is_none() {
+            return self.user_card_from_web(mid);
         }
+        self.user_card_from_space(mid)
     }
 
     fn user_card_from_space(&self, mid: i64) -> CoreResult<UserCard> {
@@ -293,7 +290,7 @@ impl Core {
     /// `max` and `view_at` are the cursor returned by the previous
     /// page; pass `0` for both on the first call.
     pub fn history_cursor(&self, max: i64, view_at: i64) -> CoreResult<HistoryPage> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(HistoryPage {
                 items: vec![],
                 next_max: 0,
@@ -324,7 +321,7 @@ impl Core {
     /// numbers rather than the cursor API. We still return `HistoryPage`
     /// so the iOS layer can share row rendering and pagination logic.
     pub fn history_search(&self, keyword: &str, pn: i64) -> CoreResult<HistoryPage> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(HistoryPage {
                 items: vec![],
                 next_max: 0,
@@ -357,7 +354,7 @@ impl Core {
         keyword: &str,
         all_folders: bool,
     ) -> CoreResult<FavResourcePage> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(FavResourcePage {
                 items: vec![],
                 has_more: false,
@@ -409,7 +406,7 @@ impl Core {
         pn: i64,
         ps: i64,
     ) -> CoreResult<SubscriptionFolderPage> {
-        if mid <= 0 || self.session.read().access_key().is_none() {
+        if mid <= 0 || !self.session.read().has_web_session() {
             return Ok(SubscriptionFolderPage {
                 items: vec![],
                 has_more: false,
@@ -441,7 +438,7 @@ impl Core {
         pn: i64,
         ps: i64,
     ) -> CoreResult<SubscriptionResourcePage> {
-        if id <= 0 || self.session.read().access_key().is_none() {
+        if id <= 0 || !self.session.read().has_web_session() {
             return Ok(SubscriptionResourcePage {
                 info: None,
                 items: vec![],
@@ -487,7 +484,7 @@ impl Core {
     pub fn followed_pgc_list(&self, kind: i64, pn: i64, ps: i64) -> CoreResult<FollowedPgcPage> {
         let session = self.session.read().snapshot();
         let mid = self.http.web_user_mid().unwrap_or(session.mid);
-        if mid <= 0 || self.session.read().access_key().is_none() {
+        if mid <= 0 || !self.session.read().has_web_session() {
             return Ok(FollowedPgcPage {
                 items: vec![],
                 total: 0,
@@ -550,7 +547,7 @@ impl Core {
 
     /// Fetch the rich watch-later list (not just aids). Cookie-auth.
     pub fn watchlater_list(&self, pn: i64, keyword: &str) -> CoreResult<Vec<WatchLaterItem>> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(Vec::new());
         }
         let key = self.fetch_wbi_key_for_space()?;

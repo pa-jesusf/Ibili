@@ -144,7 +144,7 @@ pub struct MessageConversationPage {
 
 impl Core {
     pub fn message_unread_summary(&self) -> CoreResult<MessageUnreadSummary> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(MessageUnreadSummary::default());
         }
 
@@ -172,7 +172,7 @@ impl Core {
         cursor_id: i64,
         cursor_time: i64,
     ) -> CoreResult<MessagePage> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(MessagePage {
                 items: vec![],
                 next_cursor_id: 0,
@@ -195,7 +195,7 @@ impl Core {
     }
 
     pub fn message_sessions(&self) -> CoreResult<MessageSessionPage> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(MessageSessionPage {
                 items: vec![],
                 has_more: false,

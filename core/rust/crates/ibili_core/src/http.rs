@@ -385,6 +385,33 @@ impl HttpClient {
         unwrap_envelope(body)
     }
 
+    /// Passport needs a signed form body and preserves nonzero challenge payloads.
+    /// Never include its response body (tokens/cookies) in decoding diagnostics.
+    pub fn post_login_form(
+        &self, url: &str, form: Vec<(String, String)>, buvid: &str, referer: Option<&str>,
+    ) -> CoreResult<ApiEnvelope<serde_json::Value>> {
+        let request = self.login_form_request(url, form, buvid, referer)?;
+        let response = request.send().map_err(|e| CoreError::Network(net_msg(&e)))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(CoreError::Network(format!("登录服务 HTTP {}", status.as_u16())));
+        }
+        serde_json::from_str(&response.text().map_err(|e| CoreError::Network(net_msg(&e)))?)
+            .map_err(|_| CoreError::Decode("登录服务返回了无法识别的响应".into()))
+    }
+
+    fn login_form_request(
+        &self, url: &str, mut form: Vec<(String, String)>, buvid: &str, referer: Option<&str>,
+    ) -> CoreResult<RequestBuilder> {
+        crate::signer::AppSigner::sign(&mut form);
+        let mut headers = app_headers();
+        headers.insert("buvid", reqwest::header::HeaderValue::from_str(buvid)
+            .map_err(|_| CoreError::InvalidArgument("无效的登录设备标识".into()))?);
+        let mut request = self.client.post(url).headers(headers).form(&form);
+        if let Some(referer) = referer { request = request.header("Referer", referer); }
+        Ok(request)
+    }
+
     pub fn get_signed_web<T: DeserializeOwned>(
         &self,
         url: &str,
@@ -787,5 +814,36 @@ fn mime_for_filename(name: &str) -> &'static str {
         "image/heic"
     } else {
         "application/octet-stream"
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+
+    #[test]
+    fn login_request_has_one_buvid_matching_the_form() {
+        let http = HttpClient::new().unwrap();
+        let request = http.login_form_request(
+            "https://passport.bilibili.com/x/passport-login/sms/send",
+            vec![("buvid".into(), "XYtest-device".into())], "XYtest-device", None,
+        ).unwrap().build().unwrap();
+        assert_eq!(request.headers().get_all("buvid").iter().count(), 1);
+        assert_eq!(request.headers()["buvid"], "XYtest-device");
+        let body = request.body().unwrap().as_bytes().unwrap();
+        let params: std::collections::HashMap<_, _> = url::form_urlencoded::parse(body).collect();
+        assert_eq!(params["buvid"], "XYtest-device");
+        assert!(params.contains_key("sign"));
+        assert!(request.url().query().is_none()); // Secrets belong in the HTTPS body, not URL logs.
+    }
+
+    #[test]
+    fn clearing_session_removes_account_cookies() {
+        let http = HttpClient::new().unwrap();
+        http.install_web_cookies(&[("SESSDATA".into(), "test".into()), ("bili_jct".into(), "csrf".into())]);
+        assert!(http.csrf_token().is_some());
+        http.clear_web_cookies();
+        assert!(http.csrf_token().is_none());
+        assert!(!http.snapshot_cookies().iter().any(|(name, _)| name == "SESSDATA"));
     }
 }

@@ -87,7 +87,7 @@ final class AppSession: ObservableObject {
                     : .login
             case .failure:
                 // Network/service errors are not evidence that the credentials expired.
-                self.connectionState = .offline("暂时无法连接哔哩哔哩，已进入离线模式。可播放已下载的视频。")
+                self.connectionState = .offline("暂时无法连接或确认登录状态，已进入离线模式。可播放已下载的视频，也可重连或重新登录。")
             }
         }
     }
@@ -108,11 +108,16 @@ final class AppSession: ObservableObject {
         connectionState = .login
     }
 
+    func requestLogin() {
+        invalidateConnectionCheck()
+        connectionState = .login
+    }
+
     private func handleLoginExpired() {
         guard isLoggedIn else { return }
-        invalidateConnectionCheck()
-        clearCredentials()
-        connectionState = .offline("登录已失效，本地缓存仍可播放。重新连接后可重新登录。")
+        // An app-only API may reject a cookie-only account. Validate the web
+        // session before discarding credentials that still work for web APIs.
+        reconnect()
     }
 
     private func clearCredentials() {

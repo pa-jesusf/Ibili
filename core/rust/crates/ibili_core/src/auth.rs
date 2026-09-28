@@ -4,6 +4,9 @@ use crate::session::PersistedSession;
 use crate::Core;
 use serde::Deserialize;
 
+mod login;
+pub use login::{LoginRequest, LoginResult};
+
 const URL_AUTH_CODE: &str = "https://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code";
 const URL_POLL: &str = "https://passport.bilibili.com/x/passport-tv-login/qrcode/poll";
 
@@ -50,10 +53,18 @@ impl Core {
         }
         let nav = match self.http.check_web_session::<Nav>() {
             Ok(nav) => nav,
-            Err(CoreError::Api { code: -101, .. }) => return Ok(Default::default()),
+            Err(CoreError::Api { code: -101, .. }) => Nav {
+                logged_in: false,
+                mid: 0,
+            },
             Err(e) => return Err(e),
         };
         let local = self.session_snapshot();
+        // Legacy token-only sessions are not disproved by an anonymous Web nav.
+        // Preserve them and require explicit reauthentication for Web features.
+        if local.logged_in && !self.session.read().has_web_session() {
+            return Err(CoreError::AuthRequired);
+        }
         Ok(crate::session::SessionSnapshot {
             logged_in: nav.logged_in && nav.mid > 0 && nav.mid == local.mid,
             mid: nav.mid,
@@ -80,7 +91,8 @@ impl Core {
             ("auth_code".into(), auth_code.into()),
             ("local_id".into(), "0".into()),
         ];
-        match self.http.post_signed_app::<PollData>(URL_POLL, params) {
+        let http = crate::http::HttpClient::new()?;
+        match http.post_signed_app::<PollData>(URL_POLL, params) {
             Ok(d) => {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -90,11 +102,6 @@ impl Core {
                     .cookie_info
                     .map(|ci| ci.cookies.into_iter().map(|c| (c.name, c.value)).collect())
                     .unwrap_or_default();
-                // Push cookies into the live http jar so the very next
-                // wbi/playurl call (e.g. user immediately taps a video) is
-                // authenticated, not just future restored sessions.
-                self.http.install_web_cookies(&web_cookies);
-                let _ = self.http.ensure_web_identity_activated();
                 let session = PersistedSession {
                     access_token: d.access_token,
                     refresh_token: d.refresh_token,
@@ -102,7 +109,6 @@ impl Core {
                     expires_at_secs: now + d.expires_in,
                     web_cookies,
                 };
-                *self.session.write() = crate::session::Session::from_persisted(session.clone());
                 Ok(TvQrPoll::Confirmed { session })
             }
             // Bilibili TV poll: 0=ok, 86038=expired, 86039=pending (not scanned),

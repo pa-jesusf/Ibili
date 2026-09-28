@@ -508,7 +508,7 @@ impl Core {
         &self,
         mids: Vec<i64>,
     ) -> CoreResult<HashMap<i64, bool>> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(HashMap::new());
         }
         let mut mids: Vec<i64> = mids.into_iter().filter(|mid| *mid > 0).collect();

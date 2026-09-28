@@ -90,4 +90,32 @@ final class AppSessionTests: XCTestCase {
         XCTAssertEqual(session.connectionState, .online)
         XCTAssertEqual(session.mid, 42)
     }
+
+    @MainActor
+    func testRequestLoginPreservesCredentialsAndRejectsLateReconnect() async {
+        let entered = expectation(description: "reconnect started")
+        let finished = expectation(description: "reconnect returned")
+        var continuation: CheckedContinuation<SessionSnapshotDTO, Never>?
+        var cleared = 0
+        let session = AppSession(services: AppSessionServices(
+            load: { self.credentials }, save: { _ in }, restore: { _ in },
+            clear: { cleared += 1 }, logout: {}, check: {
+                let snapshot = await withCheckedContinuation {
+                    continuation = $0
+                    entered.fulfill()
+                }
+                finished.fulfill()
+                return snapshot
+            }))
+        session.reconnect()
+        await fulfillment(of: [entered], timeout: 2)
+        session.requestLogin()
+        continuation?.resume(returning: SessionSnapshotDTO(loggedIn: false, mid: 0, expiresAtSecs: 0))
+        await fulfillment(of: [finished], timeout: 2)
+        XCTAssertEqual(session.connectionState, .login)
+        XCTAssertTrue(session.isLoggedIn)
+        XCTAssertEqual(session.mid, 42)
+        XCTAssertEqual(cleared, 0)
+        XCTAssertFalse(session.isCheckingConnection)
+    }
 }

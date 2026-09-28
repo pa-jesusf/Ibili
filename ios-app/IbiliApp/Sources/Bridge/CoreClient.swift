@@ -86,11 +86,13 @@ public final class CoreClient: @unchecked Sendable {
 
         let resolvedError = env.error.map { CoreError(category: $0.category, message: $0.message, code: $0.code) }
             ?? CoreError(category: "internal", message: "missing data", code: nil)
-        AppLog.error("core", "Core 返回错误", error: resolvedError, metadata: [
+        AppLog.error("core", "Core 返回错误", error: method.hasPrefix("auth.") ? nil : resolvedError, metadata: [
             "method": method,
+            "category": resolvedError.category,
+            "code": resolvedError.code.map(String.init) ?? "-",
             "ms": elapsedMilliseconds(since: startedAt),
         ])
-        if resolvedError.isLoginExpired {
+        if resolvedError.isLoginExpired, !method.hasPrefix("auth."), resolvedError.category != "auth_required" {
             NotificationCenter.default.post(name: .coreLoginExpired,
                                             object: nil,
                                             userInfo: ["method": method])
@@ -173,6 +175,10 @@ public final class CoreClient: @unchecked Sendable {
 
     public func tvQrPoll(authCode: String) throws -> TvQrPollDTO {
         try call("auth.tv_qr.poll", args: ["auth_code": authCode], decoding: TvQrPollDTO.self)
+    }
+
+    func login(_ action: LoginAction, request: LoginRequestDTO) throws -> LoginResultDTO {
+        try call(action.rawValue, args: request, decoding: LoginResultDTO.self)
     }
 
     public func feedHome(idx: Int64 = 0, ps: Int64 = 20, source: String = "web") throws -> FeedPageDTO {

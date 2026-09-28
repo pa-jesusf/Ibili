@@ -313,7 +313,7 @@ impl Core {
     /// a given video. Backed by `/x/web-interface/archive/relation`.
     /// Returns a default-zero struct when the user is not logged in.
     pub fn archive_relation(&self, aid: i64, bvid: &str) -> CoreResult<ArchiveRelation> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(ArchiveRelation::default());
         }
         let mut params: Vec<(String, String)> = Vec::new();
@@ -338,7 +338,7 @@ impl Core {
     /// the video is already in that folder. Backed by
     /// `/x/v3/fav/folder/created/list-all`.
     pub fn fav_folders(&self, rid: i64, up_mid: i64) -> CoreResult<Vec<FavFolderInfo>> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(Vec::new());
         }
         let mut params: Vec<(String, String)> = vec![
@@ -402,7 +402,7 @@ impl Core {
     /// empty vec for anonymous sessions. Used by the detail page to
     /// initialize the watch-later button's active state on hydrate.
     pub fn watchlater_aids(&self) -> CoreResult<Vec<i64>> {
-        if self.session.read().access_key().is_none() {
+        if !self.session.read().has_web_session() {
             return Ok(Vec::new());
         }
         let raw: WatchLaterListWire = self.http.get_web(URL_WATCHLATER_LIST, &[])?;
