@@ -1686,7 +1686,10 @@ public struct HistoryPageDTO: Decodable {
 }
 
 public struct FavResourceItemDTO: Decodable, Identifiable, Hashable {
-    public var id: Int64 { aid }
+    /// A favorite folder can contain multiple parts of the same稿件. The
+    /// diffable virtualized list needs the part identity, not just the aid,
+    /// otherwise cells collide and later rows stop receiving taps.
+    public var id: String { "\(aid):\(bvid):\(cid)" }
     public let aid: Int64
     public let bvid: String
     public let cid: Int64
