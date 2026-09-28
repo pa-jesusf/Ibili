@@ -1524,15 +1524,20 @@ final class PlayerViewModel: ObservableObject {
                         // position when the user finished the video.
                         let durationSec = item.duration.isNumeric ? CMTimeGetSeconds(item.duration) : 0
                         let resumeSec = Double(ms) / 1000.0
-                        if ms > 0, durationSec <= 0 || resumeSec < durationSec - 3 {
-                            let target = CMTime(seconds: resumeSec, preferredTimescale: 600)
-                            Task { @MainActor in
-                                guard !self.isClosing, self.loadGeneration == generation else { return }
-                                await self.player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .init(seconds: 1, preferredTimescale: 600))
-                                AppLog.info("player", "已跳转到云端记录进度", metadata: [
-                                    "resumeMs": String(ms),
-                                ])
-                            }
+                        let targetSeconds: Double = ms > 0 && (durationSec <= 0 || resumeSec < durationSec - 3)
+                            ? resumeSec
+                            : 0
+                        let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
+                        Task { @MainActor in
+                            guard !self.isClosing, self.loadGeneration == generation else { return }
+                            await self.player?.seek(
+                                to: target,
+                                toleranceBefore: .zero,
+                                toleranceAfter: targetSeconds > 0 ? .init(seconds: 1, preferredTimescale: 600) : .zero
+                            )
+                            AppLog.info("player", targetSeconds > 0 ? "已跳转到云端记录进度" : "已将新媒体进度归零", metadata: [
+                                "resumeMs": String(ms),
+                            ])
                         }
                     }
                     self.startHeartbeatIfNeeded()
