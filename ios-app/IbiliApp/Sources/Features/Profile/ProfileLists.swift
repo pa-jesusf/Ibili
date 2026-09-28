@@ -636,6 +636,8 @@ struct FavoritesFolderListView: View {
                                         .font(.footnote.weight(.semibold))
                                         .foregroundStyle(IbiliTheme.textSecondary.opacity(0.6))
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
