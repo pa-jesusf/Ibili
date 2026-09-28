@@ -673,14 +673,15 @@ final class PlayerViewModel: ObservableObject {
         guard !isClosing else { return }
         isPlaybackCompleted = true
         handle(.playbackIntentChanged(.pause))
+        player?.pause()
         refreshSystemMediaSession()
     }
 
     func restartCurrentItem() {
         guard !isClosing, let player else { return }
+        isPlaybackCompleted = false
         Task { @MainActor in
             guard !self.isClosing, self.player === player else { return }
-            self.isPlaybackCompleted = false
             self.armTransientPauseSuppression(for: .playbackLoopRestart)
             self.suppressNextObservedPlaybackIntent(.pause)
             await player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -1145,6 +1146,8 @@ final class PlayerViewModel: ObservableObject {
 
     private func handlePlaybackCompleted() {
         isPlaybackCompleted = true
+        handle(.playbackIntentChanged(.pause))
+        player?.pause()
         refreshSystemMediaSession()
         playbackCompletionSignal &+= 1
     }
@@ -1205,6 +1208,14 @@ final class PlayerViewModel: ObservableObject {
         updatePausedForDetailCollapse(from: observedPlayer)
         if status == .playing || status == .waitingToPlayAtSpecifiedRate {
             clearTransientPauseSuppression()
+            if isPlaybackCompleted {
+                // AVKit can leave the item at its terminal time while its
+                // native control still reports a play command. Treat that
+                // command as "play from beginning" instead of exposing a
+                // pause icon with no advancing playhead.
+                restartCurrentItem()
+                return
+            }
         }
         handle(.observedTimeControlStatus(status))
     }
