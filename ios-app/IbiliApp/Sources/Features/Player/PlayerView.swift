@@ -34,6 +34,37 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
     )
 }
 
+enum PlayerResumePolicy {
+    static func isPartSwitch(from previous: FeedItemDTO?, to next: FeedItemDTO) -> Bool {
+        guard let previous,
+              previous.aid == next.aid,
+              previous.cid != next.cid else { return false }
+        if !previous.bvid.isEmpty, !next.bvid.isEmpty {
+            return previous.bvid == next.bvid
+        }
+        return previous.aid > 0
+    }
+
+    static func initialResumeMilliseconds(
+        previous: FeedItemDTO?,
+        next: FeedItemDTO,
+        explicitMilliseconds: Int64?,
+        serverMilliseconds: Int64,
+        serverCid: Int64
+    ) -> Int64 {
+        if let explicitMilliseconds {
+            return max(0, explicitMilliseconds)
+        }
+        if isPartSwitch(from: previous, to: next) {
+            return serverCid == next.cid ? max(0, serverMilliseconds) : 0
+        }
+        if serverCid == 0 || serverCid == next.cid {
+            return max(0, serverMilliseconds)
+        }
+        return 0
+    }
+}
+
 @MainActor
 final class PlayerViewModel: ObservableObject {
     @Published var isLoading = true
@@ -249,7 +280,9 @@ final class PlayerViewModel: ObservableObject {
         // Treat a `reload()` of the same video (which zeroes aid/cid)
         // as the same load context so we keep the blocked-qn set; only
         // a fresh navigation to a different (aid,cid) wipes it.
-        let isSameVideo = (lastLoadedItem?.aid == item.aid && lastLoadedItem?.cid == item.cid)
+        let previousItem = lastLoadedItem
+        let isSameVideo = (previousItem?.aid == item.aid && previousItem?.cid == item.cid)
+        let isPartSwitch = PlayerResumePolicy.isPartSwitch(from: previousItem, to: item)
         aid = item.aid; cid = item.cid
         bvid = item.bvid
         lastLoadedItem = item
@@ -285,6 +318,9 @@ final class PlayerViewModel: ObservableObject {
             // session stays claimed throughout the hand-off.
             resetCurrentPlaybackForMediaSwitch()
             pendingResumeMs = item.resumePositionMs.map { max(0, $0) }
+            if isPartSwitch, pendingResumeMs == nil {
+                pendingResumeMs = 0
+            }
             currentVideoSizeHint = videoSizeHint(from: item.dimension)
         }
         isPlaybackCompleted = false
@@ -370,12 +406,14 @@ final class PlayerViewModel: ObservableObject {
             // identifying which part it belongs to. Only honor it when
             // it belongs to the part we are loading, otherwise switching
             // 分P would inherit another part's progress.
-            if !isSameVideo, self.pendingResumeMs == nil {
-                if info.lastPlayCid == 0 || info.lastPlayCid == item.cid {
-                    self.pendingResumeMs = max(0, info.lastPlayTimeMs)
-                } else {
-                    self.pendingResumeMs = 0
-                }
+            if !isSameVideo {
+                self.pendingResumeMs = PlayerResumePolicy.initialResumeMilliseconds(
+                    previous: previousItem,
+                    next: item,
+                    explicitMilliseconds: item.resumePositionMs,
+                    serverMilliseconds: info.lastPlayTimeMs,
+                    serverCid: info.lastPlayCid
+                )
             }
 
             let prep = try await engine.makeItem(for: info)
@@ -2783,6 +2821,9 @@ struct PlayerView: View {
 
             if loadedMediaKey != mediaLoadKey {
                 resetPlayerCollapseState()
+                clearDetailTimelineObserver()
+                detailTimelineClock.seconds = 0
+                detailTimelineClock.lastWholeSecond = -1
                 scheduleDeferredDetailMount(for: mediaLoadKey)
             } else if !shouldMountDetailContent {
                 shouldMountDetailContent = true
