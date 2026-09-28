@@ -147,4 +147,43 @@ final class PlayerSessionBehaviorTests: XCTestCase {
 
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
     }
+
+    func testTwoXRateMatrixPreservesRateAcrossPlaybackLifecycles() {
+        let lifecycleMatrix: [[PlayerSessionEvent]] = [
+            [
+                .interfaceActivated,
+                .systemTransitionChanged(true),
+                .systemTransitionChanged(false),
+            ],
+            [
+                .interfaceActivated,
+                .interfaceDeactivated,
+                .interfaceActivated,
+            ],
+            [
+                .interfaceActivated,
+                .pictureInPictureTransition(.started),
+                .interfaceDeactivated,
+                .pictureInPictureTransition(.stopped(.restored)),
+                .interfaceActivated,
+            ],
+            [
+                .interfaceActivated,
+                .prepareAutoplayForMediaReplacement,
+                .interfaceActivated,
+            ],
+        ]
+
+        for events in lifecycleMatrix {
+            var state = PlayerSessionBehaviorState()
+            for event in events {
+                state.apply(event)
+            }
+            XCTAssertEqual(
+                state.desiredPlaybackCommand(rate: 2.0),
+                .play(rate: 2.0),
+                "lifecycle sequence lost the user's 2x playback rate: \(events)"
+            )
+        }
+    }
 }

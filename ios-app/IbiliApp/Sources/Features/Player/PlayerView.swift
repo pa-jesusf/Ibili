@@ -131,6 +131,7 @@ final class PlayerViewModel: ObservableObject {
     private var isClosing = false
     private var dismissalFadeTask: Task<Void, Never>?
     private var audioVolumeRampTask: Task<Void, Never>?
+    private var playbackRateReapplyTask: Task<Void, Never>?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -145,6 +146,7 @@ final class PlayerViewModel: ObservableObject {
             clearPausedForDetailCollapse()
             dismissalFadeTask?.cancel()
             audioVolumeRampTask?.cancel()
+            playbackRateReapplyTask?.cancel()
             stopHeartbeat()
             clearPlaybackCompletionObserver()
             itemStatusObservation = nil
@@ -656,6 +658,7 @@ final class PlayerViewModel: ObservableObject {
     func completeSystemTransition() {
         guard !isClosing else { return }
         handle(.systemTransitionChanged(false))
+        reapplyPlaybackRateAfterLifecycleTransition(trigger: "system-transition-complete")
     }
 
     func recoverAfterSystemTransitionIfNeeded(trigger: String,
@@ -744,6 +747,34 @@ final class PlayerViewModel: ObservableObject {
 
     func reapplyPlaybackBehavior(to targetPlayer: AVPlayer? = nil) {
         applyPlaybackIntent(to: targetPlayer)
+    }
+
+    /// AVKit and scene reattachment can rewrite AVPlayer's effective rate
+    /// after the logical playback state has already been restored. Reapply the
+    /// user's rate immediately and on two later run-loop passes so the native
+    /// controller cannot leave the UI at 2x while the player runs at 1x.
+    func reapplyPlaybackRateAfterLifecycleTransition(trigger: String) {
+        guard !isClosing, let player else { return }
+        playbackRateReapplyTask?.cancel()
+        let expectedPlayer = player
+        applyRate(to: expectedPlayer)
+        AppLog.debug("player", "生命周期恢复后重新应用播放速度", metadata: [
+            "trigger": trigger,
+            "rate": String(desiredPlaybackRate),
+            "aid": String(aid),
+            "cid": String(cid),
+        ])
+        playbackRateReapplyTask = Task { @MainActor [weak self, weak expectedPlayer] in
+            guard let self, let expectedPlayer else { return }
+            for delay in [0.05, 0.20] {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled,
+                      !self.isClosing,
+                      self.player === expectedPlayer else { return }
+                self.applyRate(to: expectedPlayer)
+            }
+            self.playbackRateReapplyTask = nil
+        }
     }
 
     var canBeginTemporarySpeedBoost: Bool {
@@ -918,6 +949,8 @@ final class PlayerViewModel: ObservableObject {
         dismissalFadeTask = nil
         audioVolumeRampTask?.cancel()
         audioVolumeRampTask = nil
+        playbackRateReapplyTask?.cancel()
+        playbackRateReapplyTask = nil
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
@@ -1193,6 +1226,7 @@ final class PlayerViewModel: ObservableObject {
         suppressNextObservedPlaybackIntent(.pause)
         guard let player else { return }
         applyPlaybackIntent(to: player)
+        reapplyPlaybackRateAfterLifecycleTransition(trigger: "native-fullscreen-exit")
     }
 
     private func clearTransientPauseSuppression() {
