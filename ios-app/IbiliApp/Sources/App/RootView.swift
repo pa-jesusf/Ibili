@@ -111,6 +111,7 @@ struct RootView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var router = DeepLinkRouter()
     @State private var selectedMainTab: MainTab = .home
+    @State private var isOfflineMode = false
     @State private var retainsDismissedPlayerHost = false
     @State private var releaseDismissedPlayerHostWork: DispatchWorkItem?
     @State private var splitDetailProgress: CGFloat = 0
@@ -133,8 +134,19 @@ struct RootView: View {
                 if session.isLoggedIn {
                     mainContent(size: proxy.size, canSplit: canSplit, usesSplit: usesSplit)
                         .transition(.opacity)
+                } else if isOfflineMode {
+                    OfflineModeRootView {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isOfflineMode = false
+                        }
+                    }
+                    .transition(.opacity)
                 } else {
-                    LoginView()
+                    LoginView {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isOfflineMode = true
+                        }
+                    }
                         .transition(.opacity)
                 }
 
@@ -215,6 +227,9 @@ struct RootView: View {
             splitDetailProgress = 0
             splitLayoutBaseSize = nil
             splitFeedTransition.cancel()
+            if session.isLoggedIn {
+                isOfflineMode = false
+            }
         }
         .onDisappear {
             router.onWillSelectContent = nil
@@ -528,6 +543,28 @@ struct RootView: View {
             stack: router.livePath + rootContentLiveRoutes,
             foregroundRouteID: foregroundLiveRouteID
         )
+    }
+}
+
+private struct OfflineModeRootView: View {
+    let onExit: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            OfflineCacheListView()
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            onExit()
+                        } label: {
+                            Image(systemName: "chevron.backward")
+                        }
+                        .accessibilityLabel("退出离线模式")
+                    }
+                }
+        }
+        .tint(IbiliTheme.accent)
+        .background(IbiliTheme.background.ignoresSafeArea())
     }
 }
 

@@ -3,6 +3,7 @@ import SwiftUI
 struct LoginView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var vm = LoginViewModel()
+    let onEnterOfflineMode: () -> Void
 
     var body: some View {
         ZStack {
@@ -41,7 +42,17 @@ struct LoginView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(IbiliTheme.accent)
                 .padding(.horizontal, 32)
-                .padding(.bottom, 32)
+                Button {
+                    onEnterOfflineMode()
+                } label: {
+                    Label("进入离线模式", systemImage: "wifi.slash")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white.opacity(0.82))
+                .padding(.horizontal, 32)
+                .padding(.bottom, 24)
             }
         }
         .onAppear {
