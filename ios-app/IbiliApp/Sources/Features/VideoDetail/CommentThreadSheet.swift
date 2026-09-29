@@ -183,22 +183,22 @@ struct CommentThreadSheet: View {
             if focusedReplyRpid > 0 {
                 let target = targetedNextOffset.isEmpty && replies.isEmpty ? focusedReplyRpid : 0
                 let offset = targetedNextOffset
-                p = try await Task.detached(priority: .userInitiated) { [oid, kind, rootRpid] in
-                    try CoreClient.shared.replyDetailTarget(
+                p = try await CoreClient.shared.perform(priority: .userInitiated) { [oid, kind, rootRpid] core in
+                    try core.replyDetailTarget(
                         oid: oid,
                         kind: kind,
                         root: rootRpid,
                         targetRpid: target,
                         nextOffset: offset
                     )
-                }.value
+                }
                 targetedNextOffset = p.cursorNext
                 if p.upperMid > 0 { serverUpperMid = p.upperMid }
                 if let serverRoot = p.top { rootState = serverRoot }
             } else {
-                p = try await Task.detached(priority: .userInitiated) { [oid, kind, rootRpid, page] in
-                    try CoreClient.shared.replyDetail(oid: oid, kind: kind, root: rootRpid, page: page)
-                }.value
+                p = try await CoreClient.shared.perform(priority: .userInitiated) { [oid, kind, rootRpid, page] core in
+                    try core.replyDetail(oid: oid, kind: kind, root: rootRpid, page: page)
+                }
                 page += 1
             }
             if replies.isEmpty { total = p.total }
@@ -228,9 +228,9 @@ struct CommentThreadSheet: View {
         let next: Int32 = (target.action == 1) ? 0 : 1
         applyLike(rpid: target.rpid, action: next)
         do {
-            try await Task.detached(priority: .userInitiated) { [oid = root.oid, kind, rpid = target.rpid] in
-                try CoreClient.shared.replyLike(oid: oid, kind: kind, rpid: rpid, action: next)
-            }.value
+            try await CoreClient.shared.perform(priority: .userInitiated) { [oid = root.oid, kind, rpid = target.rpid] core in
+                try core.replyLike(oid: oid, kind: kind, rpid: rpid, action: next)
+            }
         } catch {
             applyLike(rpid: target.rpid, action: next == 1 ? 0 : 1)
             AppLog.error("comments", "点赞失败", error: error, metadata: ["rpid": String(target.rpid)])

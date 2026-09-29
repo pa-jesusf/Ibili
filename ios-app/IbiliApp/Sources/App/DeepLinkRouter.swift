@@ -513,9 +513,9 @@ final class DeepLinkRouter: ObservableObject {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
             do {
-                let season = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
-                }.value
+                let season = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.pgcSeason(seasonID: seasonID, epID: epID)
+                }
                 let episode = Self.selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
                 open(Self.makePgcFeedItem(season: season, episode: episode, resumePositionMs: resumePositionMs), mode: mode)
@@ -532,9 +532,9 @@ final class DeepLinkRouter: ObservableObject {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
             do {
-                let season = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
-                }.value
+                let season = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.pgcSeason(seasonID: seasonID, epID: epID)
+                }
                 let episode = Self.selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
                 select(Self.makePgcFeedItem(season: season, episode: episode))

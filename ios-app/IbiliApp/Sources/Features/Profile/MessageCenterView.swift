@@ -241,9 +241,9 @@ final class MessageUnreadViewModel: ObservableObject {
         defer { isLoading = false }
 
         do {
-            summary = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.messageUnreadSummary()
-            }.value
+            summary = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.messageUnreadSummary()
+            }
         } catch {
             AppLog.warning("message", "消息未读数加载失败", metadata: [
                 "error": error.localizedDescription,
@@ -279,9 +279,9 @@ private final class MessageCenterViewModel: ObservableObject {
 
     private func reloadSummary() async {
         do {
-            summary = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.messageUnreadSummary()
-            }.value
+            summary = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.messageUnreadSummary()
+            }
         } catch {
             AppLog.warning("message", "消息未读数加载失败", metadata: [
                 "error": error.localizedDescription,
@@ -296,9 +296,9 @@ private final class MessageCenterViewModel: ObservableObject {
         defer { isLoadingSessions = false }
 
         do {
-            let page = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.messageSessions()
-            }.value
+            let page = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.messageSessions()
+            }
             sessions = page.items
             sessionError = nil
         } catch {
@@ -361,13 +361,13 @@ private final class MessageFeedListViewModel: ObservableObject {
         do {
             let cursorID = reset ? 0 : nextCursorID
             let cursorTime = reset ? 0 : nextCursorTime
-            let page = try await Task.detached(priority: .userInitiated) { [kind] in
-                try CoreClient.shared.messageFeed(
+            let page = try await CoreClient.shared.perform(priority: .userInitiated) { [kind] core in
+                try core.messageFeed(
                     kind: kind.rawValue,
                     cursorID: cursorID,
                     cursorTime: cursorTime
                 )
-            }.value
+            }
             if reset {
                 items = page.items
             } else {

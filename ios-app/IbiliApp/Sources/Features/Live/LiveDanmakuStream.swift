@@ -29,9 +29,9 @@ final class LiveDanmakuStream: NSObject, URLSessionWebSocketDelegate {
         let generation = startGeneration
         isClosed = false
         do {
-            let info = try await Task.detached(priority: .utility) { [roomID] in
-                try CoreClient.shared.liveDanmakuInfo(roomID: roomID)
-            }.value
+            let info = try await CoreClient.shared.perform(priority: .utility) { [roomID] core in
+                try core.liveDanmakuInfo(roomID: roomID)
+            }
             guard !isClosed, generation == startGeneration else { return }
             guard let server = info.hostList.first(where: { $0.wssPort > 0 }) ?? info.hostList.first,
                   !server.host.isEmpty else {

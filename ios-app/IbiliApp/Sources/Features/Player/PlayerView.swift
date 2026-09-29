@@ -6,9 +6,9 @@ import UIKit
 private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> FeedItemDTO {
     guard !item.isPGC else { return item }
     guard item.cid <= 0 || item.aid <= 0 || item.linkSelection != nil else { return item }
-    let view = try await Task.detached(priority: .userInitiated) {
-        try CoreClient.shared.videoViewFull(aid: item.aid, bvid: item.bvid)
-    }.value
+    let view = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+        try core.videoViewFull(aid: item.aid, bvid: item.bvid)
+    }
     return try VideoLinkRequest.resolve(item, using: view)
 }
 
@@ -23,6 +23,7 @@ final class PlayerViewModel: ObservableObject {
     /// the master playlist + init segment are still loading from the
     /// local proxy.
     @Published private(set) var isVideoReady = false
+    @Published private(set) var isOverlayPresentationActive = false
     @Published private(set) var availableQualities: [(qn: Int64, label: String)] = []
     @Published var currentQn: Int64 = 0
     @Published private(set) var availableAudioQualities: [(qn: Int64, label: String)] = []
@@ -310,32 +311,13 @@ final class PlayerViewModel: ObservableObject {
             }
 
             let discoveryQnTarget = max(preferredQn, discoveryQn)
-            let initial: PlayUrlDTO
-            if !item.isPGC,
-               let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
-                                                        cid: item.cid,
-                                                        qn: discoveryQnTarget,
-                                                        audioQn: requestedAudioQn,
-                                                        cdn: cdnSelection) {
-                initial = warm
-                rememberPlayURL(warm)
-            } else {
-                initial = try await fetchPlayUrl(for: item, qn: discoveryQnTarget, audioQn: requestedAudioQn)
-            }
+            let initial = try await fetchPlayUrl(for: item, qn: discoveryQnTarget, audioQn: requestedAudioQn)
             guard isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
             let qualities = normalizedQualities(from: initial)
             let targetQn = resolveTargetQn(preferredQn: preferredQn, qualities: qualities, fallback: initial.quality)
             let info: PlayUrlDTO
             if targetQn == initial.quality {
                 info = initial
-            } else if !item.isPGC,
-                      let warm = PlayUrlPrefetcher.shared.take(aid: item.aid,
-                                                               cid: item.cid,
-                                                               qn: targetQn,
-                                                               audioQn: requestedAudioQn,
-                                                               cdn: cdnSelection) {
-                info = warm
-                rememberPlayURL(warm)
             } else {
                 info = try await fetchPlayUrl(for: item, qn: targetQn, audioQn: requestedAudioQn)
             }
@@ -462,7 +444,7 @@ final class PlayerViewModel: ObservableObject {
 
     /// Whether the engine still owns a live proxy stream. False after
     /// iOS suspends the app long enough to kill the listener.
-    var isEngineAlive: Bool { HLSProxyEngine.shared.isAlive }
+    private func isEngineAlive() async -> Bool { await HLSProxyEngine.shared.isAlive() }
 
     func handle(_ event: PlayerSessionEvent) {
         guard !isClosing || event == .interfaceDeactivated || event.isPictureInPictureStop else { return }
@@ -502,6 +484,8 @@ final class PlayerViewModel: ObservableObject {
             ]))
         }
         guard applied else { return }
+        let overlaysActive = behaviorState.interfaceIsActive && !behaviorState.pictureInPictureIsActive
+        if isOverlayPresentationActive != overlaysActive { isOverlayPresentationActive = overlaysActive }
 
         switch event {
         case .interfaceActivated, .interfaceDeactivated, .pictureInPictureTransition, .playbackIntentChanged:
@@ -614,7 +598,9 @@ final class PlayerViewModel: ObservableObject {
                 guard !self.isClosing else { return }
                 self.isPlaybackCompleted = false
                 self.handle(.playbackIntentChanged(.play))
-                guard !self.isEngineAlive else { return }
+                let generation = self.loadGeneration
+                let alive = await self.isEngineAlive()
+                guard !Task.isCancelled, !self.isClosing, self.loadGeneration == generation, !alive else { return }
                 if await self.recoverPlaybackFromPageCacheIfPossible(trigger: "system-remote-play") {
                     return
                 }
@@ -672,16 +658,21 @@ final class PlayerViewModel: ObservableObject {
         guard behaviorState.isInterfacePresentingPlayer else { return }
         guard let trackedPlayer = player else { return }
 
+        let generation = loadGeneration
+        let engineAlive = await isEngineAlive()
+        guard !Task.isCancelled, !isClosing, loadGeneration == generation,
+              player === trackedPlayer, behaviorState.isInterfacePresentingPlayer else { return }
+
         let recoveryAction = behaviorState.systemTransitionRecoveryAction(
             inactiveDuration: inactiveDuration,
-            engineIsAlive: isEngineAlive,
+            engineIsAlive: engineAlive,
             sourceIsOffline: isCurrentSourceOffline
         )
         switch recoveryAction {
         case .none:
             return
         case .rebuildSource:
-            let reason = isEngineAlive ? "long-paused-suspension" : "engine-dead"
+            let reason = engineAlive ? "long-paused-suspension" : "engine-dead"
             await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-\(reason)")
             return
         case .verifyPlaybackProgress:
@@ -940,6 +931,7 @@ final class PlayerViewModel: ObservableObject {
 
     func teardown() {
         isClosing = true
+        isOverlayPresentationActive = false
         dismissalFadeTask?.cancel()
         dismissalFadeTask = nil
         audioVolumeRampTask?.cancel()
@@ -1294,11 +1286,13 @@ final class PlayerViewModel: ObservableObject {
                 return CMTimeGetSeconds(player.currentTime())
             },
             send: { report in
-                Task.detached(priority: .background) {
-                    try? CoreClient.shared.archiveHeartbeat(
+                Task {
+                    try? await CoreClient.shared.perform(priority: .background) { core in
+                        try core.archiveHeartbeat(
                         aid: report.aid, bvid: report.bvid, cid: report.cid,
                         playedSeconds: report.playedSeconds
-                    )
+                        )
+                    }
                 }
             }
         )
@@ -1547,19 +1541,10 @@ final class PlayerViewModel: ObservableObject {
         }
         let cdnSelection = self.cdnSelection
         let codecPreference = self.playbackCodecPreference
-        let bvidSnapshot = bvid
-        let info = try await Task.detached {
-            try CoreClient.shared.playUrl(
-                aid: aid,
-                bvid: bvidSnapshot,
-                cid: cid,
-                qn: qn,
-                audioQn: audioQn,
-                cdn: cdnSelection,
-                codecPreference: codecPreference
-            )
-        }.value
-        return info
+        return try await PlayUrlPrefetcher.shared.value(
+            aid: aid, bvid: bvid, cid: cid, qn: qn, audioQn: audioQn,
+            cdn: cdnSelection, codecPreference: codecPreference
+        )
     }
 
     private func fetchPgcPlayUrl(item: FeedItemDTO, qn: Int64, audioQn: Int64) async throws -> PlayUrlDTO {
@@ -1579,8 +1564,8 @@ final class PlayerViewModel: ObservableObject {
         }
         let cdnSelection = self.cdnSelection
         let codecPreference = self.playbackCodecPreference
-        let info = try await Task.detached {
-            try CoreClient.shared.pgcPlayUrl(
+        let info = try await CoreClient.shared.perform { core in
+            try core.pgcPlayUrl(
                 aid: item.aid,
                 cid: item.cid,
                 epID: item.epID,
@@ -1590,7 +1575,7 @@ final class PlayerViewModel: ObservableObject {
                 cdn: cdnSelection,
                 codecPreference: codecPreference
             )
-        }.value
+        }
         return info
     }
 
@@ -2209,6 +2194,7 @@ struct PlayerView: View {
     @State private var pendingDanmakuLoadKey: String?
     @State private var loadedDanmakuKey: String?
     @State private var danmakuLoadGeneration = UUID()
+    @State private var danmakuLoadTask: Task<Void, Never>?
     @State private var danmakuLoadedSegments: Set<Int64> = []
     @State private var danmakuSegmentLoadTasks: [Int64: Task<Void, Never>] = [:]
     @State private var danmakuTimeObserver: Any?
@@ -2645,7 +2631,7 @@ struct PlayerView: View {
                                         danmaku: danmaku,
                                         subtitle: subtitle,
                                         subtitleEnabled: subtitleEnabled,
-                                        danmakuEnabled: settings.danmakuEnabled,
+                                        danmakuEnabled: shouldRunDanmaku,
                                         danmakuOpacity: settings.danmakuOpacity,
                                         danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
                                         danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
@@ -2919,6 +2905,9 @@ struct PlayerView: View {
             let work = DispatchWorkItem { danmakuHint = nil }
             danmakuHintWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work)
+        }
+        .onChange(of: shouldRunDanmaku) { _ in
+            updateDanmakuActivity()
         }
         .overlay(alignment: .top) {
             if let m = danmakuHint {
@@ -3231,7 +3220,7 @@ struct PlayerView: View {
     }
 
     private func loadDanmaku(generation: UUID) async {
-        guard generation == danmakuLoadGeneration, !Task.isCancelled else { return }
+        guard shouldRunDanmaku, generation == danmakuLoadGeneration, !Task.isCancelled else { return }
         do {
             let resolvedItem: FeedItemDTO
             if let currentFeedItem = vm.currentFeedItem {
@@ -3282,11 +3271,11 @@ struct PlayerView: View {
                 "cid": String(resolvedItem.cid),
                 "isPGC": String(resolvedItem.isPGC),
             ])
-            let sortedItems = try await Task.detached { [cid = resolvedItem.cid, durationSec = resolvedItem.durationSec] in
-                try CoreClient.shared.danmakuList(cid: cid, durationSec: durationSec)
+            let sortedItems = try await CoreClient.shared.perform { [cid = resolvedItem.cid, durationSec = resolvedItem.durationSec] core in
+                try core.danmakuList(cid: cid, durationSec: durationSec)
                     .items
                     .sorted { $0.timeSec < $1.timeSec }
-            }.value
+            }
             guard generation == danmakuLoadGeneration, !Task.isCancelled,
                   resolvedItem.cid == vm.currentCid else { return }
             vm.pageCache.storeDanmaku(sortedItems, for: resolvedItem.cid)
@@ -3305,14 +3294,33 @@ struct PlayerView: View {
     }
 
     private func loadPendingDanmakuIfNeeded() {
-        guard let key = pendingDanmakuLoadKey,
+        guard shouldRunDanmaku, vm.isVideoReady, let key = pendingDanmakuLoadKey,
               key == mediaLoadKey,
               loadedDanmakuKey != key else {
             return
         }
         loadedDanmakuKey = key
         let generation = danmakuLoadGeneration
-        Task { await loadDanmaku(generation: generation) }
+        danmakuLoadTask = Task { await loadDanmaku(generation: generation) }
+    }
+
+    private var shouldRunDanmaku: Bool {
+        settings.danmakuEnabled && settings.danmakuOpacity > 0
+            && scenePhase == .active && vm.isOverlayPresentationActive
+    }
+
+    private func updateDanmakuActivity() {
+        if shouldRunDanmaku {
+            if let player = vm.player { configureDanmakuSegmentObserver(for: player) }
+            loadPendingDanmakuIfNeeded()
+        } else {
+            danmakuLoadGeneration = UUID()
+            danmakuLoadTask?.cancel()
+            danmakuLoadTask = nil
+            loadedDanmakuKey = nil
+            cancelDanmakuSegmentTasks()
+            clearDanmakuTimeObserver()
+        }
     }
 
     private func usesSegmentedDanmaku(_ item: FeedItemDTO) -> Bool {
@@ -3321,13 +3329,14 @@ struct PlayerView: View {
 
     private func configureDanmakuSegmentObserver(for player: AVPlayer) {
         clearDanmakuTimeObserver()
+        guard shouldRunDanmaku else { return }
         let generation = danmakuLoadGeneration
         let interval = CMTime(seconds: 8, preferredTimescale: 600)
         danmakuTimeObserverPlayer = player
         danmakuTimeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak vm] time in
-            guard let current = vm?.currentFeedItem else { return }
             Task { @MainActor in
-                guard generation == self.danmakuLoadGeneration,
+                guard let current = vm?.currentFeedItem,
+                      generation == self.danmakuLoadGeneration,
                       self.vm.player === player, current.cid == self.vm.currentCid,
                       self.usesSegmentedDanmaku(current),
                       self.loadedDanmakuKey == self.mediaLoadKey else { return }
@@ -3340,9 +3349,9 @@ struct PlayerView: View {
             object: player.currentItem,
             queue: .main
         ) { [weak vm] _ in
-            guard let current = vm?.currentFeedItem else { return }
             Task { @MainActor in
-                guard generation == self.danmakuLoadGeneration,
+                guard let current = vm?.currentFeedItem,
+                      generation == self.danmakuLoadGeneration,
                       self.vm.player === player, current.cid == self.vm.currentCid,
                       self.usesSegmentedDanmaku(current),
                       self.loadedDanmakuKey == self.mediaLoadKey else { return }
@@ -3396,6 +3405,8 @@ struct PlayerView: View {
 
     private func resetDanmakuSegmentLoading() {
         danmakuLoadGeneration = UUID()
+        danmakuLoadTask?.cancel()
+        danmakuLoadTask = nil
         cancelDanmakuSegmentTasks()
         danmakuLoadedSegments.removeAll()
     }
@@ -3411,7 +3422,7 @@ struct PlayerView: View {
     }
 
     private func scheduleDanmakuSegments(around seconds: Double, for item: FeedItemDTO) {
-        guard usesSegmentedDanmaku(item), item.cid > 0 else { return }
+        guard shouldRunDanmaku, usesSegmentedDanmaku(item), item.cid > 0 else { return }
         let current = danmakuSegmentIndex(for: seconds)
         loadDanmakuSegment(current, for: item)
         let maxSegment = max(Int64(1), Int64(ceil(Double(item.durationSec) / Self.danmakuSegmentLengthSec)))
@@ -3445,11 +3456,11 @@ struct PlayerView: View {
                     "cid": String(cid),
                     "segment": String(segmentIndex),
                 ])
-                let sortedItems = try await Task.detached(priority: .utility) {
-                    try CoreClient.shared.danmakuSegment(cid: cid, segmentIndex: segmentIndex)
+                let sortedItems = try await CoreClient.shared.perform(priority: .utility) { core in
+                    try core.danmakuSegment(cid: cid, segmentIndex: segmentIndex)
                         .items
                         .sorted { $0.timeSec < $1.timeSec }
-                }.value
+                }
                 await MainActor.run {
                     guard generation == danmakuLoadGeneration, !Task.isCancelled,
                           cid == vm.currentCid else { return }

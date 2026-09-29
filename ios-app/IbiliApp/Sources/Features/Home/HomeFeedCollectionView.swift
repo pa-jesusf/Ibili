@@ -851,9 +851,9 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         }
         if representedURL == url, coverImageView.image != nil { return }
         representedURL = url
-        coverImageView.image = ImageCache.shared.image(for: url)
+        let maxPixelDimension = ImagePipeline.displayPixelDimension(for: targetSize)
+        coverImageView.image = ImageCache.shared.image(for: url, maxPixelDimension: maxPixelDimension)
         guard coverImageView.image == nil else { return }
-        let maxPixelDimension = max(targetSize.width, targetSize.height) * UIScreen.main.scale
         imageTask = Task { [weak self] in
             let image = await ImagePipeline.shared.image(for: url, maxPixelDimension: maxPixelDimension)
             guard !Task.isCancelled,

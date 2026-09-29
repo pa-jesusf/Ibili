@@ -225,12 +225,12 @@ private final class MessageConversationViewModel: ObservableObject {
 
         do {
             let endSequence = reset ? 0 : nextSequence
-            let page = try await Task.detached(priority: .userInitiated) { [talkerID] in
-                try CoreClient.shared.messageConversation(
+            let page = try await CoreClient.shared.perform(priority: .userInitiated) { [talkerID] core in
+                try core.messageConversation(
                     talkerID: talkerID,
                     endSequence: endSequence
                 )
-            }.value
+            }
             let sorted = page.items.sorted {
                 if $0.sequence == $1.sequence { return $0.timestamp < $1.timestamp }
                 return $0.sequence < $1.sequence
@@ -246,11 +246,13 @@ private final class MessageConversationViewModel: ObservableObject {
             error = nil
 
             if reset, page.ackSequence > 0 {
-                Task.detached(priority: .utility) { [talkerID] in
-                    try? CoreClient.shared.acknowledgeMessageConversation(
+                Task { [talkerID] in
+                    try? await CoreClient.shared.perform(priority: .utility) { core in
+                        try core.acknowledgeMessageConversation(
                         talkerID: talkerID,
                         sequence: page.ackSequence
-                    )
+                        )
+                    }
                 }
             }
         } catch {
@@ -267,9 +269,9 @@ private final class MessageConversationViewModel: ObservableObject {
         sendError = nil
         defer { isSending = false }
         do {
-            let sent = try await Task.detached(priority: .userInitiated) { [talkerID] in
-                try CoreClient.shared.sendMessageText(talkerID: talkerID, message: message)
-            }.value
+            let sent = try await CoreClient.shared.perform(priority: .userInitiated) { [talkerID] core in
+                try core.sendMessageText(talkerID: talkerID, message: message)
+            }
             withAnimation(.easeOut(duration: 0.2)) {
                 items = deduplicated(items + [sent])
             }

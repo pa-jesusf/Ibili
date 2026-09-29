@@ -28,7 +28,7 @@ final class SearchViewModel: ObservableObject {
             hasMore = true
             errorText = nil
             guard automaticallyLoads else { return }
-            Task { await fetchPage(1, keyword: activeQuery) }
+            schedulePage(1, keyword: activeQuery)
         }
     }
     @Published var selectedCategory: SearchCategory? = nil
@@ -63,6 +63,8 @@ final class SearchViewModel: ObservableObject {
     private let client: CoreClient
     private let automaticallyLoads: Bool
     private var suppressTypeAutoRefresh = false
+    private var requestGeneration = UUID()
+    private var requestTask: Task<Void, Never>?
 
     init(client: CoreClient = .shared, automaticallyLoads: Bool = true) {
         self.client = client
@@ -99,6 +101,8 @@ final class SearchViewModel: ObservableObject {
     private func submitResolvedQuery(_ rawQuery: String) -> Bool {
         let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        requestTask?.cancel()
+        requestGeneration = UUID()
         query = trimmed
         submittedQuery = trimmed
         hasSubmittedQuery = true
@@ -108,7 +112,7 @@ final class SearchViewModel: ObservableObject {
         hasMore = true
         errorText = nil
         if automaticallyLoads {
-            Task { await fetchPage(1, keyword: trimmed) }
+            schedulePage(1, keyword: trimmed)
         }
         return true
     }
@@ -116,23 +120,27 @@ final class SearchViewModel: ObservableObject {
     func loadNextPage() {
         guard hasActiveSubmittedQuery, hasMore, !isLoading else { return }
         let activeQuery = submittedQuery
-        Task { await fetchPage(page + 1, keyword: activeQuery) }
+        schedulePage(page + 1, keyword: activeQuery)
     }
 
     func loadPreviousPage() {
         guard hasActiveSubmittedQuery, page > 1, !isLoading else { return }
         let activeQuery = submittedQuery
-        Task { await fetchPage(page - 1, keyword: activeQuery) }
+        schedulePage(page - 1, keyword: activeQuery)
     }
 
     func loadPage(_ targetPage: Int64) {
         guard hasActiveSubmittedQuery, targetPage >= 1, targetPage != page, !isLoading else { return }
         let activeQuery = submittedQuery
-        Task { await fetchPage(targetPage, keyword: activeQuery) }
+        schedulePage(targetPage, keyword: activeQuery)
     }
 
     /// Clear results and return to the landing state.
     func reset() {
+        requestTask?.cancel()
+        requestTask = nil
+        requestGeneration = UUID()
+        isLoading = false
         query = ""
         submittedQuery = ""
         results = []
@@ -183,7 +191,16 @@ final class SearchViewModel: ObservableObject {
 
     // MARK: - Private
 
-    private func fetchPage(_ targetPage: Int64, keyword: String) async {
+    private func schedulePage(_ targetPage: Int64, keyword: String) {
+        requestTask?.cancel()
+        let generation = UUID()
+        requestGeneration = generation
+        isLoading = true
+        requestTask = Task { await fetchPage(targetPage, keyword: keyword, generation: generation) }
+    }
+
+    private func fetchPage(_ targetPage: Int64, keyword: String, generation: UUID) async {
+        guard generation == requestGeneration, !Task.isCancelled else { return }
         guard selectedType.isImplemented else {
             isLoading = false
             hasMore = false
@@ -193,7 +210,9 @@ final class SearchViewModel: ObservableObject {
         guard !queryCopy.isEmpty else { return }
 
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if generation == requestGeneration { isLoading = false; requestTask = nil }
+        }
 
         let typeCopy = selectedType
         let videoOrderCopy = order
@@ -211,7 +230,7 @@ final class SearchViewModel: ObservableObject {
                 let order = videoOrderCopy == .totalrank ? nil : videoOrderCopy.rawValue
                 let durationParam = durationCopy == .any ? nil : durationCopy.rawValue
                 let tids = categoryCopy?.tids
-                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                pageData = try await client.perform { client in
                     let page = try client.searchVideo(
                         keyword: queryCopy,
                         page: targetPage,
@@ -224,18 +243,18 @@ final class SearchViewModel: ObservableObject {
                         numResults: page.numResults,
                         numPages: page.numPages
                     )
-                }.value
+                }
             case .live:
-                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                pageData = try await client.perform { client in
                     let page = try client.searchLive(keyword: queryCopy, page: targetPage)
                     return SearchPageResult(
                         items: page.items.map(SearchResultItem.live),
                         numResults: page.numResults,
                         numPages: page.numPages
                     )
-                }.value
+                }
             case .user:
-                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                pageData = try await client.perform { client in
                     let page = try client.searchUser(
                         keyword: queryCopy,
                         page: targetPage,
@@ -248,9 +267,9 @@ final class SearchViewModel: ObservableObject {
                         numResults: page.numResults,
                         numPages: page.numPages
                     )
-                }.value
+                }
             case .article:
-                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                pageData = try await client.perform { client in
                     let page = try client.searchArticle(
                         keyword: queryCopy,
                         page: targetPage,
@@ -262,10 +281,10 @@ final class SearchViewModel: ObservableObject {
                         numResults: page.numResults,
                         numPages: page.numPages
                     )
-                }.value
+                }
             case .bangumi, .movie:
                 let searchType = typeCopy == .bangumi ? "media_bangumi" : "media_ft"
-                pageData = try await Task.detached(priority: .userInitiated) { [client] in
+                pageData = try await client.perform { client in
                     let page = try client.searchPgc(
                         keyword: queryCopy,
                         page: targetPage,
@@ -276,15 +295,17 @@ final class SearchViewModel: ObservableObject {
                         numResults: page.numResults,
                         numPages: page.numPages
                     )
-                }.value
+                }
             }
             // Guard against late callbacks for a stale submitted search.
-            guard queryCopy == self.submittedQuery, typeCopy == self.selectedType else { return }
+            guard !Task.isCancelled, generation == requestGeneration,
+                  queryCopy == self.submittedQuery, typeCopy == self.selectedType else { return }
             self.page = targetPage
             self.results = pageData.items
             self.totalResults = pageData.numResults
             self.hasMore = targetPage < pageData.numPages && !pageData.items.isEmpty
         } catch {
+            guard !Task.isCancelled, generation == requestGeneration else { return }
             errorText = (error as NSError).localizedDescription
             hasMore = false
         }

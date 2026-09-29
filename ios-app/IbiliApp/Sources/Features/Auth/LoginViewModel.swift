@@ -17,10 +17,10 @@ final class LoginViewModel: ObservableObject {
         var submit: (LoginAction, LoginRequestDTO) async throws -> LoginResultDTO
         static var live: Self {
             Self(
-                qrStart: { try await Task.detached { try CoreClient.shared.tvQrStart() }.value },
-                qrPoll: { code in try await Task.detached { try CoreClient.shared.tvQrPoll(authCode: code) }.value },
+                qrStart: { try await CoreClient.shared.perform { core in try core.tvQrStart() } },
+                qrPoll: { code in try await CoreClient.shared.perform { core in try core.tvQrPoll(authCode: code) } },
                 submit: { action, request in
-                    try await Task.detached { try CoreClient.shared.login(action, request: request) }.value
+                    try await CoreClient.shared.perform { core in try core.login(action, request: request) }
                 })
         }
     }

@@ -268,6 +268,7 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
         vc.setViewControllers([target], direction: direction, animated: false) { _ in
             coordinator.isProgrammaticUpdate = false
             coordinator.visibleIndex = index
+            coordinator.trimPages(around: index)
         }
     }
 
@@ -337,6 +338,10 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
             self.visibleIndex = visibleIndex
         }
 
+        func trimPages(around index: Int) {
+            controllers = controllers.filter { abs($0.key - index) <= 1 }
+        }
+
         private func update(_ controller: UIViewController, at index: Int) {
             guard let controller = controller as? UIHostingController<Page>,
                   parent.images.indices.contains(index) else { return }
@@ -359,9 +364,10 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
                                 didFinishAnimating finished: Bool,
                                 previousViewControllers: [UIViewController],
                                 transitionCompleted completed: Bool) {
-            guard completed,
-                  let current = pageViewController.viewControllers?.first,
+            guard let current = pageViewController.viewControllers?.first,
                   let currentIndex = index(of: current) else { return }
+            trimPages(around: currentIndex)
+            guard completed else { return }
             visibleIndex = currentIndex
             parent.pageZoomed = false
             parent.index = currentIndex
@@ -448,7 +454,10 @@ private struct ZoomablePreviewPage: View {
             }
         }
         .task(id: requestedURL) {
-            loader.load(url: requestedURL, fallbackURL: URL(string: image.thumbnailURL()))
+            loader.load(url: requestedURL, fallbackURL: URL(string: image.thumbnailURL()),
+                        fallbackPixelDimension: ImagePipeline.displayPixelDimension(for: CGSize(
+                            width: image.cachedThumbnailSide, height: image.cachedThumbnailSide
+                        )))
         }
         .onReceive(NotificationCenter.default.publisher(for: ImageCache.didStoreImageNotification)) { notification in
             guard ImageCache.storedURL(from: notification) == requestedURL else { return }
@@ -458,89 +467,57 @@ private struct ZoomablePreviewPage: View {
 }
 
 @MainActor
-private final class CachedRemoteImageLoader: ObservableObject {
+final class CachedRemoteImageLoader: ObservableObject {
     @Published var image: UIImage?
     @Published var failed = false
 
     private var task: Task<Void, Never>?
     private var loadedURL: URL?
+    private let pipeline: ImagePipeline
 
-    func load(url: URL?, fallbackURL: URL?) {
+    init(pipeline: ImagePipeline? = nil) { self.pipeline = pipeline ?? .shared }
+
+    func load(url: URL?, fallbackURL: URL?, fallbackPixelDimension: CGFloat) {
         task?.cancel()
         failed = false
         loadedURL = url
-        image = cachedImage(for: url) ?? cachedImage(for: fallbackURL)
-
-        guard let url else { return }
-        if ImageCache.shared.image(for: url) != nil {
-            return
-        }
-
         let maxDisplayPixelDimension = Self.maxDisplayPixelDimension()
-        task = Task { [url] in
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if Task.isCancelled { return }
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw URLError(.badServerResponse)
-                }
-                guard let raw = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
-                let display = self.downsample(raw, maxPixelDimension: maxDisplayPixelDimension)
-                ImageCache.shared.store(display, for: url, cost: data.count)
-                ImageDiskCache.shared.write(url, data: data)
-                await MainActor.run {
-                    guard self.loadedURL == url else { return }
-                    self.image = display
-                    self.failed = false
-                }
-            } catch {
-                await MainActor.run {
-                    guard self.loadedURL == url, self.image == nil else { return }
-                    self.failed = true
-                }
+        let primary = url.flatMap { ImageCache.shared.image(for: $0, maxPixelDimension: maxDisplayPixelDimension) }
+        image = primary ?? fallbackURL.flatMap { ImageCache.shared.image(for: $0, maxPixelDimension: fallbackPixelDimension) }
+        guard let url, primary == nil else { return }
+        task = Task { [weak self, url, pipeline] in
+            // The thumbnail remains a separate, cancellable consumer. Original
+            // decoding uses the same off-main pipeline as all other images.
+            let thumbnailTask = Task { [weak self] in
+                guard let fallbackURL, fallbackURL != url, self?.image == nil else { return }
+                let thumbnail = await pipeline.image(for: fallbackURL, maxPixelDimension: fallbackPixelDimension)
+                guard !Task.isCancelled, self?.loadedURL == url, self?.image == nil else { return }
+                self?.image = thumbnail
             }
+            defer { thumbnailTask.cancel() }
+            let display = await withTaskCancellationHandler {
+                let display = await pipeline.image(for: url, maxPixelDimension: maxDisplayPixelDimension)
+                if display == nil { await thumbnailTask.value }
+                return display
+            } onCancel: { thumbnailTask.cancel() }
+            guard !Task.isCancelled, let self, self.loadedURL == url else { return }
+            if let display { self.image = display }
+            self.failed = self.image == nil
         }
     }
 
     func useCachedImageIfAvailable(for url: URL?) {
         guard let url, loadedURL == url, image == nil else { return }
-        image = cachedImage(for: url)
+        image = ImageCache.shared.image(for: url, maxPixelDimension: Self.maxDisplayPixelDimension())
     }
 
     deinit { task?.cancel() }
-
-    private func cachedImage(for url: URL?) -> UIImage? {
-        guard let url else { return nil }
-        if let memory = ImageCache.shared.image(for: url) {
-            return memory
-        }
-        guard let data = ImageDiskCache.shared.read(url),
-              let raw = UIImage(data: data) else {
-            return nil
-        }
-        let display = downsample(raw, maxPixelDimension: Self.maxDisplayPixelDimension())
-        ImageCache.shared.store(display, for: url, cost: data.count)
-        return display
-    }
 
     @MainActor
     private static func maxDisplayPixelDimension() -> CGFloat {
         max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale * 1.5
     }
 
-    private nonisolated func downsample(_ image: UIImage, maxPixelDimension maxDim: CGFloat) -> UIImage {
-        let size = image.size
-        let scale = min(maxDim / max(size.width, 1), maxDim / max(size.height, 1))
-        guard scale < 0.9 else { return image }
-        let targetSize = CGSize(
-            width: (size.width * scale).rounded(),
-            height: (size.height * scale).rounded()
-        )
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        return renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-    }
 }
 
 /// Circular liquid-glass background for overlay buttons. iOS 26 picks

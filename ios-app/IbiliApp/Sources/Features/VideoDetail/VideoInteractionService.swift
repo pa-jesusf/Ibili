@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Optimistic-UI wrapper around the write-action endpoints exposed by
 /// the Rust core (like / coin / favorite / triple / follow / watch
@@ -46,8 +47,10 @@ final class VideoInteractionService: ObservableObject {
     @Published var lastToast: String?
 
     private var hydratedIdentity: HydrationIdentity?
+    private var hydrationGeneration = UUID()
+    private let client: CoreClient
 
-    init() {}
+    init(client: CoreClient = .shared) { self.client = client }
 
     func matchesHydratedState(aid: Int64, bvid: String) -> Bool {
         guard let hydratedIdentity else { return false }
@@ -56,6 +59,7 @@ final class VideoInteractionService: ObservableObject {
     }
 
     func resetForNextItem() {
+        hydrationGeneration = UUID()
         state = State()
         folders = []
         defaultFolderId = 0
@@ -81,26 +85,27 @@ final class VideoInteractionService: ObservableObject {
             return
         }
         isHydrating = true
+        let hydration = UUID()
+        hydrationGeneration = hydration
         // Concurrently fetch relation state + folder list + watch-later
         // membership so all three buttons can render their *real* state
         // on first paint instead of defaulting to inactive.
-        let snapshot = await Task.detached { () -> (ArchiveRelationDTO?, [FavFolderInfoDTO], Set<Int64>) in
-            async let relTask: ArchiveRelationDTO? = {
-                try? CoreClient.shared.archiveRelation(aid: aid, bvid: bvid)
-            }()
-            async let foldersTask: [FavFolderInfoDTO] = {
-                let selfMid = CoreClient.shared.sessionSnapshot().mid
-                guard selfMid > 0 else { return [] }
-                return (try? CoreClient.shared.favFolders(rid: aid, upMid: selfMid)) ?? []
-            }()
-            async let watchLaterTask: Set<Int64> = {
-                let aids = (try? CoreClient.shared.watchLaterAids()) ?? []
-                return Set(aids)
-            }()
-            let (rel, folders, wl) = await (relTask, foldersTask, watchLaterTask)
-            _ = ownerMid // unused; uploader follow state lives in `rel.attention`
-            return (rel, folders, wl)
-        }.value
+        let sessionGeneration = client.sessionGeneration
+        async let relation = try? client.perform { try $0.archiveRelation(aid: aid, bvid: bvid) }
+        async let foldersResult = try? client.perform { core -> [FavFolderInfoDTO] in
+            let selfMid = core.sessionSnapshot().mid
+            guard selfMid > 0 else { return [] }
+            return try core.favFolders(rid: aid, upMid: selfMid)
+        }
+        async let watchLater = try? client.perform { try $0.watchLaterAids() }
+        let results = await (relation, foldersResult, watchLater)
+        guard hydrationGeneration == hydration else { return }
+        guard !Task.isCancelled, sessionGeneration == client.sessionGeneration else {
+            isHydrating = false
+            return
+        }
+        let snapshot = (results.0, results.1 ?? [], Set(results.2 ?? []))
+        _ = ownerMid // Uploader follow state lives in the archive relation.
 
         if let rel = snapshot.0 {
             state.liked = rel.liked
@@ -135,9 +140,9 @@ final class VideoInteractionService: ObservableObject {
         let action: Int32 = willLike ? 1 : 2
         Task {
             do {
-                _ = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.archiveLike(aid: aid, action: action)
-                }.value
+                _ = try await client.perform(priority: .userInitiated) { core in
+                    try core.archiveLike(aid: aid, action: action)
+                }
             } catch {
                 state = old
                 lastToast = "操作失败"
@@ -158,9 +163,9 @@ final class VideoInteractionService: ObservableObject {
         }
         Task {
             do {
-                let toast = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.archiveCoin(aid: aid, multiply: multiply, alsoLike: alsoLike).toast
-                }.value
+                let toast = try await client.perform(priority: .userInitiated) { core in
+                    try core.archiveCoin(aid: aid, multiply: multiply, alsoLike: alsoLike).toast
+                }
                 if !toast.isEmpty { lastToast = toast }
             } catch {
                 state = old
@@ -186,9 +191,9 @@ final class VideoInteractionService: ObservableObject {
         if willFav { favoritedFolderIds = [defaultFolderId] } else { favoritedFolderIds.removeAll() }
         Task {
             do {
-                _ = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
-                }.value
+                _ = try await client.perform(priority: .userInitiated) { core in
+                    try core.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
+                }
             } catch {
                 state = old
                 favoritedFolderIds = oldFolderIds
@@ -212,9 +217,9 @@ final class VideoInteractionService: ObservableObject {
         // server toast or the next detail view refresh.
         Task {
             do {
-                _ = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
-                }.value
+                _ = try await client.perform(priority: .userInitiated) { core in
+                    try core.archiveFavorite(aid: aid, addIds: addIds, delIds: delIds)
+                }
                 lastToast = "收藏已更新"
             } catch {
                 state = old
@@ -247,10 +252,10 @@ final class VideoInteractionService: ObservableObject {
             // off before the eye registers the animation.
             async let minDelay: () = Task.sleep(nanoseconds: 700_000_000)
             do {
-                let result = try await Task.detached(priority: .userInitiated) {
-                    let response = try CoreClient.shared.archiveTriple(aid: aid)
+                let result = try await client.perform(priority: .userInitiated) { core in
+                    let response = try core.archiveTriple(aid: aid)
                     return (response.like, response.coin, response.fav, response.prompt)
-                }.value
+                }
                 try? await minDelay
                 state.liked = result.0 || state.liked
                 state.coined = result.1 || state.coined
@@ -283,9 +288,9 @@ final class VideoInteractionService: ObservableObject {
         let act: Int32 = willFollow ? 1 : 2
         Task {
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.relationModify(fid: fid, act: act)
-                }.value
+                try await client.perform(priority: .userInitiated) { core in
+                    try core.relationModify(fid: fid, act: act)
+                }
             } catch {
                 state = old
                 lastToast = "关注操作失败"
@@ -303,14 +308,14 @@ final class VideoInteractionService: ObservableObject {
         Task {
             do {
                 if willAdd {
-                    try await Task.detached(priority: .userInitiated) {
-                        try CoreClient.shared.watchLaterAdd(aid: aid)
-                    }.value
+                    try await client.perform(priority: .userInitiated) { core in
+                        try core.watchLaterAdd(aid: aid)
+                    }
                     lastToast = "已添加稍后再看"
                 } else {
-                    try await Task.detached(priority: .userInitiated) {
-                        try CoreClient.shared.watchLaterDel(aid: aid)
-                    }.value
+                    try await client.perform(priority: .userInitiated) { core in
+                        try core.watchLaterDel(aid: aid)
+                    }
                     lastToast = "已移除"
                 }
             } catch {

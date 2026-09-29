@@ -383,9 +383,9 @@ final class HistoryListViewModel: ObservableObject {
         if reset { nextMax = 0; nextViewAt = 0; isEnd = false }
         isLoading = true
         let max = nextMax, viewAt = nextViewAt
-        let page: HistoryPageDTO? = await Task.detached {
-            try? CoreClient.shared.userHistory(max: max, viewAt: viewAt)
-        }.value
+        let page: HistoryPageDTO? = try? await CoreClient.shared.perform { core in
+            try core.userHistory(max: max, viewAt: viewAt)
+        }
         isLoading = false
         guard let page else { isEnd = true; return }
         if reset { items = page.items } else { items.append(contentsOf: page.items) }
@@ -435,9 +435,9 @@ final class HistoryListViewModel: ObservableObject {
         searchIsLoading = true
         let keyword = searchKeyword
         let pageNumber = searchPage
-        let page: HistoryPageDTO? = await Task.detached {
-            try? CoreClient.shared.userHistorySearch(keyword: keyword, page: pageNumber)
-        }.value
+        let page: HistoryPageDTO? = try? await CoreClient.shared.perform { core in
+            try core.userHistorySearch(keyword: keyword, page: pageNumber)
+        }
         guard keyword == searchKeyword else { return }
         searchIsLoading = false
         guard let page else { searchIsEnd = true; return }
@@ -554,9 +554,9 @@ final class WatchLaterListViewModel: ObservableObject {
         keyword = nextKeyword
         isLoading = true
         let query = keyword
-        let result: [WatchLaterItemDTO] = await Task.detached {
-            (try? CoreClient.shared.userWatchLaterList(keyword: query)) ?? []
-        }.value
+        let result: [WatchLaterItemDTO] = (try? await CoreClient.shared.perform { core in
+            try core.userWatchLaterList(keyword: query)
+        }) ?? []
         guard query == keyword else { return }
         items = result
         isLoading = false
@@ -656,9 +656,9 @@ struct FavoritesFolderListView: View {
         .task {
             guard folders.isEmpty else { return }
             isLoading = true
-            let result: [FavFolderInfoDTO] = await Task.detached { [mid] in
-                (try? CoreClient.shared.favFolders(rid: 0, upMid: mid)) ?? []
-            }.value
+            let result: [FavFolderInfoDTO] = (try? await CoreClient.shared.perform { [mid] core in
+                try core.favFolders(rid: 0, upMid: mid)
+            }) ?? []
             folders = result
             isLoading = false
             if isSearching {
@@ -692,9 +692,9 @@ struct FavoritesFolderListView: View {
     private func reloadFolders() async {
         guard !isLoading else { return }
         isLoading = true
-        let result: [FavFolderInfoDTO] = await Task.detached { [mid] in
-            (try? CoreClient.shared.favFolders(rid: 0, upMid: mid)) ?? []
-        }.value
+        let result: [FavFolderInfoDTO] = (try? await CoreClient.shared.perform { [mid] core in
+            try core.favFolders(rid: 0, upMid: mid)
+        }) ?? []
         folders = result
         isLoading = false
         if isSearching, defaultSearchFolderID > 0 {
@@ -916,14 +916,14 @@ final class FavoriteResourcesViewModel: ObservableObject {
         isLoading = true
         let p = page
         let expectedKeyword = query
-        let result: FavResourcePageDTO? = await Task.detached {
-            try? CoreClient.shared.userFavResources(
+        let result: FavResourcePageDTO? = try? await CoreClient.shared.perform { core in
+            try core.userFavResources(
                 mediaId: folderId,
                 page: p,
                 keyword: expectedKeyword,
                 allFolders: allFolders
             )
-        }.value
+        }
         guard expectedKeyword == keyword else { return }
         isLoading = false
         guard let result else { isEnd = true; return }
@@ -1072,9 +1072,9 @@ final class SubscriptionFolderListViewModel: ObservableObject {
         let old = items
         items.removeAll { $0.id == item.id }
         do {
-            try await Task.detached {
-                try CoreClient.shared.userSubscriptionCancel(id: item.folderID, type: item.type)
-            }.value
+            try await CoreClient.shared.perform { core in
+                try core.userSubscriptionCancel(id: item.folderID, type: item.type)
+            }
         } catch {
             items = old
         }
@@ -1089,9 +1089,9 @@ final class SubscriptionFolderListViewModel: ObservableObject {
         }
         isLoading = true
         let p = page
-        let result: SubscriptionFolderPageDTO? = await Task.detached {
-            try? CoreClient.shared.userSubscriptions(mid: mid, page: p)
-        }.value
+        let result: SubscriptionFolderPageDTO? = try? await CoreClient.shared.perform { core in
+            try core.userSubscriptions(mid: mid, page: p)
+        }
         isLoading = false
         guard let result else { isEnd = true; return }
         items.append(contentsOf: result.items)
@@ -1185,9 +1185,9 @@ final class SubscriptionResourcesViewModel: ObservableObject {
         }
         isLoading = true
         let p = page
-        let result: SubscriptionResourcePageDTO? = await Task.detached {
-            try? CoreClient.shared.userSubscriptionResources(id: id, page: p)
-        }.value
+        let result: SubscriptionResourcePageDTO? = try? await CoreClient.shared.perform { core in
+            try core.userSubscriptionResources(id: id, page: p)
+        }
         isLoading = false
         guard let result else { isEnd = true; return }
         items.append(contentsOf: result.items)
@@ -1382,9 +1382,9 @@ final class FollowedPgcListViewModel: ObservableObject {
         isLoading = true
         let p = page
         do {
-            let result = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.userFollowedPgc(kind: 1, page: p)
-            }.value
+            let result = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.userFollowedPgc(kind: 1, page: p)
+            }
             isLoading = false
             items.append(contentsOf: result.items)
             if result.hasMore { page += 1 } else { isEnd = true }
@@ -1499,12 +1499,12 @@ final class RelationListViewModel: ObservableObject {
     private func fetch(vmid: Int64, scope: RelationListView.Scope) async {
         isLoading = true
         let p = page
-        let result: RelationPageDTO? = await Task.detached {
+        let result: RelationPageDTO? = try? await CoreClient.shared.perform { core in
             switch scope {
-            case .followings: return try? CoreClient.shared.userFollowings(vmid: vmid, page: p)
-            case .followers: return try? CoreClient.shared.userFollowers(vmid: vmid, page: p)
+            case .followings: return try core.userFollowings(vmid: vmid, page: p)
+            case .followers: return try core.userFollowers(vmid: vmid, page: p)
             }
-        }.value
+        }
         isLoading = false
         guard let result else { isEnd = true; return }
         items.append(contentsOf: result.items)

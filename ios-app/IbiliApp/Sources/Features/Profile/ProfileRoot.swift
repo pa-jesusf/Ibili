@@ -320,9 +320,9 @@ final class ProfileHeaderLoader: ObservableObject {
     func reload(mid: Int64) async {
         guard mid > 0 else { return }
         inflight = mid
-        let result: UserCardDTO? = await Task.detached {
-            try? CoreClient.shared.userCard(mid: mid)
-        }.value
+        let result: UserCardDTO? = try? await CoreClient.shared.perform { core in
+            try core.userCard(mid: mid)
+        }
         if let result, result.mid == mid {
             self.card = result
         }

@@ -86,9 +86,9 @@ final class UploaderCardLoader: ObservableObject {
             return
         }
         if card?.mid == mid { return }
-        let result: UserCardDTO? = await Task.detached {
-            try? CoreClient.shared.userCard(mid: mid)
-        }.value
+        let result: UserCardDTO? = try? await CoreClient.shared.perform { core in
+            try core.userCard(mid: mid)
+        }
         // Drop late responses if `mid` changed underneath us.
         if let result, result.mid == mid {
             self.card = result

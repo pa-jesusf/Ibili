@@ -276,12 +276,12 @@ final class ArticleViewModel: ObservableObject {
         errorText = nil
         do {
             let normalizedKind = kind == "opus" ? "opus" : "read"
-            let result = try await Task.detached(priority: .userInitiated) {
+            let result = try await CoreClient.shared.perform(priority: .userInitiated) { core in
                 if normalizedKind == "opus" {
-                    return try CoreClient.shared.articleOpus(id: id)
+                    return try core.articleOpus(id: id)
                 }
-                return try CoreClient.shared.articleRead(cvid: Int64(id) ?? 0)
-            }.value
+                return try core.articleRead(cvid: Int64(id) ?? 0)
+            }
             detail = result
         } catch {
             errorText = (error as NSError).localizedDescription

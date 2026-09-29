@@ -694,9 +694,9 @@ struct DynamicItemCard: View {
         defer { likeBusy = false }
         let next: Int32 = isLiked ? 2 : 1
         let dynId = item.idStr
-        let ok: Bool = await Task.detached {
-            (try? CoreClient.shared.dynamicLike(dynamicId: dynId, action: next)) != nil
-        }.value
+        let ok = (try? await CoreClient.shared.perform { core in
+            try core.dynamicLike(dynamicId: dynId, action: next)
+        }) != nil
         guard ok else { return }
         let currentCount = likeCount ?? item.stat.like
         isLiked.toggle()
@@ -1172,9 +1172,9 @@ final class DynamicFeedViewModel: ObservableObject {
         isLoading = true
         let p = page, off = offset
         let feedType = scope.rawValue
-        let result: DynamicFeedPageDTO? = await Task.detached {
-            try? CoreClient.shared.dynamicFeed(feedType: feedType, page: p, offset: off)
-        }.value
+        let result: DynamicFeedPageDTO? = try? await CoreClient.shared.perform { core in
+            try core.dynamicFeed(feedType: feedType, page: p, offset: off)
+        }
         isLoading = false
         guard let result else { isEnd = true; return }
         let existing = Set(items.map { $0.idStr })

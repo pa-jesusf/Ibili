@@ -148,9 +148,9 @@ struct LiveDanmakuSendSheet: View {
         errorText = nil
         defer { isSending = false }
         do {
-            try await Task.detached(priority: .userInitiated) { [roomID, msg, mode, color] in
-                try CoreClient.shared.sendLiveDanmaku(roomID: roomID, msg: msg, mode: mode, color: color)
-            }.value
+            try await CoreClient.shared.perform(priority: .userInitiated) { [roomID, msg, mode, color] core in
+                try core.sendLiveDanmaku(roomID: roomID, msg: msg, mode: mode, color: color)
+            }
             dismiss()
         } catch {
             errorText = (error as NSError).localizedDescription

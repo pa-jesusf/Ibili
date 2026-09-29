@@ -20,7 +20,7 @@ struct AppSessionServices {
         Self(load: SessionStore.load, save: SessionStore.save,
              restore: CoreClient.shared.restoreSession, clear: SessionStore.clear,
              logout: CoreClient.shared.logout,
-             check: { try await Task.detached { try CoreClient.shared.checkSession() }.value })
+             check: { try await CoreClient.shared.perform { try $0.checkSession() } })
     }
 }
 
@@ -47,8 +47,12 @@ final class AppSession: ObservableObject {
         }
         expirationObserver = NotificationCenter.default.addObserver(
             forName: .coreLoginExpired, object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.handleLoginExpired() }
+        ) { [weak self] notification in
+            let generation = notification.userInfo?["generation"] as? UUID
+            Task { @MainActor [weak self] in
+                if let generation, generation != CoreClient.shared.sessionGeneration { return }
+                self?.handleLoginExpired()
+            }
         }
     }
 

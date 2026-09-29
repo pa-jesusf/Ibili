@@ -134,16 +134,16 @@ final class LiveRoomViewModel: ObservableObject {
         errorText = nil
         stopCurrentPlayer(releaseAudioSession: true)
 
-        let fetchedInfo: LiveRoomInfoDTO? = await Task.detached {
-            try? CoreClient.shared.liveRoomInfo(roomID: route.roomID)
-        }.value
+        let fetchedInfo: LiveRoomInfoDTO? = try? await CoreClient.shared.perform { core in
+            try core.liveRoomInfo(roomID: route.roomID)
+        }
         guard isCurrentLoad(generation, roomID: route.roomID) else { return }
         info = fetchedInfo
 
         do {
-            let play = try await Task.detached(priority: .userInitiated) { [resolvedCdnSelection] in
-                try CoreClient.shared.livePlayUrl(roomID: route.roomID, cdn: resolvedCdnSelection)
-            }.value
+            let play = try await CoreClient.shared.perform(priority: .userInitiated) { [resolvedCdnSelection] core in
+                try core.livePlayUrl(roomID: route.roomID, cdn: resolvedCdnSelection)
+            }
             guard isCurrentLoad(generation, roomID: route.roomID) else { return }
             configurePlayer(with: play, roomID: route.roomID)
         } catch {
@@ -165,9 +165,9 @@ final class LiveRoomViewModel: ObservableObject {
         isLoading = true
         errorText = nil
         do {
-            let play = try await Task.detached(priority: .userInitiated) { [roomID, resolvedCdnSelection] in
-                try CoreClient.shared.livePlayUrl(roomID: roomID, qn: qn, cdn: resolvedCdnSelection)
-            }.value
+            let play = try await CoreClient.shared.perform(priority: .userInitiated) { [roomID, resolvedCdnSelection] core in
+                try core.livePlayUrl(roomID: roomID, qn: qn, cdn: resolvedCdnSelection)
+            }
             guard isCurrentLoad(generation, roomID: targetRoomID) else { return }
             configurePlayer(with: play, roomID: targetRoomID)
         } catch {
@@ -322,6 +322,7 @@ final class LiveRoomViewModel: ObservableObject {
 
 struct LiveRoomView: View {
     let route: DeepLinkRouter.LiveRoute
+    @Environment(\.scenePhase) private var scenePhase
 
     @StateObject private var vm: LiveRoomViewModel
     @State private var danmaku = DanmakuController()
@@ -421,7 +422,7 @@ struct LiveRoomView: View {
                     danmaku: danmaku,
                     subtitle: nil,
                     subtitleEnabled: false,
-                    danmakuEnabled: danmakuEnabled,
+                    danmakuEnabled: danmakuEnabled && scenePhase == .active,
                     danmakuOpacity: settings.danmakuOpacity,
                     danmakuBlockLevel: settings.resolvedDanmakuBlockLevel(),
                     danmakuFrameRate: settings.resolvedDanmakuFrameRate(),
@@ -503,10 +504,10 @@ struct LiveRoomView: View {
             }
         }
         do {
-            let items = try await Task.detached(priority: .utility) { [roomID] in
-                try CoreClient.shared.liveDanmakuHistory(roomID: roomID)
+            let items = try await CoreClient.shared.perform(priority: .utility) { [roomID] core in
+                try core.liveDanmakuHistory(roomID: roomID)
                     .items
-            }.value
+            }
             guard generation == lifecycleGeneration, route.roomID == roomID else { return }
             loadedDanmakuListRoomID = roomID
             guard !items.isEmpty else { return }

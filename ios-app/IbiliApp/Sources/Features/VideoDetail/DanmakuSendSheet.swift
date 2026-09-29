@@ -171,12 +171,12 @@ struct DanmakuSendSheet: View {
         errorText = nil
         defer { isSending = false }
         do {
-            try await Task.detached(priority: .userInitiated) { [aid, cid, msg, progressMs, mode, color] in
-                try CoreClient.shared.sendDanmaku(
+            try await CoreClient.shared.perform(priority: .userInitiated) { [aid, cid, msg, progressMs, mode, color] core in
+                try core.sendDanmaku(
                     aid: aid, cid: cid, msg: msg,
                     progressMs: progressMs, mode: mode, color: color
                 )
-            }.value
+            }
             let echo = DanmakuItemDTO(
                 timeSec: Float(Double(progressMs) / 1000.0),
                 mode: mode,

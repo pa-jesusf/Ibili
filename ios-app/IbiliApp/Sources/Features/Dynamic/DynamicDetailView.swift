@@ -160,9 +160,9 @@ struct DynamicDetailView: View {
         defer { likeBusy = false }
         let next: Int32 = isLiked ? 2 : 1 // 1=like, 2=unlike (matches upstream)
         let dynId = item.idStr
-        let ok: Bool = await Task.detached {
-            (try? CoreClient.shared.dynamicLike(dynamicId: dynId, action: next)) != nil
-        }.value
+        let ok = (try? await CoreClient.shared.perform { core in
+            try core.dynamicLike(dynamicId: dynId, action: next)
+        }) != nil
         if ok {
             isLiked.toggle()
             likeCount += isLiked ? 1 : -1

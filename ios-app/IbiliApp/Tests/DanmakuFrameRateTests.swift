@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import UIKit
 @testable import Ibili
 
 @MainActor
@@ -97,6 +98,8 @@ final class DanmakuLaneAllocatorTests: XCTestCase {
 final class DanmakuSynchronizedLayerTests: XCTestCase {
     func testDenseBurstMaterializesEveryDanmaku() async throws {
         let canvas = DanmakuCanvasView(frame: CGRect(x: 0, y: 0, width: 390, height: 220))
+        let window = mount(canvas)
+        defer { window.isHidden = true }
         let items = (0..<200).map { index in
             DanmakuItemDTO(
                 timeSec: 0,
@@ -135,6 +138,8 @@ final class DanmakuSynchronizedLayerTests: XCTestCase {
 
     func testNormalAndModeSevenBulletsShareSynchronizedTimeline() async throws {
         let canvas = DanmakuCanvasView(frame: CGRect(x: 0, y: 0, width: 390, height: 220))
+        let window = mount(canvas)
+        defer { window.isHidden = true }
         let modeSevenPayload: [Any] = [
             "0.1", "0.1", "1-0.4", 4, "advanced", 0, 0,
             "0.7", "0.6", 1_000, 200, 1, "", 1,
@@ -187,6 +192,41 @@ final class DanmakuSynchronizedLayerTests: XCTestCase {
             .first
         XCTAssertTrue(attachedAgain === synchronizedLayer)
         canvas.detach()
+    }
+
+    func testDisabledDetachedAndPictureInPictureCanvasStopScheduling() async {
+        let canvas = DanmakuCanvasView(frame: CGRect(x: 0, y: 0, width: 390, height: 220))
+        let window = mount(canvas)
+        defer { window.isHidden = true }
+        let player = AVPlayer(playerItem: AVPlayerItem(asset: AVMutableComposition()))
+        canvas.attach(player)
+        XCTAssertTrue(canvas.isRenderingActive)
+        canvas.renderingEnabled = false
+        XCTAssertFalse(canvas.isRenderingActive)
+        XCTAssertFalse(canvas.layer.sublayers?.contains(where: { $0 is AVSynchronizedLayer }) == true)
+        canvas.setItems([DanmakuItemDTO(timeSec: 0, mode: 1, color: 0xFFFFFF, fontSize: 25, text: "resume")])
+        canvas.renderingEnabled = true
+        XCTAssertTrue(canvas.isRenderingActive)
+        canvas.presentationAllowsRendering = false
+        XCTAssertFalse(canvas.isRenderingActive)
+        canvas.presentationAllowsRendering = true
+        XCTAssertTrue(canvas.isRenderingActive)
+        canvas.removeFromSuperview()
+        XCTAssertFalse(canvas.isRenderingActive)
+        window.addSubview(canvas)
+        await Task.yield()
+        XCTAssertTrue(canvas.isRenderingActive)
+        canvas.detach()
+        XCTAssertFalse(canvas.isRenderingActive)
+    }
+
+    private func mount(_ canvas: DanmakuCanvasView) -> UIWindow {
+        let window = UIWindow(frame: canvas.frame)
+        window.rootViewController = UIViewController()
+        window.isHidden = false
+        canvas.renderingEnabled = true
+        window.addSubview(canvas)
+        return window
     }
 
     private func hasBrightOpaquePixel(in image: CGImage) -> Bool {

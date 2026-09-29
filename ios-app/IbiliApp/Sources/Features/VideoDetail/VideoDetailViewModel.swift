@@ -40,9 +40,9 @@ final class VideoDetailViewModel: ObservableObject {
 
     func refreshStat() async {
         guard aid > 0 || !bvid.isEmpty else { return }
-        if let updated = try? await Task.detached(priority: .utility, operation: { [aid = self.aid, bvid = self.bvid] in
-            try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
-        }).value {
+        if let updated = try? await CoreClient.shared.perform(priority: .utility, { [aid = self.aid, bvid = self.bvid] core in
+            try core.videoViewFull(aid: aid, bvid: bvid)
+        }) {
             self.aid = updated.aid
             self.bvid = updated.bvid.isEmpty ? bvid : updated.bvid
             self.view = updated
@@ -72,9 +72,9 @@ final class VideoDetailViewModel: ObservableObject {
         // never appears to stall just because one page was all duplicates.
         for _ in 0..<3 {
             let idx = nextIdx
-            let page = await Task.detached(priority: .utility) {
-                (try? CoreClient.shared.feedHome(idx: idx, ps: 12, source: "web"))
-            }.value
+            let page = try? await CoreClient.shared.perform(priority: .utility) { core in
+                (try core.feedHome(idx: idx, ps: 12, source: "web"))
+            }
             guard let page else {
                 reachedEnd = true
                 break
@@ -110,9 +110,9 @@ final class VideoDetailViewModel: ObservableObject {
         isLoading = true
         errorText = nil
         do {
-            let v = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.videoViewFull(aid: aid, bvid: bvid)
-            }.value
+            let v = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.videoViewFull(aid: aid, bvid: bvid)
+            }
             guard generation == detailGeneration else { return }
             let resolvedBvid = v.bvid.isEmpty ? bvid : v.bvid
             self.aid = v.aid
@@ -130,9 +130,9 @@ final class VideoDetailViewModel: ObservableObject {
                 "pages": String(v.pages.count),
             ])
 
-            let fetchedRelated = await Task.detached(priority: .utility) {
-                (try? CoreClient.shared.videoRelated(aid: v.aid, bvid: resolvedBvid)) ?? []
-            }.value
+            let fetchedRelated = (try? await CoreClient.shared.perform(priority: .utility) { core in
+                try core.videoRelated(aid: v.aid, bvid: resolvedBvid)
+            }) ?? []
             guard generation == detailGeneration else { return }
             let initialRelated = fetchedRelated.filter { $0.aid > 0 && $0.aid != v.aid }
             _ = relatedStore.replace(with: initialRelated, generation: relatedGeneration)

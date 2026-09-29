@@ -574,12 +574,8 @@ final class UserSpaceViewModel: ObservableObject {
     }
 
     func loadHeader(mid: Int64) async {
-        async let cardResult: UserCardDTO? = Task.detached {
-            try? CoreClient.shared.userCard(mid: mid)
-        }.value
-        async let liveResult: UserLiveRoomDTO? = Task.detached {
-            try? CoreClient.shared.userLive(mid: mid)
-        }.value
+        async let cardResult = try? CoreClient.shared.perform { try $0.userCard(mid: mid) }
+        async let liveResult = try? CoreClient.shared.perform { try $0.userLive(mid: mid) }
         let loadedCard = await cardResult
         self.card = loadedCard
         self.isFollowed = loadedCard?.isFollowed ?? false
@@ -596,14 +592,7 @@ final class UserSpaceViewModel: ObservableObject {
         followBusy = true
         defer { followBusy = false }
         let act: Int32 = isFollowed ? 2 : 1
-        let ok: Bool = await Task.detached {
-            do {
-                try CoreClient.shared.relationModify(fid: mid, act: act)
-                return true
-            } catch {
-                return false
-            }
-        }.value
+        let ok = (try? await CoreClient.shared.perform { try $0.relationModify(fid: mid, act: act) }) != nil
         if ok { isFollowed.toggle() }
     }
 
@@ -627,9 +616,9 @@ final class UserSpaceViewModel: ObservableObject {
         archivesLoading = true
         defer { archivesLoading = false }
         let p = archivePage, kw = archiveKeyword, order = archiveOrder
-        let result: SpaceArcSearchPageDTO? = await Task.detached {
-            try? CoreClient.shared.spaceArcSearch(mid: mid, keyword: kw, order: order, page: p)
-        }.value
+        let result: SpaceArcSearchPageDTO? = try? await CoreClient.shared.perform { core in
+            try core.spaceArcSearch(mid: mid, keyword: kw, order: order, page: p)
+        }
         guard let result else { archivesEnd = true; return }
         let existing = Set(archives.map { $0.aid })
         let fresh = result.items.filter { !existing.contains($0.aid) }
@@ -657,9 +646,9 @@ final class UserSpaceViewModel: ObservableObject {
         dynamicsLoading = true
         defer { dynamicsLoading = false }
         let off = dynamicOffset
-        let result: DynamicFeedPageDTO? = await Task.detached {
-            try? CoreClient.shared.spaceDynamicFeed(hostMid: mid, offset: off)
-        }.value
+        let result: DynamicFeedPageDTO? = try? await CoreClient.shared.perform { core in
+            try core.spaceDynamicFeed(hostMid: mid, offset: off)
+        }
         guard let result else { dynamicsEnd = true; return }
         let existing = Set(dynamics.map { $0.idStr })
         let fresh = result.items.filter { !existing.contains($0.idStr) }

@@ -298,6 +298,13 @@ final class DanmakuCanvasView: UIView {
     private var lastObservedPlaybackTime: Double?
 
     private weak var player: AVPlayer?
+    var renderingEnabled = false {
+        didSet { if renderingEnabled != oldValue { updateRenderingActivity() } }
+    }
+    var presentationAllowsRendering = true {
+        didSet { if presentationAllowsRendering != oldValue { updateRenderingActivity() } }
+    }
+    var isRenderingActive: Bool { timeObserver != nil }
     private var timeObserver: Any?
     private var currentItemObservation: NSKeyValueObservation?
     private var timeJumpObserver: NSObjectProtocol?
@@ -387,6 +394,29 @@ final class DanmakuCanvasView: UIView {
         scheduleLayoutResynchronization()
     }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        updateRenderingActivity()
+    }
+
+    private func updateRenderingActivity() {
+        guard renderingEnabled, presentationAllowsRendering, window != nil, let player else {
+            layoutResynchronizationWork?.cancel()
+            layoutResynchronizationWork = nil
+            removeObservers()
+            installSynchronizedLayer(for: nil)
+            return
+        }
+        guard timeObserver == nil else { return }
+        addScheduler(to: player)
+        currentItemObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] observedPlayer, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.player === observedPlayer, self.isRenderingActive else { return }
+                self.installSynchronizedLayer(for: observedPlayer.currentItem)
+            }
+        }
+    }
+
     deinit {
         MainActor.assumeIsolated {
             layoutResynchronizationWork?.cancel()
@@ -410,6 +440,7 @@ final class DanmakuCanvasView: UIView {
     }
 
     func appendLive(_ item: DanmakuItemDTO) {
+        guard isRenderingActive else { return }
         let sourceInsert = sourceItems.firstIndex(where: { $0.timeSec > item.timeSec }) ?? sourceItems.count
         sourceItems.insert(item, at: sourceInsert)
         guard shouldInclude(item) else { return }
@@ -438,13 +469,7 @@ final class DanmakuCanvasView: UIView {
 
         removeObservers()
         self.player = player
-        addScheduler(to: player)
-        currentItemObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] observedPlayer, _ in
-            Task { @MainActor [weak self] in
-                guard self?.player === observedPlayer else { return }
-                self?.installSynchronizedLayer(for: observedPlayer.currentItem)
-            }
-        }
+        updateRenderingActivity()
     }
 
     func detach() {
@@ -488,6 +513,7 @@ final class DanmakuCanvasView: UIView {
     }
 
     private func handleSchedulerTick(at now: Double) {
+        guard isRenderingActive else { return }
         if let lastObservedPlaybackTime,
            now + 0.05 < lastObservedPlaybackTime
                 || now - lastObservedPlaybackTime > seekResyncThreshold {
@@ -1119,6 +1145,7 @@ final class DanmakuCanvasView: UIView {
     }
 
     private func scheduleLayoutResynchronization() {
+        guard isRenderingActive else { return }
         layoutResynchronizationWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }

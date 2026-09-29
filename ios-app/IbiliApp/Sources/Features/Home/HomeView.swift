@@ -239,9 +239,9 @@ private struct HomeFeedPage: View {
         guard aid > 0 else { return }
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.watchLaterAdd(aid: aid)
-                }.value
+                try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.watchLaterAdd(aid: aid)
+                }
                 showToast("已添加稍后再看")
             } catch {
                 showToast("稍后再看失败")
@@ -257,9 +257,9 @@ private struct HomeFeedPage: View {
         guard aid > 0 else { return }
         vm.hideItem(aid: aid)
         showToast("已减少此类推荐")
-        Task.detached(priority: .utility) {
+        Task {
             do {
-                try CoreClient.shared.archiveDislike(aid: aid)
+                try await CoreClient.shared.perform(priority: .utility) { try $0.archiveDislike(aid: aid) }
             } catch {
                 AppLog.error("home", "卡片菜单不感兴趣同步失败", error: error, metadata: [
                     "aid": String(aid),
@@ -277,13 +277,13 @@ private struct HomeFeedPage: View {
         showToast("正在撤销")
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .utility) {
+                try await CoreClient.shared.perform(priority: .utility) { core in
                     if usesFeedReasons, !feedGoto.isEmpty, feedID > 0 {
-                        try CoreClient.shared.feedDislikeCancel(goto: feedGoto, id: feedID)
+                        try core.feedDislikeCancel(goto: feedGoto, id: feedID)
                     } else {
-                        try CoreClient.shared.archiveDislike(aid: aid, dislike: false)
+                        try core.archiveDislike(aid: aid, dislike: false)
                     }
-                }.value
+                }
                 showToast("已撤销")
             } catch {
                 showToast("撤销失败")
@@ -308,13 +308,13 @@ private struct HomeFeedPage: View {
         }
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .utility) {
+                try await CoreClient.shared.perform(priority: .utility) { core in
                     if isFeedback {
-                        try CoreClient.shared.feedDislike(goto: feedGoto, id: feedID, feedbackID: reasonID)
+                        try core.feedDislike(goto: feedGoto, id: feedID, feedbackID: reasonID)
                     } else {
-                        try CoreClient.shared.feedDislike(goto: feedGoto, id: feedID, reasonID: reasonID)
+                        try core.feedDislike(goto: feedGoto, id: feedID, reasonID: reasonID)
                     }
-                }.value
+                }
                 vm.hideItem(aid: aid)
                 showToast(toast.isEmpty ? "已减少此类推荐" : toast)
             } catch {
@@ -340,10 +340,10 @@ private struct HomeFeedPage: View {
         showToast("已从当前列表隐藏")
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .userInitiated) {
+                try await CoreClient.shared.perform(priority: .userInitiated) { core in
                     // Bilibili relation API: act 5 = 拉黑.
-                    try CoreClient.shared.relationModify(fid: mid, act: 5)
-                }.value
+                    try core.relationModify(fid: mid, act: 5)
+                }
                 showToast(owner.isEmpty ? "已拉黑 UP 主" : "已拉黑 \(owner)")
             } catch {
                 showToast("拉黑失败")

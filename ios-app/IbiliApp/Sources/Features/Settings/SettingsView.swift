@@ -675,9 +675,9 @@ private enum CDNSpeedTester {
     }
 
     static func resolveSample() async throws -> Sample {
-        let page = try await Task.detached(priority: .utility) {
-            try CoreClient.shared.feedPopular(pn: 1, ps: 12)
-        }.value
+        let page = try await CoreClient.shared.perform(priority: .utility) { core in
+            try core.feedPopular(pn: 1, ps: 12)
+        }
         var lastError: Error?
         for item in page.items where item.aid > 0 {
             let aid = item.aid
@@ -685,15 +685,15 @@ private enum CDNSpeedTester {
             let title = item.title
             do {
                 let cid = try await resolveCid(for: item)
-                _ = try await Task.detached(priority: .utility) {
-                    try CoreClient.shared.playUrl(
+                _ = try await CoreClient.shared.perform(priority: .utility) { core in
+                    try core.playUrl(
                         aid: aid,
                         bvid: bvid,
                         cid: cid,
                         qn: sampleQn,
                         cdn: MediaCDNService.auto.rawValue
                     )
-                }.value
+                }
                 let sampleTitle = title.isEmpty ? "av\(aid)" : title
                 return Sample(aid: aid, bvid: bvid, cid: cid, title: sampleTitle)
             } catch {
@@ -706,15 +706,15 @@ private enum CDNSpeedTester {
 
     static func measure(service: MediaCDNService, sample: Sample) async -> CDNSpeedResult {
         do {
-            let play = try await Task.detached(priority: .utility) {
-                try CoreClient.shared.playUrl(
+            let play = try await CoreClient.shared.perform(priority: .utility) { core in
+                try core.playUrl(
                     aid: sample.aid,
                     bvid: sample.bvid,
                     cid: sample.cid,
                     qn: sampleQn,
                     cdn: service.rawValue
                 )
-            }.value
+            }
             let urls = ([play.url] + play.backupUrls).compactMap(URL.init(string:))
             guard !urls.isEmpty else { return .failure("无地址") }
             let start = CFAbsoluteTimeGetCurrent()
@@ -733,13 +733,13 @@ private enum CDNSpeedTester {
         let bvid = item.bvid
         let aid = item.aid
         if !bvid.isEmpty {
-            return try await Task.detached(priority: .utility) {
-                try CoreClient.shared.videoViewCid(bvid: bvid)
-            }.value
+            return try await CoreClient.shared.perform(priority: .utility) { core in
+                try core.videoViewCid(bvid: bvid)
+            }
         }
-        let view = try await Task.detached(priority: .utility) {
-            try CoreClient.shared.videoViewFull(aid: aid)
-        }.value
+        let view = try await CoreClient.shared.perform(priority: .utility) { core in
+            try core.videoViewFull(aid: aid)
+        }
         if view.cid > 0 { return view.cid }
         if let cid = view.pages.first?.cid, cid > 0 { return cid }
         throw CDNSpeedTestError.noPlayableSample

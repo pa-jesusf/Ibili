@@ -360,9 +360,9 @@ final class OfflineDownloadService: ObservableObject {
             upsert(metadata)
             writeMetadata(metadata, to: directory)
 
-            let offline = try await Task.detached(priority: .userInitiated) {
+            let offline = try await CoreClient.shared.perform(priority: .userInitiated) { core in
                 if request.item.isPGC {
-                    return try CoreClient.shared.pgcOfflinePlayUrl(
+                    return try core.pgcOfflinePlayUrl(
                         aid: request.item.aid,
                         cid: request.item.cid,
                         epID: request.item.epID,
@@ -372,7 +372,7 @@ final class OfflineDownloadService: ObservableObject {
                         cdn: request.cdn
                     )
                 }
-                return try CoreClient.shared.offlinePlayUrl(
+                return try core.offlinePlayUrl(
                     aid: request.item.aid,
                     bvid: request.item.bvid,
                     cid: request.item.cid,
@@ -380,7 +380,7 @@ final class OfflineDownloadService: ObservableObject {
                     audioQn: request.audioQn,
                     cdn: request.cdn
                 )
-            }.value
+            }
 
             try Task.checkCancellation()
             let trimmedAudioURL = offline.play.audioUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -604,9 +604,9 @@ final class OfflineDownloadService: ObservableObject {
         do {
             ensureDirectory(directory)
             let duration = metadata.durationSec
-            let track = try await Task.detached(priority: .utility) {
-                try CoreClient.shared.danmakuList(cid: metadata.cid, durationSec: duration)
-            }.value
+            let track = try await CoreClient.shared.perform(priority: .utility) { core in
+                try core.danmakuList(cid: metadata.cid, durationSec: duration)
+            }
             let archive = OfflineDanmakuArchive(
                 schemaVersion: 1,
                 cid: metadata.cid,

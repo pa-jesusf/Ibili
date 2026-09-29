@@ -139,7 +139,12 @@ struct RichReplyText: View {
 private final class ReplyEmoteImageCache {
     static let shared = ReplyEmoteImageCache()
 
-    private let renderedCache = NSCache<NSString, UIImage>()
+    private let renderedCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 256
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
     private static var placeholders: [Int: UIImage] = [:]
 
@@ -154,30 +159,17 @@ private final class ReplyEmoteImageCache {
         }
         let task = Task<UIImage?, Never> {
             guard let url = URL(string: emote.url) else { return nil }
-            let rawKey = url as NSURL
-            let rawImage: UIImage
-            if let cached = ImageCache.shared.cache.object(forKey: rawKey) {
-                rawImage = cached
-            } else {
-                do {
-                    let (data, response) = try await URLSession.shared.data(from: url)
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        return nil
-                    }
-                    guard let decoded = UIImage(data: data) else { return nil }
-                    ImageCache.shared.cache.setObject(decoded, forKey: rawKey, cost: data.count)
-                    rawImage = decoded
-                } catch {
-                    return nil
-                }
+            let scale = UIScreen.main.scale
+            guard let rawImage = await ImagePipeline.shared.image(for: url, maxPixelDimension: pointSize * scale) else { return nil }
+            return try? await BlockingWorkQueue.images.run(priority: .utility) {
+                Self.renderedSquare(rawImage, pointSize: pointSize, scale: scale)
             }
-            return Self.renderedSquare(rawImage, pointSize: pointSize)
         }
         inFlight[taskKey] = task
         let image = await task.value
         inFlight[taskKey] = nil
         if let image {
-            renderedCache.setObject(image, forKey: cacheKey, cost: Int(image.size.width * image.size.height * image.scale * image.scale * 4))
+            renderedCache.setObject(image, forKey: cacheKey, cost: ImageCache.decodedCost(of: image))
         }
         return image
     }
@@ -195,7 +187,7 @@ private final class ReplyEmoteImageCache {
         return image
     }
 
-    private static func renderedSquare(_ image: UIImage, pointSize: CGFloat) -> UIImage {
+    private nonisolated static func renderedSquare(_ image: UIImage, pointSize: CGFloat, scale displayScale: CGFloat) -> UIImage {
         let canvas = CGSize(width: pointSize, height: pointSize)
         let imageSize = image.size
         let scale = min(canvas.width / max(imageSize.width, 1), canvas.height / max(imageSize.height, 1))
@@ -204,7 +196,9 @@ private final class ReplyEmoteImageCache {
             x: (canvas.width - drawSize.width) / 2,
             y: (canvas.height - drawSize.height) / 2
         )
-        let renderer = UIGraphicsImageRenderer(size: canvas)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = displayScale
+        let renderer = UIGraphicsImageRenderer(size: canvas, format: format)
         return renderer.image { _ in
             image.draw(in: CGRect(origin: drawOrigin, size: drawSize))
         }

@@ -361,9 +361,9 @@ struct SearchResultsView: View {
         guard aid > 0 else { return }
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.watchLaterAdd(aid: aid)
-                }.value
+                try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.watchLaterAdd(aid: aid)
+                }
                 showToast("已添加稍后再看")
             } catch {
                 showToast("稍后再看失败")
@@ -378,9 +378,9 @@ struct SearchResultsView: View {
         guard aid > 0 else { return }
         vm.hideVideo(aid: aid)
         showToast("已减少此类结果")
-        Task.detached(priority: .utility) {
+        Task {
             do {
-                try CoreClient.shared.archiveDislike(aid: aid)
+                try await CoreClient.shared.perform(priority: .utility) { try $0.archiveDislike(aid: aid) }
             } catch {
                 AppLog.error("search", "卡片菜单不感兴趣同步失败", error: error, metadata: [
                     "aid": String(aid),
@@ -393,9 +393,9 @@ struct SearchResultsView: View {
         guard aid > 0 else { return }
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .utility) {
-                    try CoreClient.shared.archiveDislike(aid: aid, dislike: false)
-                }.value
+                try await CoreClient.shared.perform(priority: .utility) { core in
+                    try core.archiveDislike(aid: aid, dislike: false)
+                }
                 showToast("已撤销")
             } catch {
                 showToast("撤销失败")
@@ -416,9 +416,9 @@ struct SearchResultsView: View {
         showToast("已从当前结果隐藏")
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.relationModify(fid: mid, act: 5)
-                }.value
+                try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.relationModify(fid: mid, act: 5)
+                }
                 showToast(owner.isEmpty ? "已拉黑 UP 主" : "已拉黑 \(owner)")
             } catch {
                 showToast("拉黑失败")
@@ -442,9 +442,9 @@ struct SearchResultsView: View {
         resolvingPgcSeasonID = item.seasonID
         Task {
             do {
-                let season = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.pgcSeason(seasonID: item.seasonID)
-                }.value
+                let season = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.pgcSeason(seasonID: item.seasonID)
+                }
                 guard let episode = season.episodes.first else {
                     await MainActor.run { resolvingPgcSeasonID = nil }
                     return

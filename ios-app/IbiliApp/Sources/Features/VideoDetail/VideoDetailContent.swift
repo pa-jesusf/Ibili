@@ -766,9 +766,9 @@ struct VideoDetailContent: View {
         pgcErrorText = nil
         defer { pgcLoading = false }
         do {
-            let season = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
-            }.value
+            let season = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.pgcSeason(seasonID: seasonID, epID: epID)
+            }
             pgcSeason = season
         } catch {
             pgcErrorText = (error as NSError).localizedDescription

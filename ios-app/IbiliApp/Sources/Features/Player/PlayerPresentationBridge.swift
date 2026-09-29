@@ -160,6 +160,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         vc.videoGravity = .resizeAspect
 
         let canvas = danmaku.prepareCanvas()
+        canvas.renderingEnabled = danmakuEnabled && danmakuOpacity > 0
         canvas.blockLevel = danmakuBlockLevel
         canvas.preferredFrameRate = danmakuFrameRate
         canvas.normalStrokeWidth = CGFloat(danmakuStrokeWidth)
@@ -256,6 +257,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         context.coordinator.danmakuCanvas?.normalFontWeight = danmakuFontWeight
         context.coordinator.danmakuCanvas?.normalFontScale = CGFloat(danmakuFontScale)
         context.coordinator.danmakuCanvas?.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
+        context.coordinator.danmakuCanvas?.renderingEnabled = danmakuEnabled && danmakuOpacity > 0
         context.coordinator.subtitleOverlay?.setVisible(subtitleEnabled)
         context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: true)
     }
@@ -418,6 +420,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
+            danmakuCanvas?.presentationAllowsRendering = false
             guard !isDismantled else { return }
             pictureInPictureRestoreSucceeded = false
             AppLog.info("player", "PiP 即将开始")
@@ -426,6 +429,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func playerViewController(_ playerViewController: AVPlayerViewController,
                                   failedToStartPictureInPictureWithError error: Error) {
+            danmakuCanvas?.presentationAllowsRendering = true
             guard !isDismantled else { return }
             AppLog.warning("player", "PiP 启动失败", metadata: [
                 "error": error.localizedDescription,
@@ -437,6 +441,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
+            danmakuCanvas?.presentationAllowsRendering = true
             guard !isDismantled else { return }
             let reason: PlayerPictureInPictureStopReason = pictureInPictureRestoreSucceeded ? .restored : .closed
             pictureInPictureRestoreSucceeded = false

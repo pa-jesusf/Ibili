@@ -71,7 +71,7 @@ final class HLSProxyEngine: PlaybackEngine {
             videoFrameRateHint: source.videoFrameRate,
             videoRangeHint: source.videoRange
         )
-        let masterURL = try LocalHLSProxy.shared.register(token: token, source: registered)
+        let masterURL = try await LocalHLSProxy.shared.register(token: token, source: registered)
         liveTokens.insert(token)
 
         let asset = AVURLAsset(url: masterURL, options: nil)
@@ -126,9 +126,10 @@ final class HLSProxyEngine: PlaybackEngine {
     /// after the app comes back from a long background spell is the
     /// signal `PlayerView` uses to rebuild the AVPlayerItem against a
     /// freshly-bound port.
-    var isAlive: Bool {
+    func isAlive() async -> Bool {
         guard !liveTokens.isEmpty else { return false }
-        return LocalHLSProxy.shared.isHealthy
+        let healthy = await LocalHLSProxy.shared.isHealthy()
+        return healthy && !liveTokens.isEmpty
     }
 
     // MARK: - Helpers

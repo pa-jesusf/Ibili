@@ -105,9 +105,9 @@ final class HomeViewModel: ObservableObject {
             "source": sourceRaw,
         ])
         do {
-            let response = try await Task.detached {
-                try CoreClient.shared.feedHome(idx: targetIdx, ps: 20, source: sourceRaw)
-            }.value
+            let response = try await CoreClient.shared.perform { core in
+                try core.feedHome(idx: targetIdx, ps: 20, source: sourceRaw)
+            }
             guard store.accepts(generation: requestGeneration) else { return }
             let fresh = reset
                 ? store.replace(with: response.items, generation: requestGeneration)
@@ -145,9 +145,9 @@ final class HomeViewModel: ObservableObject {
             "section": section.rawValue,
         ])
         do {
-            let page = try await Task.detached {
-                try CoreClient.shared.feedPopular(pn: targetPage, ps: 20)
-            }.value
+            let page = try await CoreClient.shared.perform { core in
+                try core.feedPopular(pn: targetPage, ps: 20)
+            }
             guard store.accepts(generation: requestGeneration) else { return }
             let fresh = reset
                 ? store.replace(with: page.items, generation: requestGeneration)
@@ -209,9 +209,9 @@ final class LiveHomeViewModel: ObservableObject {
         }
         let targetPage = page
         do {
-            let response = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.liveFeed(page: targetPage)
-            }.value
+            let response = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.liveFeed(page: targetPage)
+            }
             guard store.accepts(generation: generation) else { return }
             let fresh = reset
                 ? store.replace(with: response.items, generation: generation)

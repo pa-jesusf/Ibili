@@ -74,9 +74,9 @@ final class CommentListViewModel: ObservableObject {
             }
         }
         do {
-            let page = try await Task.detached(priority: .userInitiated) { [oid, kind, sort] in
-                try CoreClient.shared.replyMain(oid: oid, kind: kind, sort: sort, nextOffset: "")
-            }.value
+            let page = try await CoreClient.shared.perform(priority: .userInitiated) { [oid, kind, sort] core in
+                try core.replyMain(oid: oid, kind: kind, sort: sort, nextOffset: "")
+            }
             guard requestGeneration == generation, self.oid == oid, self.kind == kind else { return }
             top = page.top
             total = page.total
@@ -115,14 +115,14 @@ final class CommentListViewModel: ObservableObject {
             }
         }
         do {
-            let page = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.replyMain(
+            let page = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.replyMain(
                     oid: requestOid,
                     kind: requestKind,
                     sort: requestSort,
                     nextOffset: requestOffset
                 )
-            }.value
+            }
             guard requestGeneration == generation,
                   self.oid == requestOid,
                   self.kind == requestKind,
@@ -152,9 +152,9 @@ final class CommentListViewModel: ObservableObject {
         let nextAction: Int32 = currentAction(for: rpid) == 1 ? 0 : 1
         applyLikeDelta(rpid: rpid, action: nextAction)
         do {
-            try await Task.detached(priority: .userInitiated) { [oid, kind] in
-                try CoreClient.shared.replyLike(oid: oid, kind: kind, rpid: rpid, action: nextAction)
-            }.value
+            try await CoreClient.shared.perform(priority: .userInitiated) { [oid, kind] core in
+                try core.replyLike(oid: oid, kind: kind, rpid: rpid, action: nextAction)
+            }
         } catch {
             // rollback
             applyLikeDelta(rpid: rpid, action: nextAction == 1 ? 0 : 1)

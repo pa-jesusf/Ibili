@@ -219,14 +219,14 @@ struct CommentListView: View {
               focusTarget.kind == kind,
               focusTarget.rootRpid > 0 else { return }
         do {
-            let page = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.replyDetailTarget(
+            let page = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.replyDetailTarget(
                     oid: focusTarget.oid,
                     kind: focusTarget.kind,
                     root: focusTarget.rootRpid,
                     targetRpid: focusTarget.replyRpid
                 )
-            }.value
+            }
             guard let root = page.top else { return }
             focusedThreadInitialPage = page
             focusedThreadReplyRpid = focusTarget.replyRpid

@@ -21,18 +21,61 @@ extension Notification.Name {
 public final class CoreClient: @unchecked Sendable {
     public static let shared = CoreClient()
 
-    private let handle: OpaquePointer
-    private let lock = NSLock()
-
-    private init() {
-        guard let h = "{}".withCString({ ibili_core_new($0) }) else {
-            fatalError("ibili_core_new returned null")
+    private final class Context: @unchecked Sendable {
+        let handle: OpaquePointer?
+        let transport: (@Sendable (String, String) throws -> String)?
+        let generation = UUID()
+        init(transport: (@Sendable (String, String) throws -> String)? = nil) {
+            self.transport = transport
+            if transport != nil { handle = nil; return }
+            guard let handle = "{}".withCString({ ibili_core_new($0) }) else {
+                fatalError("ibili_core_new returned null")
+            }
+            self.handle = handle
         }
-        self.handle = h
+        deinit { if let handle { ibili_core_free(handle) } }
     }
 
-    deinit {
-        ibili_core_free(handle)
+    private var context: Context
+    private let lock = NSLock()
+    private let mutationLock = NSLock()
+    private let owner: CoreClient?
+    private static let requestSlots = DispatchSemaphore(value: 4)
+
+    init(transport: (@Sendable (String, String) throws -> String)? = nil) {
+        context = Context(transport: transport)
+        owner = nil
+    }
+
+    private init(context: Context, owner: CoreClient) {
+        self.context = context
+        self.owner = owner
+    }
+
+    private func captureContext() -> Context {
+        lock.lock()
+        defer { lock.unlock() }
+        return context
+    }
+
+    var sessionGeneration: UUID { captureContext().generation }
+
+    /// Fix credentials before queueing, not when a worker eventually starts.
+    /// Replacing credentials never mutates an old request's cookie jar.
+    func perform<T>(priority: TaskPriority = .userInitiated,
+                    _ work: @escaping @Sendable (CoreClient) throws -> T) async throws -> T {
+        let captured = captureContext()
+        let client = CoreClient(context: captured, owner: owner ?? self)
+        return try await BlockingWorkQueue.core.run(priority: priority) {
+            try client.checkCurrent(captured)
+            let value = try work(client)
+            try client.checkCurrent(captured)
+            return value
+        }
+    }
+
+    private func checkCurrent(_ captured: Context) throws {
+        guard (owner ?? self).captureContext() === captured else { throw CancellationError() }
     }
 
     // MARK: - Dispatch
@@ -40,8 +83,11 @@ public final class CoreClient: @unchecked Sendable {
     private func call<T: Decodable>(_ method: String, args: Encodable? = nil, decoding: T.Type = T.self) throws -> T {
         let startedAt = CFAbsoluteTimeGetCurrent()
         let raw: String
+        let captured = captureContext()
         do {
-            raw = try callRaw(method, args: args)
+            raw = try callRaw(method, args: args, context: captured)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             AppLog.error("core", "Core 调用失败", error: error, metadata: [
                 "method": method,
@@ -71,6 +117,7 @@ public final class CoreClient: @unchecked Sendable {
             ])
             throw error
         }
+        try checkCurrent(captured)
 
         if env.ok, let d = env.data {
             // Promoted from .debug to .info so every API hit is
@@ -95,7 +142,7 @@ public final class CoreClient: @unchecked Sendable {
         if resolvedError.isLoginExpired, !method.hasPrefix("auth."), resolvedError.category != "auth_required" {
             NotificationCenter.default.post(name: .coreLoginExpired,
                                             object: nil,
-                                            userInfo: ["method": method])
+                                            userInfo: ["method": method, "generation": captured.generation])
         }
         throw resolvedError
     }
@@ -117,24 +164,31 @@ public final class CoreClient: @unchecked Sendable {
         }
     }
 
-    private func callRaw(_ method: String, args: Encodable?) throws -> String {
+    private func callRaw(_ method: String, args: Encodable?, context suppliedContext: Context? = nil) throws -> String {
+        let captured = suppliedContext ?? captureContext()
         var argsJson = "{}"
         if let a = args {
             let data = try JSONEncoder().encode(AnyEncodable(a))
             argsJson = String(data: data, encoding: .utf8) ?? "{}"
         }
-        let needsExclusiveCoreAccess = !Self.concurrentSafeMethods.contains(method)
-        if needsExclusiveCoreAccess {
-            lock.lock()
-        }
-        defer {
-            if needsExclusiveCoreAccess {
-                lock.unlock()
-            }
-        }
+        let localSnapshot = method == "session.snapshot"
+        let serialized = !localSnapshot && !Self.concurrentSafeMethods.contains(method)
+        let mutationLock = (owner ?? self).mutationLock
+        if serialized { mutationLock.lock() }
+        defer { if serialized { mutationLock.unlock() } }
+        if !localSnapshot { Self.requestSlots.wait() }
+        defer { if !localSnapshot { Self.requestSlots.signal() } }
+        try checkCurrent(captured)
+        let result = try Self.invoke(captured, method: method, argsJson: argsJson)
+        try checkCurrent(captured)
+        return result
+    }
+
+    private static func invoke(_ context: Context, method: String, argsJson: String) throws -> String {
+        if let transport = context.transport { return try transport(method, argsJson) }
         let resultPtr: UnsafeMutablePointer<CChar>? = method.withCString { mPtr in
             argsJson.withCString { aPtr in
-                ibili_call(handle, mPtr, aPtr)
+                ibili_call(context.handle, mPtr, aPtr)
             }
         }
         guard let ptr = resultPtr else {
@@ -149,7 +203,23 @@ public final class CoreClient: @unchecked Sendable {
         return s
     }
 
-    private static let concurrentSafeMethods: Set<String> = []
+    // Only operations that do not replace credentials or submit remote mutations.
+    // HttpClient/Jar and the internal session are thread-safe; auth's anonymous
+    // cookie sequence and remote mutations retain their own serial boundary.
+    private static let concurrentSafeMethods: Set<String> = [
+        "session.check", "feed.home", "feed.popular", "live.feed", "live.room_info",
+        "live.playurl", "live.danmaku_info", "live.danmaku_history", "video.playurl",
+        "video.offline_playurl", "pgc.playurl", "pgc.offline_playurl", "pgc.season",
+        "video.playurl.tv", "danmaku.list", "danmaku.segment", "video.view_cid",
+        "video.view_full", "video.related", "reply.main", "reply.detail", "reply.detail_target",
+        "interaction.archive_relation", "interaction.fav_folders", "interaction.watchlater_aids",
+        "interaction.emote_panel", "search.video", "search.live", "search.pgc", "search.user",
+        "search.article", "article.read", "article.opus", "user.card", "user.live", "user.history",
+        "user.history_search", "user.fav_resources", "user.subscriptions", "user.subscription_resources",
+        "user.followed_pgc", "message.unread", "message.feed", "message.sessions", "message.conversation",
+        "user.watchlater_list", "user.followings", "user.followers", "dynamic.feed",
+        "dynamic.space_feed", "user.space_arc_search", "packaging.offline_build",
+    ]
 
     // MARK: - High-level methods
 
@@ -162,11 +232,23 @@ public final class CoreClient: @unchecked Sendable {
     }
 
     public func restoreSession(_ p: PersistedSessionDTO) {
-        try? callVoid("session.restore", args: p)
+        do {
+            let next = Context(transport: captureContext().transport)
+            let data = try JSONEncoder().encode(p)
+            _ = try Self.invoke(next, method: "session.restore", argsJson: String(decoding: data, as: UTF8.self))
+            lock.lock()
+            context = next
+            lock.unlock()
+        } catch {
+            AppLog.error("session", "恢复核心会话失败", error: error)
+        }
     }
 
     public func logout() {
-        try? callVoid("session.logout")
+        let next = Context(transport: captureContext().transport)
+        lock.lock()
+        context = next
+        lock.unlock()
     }
 
     public func tvQrStart() throws -> TvQrStartDTO {

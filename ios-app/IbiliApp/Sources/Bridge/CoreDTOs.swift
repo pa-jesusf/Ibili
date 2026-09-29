@@ -980,7 +980,7 @@ public struct SearchArticlePageDTO: Decodable {
     }
 }
 
-public struct SearchPgcItemDTO: Decodable, Identifiable, Hashable {
+public struct SearchPgcItemDTO: Decodable, Identifiable, Hashable, Sendable {
     public var id: Int64 { seasonID }
     public let seasonID: Int64
     public let mediaID: Int64
@@ -1546,7 +1546,7 @@ public struct FavFolderInfoDTO: Decodable, Identifiable, Hashable {
 
 /// One image attached to a comment. Wire-compatible with what the
 /// `pictures` parameter on `/x/v2/reply/add` expects.
-public struct ReplyPictureDTO: Codable, Hashable {
+public struct ReplyPictureDTO: Codable, Hashable, Sendable {
     public let imgSrc: String
     public let imgWidth: Int32
     public let imgHeight: Int32

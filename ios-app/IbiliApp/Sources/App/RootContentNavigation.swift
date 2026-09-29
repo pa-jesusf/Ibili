@@ -250,9 +250,9 @@ struct RootContentNavigationActions {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
             do {
-                let season = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.pgcSeason(seasonID: seasonID, epID: epID)
-                }.value
+                let season = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.pgcSeason(seasonID: seasonID, epID: epID)
+                }
                 let episode = DeepLinkRouter.selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
                 openPlayer(DeepLinkRouter.makePgcFeedItem(season: season, episode: episode, resumePositionMs: resumePositionMs))

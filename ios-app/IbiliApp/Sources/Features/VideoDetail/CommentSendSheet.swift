@@ -204,9 +204,9 @@ struct CommentSendSheet: View {
         emotesLoading = true
         defer { emotesLoading = false }
         do {
-            let pkgs = try await Task.detached(priority: .userInitiated) {
-                try CoreClient.shared.emotePanel(business: "reply")
-            }.value
+            let pkgs = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                try core.emotePanel(business: "reply")
+            }
             emotePackages = pkgs
         } catch {
             // Silent — user can still post text only.
@@ -228,9 +228,9 @@ struct CommentSendSheet: View {
             var pictures: [ReplyPictureDTO] = []
             for image in images {
                 guard let data = image.jpegData(compressionQuality: 0.85) else { continue }
-                let uploaded = try await Task.detached(priority: .userInitiated) {
-                    try CoreClient.shared.uploadBfs(bytes: data, fileName: "comment.jpg")
-                }.value
+                let uploaded = try await CoreClient.shared.perform(priority: .userInitiated) { core in
+                    try core.uploadBfs(bytes: data, fileName: "comment.jpg")
+                }
                 pictures.append(ReplyPictureDTO(
                     imgSrc: uploaded.url,
                     imgWidth: uploaded.width,
@@ -244,13 +244,13 @@ struct CommentSendSheet: View {
             } else {
                 outgoingMessage = msg
             }
-            let result = try await Task.detached(priority: .userInitiated) { [oid, kind, root, parent, outgoingMessage, pictures] in
-                try CoreClient.shared.replyAdd(
+            let result = try await CoreClient.shared.perform(priority: .userInitiated) { [oid, kind, root, parent, outgoingMessage, pictures] core in
+                try core.replyAdd(
                     oid: oid, kind: kind,
                     message: outgoingMessage, root: root, parent: parent,
                     pictures: pictures
                 )
-            }.value
+            }
             // Synthesize a local-echo so the host can prepend it to
             // the comment list without a refetch round-trip.
             let echo = ReplyItemDTO(

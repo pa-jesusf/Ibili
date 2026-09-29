@@ -8,19 +8,26 @@ final class ImageCache {
     private static let storedURLUserInfoKey = "url"
     static let didStoreImageNotification = Notification.Name("IbiliImageCacheDidStoreImage")
 
-    let cache: NSCache<NSURL, UIImage> = {
-        let c = NSCache<NSURL, UIImage>()
+    private let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
         c.countLimit = 256
         c.totalCostLimit = 64 * 1024 * 1024 // 64 MB
         return c
     }()
 
-    func image(for url: URL) -> UIImage? {
-        cache.object(forKey: url as NSURL)
+    func image(for url: URL, maxPixelDimension: CGFloat) -> UIImage? {
+        cache.object(forKey: ImageRequestKey(url: url, maxPixelDimension: maxPixelDimension).cacheKey)
     }
 
-    func store(_ image: UIImage, for url: URL, cost: Int) {
-        cache.setObject(image, forKey: url as NSURL, cost: cost)
+    static func decodedCost(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage { return cgImage.bytesPerRow * cgImage.height }
+        return Int(ceil(image.size.width * image.scale) * ceil(image.size.height * image.scale) * 4)
+    }
+
+    func store(_ image: UIImage, for url: URL, maxPixelDimension: CGFloat) {
+        cache.setObject(image,
+                        forKey: ImageRequestKey(url: url, maxPixelDimension: maxPixelDimension).cacheKey,
+                        cost: Self.decodedCost(of: image))
         DispatchQueue.main.async {
             NotificationCenter.default.post(
                 name: Self.didStoreImageNotification,
@@ -51,23 +58,20 @@ final class CoverImagePrefetcher {
             return URL(string: resolved)
         }
         let maxPixelDimension = Self.maxPixelDimension(for: targetPointSize)
-        for url in urls where tasks[url] == nil && ImageCache.shared.image(for: url) == nil {
+        for url in urls where tasks[url] == nil && ImageCache.shared.image(for: url, maxPixelDimension: maxPixelDimension) == nil {
             if tasks.count >= maxConcurrent, let first = tasks.keys.first {
                 tasks[first]?.cancel()
                 tasks[first] = nil
             }
             tasks[url] = Task { [url, maxPixelDimension] in
-                defer { Task { @MainActor in self.tasks[url] = nil } }
                 _ = await ImagePipeline.shared.image(for: url, maxPixelDimension: maxPixelDimension)
+                if !Task.isCancelled { self.tasks[url] = nil }
             }
         }
     }
 
     private static func maxPixelDimension(for targetPointSize: CGSize) -> CGFloat {
-        let scale = UIScreen.main.scale
-        let maxScreenDimension = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * scale
-        let targetDimension = max(targetPointSize.width, targetPointSize.height) * scale
-        return min(max(targetDimension, 160), maxScreenDimension)
+        ImagePipeline.displayPixelDimension(for: targetPointSize)
     }
 }
 
@@ -89,16 +93,19 @@ private final class RemoteImageLoader: ObservableObject {
             failed = false
             return
         }
-        if loadedURL == url, image != nil { return }
-        loadedURL = url
-        if loadFromMemoryCache(url) { return }
         let maxDisplayPixelDimension = Self.maxDisplayPixelDimension(for: targetPointSize)
+        if loadedURL == url, loadedDimension == maxDisplayPixelDimension, image != nil { return }
         task?.cancel()
+        loadedURL = url
+        loadedDimension = maxDisplayPixelDimension
+        image = ImageCache.shared.image(for: url, maxPixelDimension: maxDisplayPixelDimension)
+        if image != nil { failed = false; return }
         failed = false
-        task = Task { [url] in
+        task = Task { [weak self, url] in
             let display = await ImagePipeline.shared.image(for: url, maxPixelDimension: maxDisplayPixelDimension)
             await MainActor.run {
-                guard self.loadedURL == url else { return }
+                guard !Task.isCancelled, let self, self.loadedURL == url,
+                      self.loadedDimension == maxDisplayPixelDimension else { return }
                 if let display {
                     self.image = display
                     self.failed = false
@@ -111,23 +118,11 @@ private final class RemoteImageLoader: ObservableObject {
 
     deinit { task?.cancel() }
 
-    @discardableResult
-    private func loadFromMemoryCache(_ url: URL) -> Bool {
-        guard let cached = ImageCache.shared.image(for: url) else { return false }
-        image = cached
-        failed = false
-        return true
-    }
+    private var loadedDimension: CGFloat = 0
 
     @MainActor
     private static func maxDisplayPixelDimension(for targetPointSize: CGSize?) -> CGFloat {
-        let scale = UIScreen.main.scale
-        let maxScreenDimension = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * scale
-        guard let targetPointSize else {
-            return maxScreenDimension
-        }
-        let targetDimension = max(targetPointSize.width, targetPointSize.height) * scale
-        return min(max(targetDimension, 160), maxScreenDimension)
+        ImagePipeline.displayPixelDimension(for: targetPointSize)
     }
 
 }
