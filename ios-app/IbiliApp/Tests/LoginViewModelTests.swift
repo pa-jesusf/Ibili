@@ -141,6 +141,51 @@ final class LoginViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testSmsCaptchaRetriesOriginalPhoneWithCompleteProofAndReceivesTicket() async throws {
+        var requests: [LoginRequestDTO] = []
+        var actions: [LoginAction] = []
+        let vm = LoginViewModel(services: services { action, request in
+            actions.append(action)
+            requests.append(request)
+            if requests.count == 1 {
+                return .captcha(.init(gt: "sms-gt", challenge: "server-challenge", token: "sms-token+original"))
+            }
+            return .smsSent("sms-ticket")
+        })
+        vm.select(.sms)
+        vm.phone = "13800000000"
+        vm.sendSMS()
+        await settle(vm)
+        let id = try XCTUnwrap(vm.captcha?.id)
+        vm.phone = "13900000000"
+        vm.countryCode = "1"
+        // Geetest may extend the challenge; submit its result, not the initial value.
+        vm.completeCaptcha(.init(challenge: "widget-challenge", validate: "validate", seccode: "validate|jordan",
+                                 token: "sms-token+original"), presentationID: id)
+        vm.captchaDidDismiss(presentationID: id)
+        await settle(vm)
+        XCTAssertEqual(actions, [.sendSMS, .sendSMS])
+        let encoded = try JSONEncoder().encode(requests[1])
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(json["tel"] as? String, "13800000000")
+        XCTAssertEqual(json["country_code"] as? String, "86")
+        XCTAssertEqual(json["captcha"] as? [String: String], [
+            "challenge": "widget-challenge", "validate": "validate", "seccode": "validate|jordan", "token": "sms-token+original"
+        ])
+        XCTAssertNil(vm.captcha)
+        XCTAssertFalse(vm.isCaptchaPresented)
+        XCTAssertEqual(vm.message, "短信验证码已发送")
+        XCTAssertGreaterThan(vm.smsCooldownRemaining(at: Date()), 0)
+        vm.phone = "13800000000"
+        vm.countryCode = "86"
+        vm.smsCode = "123456"
+        vm.submit()
+        await settle(vm)
+        XCTAssertEqual(actions.last, .sms)
+        XCTAssertEqual(requests.last?.captcha_key, "sms-ticket")
+    }
+
+    @MainActor
     func testSmsTicketCannotBeUsedForDifferentPhone() async {
         var calls = 0
         let vm = LoginViewModel(services: services { action, _ in

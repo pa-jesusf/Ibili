@@ -27,7 +27,7 @@ pub mod video;
 
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 pub use error::{CoreError, CoreResult};
 
@@ -35,6 +35,7 @@ pub use error::{CoreError, CoreResult};
 #[derive(Clone)]
 pub struct Core {
     pub(crate) http: Arc<http::HttpClient>,
+    pub(crate) login_http: Arc<Mutex<Option<Arc<http::HttpClient>>>>,
     pub(crate) session: Arc<RwLock<session::Session>>,
 }
 
@@ -43,6 +44,9 @@ impl Core {
         let http = http::HttpClient::new()?;
         Ok(Self {
             http: Arc::new(http),
+            // PiliPlus's AnonymousAccount retains Passport cookies between
+            // issuing a challenge and submitting its proof, separate from the live account.
+            login_http: Arc::new(Mutex::new(None)),
             session: Arc::new(RwLock::new(session::Session::default())),
         })
     }
@@ -57,11 +61,15 @@ impl Core {
         self.http.clear_web_cookies();
         self.http.install_web_cookies(&s.web_cookies);
         *self.session.write() = session::Session::from_persisted(s);
+        // Retire the whole anonymous context after accepting credentials.
+        // Late responses may still finish on their old Arc, never on the next login's jar.
+        self.login_http.lock().take();
     }
 
     pub fn logout(&self) {
         *self.session.write() = session::Session::default();
         self.http.clear_web_cookies();
+        self.login_http.lock().take();
     }
 
     pub fn packaging_offline_build(

@@ -10,7 +10,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use rsa::{pkcs8::DecodePublicKey, Pkcs1v15Encrypt, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 const PASSPORT: &str = "https://passport.bilibili.com";
 
@@ -64,8 +64,7 @@ pub enum LoginResult {
 
 impl Core {
     pub fn auth_login(&self, method: &str, request: LoginRequest) -> CoreResult<LoginResult> {
-        // A rejected/cancelled attempt must not modify the live account cookie jar.
-        let http = HttpClient::new()?;
+        let http = self.login_client(method)?;
         let mut form = app_form();
         add_captcha(&mut form, request.captcha.as_ref());
         match method {
@@ -128,24 +127,7 @@ impl Core {
                     ),
                 ]);
                 let response = post(&http, "/x/passport-login/sms/send", form, None)?;
-                if response.code == -105
-                    || response
-                        .data
-                        .as_ref()
-                        .is_some_and(|v| !str_field(v, "recaptcha_url").is_empty())
-                {
-                    let challenge = response
-                        .data
-                        .as_ref()
-                        .and_then(|v| challenge_from_url(str_field(v, "recaptcha_url")).ok());
-                    return Ok(LoginResult::Captcha {
-                        captcha: match challenge {
-                            Some(challenge) => challenge,
-                            None => pre_captcha(&http)?, // Documented upstream response without URL parameters.
-                        },
-                    });
-                }
-                sms_result(response)
+                sms_send_result(response, || pre_captcha(&http))
             }
             "auth.sms.login" => {
                 validate_phone(&request.country_code, &request.tel)?;
@@ -230,6 +212,22 @@ impl Core {
             _ => Err(CoreError::InvalidArgument(
                 "unsupported login method".into(),
             )),
+        }
+    }
+
+    fn login_client(&self, method: &str) -> CoreResult<Arc<HttpClient>> {
+        // Keep the anonymous device/cookies across CAPTCHA continuations.
+        // A manual Cookie candidate must not contaminate that context or the live account.
+        if method == "auth.cookie" {
+            Ok(Arc::new(HttpClient::new()?))
+        } else {
+            let mut cached = self.login_http.lock();
+            if let Some(http) = cached.as_ref() {
+                return Ok(Arc::clone(http));
+            }
+            let http = Arc::new(HttpClient::new()?);
+            *cached = Some(Arc::clone(&http));
+            Ok(http)
         }
     }
 }
@@ -457,8 +455,34 @@ fn sms_result(response: ApiEnvelope<Value>) -> CoreResult<LoginResult> {
     })
 }
 
+fn sms_send_result(
+    response: ApiEnvelope<Value>,
+    pre_captcha: impl FnOnce() -> CoreResult<CaptchaChallenge>,
+) -> CoreResult<LoginResult> {
+    let url = response
+        .data
+        .as_ref()
+        .map(|v| str_field(v, "recaptcha_url"))
+        .unwrap_or("");
+    if response.code == -105 || (response.code == 0 && !url.is_empty()) {
+        let captcha = if url.is_empty() {
+            pre_captcha()?
+        } else {
+            let parsed = captcha_url(url)?;
+            match challenge_from_params(&parsed) {
+                Some(challenge) => challenge,
+                // PiliPlus requests pre-captcha only when the response omits
+                // challenge fields, never just because its host differs.
+                None => pre_captcha()?,
+            }
+        };
+        return Ok(LoginResult::Captcha { captcha });
+    }
+    sms_result(response)
+}
+
 fn pre_captcha(http: &HttpClient) -> CoreResult<CaptchaChallenge> {
-    let value = data(post(http, "/x/safecenter/captcha/pre", vec![], None)?)?;
+    let value = data(http.post_login_captcha(&format!("{PASSPORT}/x/safecenter/captcha/pre"))?)?;
     challenge(
         str_field(&value, "gee_gt"),
         str_field(&value, "gee_challenge"),
@@ -467,7 +491,11 @@ fn pre_captcha(http: &HttpClient) -> CoreResult<CaptchaChallenge> {
 }
 
 fn challenge_from_url(raw: &str) -> CoreResult<CaptchaChallenge> {
-    let url = passport_url(raw)?;
+    challenge_from_params(&captcha_url(raw)?)
+        .ok_or_else(|| CoreError::Decode("人机验证参数不完整，请重试".into()))
+}
+
+fn challenge_from_params(url: &url::Url) -> Option<CaptchaChallenge> {
     let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
     challenge(
         params.get("gee_gt").map(|s| s.as_ref()).unwrap_or(""),
@@ -480,6 +508,24 @@ fn challenge_from_url(raw: &str) -> CoreResult<CaptchaChallenge> {
             .map(|s| s.as_ref())
             .unwrap_or(""),
     )
+    .ok()
+}
+
+fn captcha_url(raw: &str) -> CoreResult<url::Url> {
+    let url = url::Url::parse(raw)
+        .map_err(|_| CoreError::Decode("无效的人机验证地址".into()))?;
+    // This URL is only a container for challenge parameters, not a navigation
+    // or Referer destination. Bilibili also hosts these pages on www.bilibili.com.
+    let official = url.host_str()
+        .is_some_and(|host| host == "bilibili.com" || host.ends_with(".bilibili.com"));
+    if !matches!(url.scheme(), "https" | "http")
+        || !official
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(CoreError::InvalidArgument("人机验证地址不属于哔哩哔哩".into()));
+    }
+    Ok(url)
 }
 
 fn challenge(gt: &str, value: &str, token: &str) -> CoreResult<CaptchaChallenge> {
@@ -617,6 +663,96 @@ mod tests {
             challenge_from_url(&format!("https://passport.bilibili.com.evil.test{path}")).is_err()
         );
         assert!(challenge_from_url(&format!("{PASSPORT}/?gee_gt=g")).is_err());
+    }
+    #[test]
+    fn sms_keeps_challenge_from_bilibili_page_without_replacing_it() {
+        for code in [0, -105] {
+            let response = serde_json::from_value(json!({
+                "code": code, "message": "captcha required", "data": {
+                    "recaptcha_url": "https://www.bilibili.com/blackboard/activity-geetest.html?gee_gt=sms-gt&gee_challenge=sms-challenge&recaptcha_token=sms-token%2Boriginal"
+                }
+            })).unwrap();
+            let LoginResult::Captcha { captcha } = sms_send_result(response, || panic!("Must not replace the SMS challenge with pre-captcha")).unwrap() else {
+                panic!("expected captcha");
+            };
+            assert_eq!(captcha.gt, "sms-gt");
+            assert_eq!(captcha.challenge, "sms-challenge");
+            assert_eq!(captcha.token, "sms-token+original");
+            let mut form = app_form();
+            add_captcha(&mut form, Some(&CaptchaProof {
+                challenge: "widget-challenge".into(), validate: "widget-validate".into(),
+                seccode: "widget-seccode".into(), token: captcha.token,
+            }));
+            let form: std::collections::HashMap<_, _> = form.into_iter().collect();
+            assert_eq!(form["recaptcha_token"], "sms-token+original");
+            assert_eq!(form["gee_challenge"], "widget-challenge");
+            assert_eq!(form["gee_validate"], "widget-validate");
+            assert_eq!(form["gee_seccode"], "widget-seccode");
+        }
+    }
+    #[test]
+    fn sms_only_requests_pre_captcha_for_missing_parameters() {
+        for url in ["", "https://www.bilibili.com/blackboard/activity-geetest.html"] {
+            let response = serde_json::from_value(json!({
+                "code": -105, "data": {"recaptcha_url": url}
+            })).unwrap();
+            assert!(matches!(sms_send_result(response, || challenge("g", "c", "t")).unwrap(), LoginResult::Captcha { .. }));
+        }
+        for url in ["not-a-url", "https://bilibili.com.evil.test/?gee_gt=g", "javascript:alert(1)"] {
+            let response = serde_json::from_value(json!({"code": -105, "data": {"recaptcha_url": url}})).unwrap();
+            assert!(sms_send_result(response, || panic!("Invalid addresses must not be hidden by pre-captcha")).is_err());
+        }
+        let response = serde_json::from_value(json!({"code": 1003, "message": "rate limited", "data": {"recaptcha_url": "https://www.bilibili.com/"}})).unwrap();
+        assert!(matches!(sms_send_result(response, || panic!("API errors are not captcha requests")), Err(CoreError::Api { code: 1003, .. })));
+        // Relaxing the read-only CAPTCHA parameter parser must not relax risk Referers.
+        assert!(passport_url("https://www.bilibili.com/").is_err());
+        assert!(challenge_from_url("http://www.bilibili.com/?gee_gt=g&gee_challenge=c&recaptcha_token=t").is_ok());
+        assert!(passport_url("http://passport.bilibili.com/").is_err());
+    }
+    #[test]
+    fn login_continuations_keep_anonymous_cookies_without_touching_live_account() {
+        let core = Core::new("{}").unwrap();
+        core.http.install_web_cookies(&[("SESSDATA".into(), "live-account".into())]);
+        let first = core.login_client("auth.sms.send").unwrap();
+        let identity = first.snapshot_cookies();
+        first.install_web_cookies(&[("captcha-session".into(), "anonymous-cookie".into())]);
+        for method in ["auth.sms.send", "auth.sms.login", "auth.captcha", "auth.risk.send", "auth.risk.verify"] {
+            let next = core.clone().login_client(method).unwrap();
+            assert!(Arc::ptr_eq(&first, &next));
+            let cookies = next.snapshot_cookies();
+            assert!(identity.iter().all(|pair| cookies.contains(pair)));
+            assert!(cookies.contains(&("captcha-session".into(), "anonymous-cookie".into())));
+            assert!(!cookies.iter().any(|(name, _)| name == "SESSDATA"));
+        }
+        let manual = core.login_client("auth.cookie").unwrap();
+        manual.install_web_cookies(&[("SESSDATA".into(), "unaccepted-candidate".into())]);
+        assert!(!first.snapshot_cookies().iter().any(|(name, _)| name == "SESSDATA"));
+        assert!(core.http.snapshot_cookies().contains(&("SESSDATA".into(), "live-account".into())));
+        assert!(!core.http.snapshot_cookies().iter().any(|(name, _)| name == "captcha-session"));
+        assert!(!core.session_snapshot().logged_in);
+    }
+    #[test]
+    fn accepting_credentials_and_logout_retire_old_login_cookies() {
+        let core = Core::new("{}").unwrap();
+        let first = core.login_client("auth.password").unwrap();
+        first.install_web_cookies(&[("SESSDATA".into(), "candidate-account".into())]);
+        core.restore_session(PersistedSession {
+            mid: 42,
+            web_cookies: vec![("SESSDATA".into(), "accepted-account".into())],
+            ..Default::default()
+        });
+        let next = core.clone().login_client("auth.sms.send").unwrap();
+        assert!(!Arc::ptr_eq(&first, &next));
+        // Model a stale response arriving after the new anonymous context exists.
+        first.install_web_cookies(&[("late-cookie".into(), "old-response".into())]);
+        assert!(!next.snapshot_cookies().iter().any(|(name, _)| name == "SESSDATA" || name == "late-cookie"));
+        assert!(core.http.snapshot_cookies().contains(&("SESSDATA".into(), "accepted-account".into())));
+        next.install_web_cookies(&[("SESSDATA".into(), "another-candidate".into())]);
+        core.logout();
+        let after_logout = core.login_client("auth.password").unwrap();
+        assert!(!Arc::ptr_eq(&next, &after_logout));
+        assert!(!after_logout.snapshot_cookies().iter().any(|(name, _)| name == "SESSDATA"));
+        assert!(!core.session_snapshot().logged_in);
     }
     #[test]
     fn incomplete_login_is_not_success() {

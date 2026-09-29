@@ -391,6 +391,19 @@ impl HttpClient {
         &self, url: &str, form: Vec<(String, String)>, buvid: &str, referer: Option<&str>,
     ) -> CoreResult<ApiEnvelope<serde_json::Value>> {
         let request = self.login_form_request(url, form, buvid, referer)?;
+        Self::send_login_request(request)
+    }
+
+    /// PiliPlus preCapture is an unsigned, empty POST, not an app login form.
+    pub fn post_login_captcha(&self, url: &str) -> CoreResult<ApiEnvelope<serde_json::Value>> {
+        Self::send_login_request(self.login_captcha_request(url))
+    }
+
+    fn login_captcha_request(&self, url: &str) -> RequestBuilder {
+        self.client.post(url).headers(anonymous_login_headers())
+    }
+
+    fn send_login_request(request: RequestBuilder) -> CoreResult<ApiEnvelope<serde_json::Value>> {
         let response = request.send().map_err(|e| CoreError::Network(net_msg(&e)))?;
         let status = response.status();
         if !status.is_success() {
@@ -405,11 +418,18 @@ impl HttpClient {
     ) -> CoreResult<RequestBuilder> {
         crate::signer::AppSigner::sign(&mut form);
         let mut headers = app_headers();
+        // AccountManager overwrites these after LoginHttp.headers in PiliPlus.
+        headers.extend(anonymous_login_headers());
+        headers.insert("Content-Type", reqwest::header::HeaderValue::from_static(
+            "application/x-www-form-urlencoded; charset=utf-8",
+        ));
         headers.insert("buvid", reqwest::header::HeaderValue::from_str(buvid)
             .map_err(|_| CoreError::InvalidArgument("无效的登录设备标识".into()))?);
-        let mut request = self.client.post(url).headers(headers).form(&form);
-        if let Some(referer) = referer { request = request.header("Referer", referer); }
-        Ok(request)
+        if let Some(referer) = referer {
+            headers.insert("referer", reqwest::header::HeaderValue::from_str(referer)
+                .map_err(|_| CoreError::InvalidArgument("无效的安全验证地址".into()))?);
+        }
+        Ok(self.client.post(url).headers(headers).form(&form))
     }
 
     pub fn get_signed_web<T: DeserializeOwned>(
@@ -603,6 +623,18 @@ impl HttpClient {
         let bytes = resp.bytes().map_err(|e| CoreError::Network(net_msg(&e)))?;
         Ok(bytes.to_vec())
     }
+}
+
+fn anonymous_login_headers() -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderMap, HeaderValue};
+    let mut headers = HeaderMap::new();
+    for (name, value) in [
+        ("env", "prod"), ("app-key", "android64"),
+        ("x-bili-aurora-zone", "sh001"), ("referer", WEB_REFERER),
+    ] {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
+    headers
 }
 
 /// Render a reqwest error including the full source chain so the iOS layer can
@@ -835,6 +867,77 @@ mod login_tests {
         assert_eq!(params["buvid"], "XYtest-device");
         assert!(params.contains_key("sign"));
         assert!(request.url().query().is_none()); // Secrets belong in the HTTPS body, not URL logs.
+        assert_eq!(request.headers()["app-key"], "android64");
+        assert_eq!(request.headers()["x-bili-aurora-zone"], "sh001");
+        assert_eq!(request.headers()["referer"], WEB_REFERER);
+        assert_eq!(request.headers()["content-type"], "application/x-www-form-urlencoded; charset=utf-8");
+    }
+
+    #[test]
+    fn pre_captcha_is_unsigned_and_risk_referer_is_preserved() {
+        let http = HttpClient::new().unwrap();
+        let request = http.login_captcha_request("https://passport.bilibili.com/x/safecenter/captcha/pre").build().unwrap();
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert!(request.body().is_none());
+        assert!(request.url().query().is_none());
+        assert_eq!(request.headers()["referer"], WEB_REFERER);
+        let referer = "https://passport.bilibili.com/risk";
+        let risk = http.login_form_request("https://passport.bilibili.com/x/safecenter/common/sms/send", vec![], "XYtest", Some(referer)).unwrap().build().unwrap();
+        assert_eq!(risk.headers().get_all("referer").iter().count(), 1);
+        assert_eq!(risk.headers()["referer"], referer);
+    }
+
+    #[test]
+    fn passport_retry_sends_response_cookie_and_encoded_captcha_proof() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        // Loopback only: exercise reqwest's actual Set-Cookie and form encoding,
+        // without contacting Passport or sending an SMS.
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (socket, _) = server.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut headers = String::new();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" { break; }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap();
+                        }
+                    }
+                    headers.push_str(&line);
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                requests.push((headers, body));
+                let body = r#"{"code":0,"data":{"captcha_key":"test-ticket"}}"#;
+                write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: passport_context=test-context; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            }
+            requests
+        });
+        let http = HttpClient::new().unwrap();
+        let url = format!("http://{address}/sms/send");
+        http.post_login_form(&url, vec![], "XYtest", None).unwrap();
+        let proof: Vec<(String, String)> = [
+            ("gee_challenge", "widget-challenge"), ("gee_validate", "widget-proof"),
+            ("gee_seccode", "widget-proof|jordan"), ("recaptcha_token", "sms-token+original"),
+        ].into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        http.post_login_form(&url, proof.clone(), "XYtest", None).unwrap();
+        let requests = handle.join().unwrap();
+        assert!(!requests[0].0.contains("passport_context=test-context"));
+        assert!(requests[1].0.contains("passport_context=test-context"));
+        let sent: std::collections::HashMap<_, _> = url::form_urlencoded::parse(&requests[1].1)
+            .into_owned().collect();
+        for (key, value) in proof { assert_eq!(sent[&key], value); }
     }
 
     #[test]
