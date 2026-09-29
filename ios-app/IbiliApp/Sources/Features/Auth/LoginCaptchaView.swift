@@ -7,13 +7,17 @@ struct LoginCaptchaView: View {
     let onSuccess: (LoginCaptchaProof) -> Void
     let onCancel: () -> Void
     @State private var isLoading = true
+    @State private var isCompleting = false
     @State private var errorMessage: String?
     @State private var reloadID = 0
 
     var body: some View {
         SheetScaffold(title: "安全验证", showsDoneButton: false) {
             ZStack {
-                CaptchaWebView(challenge: challenge, onReady: { isLoading = false }, onSuccess: onSuccess,
+                CaptchaWebView(challenge: challenge, onReady: { isLoading = false }, onSuccess: { proof in
+                                   isCompleting = true
+                                   onSuccess(proof)
+                               },
                                onError: { isLoading = false; errorMessage = $0 }, onCancel: onCancel)
                     .id(reloadID)
                 if let errorMessage {
@@ -31,8 +35,8 @@ struct LoginCaptchaView: View {
                     .padding(28)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(IbiliTheme.background)
-                } else if isLoading {
-                    ProgressView("正在加载验证…")
+                } else if isLoading || isCompleting {
+                    ProgressView(isCompleting ? "验证完成，正在继续…" : "正在加载验证…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(IbiliTheme.background)
                 }
@@ -40,7 +44,9 @@ struct LoginCaptchaView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(IbiliTheme.background)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消", action: onCancel) }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", action: onCancel).disabled(isCompleting)
+                }
             }
         }
     }

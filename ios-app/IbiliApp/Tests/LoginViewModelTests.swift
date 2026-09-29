@@ -4,6 +4,102 @@ import Combine
 
 final class LoginViewModelTests: XCTestCase {
     @MainActor
+    func testCompletedCaptchaRetainsContentUntilSheetDismisses() async {
+        let vm = LoginViewModel(services: services { _, _ in
+            .captcha(.init(gt: "gt", challenge: "challenge", token: "token"))
+        })
+        vm.select(.password)
+        vm.username = "user"
+        vm.password = "pass"
+        vm.submit()
+        await settle(vm)
+        vm.completeCaptcha(.init(challenge: "challenge", validate: "proof", seccode: "sec", token: "token"), presentationID: vm.captcha!.id)
+        XCTAssertNotNil(vm.captcha, "Keep the current content alive through the native dismissal animation")
+        XCTAssertFalse(vm.isCaptchaPresented)
+        XCTAssertTrue(vm.isBusy)
+    }
+
+    @MainActor
+    func testContinuationWaitsForDismissalAndIgnoresOldPresentationCallbacks() async {
+        var requests: [LoginRequestDTO] = []
+        let vm = LoginViewModel(services: services { _, request in
+            requests.append(request)
+            // The service may reuse the recaptcha token for a second challenge.
+            return .captcha(.init(gt: "gt", challenge: "challenge-\(requests.count)", token: "token"))
+        })
+        await openPasswordChallenge(vm)
+        let firstID = vm.captcha!.id
+        let proof = LoginCaptchaProof(challenge: "challenge-1", validate: "proof", seccode: "sec", token: "token")
+        vm.completeCaptcha(proof, presentationID: firstID)
+        XCTAssertEqual(requests.count, 1, "Do not resume HTTP while the sheet is still dismissing")
+        vm.captchaPresentationChanged(false, presentationID: firstID)
+        vm.cancelCaptcha(presentationID: firstID) // Late close from the completed widget.
+        vm.captchaDidDismiss(presentationID: firstID)
+        vm.captchaDidDismiss(presentationID: firstID) // Duplicate must not submit twice.
+        await settle(vm)
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[1].captcha?.validate, "proof")
+        let secondID = vm.captcha!.id
+        XCTAssertNotEqual(firstID, secondID)
+        vm.completeCaptcha(proof, presentationID: firstID)
+        vm.cancelCaptcha(presentationID: firstID)
+        vm.captchaPresentationChanged(false, presentationID: firstID)
+        vm.captchaDidDismiss(presentationID: firstID)
+        XCTAssertTrue(vm.isCaptchaPresented)
+        XCTAssertEqual(vm.captcha?.id, secondID)
+        vm.captchaPresentationChanged(false, presentationID: secondID) // User swipes down.
+        vm.captchaDidDismiss(presentationID: secondID)
+        XCTAssertNil(vm.captcha)
+        XCTAssertEqual(requests.count, 2, "Cancelling a repeated challenge must not reuse the previous proof")
+    }
+
+    @MainActor
+    func testContinuationFailureReturnsToLoginWithVisibleError() async {
+        var requests = 0
+        let vm = LoginViewModel(services: services { _, _ in
+            requests += 1
+            if requests == 1 { return .captcha(.init(gt: "gt", challenge: "challenge", token: "token")) }
+            throw URLError(.notConnectedToInternet)
+        })
+        await openPasswordChallenge(vm)
+        let id = vm.captcha!.id
+        vm.completeCaptcha(.init(challenge: "challenge", validate: "proof", seccode: "sec", token: "token"), presentationID: id)
+        vm.captchaDidDismiss(presentationID: id)
+        await settle(vm)
+        XCTAssertFalse(vm.isCaptchaPresented)
+        XCTAssertNil(vm.captcha)
+        XCTAssertFalse(vm.isBusy)
+        XCTAssertNotNil(vm.message)
+    }
+
+    @MainActor
+    func testSwitchingLoginMethodInvalidatesPendingDismissalContinuation() async {
+        var requests = 0
+        let vm = LoginViewModel(services: services { _, _ in
+            requests += 1
+            return .captcha(.init(gt: "gt", challenge: "challenge", token: "token"))
+        })
+        await openPasswordChallenge(vm)
+        let id = vm.captcha!.id
+        vm.completeCaptcha(.init(challenge: "challenge", validate: "proof", seccode: "sec", token: "token"), presentationID: id)
+        vm.select(.sms)
+        vm.captchaDidDismiss(presentationID: id)
+        XCTAssertEqual(requests, 1)
+        XCTAssertEqual(vm.method, .sms)
+        XCTAssertNil(vm.captcha)
+        XCTAssertFalse(vm.isBusy)
+    }
+
+    @MainActor
+    private func openPasswordChallenge(_ vm: LoginViewModel) async {
+        vm.select(.password)
+        vm.username = "user"
+        vm.password = "pass"
+        vm.submit()
+        await settle(vm)
+    }
+
+    @MainActor
     private func settle(_ vm: LoginViewModel) async {
         let done = expectation(description: "login operation")
         let subscription = vm.$isBusy.drop(while: { $0 }).prefix(1).sink { _ in done.fulfill() }
@@ -34,7 +130,8 @@ final class LoginViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.captcha)
         vm.username = "different@example.com"
         vm.password = "different"
-        vm.completeCaptcha(LoginCaptchaProof(challenge: "challenge", validate: "proof", seccode: "sec", token: "token"))
+        vm.completeCaptcha(LoginCaptchaProof(challenge: "challenge", validate: "proof", seccode: "sec", token: "token"), presentationID: vm.captcha!.id)
+        vm.captchaDidDismiss(presentationID: vm.captcha?.id)
         await settle(vm)
         XCTAssertEqual(requests[1].username, "first@example.com")
         XCTAssertEqual(requests[1].password, " original password ")
@@ -155,7 +252,8 @@ final class LoginViewModelTests: XCTestCase {
         vm.sendRiskSMS()
         await settle(vm)
         XCTAssertEqual(actions, [.password, .captcha])
-        vm.completeCaptcha(.init(challenge: "challenge", validate: "proof", seccode: "sec", token: "token"))
+        vm.completeCaptcha(.init(challenge: "challenge", validate: "proof", seccode: "sec", token: "token"), presentationID: vm.captcha!.id)
+        vm.captchaDidDismiss(presentationID: vm.captcha?.id)
         await settle(vm)
         XCTAssertEqual(actions, [.password, .captcha, .riskSend])
         XCTAssertGreaterThan(vm.riskCooldownRemaining(at: Date()), 0)

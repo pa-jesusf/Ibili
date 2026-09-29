@@ -37,11 +37,10 @@ struct LoginCaptchaProof: Encodable {
     let token: String
 }
 
-struct LoginCaptchaChallenge: Decodable, Identifiable {
+struct LoginCaptchaChallenge: Decodable {
     let gt: String
     let challenge: String
     let token: String
-    var id: String { token }
 }
 
 struct LoginPhoneRisk: Codable {

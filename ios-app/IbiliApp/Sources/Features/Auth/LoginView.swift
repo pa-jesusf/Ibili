@@ -8,6 +8,7 @@ struct LoginView: View {
     private enum Field: Hashable { case username, password, country, phone, code, cookie, riskCode }
 
     var body: some View {
+        let captchaID = vm.captcha?.id
         NavigationStack {
             GeometryReader { geometry in
                 ScrollView {
@@ -55,22 +56,31 @@ struct LoginView: View {
             vm.bind(session: session)
             if vm.method == .qr, vm.state == .idle { vm.start() }
         }
-        .onDisappear { vm.cancel() }
-        .sheet(item: Binding(get: { vm.captcha }, set: { if $0 == nil { vm.cancelCaptcha() } })) { challenge in
-            LoginCaptchaView(challenge: challenge, onSuccess: vm.completeCaptcha, onCancel: vm.cancelCaptcha)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+        .onDisappear {
+            // Covering login with verification is not leaving the login flow.
+            if session.connectionState != .login { vm.cancel() }
+        }
+        .sheet(isPresented: Binding(get: { vm.isCaptchaPresented }, set: {
+            vm.captchaPresentationChanged($0, presentationID: captchaID)
+        }), onDismiss: { vm.captchaDidDismiss(presentationID: captchaID) }) {
+            if let presentation = vm.captcha {
+                LoginCaptchaView(challenge: presentation.challenge,
+                    onSuccess: { vm.completeCaptcha($0, presentationID: presentation.id) },
+                    onCancel: { vm.cancelCaptcha(presentationID: presentation.id) })
+                    .id(presentation.id)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 
     private var brand: some View {
         VStack(spacing: 14) {
-            GlassSurface(cornerRadius: 22) {
-                Image(systemName: "play.rectangle.fill")
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundStyle(IbiliTheme.accent)
-                    .frame(width: 72, height: 72)
-            }
+            Image("LoginBrand")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 156, height: 76)
+                .accessibilityHidden(true)
             Text("Ibili")
                 .font(.system(size: 34, weight: .bold, design: .rounded))
         }

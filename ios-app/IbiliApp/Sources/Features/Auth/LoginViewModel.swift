@@ -7,6 +7,10 @@ final class LoginViewModel: ObservableObject {
         case idle, loadingQR, waiting(qrUrl: String), scanned(qrUrl: String)
         case expired, failed(String), success
     }
+    struct CaptchaPresentation: Identifiable {
+        let id = UUID()
+        let challenge: LoginCaptchaChallenge
+    }
     struct Services {
         var qrStart: () async throws -> TvQrStartDTO
         var qrPoll: (String) async throws -> TvQrPollDTO
@@ -45,7 +49,8 @@ final class LoginViewModel: ObservableObject {
     @Published var countryCode = "86"
     @Published var smsCode = ""
     @Published var cookie = ""
-    @Published private(set) var captcha: LoginCaptchaChallenge?
+    @Published private(set) var captcha: CaptchaPresentation?
+    @Published private(set) var isCaptchaPresented = false
     @Published private(set) var phoneRisk: LoginPhoneRisk?
     @Published var riskCode = ""
     @Published private var smsTicket: SMSTicket?
@@ -58,6 +63,7 @@ final class LoginViewModel: ObservableObject {
     private weak var session: AppSession?
 
     init(services: Services = .live) { self.services = services }
+    deinit { task?.cancel() }
     func bind(session: AppSession) { self.session = session }
 
     func select(_ method: LoginMethod) {
@@ -162,17 +168,40 @@ final class LoginViewModel: ObservableObject {
                           request: LoginRequestDTO(code: riskCode, captcha_key: ticket.key, risk: phoneRisk)))
     }
 
-    func completeCaptcha(_ proof: LoginCaptchaProof) {
-        guard var operation = pendingCaptchaOperation else { return }
-        pendingCaptchaOperation = nil
-        captcha = nil
+    func completeCaptcha(_ proof: LoginCaptchaProof, presentationID: UUID) {
+        guard captcha?.id == presentationID, isCaptchaPresented,
+              proof.token == captcha?.challenge.token,
+              var operation = pendingCaptchaOperation else { return }
         operation.request.captcha = proof
-        perform(operation)
+        pendingCaptchaOperation = operation
+        isBusy = true
+        // Keep the sheet's content/identity alive while UIKit dismisses it.
+        // The next HTTP result must not present another challenge mid-dismissal.
+        isCaptchaPresented = false
+        AppLog.info("auth", "人机验证已完成，等待弹层关闭")
     }
 
-    func cancelCaptcha() {
+    func cancelCaptcha(presentationID: UUID) {
+        guard captcha?.id == presentationID, isCaptchaPresented else { return }
+        pendingCaptchaOperation = nil
+        isCaptchaPresented = false
+    }
+
+    func captchaPresentationChanged(_ presented: Bool, presentationID: UUID?) {
+        // SwiftUI also writes false after a programmatic dismissal. This is a
+        // presentation acknowledgement, not cancellation of an accepted proof.
+        guard captcha?.id == presentationID else { return }
+        if !presented { isCaptchaPresented = false }
+    }
+
+    func captchaDidDismiss(presentationID: UUID?) {
+        guard let presentationID, captcha?.id == presentationID, !isCaptchaPresented else { return }
+        let operation = pendingCaptchaOperation
         captcha = nil
         pendingCaptchaOperation = nil
+        guard let operation, operation.request.captcha != nil else { return }
+        AppLog.info("auth", "验证弹层已关闭，继续登录请求")
+        perform(operation)
     }
 
     func cancelRiskVerification() {
@@ -187,6 +216,7 @@ final class LoginViewModel: ObservableObject {
         task = nil
         isBusy = false
         isSendingSMS = false
+        isCaptchaPresented = false
         captcha = nil
         pendingCaptchaOperation = nil
         phoneRisk = nil
@@ -215,8 +245,11 @@ final class LoginViewModel: ObservableObject {
                 case .captcha(let challenge):
                     var continuation = operation
                     if operation.action == .captcha { continuation.action = .riskSend }
+                    // A new challenge needs new proof, even if the server reused its token.
+                    continuation.request.captcha = nil
                     self.pendingCaptchaOperation = continuation
-                    self.captcha = challenge
+                    self.captcha = CaptchaPresentation(challenge: challenge)
+                    self.isCaptchaPresented = true
                 case .phoneVerification(let risk):
                     self.password = ""
                     self.phoneRisk = risk
@@ -249,6 +282,7 @@ final class LoginViewModel: ObservableObject {
         riskCode = ""
         phoneRisk = nil
         pendingCaptchaOperation = nil
+        isCaptchaPresented = false
         captcha = nil
         state = .success
         isBusy = false
