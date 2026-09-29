@@ -330,6 +330,7 @@ struct LiveRoomView: View {
     @State private var danmakuEnabled = true
     @State private var showDanmakuSheet = false
     @State private var danmakuMessages: [LiveDanmakuMessageDTO] = []
+    @State private var messageBuffer = LiveMessageBuffer()
     @State private var loadedDanmakuListRoomID: Int64 = 0
     @State private var loadingDanmakuHistoryRoomID: Int64 = 0
     @State private var isLoadingDanmakuHistory = false
@@ -464,10 +465,10 @@ struct LiveRoomView: View {
         guard vm.player != nil, danmakuStream == nil else { return }
         let generation = lifecycleGeneration
         let selfMID = CoreClient.shared.sessionSnapshot().mid
-        let stream = LiveDanmakuStream(roomID: route.roomID, selfMID: selfMID) { item, message in
+        let stream = LiveDanmakuStream(roomID: route.roomID, selfMID: selfMID) { events in
             guard generation == lifecycleGeneration else { return }
-            danmaku.appendLive(item)
-            appendDanmakuMessage(message)
+            for event in events { danmaku.appendLive(event.item) }
+            appendDanmakuMessages(events.map(\.message))
         }
         danmakuStream = stream
         Task {
@@ -486,6 +487,7 @@ struct LiveRoomView: View {
         danmakuStream?.close()
         danmakuStream = nil
         danmakuMessages.removeAll()
+        messageBuffer = LiveMessageBuffer()
         loadedDanmakuListRoomID = 0
         loadingDanmakuHistoryRoomID = 0
         isLoadingDanmakuHistory = false
@@ -525,32 +527,14 @@ struct LiveRoomView: View {
     }
 
     private func appendDanmakuMessages(_ incoming: [LiveDanmakuMessageDTO]) {
-        guard !incoming.isEmpty else { return }
-        var seen = Set(danmakuMessages.map(\.id))
-        var next = danmakuMessages
-        for message in incoming where !message.text.isEmpty && seen.insert(message.id).inserted {
-            next.append(message)
-        }
-        if next.count > 1_000 {
-            next.removeFirst(next.count - 1_000)
-        }
-        danmakuMessages = next
+        guard messageBuffer.append(incoming) else { return }
+        danmakuMessages = messageBuffer.messages
     }
 
     private func prependDanmakuHistoryMessages(_ incoming: [LiveDanmakuMessageDTO]) {
         guard !incoming.isEmpty else { return }
-        var seen = Set<String>()
-        var next: [LiveDanmakuMessageDTO] = []
-        for message in incoming where !message.text.isEmpty && seen.insert(message.id).inserted {
-            next.append(message)
-        }
-        for message in danmakuMessages where !message.text.isEmpty && seen.insert(message.id).inserted {
-            next.append(message)
-        }
-        if next.count > 1_000 {
-            next.removeFirst(next.count - 1_000)
-        }
-        danmakuMessages = next
+        messageBuffer.prependHistory(incoming)
+        danmakuMessages = messageBuffer.messages
     }
 
     private var roomTitle: some View {
@@ -780,7 +764,7 @@ private struct LiveDanmakuScrollPane: View {
             .onAppear {
                 requestScrollToBottom(animated: false)
             }
-            .onChange(of: messages.count) { _ in
+            .onChange(of: "\(messages.count):\(messages.last?.id ?? "")") { _ in
                 if followsLatest {
                     requestScrollToBottom(animated: false)
                 } else {

@@ -9,23 +9,10 @@ use crate::dto::{
     SearchPgcPage, SearchUserItem, SearchUserPage, SearchVideoItem, SearchVideoPage,
 };
 use crate::error::{CoreError, CoreResult};
-use crate::signer::WbiKey;
 use crate::Core;
 use serde::Deserialize;
 
 const URL_SEARCH_TYPE: &str = "https://api.bilibili.com/x/web-interface/wbi/search/type";
-const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
-
-#[derive(Deserialize)]
-struct NavData {
-    wbi_img: NavWbiImage,
-}
-
-#[derive(Deserialize)]
-struct NavWbiImage {
-    img_url: String,
-    sub_url: String,
-}
 
 #[derive(Deserialize, Default)]
 struct SearchTypeRoot {
@@ -164,7 +151,7 @@ impl Core {
         duration: Option<i64>,
         tids: Option<i64>,
     ) -> CoreResult<SearchVideoPage> {
-        let key = self.fetch_wbi_key_for_search()?;
+        let key = self.http.wbi_key()?;
         let mut params: Vec<(String, String)> = vec![
             ("search_type".into(), "video".into()),
             ("keyword".into(), keyword.to_string()),
@@ -239,7 +226,7 @@ impl Core {
     }
 
     pub fn search_live(&self, keyword: &str, page: i64) -> CoreResult<SearchLivePage> {
-        let key = self.fetch_wbi_key_for_search()?;
+        let key = self.http.wbi_key()?;
         let params: Vec<(String, String)> = vec![
             ("search_type".into(), "live_room".into()),
             ("keyword".into(), keyword.to_string()),
@@ -304,7 +291,7 @@ impl Core {
             "media_ft" => "media_ft",
             _ => "media_bangumi",
         };
-        let key = self.fetch_wbi_key_for_search()?;
+        let key = self.http.wbi_key()?;
         let params: Vec<(String, String)> = vec![
             ("search_type".into(), search_type.into()),
             ("keyword".into(), keyword.to_string()),
@@ -375,7 +362,7 @@ impl Core {
         order_sort: Option<i64>,
         user_type: Option<i64>,
     ) -> CoreResult<SearchUserPage> {
-        let key = self.fetch_wbi_key_for_search()?;
+        let key = self.http.wbi_key()?;
         let mut params: Vec<(String, String)> = vec![
             ("search_type".into(), "bili_user".into()),
             ("keyword".into(), keyword.to_string()),
@@ -460,7 +447,7 @@ impl Core {
         order: Option<&str>,
         category_id: Option<i64>,
     ) -> CoreResult<SearchArticlePage> {
-        let key = self.fetch_wbi_key_for_search()?;
+        let key = self.http.wbi_key()?;
         let mut params: Vec<(String, String)> = vec![
             ("search_type".into(), "article".into()),
             ("keyword".into(), keyword.to_string()),
@@ -525,14 +512,6 @@ impl Core {
             num_results: raw.num_results,
             num_pages,
         })
-    }
-
-    fn fetch_wbi_key_for_search(&self) -> CoreResult<WbiKey> {
-        let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(
-            &nav.wbi_img.img_url,
-            &nav.wbi_img.sub_url,
-        ))
     }
 }
 

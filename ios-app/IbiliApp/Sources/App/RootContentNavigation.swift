@@ -551,7 +551,11 @@ struct RootContentNavigationStack<Root: View>: View {
     }
 
     private func restorePictureInPicture(routeID: UUID, completion: @escaping (Bool) -> Void) {
-        if path.contains(where: { $0.playerRoute?.id == routeID }) {
+        if let index = path.firstIndex(where: { $0.playerRoute?.id == routeID }) {
+            // Restoring means showing this player, not merely retaining it
+            // underneath another destination in the navigation stack.
+            path = Array(path.prefix(through: index))
+            syncMediaSessions()
             completion(true)
             return
         }

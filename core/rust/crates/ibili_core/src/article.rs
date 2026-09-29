@@ -8,10 +8,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::signer::WbiKey;
 use crate::{Core, CoreError, CoreResult};
 
-const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 const URL_ARTICLE_VIEW: &str = "https://api.bilibili.com/x/article/view";
 const URL_ARTICLE_INFO: &str = "https://api.bilibili.com/x/article/viewinfo";
 const URL_OPUS_DETAIL: &str = "https://api.bilibili.com/x/polymer/web-dynamic/v1/opus/detail";
@@ -84,17 +82,6 @@ pub struct ArticleRichNode {
     pub bold: bool,
     pub italic: bool,
     pub strikethrough: bool,
-}
-
-#[derive(Deserialize)]
-struct NavData {
-    wbi_img: NavWbiImage,
-}
-
-#[derive(Deserialize)]
-struct NavWbiImage {
-    img_url: String,
-    sub_url: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -196,7 +183,7 @@ impl Core {
         if opus_id.trim().is_empty() {
             return Err(CoreError::InvalidArgument("opus id invalid".into()));
         }
-        let key = self.fetch_wbi_key_for_article()?;
+        let key = self.http.wbi_key()?;
         let raw: OpusRoot = self.http.get_signed_web(
             URL_OPUS_DETAIL,
             vec![
@@ -221,7 +208,7 @@ impl Core {
         if cvid <= 0 {
             return Err(CoreError::InvalidArgument("cv id invalid".into()));
         }
-        let key = self.fetch_wbi_key_for_article()?;
+        let key = self.http.wbi_key()?;
         let raw: ArticleViewWire = self.http.get_signed_web(
             URL_ARTICLE_VIEW,
             vec![
@@ -239,7 +226,7 @@ impl Core {
         if cvid <= 0 {
             return Err(CoreError::InvalidArgument("cv id invalid".into()));
         }
-        let key = self.fetch_wbi_key_for_article()?;
+        let key = self.http.wbi_key()?;
         self.http.get_signed_web(
             URL_ARTICLE_INFO,
             vec![
@@ -250,14 +237,6 @@ impl Core {
             ],
             &key,
         )
-    }
-
-    fn fetch_wbi_key_for_article(&self) -> CoreResult<WbiKey> {
-        let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(
-            &nav.wbi_img.img_url,
-            &nav.wbi_img.sub_url,
-        ))
     }
 }
 

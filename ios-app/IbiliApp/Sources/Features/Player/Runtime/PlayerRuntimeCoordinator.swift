@@ -77,10 +77,17 @@ final class PlayerRuntimeCoordinator {
             cancelPendingTeardown(for: routeID)
         }
         for (routeID, viewModel) in viewModels
-        where retainedIDs.contains(routeID)
-            && routeID != activeForegroundRouteID
-            && routeID != pictureInPictureRouteID {
-            viewModel.prepareForStackBackground()
+        where retainedIDs.contains(routeID) {
+            if routeID == activeForegroundRouteID {
+                // A player destination can remain mounted while another
+                // route is pushed above it. When that route is popped,
+                // SwiftUI may not deliver a fresh onAppear after the
+                // navigation model has already changed. Reclaim focus here
+                // so the session resumes its preserved play/pause intent.
+                viewModel.activateInterfaceIfForeground()
+            } else if routeID != pictureInPictureRouteID {
+                viewModel.prepareForStackBackground()
+            }
         }
         let staleSessions = viewModels.filter { !retainedIDs.contains($0.key) }
         for (routeID, viewModel) in staleSessions {

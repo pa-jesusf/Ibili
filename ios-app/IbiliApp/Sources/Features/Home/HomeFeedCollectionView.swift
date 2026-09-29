@@ -82,6 +82,8 @@ final class HomeFeedCollectionViewController: UIViewController {
     private var itemByID: [FeedStableIdentity: FeedItemDTO] = [:]
     private var modelByID: [FeedStableIdentity: MediaCardRenderModel] = [:]
     private var orderedIDs: [FeedStableIdentity] = []
+    private var sourceItems: [FeedItemDTO] = []
+    private var hasSourceItems = false
     private var imageQuality: Int?
     private var meta: FeedCardMetaConfig = .standard
     private var usesTopTrailingDuration = false
@@ -178,6 +180,11 @@ final class HomeFeedCollectionViewController: UIViewController {
         splitTransitionConfiguration: SplitFeedTransitionConfiguration? = nil
     ) {
         loadViewIfNeeded()
+        let appearanceChanged = self.imageQuality != imageQuality || self.meta != meta
+            || self.usesTopTrailingDuration != usesTopTrailingDuration
+        let sameItems = sourceItems.withUnsafeBufferPointer { old in
+            items.withUnsafeBufferPointer { new in old.count == new.count && old.baseAddress == new.baseAddress }
+        }
         self.imageQuality = imageQuality
         self.meta = meta
         self.usesTopTrailingDuration = usesTopTrailingDuration
@@ -202,32 +209,39 @@ final class HomeFeedCollectionViewController: UIViewController {
         let previousFooterState = footerState
         footerState = newFooterState
 
-        var newItems: [FeedStableIdentity: FeedItemDTO] = [:]
-        var newModels: [FeedStableIdentity: MediaCardRenderModel] = [:]
-        var newIDs: [FeedStableIdentity] = []
-        newIDs.reserveCapacity(items.count)
-        for item in items {
-            let id = FeedStableIdentity(item)
-            guard id.isValid, newItems[id] == nil else { continue }
-            newItems[id] = item
-            newModels[id] = MediaCardRenderModel(
-                feed: item,
-                imageQuality: imageQuality,
-                meta: meta,
-                durationPlacement: usesTopTrailingDuration ? .topTrailing : .bottomTrailing
-            )
-            newIDs.append(id)
+        var snapshotUpdate: (structure: Bool, changed: [FeedStableIdentity])?
+        if !sameItems || appearanceChanged || !hasSourceItems {
+            var newItems: [FeedStableIdentity: FeedItemDTO] = [:]
+            var newModels: [FeedStableIdentity: MediaCardRenderModel] = [:]
+            var newIDs: [FeedStableIdentity] = []
+            newIDs.reserveCapacity(items.count)
+            for item in items {
+                let id = FeedStableIdentity(item)
+                guard id.isValid, newItems[id] == nil else { continue }
+                newItems[id] = item
+                newModels[id] = !appearanceChanged && itemByID[id] == item ? modelByID[id] : MediaCardRenderModel(
+                    feed: item,
+                    imageQuality: imageQuality,
+                    meta: meta,
+                    durationPlacement: usesTopTrailingDuration ? .topTrailing : .bottomTrailing
+                )
+                newIDs.append(id)
+            }
+
+            let changedIDs = newIDs.filter { modelByID[$0] != newModels[$0] }
+            let structureChanged = orderedIDs != newIDs || previousFooterState != newFooterState
+            itemByID = newItems
+            modelByID = newModels
+            orderedIDs = newIDs
+            snapshotUpdate = (structureChanged, changedIDs)
+            sourceItems = items
+            hasSourceItems = true
+        } else if previousFooterState != newFooterState {
+            snapshotUpdate = (true, [])
         }
-
-        let changedIDs = newIDs.filter { modelByID[$0] != newModels[$0] }
-        let structureChanged = orderedIDs != newIDs || previousFooterState != newFooterState
-        itemByID = newItems
-        modelByID = newModels
-        orderedIDs = newIDs
-        updateRefreshControlAttachment(hasContent: !newIDs.isEmpty)
-
+        updateRefreshControlAttachment(hasContent: !orderedIDs.isEmpty)
         updateLayoutIfNeeded()
-        applySnapshot(structureChanged: structureChanged, changedIDs: changedIDs)
+        if let snapshotUpdate { applySnapshot(structureChanged: snapshotUpdate.structure, changedIDs: snapshotUpdate.changed) }
         registerSplitTransitionSource()
         applyPendingAnchorIfPossible()
 
@@ -276,6 +290,7 @@ final class HomeFeedCollectionViewController: UIViewController {
 
     private func applySnapshot(structureChanged: Bool, changedIDs: [FeedStableIdentity]) {
         guard dataSource != nil else { return }
+        guard structureChanged || !changedIDs.isEmpty else { return }
         if structureChanged {
             visibleIndices.removeAll(keepingCapacity: true)
             onViewportChanged([])

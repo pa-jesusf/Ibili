@@ -6,9 +6,7 @@ import UIKit
 private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> FeedItemDTO {
     guard !item.isPGC else { return item }
     guard item.cid <= 0 || item.aid <= 0 || item.linkSelection != nil else { return item }
-    let view = try await CoreClient.shared.perform(priority: .userInitiated) { core in
-        try core.videoViewFull(aid: item.aid, bvid: item.bvid)
-    }
+    let view = try await VideoDetailRepository.shared.detail(aid: item.aid, bvid: item.bvid)
     return try VideoLinkRequest.resolve(item, using: view)
 }
 
@@ -59,6 +57,7 @@ final class PlayerViewModel: ObservableObject {
     /// the AVPlayerItem first reaches `.readyToPlay` so we don't fight
     /// AVPlayer's own initial seek behaviour.
     private var pendingResumeMs: Int64?
+    private var pendingResumeIsLocal = false
     /// Snapshot of the current bvid so the heartbeat call carries the
     /// same identifier upstream PiliPlus uses (`bvid` for ugc).
     private var bvid: String = ""
@@ -107,9 +106,9 @@ final class PlayerViewModel: ObservableObject {
     private var transientPauseSuppressionContext: PlayerTransientPauseSuppressionContext?
     private var pausedForDetailCollapseConfirmationWork: DispatchWorkItem?
     private var isClosing = false
-    private var systemTransitionExpectedToResume = false
     private var dismissalFadeTask: Task<Void, Never>?
     private var audioVolumeRampTask: Task<Void, Never>?
+    private var foregroundRecoveryTask: Task<Void, Never>?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -124,6 +123,7 @@ final class PlayerViewModel: ObservableObject {
             clearPausedForDetailCollapse()
             dismissalFadeTask?.cancel()
             audioVolumeRampTask?.cancel()
+            foregroundRecoveryTask?.cancel()
             stopHeartbeat()
             clearPlaybackCompletionObserver()
             itemStatusObservation = nil
@@ -216,6 +216,7 @@ final class PlayerViewModel: ObservableObject {
             if let resume = item.resumePositionMs, resume != lastLoadedItem?.resumePositionMs {
                 lastLoadedItem = item
                 pendingResumeMs = max(0, resume)
+                pendingResumeIsLocal = false
                 if isVideoReady, let playerItem = player.currentItem {
                     _ = await applyPendingResume(to: player, item: playerItem, generation: loadGeneration)
                 }
@@ -271,6 +272,7 @@ final class PlayerViewModel: ObservableObject {
             // session stays claimed throughout the hand-off.
             resetCurrentPlaybackForMediaSwitch()
             pendingResumeMs = item.resumePositionMs.map { max(0, $0) }
+            pendingResumeIsLocal = false
             if isPartSwitch, pendingResumeMs == nil {
                 pendingResumeMs = 0
             }
@@ -291,11 +293,13 @@ final class PlayerViewModel: ObservableObject {
             "offlineOnly": String(offlineOnly),
         ])
         do {
-            if let offline = OfflineDownloadService.shared.playbackSource(
+            let offline = await OfflineDownloadService.shared.playbackSource(
                 for: item,
                 preferredQn: preferredQn,
                 audioQn: requestedAudioQn
-            ) {
+            )
+            guard !Task.isCancelled, isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
+            if let offline {
                 try await loadOfflineSource(
                     offline,
                     item: item,
@@ -462,9 +466,6 @@ final class PlayerViewModel: ObservableObject {
             break
         case .playbackIntentChanged(.pause):
             endTemporarySpeedBoost()
-            if behaviorState.isSystemTransitionActive {
-                systemTransitionExpectedToResume = false
-            }
         case .observedTimeControlStatus(.paused):
             endTemporarySpeedBoost()
         case .interfaceDeactivated,
@@ -537,6 +538,7 @@ final class PlayerViewModel: ObservableObject {
             handle(.interfaceDeactivated)
             return
         }
+        guard !behaviorState.interfaceIsActive else { return }
         handle(.interfaceActivated)
     }
 
@@ -633,61 +635,69 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func beginSystemTransition() {
-        guard !isClosing else { return }
-        systemTransitionExpectedToResume = shouldHoldAudioSession
+        guard !isClosing, !behaviorState.isSystemTransitionActive else { return }
         endTemporarySpeedBoost()
         handle(.systemTransitionChanged(true))
     }
 
     func completeSystemTransition() {
-        guard !isClosing else { return }
-        let expectedToResume = systemTransitionExpectedToResume
-        systemTransitionExpectedToResume = false
+        guard !isClosing, behaviorState.isSystemTransitionActive else { return }
+        // The state already preserves intent across transient system pauses.
+        // Do not restore a snapshot: the user may have paused in PiP or via
+        // the lock-screen controls since the scene left the foreground.
         handle(.systemTransitionChanged(false))
-        if expectedToResume {
-            // A late AVPlayer `.paused` observation can arrive just after the
-            // system transition ends. Restore the intent captured on entry
-            // before the recovery probe evaluates whether playback is alive.
-            handle(.playbackIntentChanged(.play))
+    }
+
+    func requestSystemTransitionRecovery(inactiveDuration: TimeInterval, presentationNeedsRecovery: Bool) {
+        guard !isClosing, foregroundRecoveryTask == nil, let trackedPlayer = player else { return }
+        let generation = loadGeneration
+        let trackedItem = trackedPlayer.currentItem
+        // Once recovery starts replacing a source it belongs to this session,
+        // not to the scene's active/inactive cycle or a SwiftUI view instance.
+        foregroundRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.foregroundRecoveryTask = nil }
+            guard !Task.isCancelled, !self.isClosing, self.loadGeneration == generation,
+                  self.player === trackedPlayer, trackedPlayer.currentItem === trackedItem else { return }
+            await self.recoverAfterSystemTransitionIfNeeded(
+                trigger: "foreground-active", inactiveDuration: inactiveDuration,
+                presentationNeedsRecovery: presentationNeedsRecovery
+            )
         }
     }
 
-    func recoverAfterSystemTransitionIfNeeded(trigger: String,
-                                               inactiveDuration: TimeInterval) async {
+    private func recoverAfterSystemTransitionIfNeeded(trigger: String,
+                                               inactiveDuration: TimeInterval,
+                                               presentationNeedsRecovery: Bool = false) async {
         guard !isClosing else { return }
         guard behaviorState.isInterfacePresentingPlayer else { return }
         guard let trackedPlayer = player else { return }
 
         let generation = loadGeneration
+        let trackedItem = trackedPlayer.currentItem
         let engineAlive = await isEngineAlive()
         guard !Task.isCancelled, !isClosing, loadGeneration == generation,
-              player === trackedPlayer, behaviorState.isInterfacePresentingPlayer else { return }
+              player === trackedPlayer, trackedPlayer.currentItem === trackedItem,
+              behaviorState.isInterfacePresentingPlayer else { return }
 
         let recoveryAction = behaviorState.systemTransitionRecoveryAction(
             inactiveDuration: inactiveDuration,
             engineIsAlive: engineAlive,
-            sourceIsOffline: isCurrentSourceOffline
+            sourceIsOffline: isCurrentSourceOffline,
+            itemHasFailed: trackedItem?.status == .failed,
+            presentationNeedsRecovery: presentationNeedsRecovery
         )
         switch recoveryAction {
         case .none:
             return
         case .rebuildSource:
-            let reason = engineAlive ? "long-paused-suspension" : "engine-dead"
+            let reason = engineAlive ? "suspended-presentation" : "engine-dead"
             await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-\(reason)")
             return
         case .verifyPlaybackProgress:
             break
         }
 
-        let trackedItem = trackedPlayer.currentItem
-        if trackedItem?.status == .failed {
-            AppLog.warning("player", "前台恢复发现播放项已失败，立即刷新播放源", metadata: [
-                "trigger": trigger,
-                "inactiveMs": String(Int(inactiveDuration * 1000)),
-            ])
-            await rebuildPlaybackSourcePreservingPosition(trigger: "\(trigger)-item-failed")
-            return
-        }
         let baselineSeconds = trackedPlayer.currentTime().seconds
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         guard !Task.isCancelled,
@@ -713,40 +723,53 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func rebuildPlaybackSourcePreservingPosition(trigger: String) async {
+        let generation = loadGeneration
+        let expectedAid = aid
+        let expectedCid = cid
+        let trackedPlayer = player
+        let trackedItem = trackedPlayer?.currentItem
         let resumeAt = currentPlaybackTimeForRecovery()
         if await recoverPlaybackFromPageCacheIfPossible(trigger: trigger) {
             return
         }
 
-        let expectedAid = aid
-        let expectedCid = cid
+        guard isCurrentLoad(generation, aid: expectedAid, cid: expectedCid),
+              player === trackedPlayer, trackedPlayer?.currentItem === trackedItem else { return }
+        // The ready-to-play handler consumes this after the fresh item is
+        // loaded. Seeking immediately after load can race its initial seek
+        // or silently fail before the replacement is ready.
+        if resumeAt.seconds.isFinite, resumeAt.seconds >= 0 {
+            pendingResumeMs = Int64(resumeAt.seconds * 1000)
+            pendingResumeIsLocal = true
+        }
         await reload(trigger: trigger)
-        guard !isClosing,
-              aid == expectedAid,
-              cid == expectedCid,
-              let player,
-              resumeAt.isValid,
-              !resumeAt.isIndefinite,
-              CMTimeGetSeconds(resumeAt) > 0 else { return }
-        await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 1, preferredTimescale: 600))
-        applyPlaybackIntent(to: player)
     }
 
-    /// Read-only flag mirroring the internal PiP state. Used by the
-    /// view-side scene-phase recovery to decide whether returning to
-    /// the foreground should auto-collapse the PiP floating window
-    /// (only the originating session has this set).
+    func retryPlayback() async {
+        guard !isClosing, !isLoading else { return }
+        let position = currentPlaybackTimeForRecovery().seconds
+        if position.isFinite, position >= 0 {
+            pendingResumeMs = Int64(position * 1000)
+            pendingResumeIsLocal = true
+        }
+        errorText = nil
+        // A failed quality/audio switch can leave an empty player item.
+        // Explicit retry starts a fresh load instead of treating that empty
+        // item as an in-flight source replacement owned by someone else.
+        await reload(trigger: "user-retry")
+    }
+
+    /// Native AVKit owns PiP presentation; foreground recovery must not
+    /// disable PiP to force its window closed.
     var isPictureInPictureActive: Bool { behaviorState.pictureInPictureIsActive }
 
     private func configureExternalPlayback(for player: AVPlayer) {
         player.allowsExternalPlayback = true
         player.usesExternalPlaybackWhileExternalScreenIsActive = true
-    }
-
-    func backgroundContinuationRate(for player: AVPlayer) -> Float? {
-        guard !isClosing else { return nil }
-        return behaviorState.backgroundContinuationRate(currentRate: player.rate,
-                                                        desiredRate: desiredPlaybackRate)
+        // iOS 15+ supports continuing audiovisual playback without removing
+        // the player's display binding. The app already has background audio
+        // capability and owns its playback audio session.
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
     }
 
     func reapplyPlaybackBehavior(to targetPlayer: AVPlayer? = nil) {
@@ -857,11 +880,13 @@ final class PlayerViewModel: ObservableObject {
             // switches without tearing down other tab's retained players.
             let info: PlayUrlDTO
             if let item = lastLoadedItem {
-                if let offline = OfflineDownloadService.shared.playbackSource(
+                let offline = await OfflineDownloadService.shared.playbackSource(
                     for: item,
                     preferredQn: qn,
                     audioQn: currentAudioQn
-                ), offline.metadata.qn == qn {
+                )
+                guard !Task.isCancelled, isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
+                if let offline, offline.metadata.qn == qn {
                     info = offline.play
                     isCurrentSourceOffline = true
                     AppLog.info("player", "清晰度切换命中离线缓存", metadata: [
@@ -931,6 +956,7 @@ final class PlayerViewModel: ObservableObject {
 
     func teardown() {
         isClosing = true
+        foregroundRecoveryTask?.cancel()
         isOverlayPresentationActive = false
         dismissalFadeTask?.cancel()
         dismissalFadeTask = nil
@@ -964,6 +990,7 @@ final class PlayerViewModel: ObservableObject {
         isVideoReady = false
         currentVideoSizeHint = nil
         pendingResumeMs = nil
+        pendingResumeIsLocal = false
     }
 
     func prepareForDismissal() {
@@ -973,6 +1000,7 @@ final class PlayerViewModel: ObservableObject {
         }
         guard !isClosing else { return }
         isClosing = true
+        foregroundRecoveryTask?.cancel()
         loadGeneration &+= 1
         clearTransientPauseSuppression()
         clearPausedForDetailCollapse()
@@ -1242,6 +1270,7 @@ final class PlayerViewModel: ObservableObject {
         guard let targetPlayer = targetPlayer ?? player else { return }
         switch behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) {
         case .play(let rate):
+            guard targetPlayer.timeControlStatus == .paused || targetPlayer.rate == 0 else { return }
             AppLog.debug("player", "向 AVPlayer 下发播放命令", metadata: playbackDebugMetadata(for: targetPlayer, extra: [
                 "command": "play",
                 "commandRate": String(rate),
@@ -1249,6 +1278,7 @@ final class PlayerViewModel: ObservableObject {
             suppressNextObservedPlaybackIntent(.play)
             targetPlayer.playImmediately(atRate: rate)
         case .pause:
+            guard targetPlayer.timeControlStatus != .paused || targetPlayer.rate != 0 else { return }
             AppLog.debug("player", "向 AVPlayer 下发暂停命令", metadata: playbackDebugMetadata(for: targetPlayer, extra: [
                 "command": "pause",
             ]))
@@ -1414,9 +1444,9 @@ final class PlayerViewModel: ObservableObject {
                 switch status {
                 case .readyToPlay:
                     self.isPlaybackCompleted = false
+                    guard await self.applyPendingResume(to: player, item: item, generation: generation) else { return }
                     self.isVideoReady = true
                     self.updatePausedForDetailCollapse()
-                    guard await self.applyPendingResume(to: player, item: item, generation: generation) else { return }
                     self.startHeartbeatIfNeeded()
                     self.refreshSystemMediaSession()
                 case .failed:
@@ -1612,8 +1642,12 @@ final class PlayerViewModel: ObservableObject {
               self.player === player, player.currentItem === item else { return false }
         guard let ms = pendingResumeMs else { return true }
         pendingResumeMs = nil
-        let isExplicit = lastLoadedItem?.resumePositionMs != nil
-        let seconds = PlayerResumePolicy.targetSeconds(milliseconds: ms, duration: item.duration.seconds, isExplicit: isExplicit)
+        let isLocal = pendingResumeIsLocal
+        pendingResumeIsLocal = false
+        let isExplicit = isLocal || lastLoadedItem?.resumePositionMs != nil
+        let seconds = isLocal ? Double(max(0, ms)) / 1000 : PlayerResumePolicy.targetSeconds(
+            milliseconds: ms, duration: item.duration.seconds, isExplicit: isExplicit
+        )
         let finished = await player.seek(
             to: CMTime(seconds: seconds, preferredTimescale: 600),
             toleranceBefore: .zero,
@@ -1621,6 +1655,16 @@ final class PlayerViewModel: ObservableObject {
         )
         guard !isClosing, loadGeneration == generation,
               self.player === player, player.currentItem === item else { return false }
+        if isLocal {
+            guard finished else {
+                pendingResumeMs = ms
+                pendingResumeIsLocal = true
+                errorText = "播放进度恢复失败，请重试"
+                isLoading = false
+                return false
+            }
+            applyPlaybackIntent(to: player)
+        }
         AppLog.info("player", "播放进度定位完成", metadata: [
             "aid": String(aid), "cid": String(cid),
             "requestedResumeMs": String(ms), "targetSeconds": String(seconds),
@@ -1630,6 +1674,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func currentPlaybackTimeForRecovery() -> CMTime {
+        if pendingResumeIsLocal, let pendingResumeMs {
+            return CMTime(seconds: Double(pendingResumeMs) / 1000, preferredTimescale: 600)
+        }
         guard let player else {
             if let pendingResumeMs, pendingResumeMs > 0 {
                 return CMTime(seconds: Double(pendingResumeMs) / 1000.0, preferredTimescale: 600)
@@ -1649,6 +1696,10 @@ final class PlayerViewModel: ObservableObject {
     private func recoverPlaybackFromPageCacheIfPossible(trigger: String) async -> Bool {
         guard !isClosing else { return true }
         guard !isRecoveringPlaybackFromPageCache else { return true }
+        // An empty item belongs to an in-flight load/quality/audio switch.
+        // That operation owns the next source; recovery must not compete.
+        guard let previousPlayer = player else { return false }
+        guard let previousItem = previousPlayer.currentItem else { return true }
         let cacheVariant = playURLCacheVariant()
         guard currentQn > 0,
               let info = pageCache.playURL(qn: currentQn, audioQn: currentAudioQn, variant: cacheVariant) else {
@@ -1668,7 +1719,12 @@ final class PlayerViewModel: ObservableObject {
         defer { isRecoveringPlaybackFromPageCache = false }
 
         let generation = loadGeneration
+        let expectedAid = aid
+        let expectedCid = cid
+        let expectedQn = currentQn
+        let expectedAudioQn = currentAudioQn
         let resumeAt = currentPlaybackTimeForRecovery()
+        let playbackRate = desiredPlaybackRate
 
         AppLog.info("player", "尝试使用播放页缓存恢复播放源", metadata: [
             "aid": String(aid),
@@ -1682,7 +1738,9 @@ final class PlayerViewModel: ObservableObject {
 
         do {
             let prep = try await engine.makeItem(for: info)
-            guard isCurrentLoad(generation, aid: aid, cid: cid) else {
+            guard isCurrentLoad(generation, aid: expectedAid, cid: expectedCid),
+                  player === previousPlayer, previousPlayer.currentItem === previousItem,
+                  currentQn == expectedQn, currentAudioQn == expectedAudioQn else {
                 prep.release()
                 return true
             }
@@ -1692,42 +1750,37 @@ final class PlayerViewModel: ObservableObject {
             }
 
             isVideoReady = false
+            errorText = nil
             stopHeartbeat()
             itemStatusObservation = nil
 
             let previousPreparation = activePreparation
-            let targetPlayer: AVPlayer
-            if let existingPlayer = player {
-                suppressNextObservedPlaybackIntent(.pause)
-                existingPlayer.pause()
-                endTemporarySpeedBoost(on: existingPlayer)
-                clearPlaybackCompletionObserver()
-                existingPlayer.replaceCurrentItem(with: nil)
-                targetPlayer = existingPlayer
-            } else {
-                targetPlayer = AVPlayer(playerItem: prep.item)
-                configureExternalPlayback(for: targetPlayer)
-            }
+            // Recreate the suspended decoder/display pipeline, not just its
+            // source item. SwiftUI will bind this new identity to native AVKit.
+            // Retire old KVO before pausing so it cannot change the new intent.
+            playerTimeControlObservation?.invalidate()
+            playerTimeControlObservation = nil
+            previousPlayer.pause()
+            endTemporarySpeedBoost(on: previousPlayer)
+            clearPlaybackCompletionObserver()
+            previousPlayer.replaceCurrentItem(with: nil)
+            let targetPlayer = AVPlayer(playerItem: prep.item)
+            configureExternalPlayback(for: targetPlayer)
+            targetPlayer.defaultRate = playbackRate
 
             activePreparation = prep
             rememberActivePlayURL(info)
-            observeItemStatus(prep.item, generation: generation)
-
-            if player == nil {
-                setPlayer(targetPlayer)
-            } else {
-                targetPlayer.replaceCurrentItem(with: prep.item)
-                observePlaybackCompletion(for: targetPlayer)
+            if resumeAt.seconds.isFinite, resumeAt.seconds >= 0 {
+                pendingResumeMs = Int64(resumeAt.seconds * 1000)
+                pendingResumeIsLocal = true
             }
-
-            await targetPlayer.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
+            observeItemStatus(prep.item, generation: generation)
+            setPlayer(targetPlayer)
             previousPreparation?.release()
-            guard isCurrentLoad(generation, aid: aid, cid: cid),
-                  self.player === targetPlayer, targetPlayer.currentItem === prep.item else { return true }
             applyPlaybackIntent(to: targetPlayer)
             refreshSystemMediaSession()
 
-            AppLog.info("player", "播放页缓存恢复成功", metadata: [
+            AppLog.info("player", "恢复播放源已安装，等待就绪并定位进度", metadata: [
                 "aid": String(aid),
                 "cid": String(cid),
                 "trigger": trigger,
@@ -1737,7 +1790,9 @@ final class PlayerViewModel: ObservableObject {
             ])
             return true
         } catch {
-            guard isCurrentLoad(generation, aid: aid, cid: cid) else { return true }
+            guard isCurrentLoad(generation, aid: expectedAid, cid: expectedCid),
+                  player === previousPlayer, previousPlayer.currentItem === previousItem,
+                  currentQn == expectedQn, currentAudioQn == expectedAudioQn else { return true }
             pageCache.removePlayURL(qn: info.quality, audioQn: info.audioQuality, variant: cacheVariant)
             AppLog.warning("player", "播放页缓存恢复失败，已回退到常规重载路径", metadata: [
                 "aid": String(aid),
@@ -1899,11 +1954,13 @@ final class PlayerViewModel: ObservableObject {
             activePreparation = nil
             let info: PlayUrlDTO
             if let item = lastLoadedItem {
-                if let offline = OfflineDownloadService.shared.playbackSource(
+                let offline = await OfflineDownloadService.shared.playbackSource(
                     for: item,
                     preferredQn: currentQn,
                     audioQn: audioQn
-                ), offline.metadata.qn == currentQn, offline.metadata.audioQn == audioQn {
+                )
+                guard !Task.isCancelled, isCurrentLoad(generation, aid: item.aid, cid: item.cid) else { return }
+                if let offline, offline.metadata.qn == currentQn, offline.metadata.audioQn == audioQn {
                     info = offline.play
                     AppLog.info("player", "音质切换命中离线缓存", metadata: [
                         "aid": String(item.aid),
@@ -2657,12 +2714,20 @@ struct PlayerView: View {
                                     }
                                 } else if vm.isLoading {
                                     ProgressView().tint(.white)
-                                } else if let err = vm.errorText {
+                                }
+                                if let err = vm.errorText {
+                                    Color.black.opacity(0.9)
                                     VStack(spacing: 12) {
                                         Image(systemName: "exclamationmark.triangle").font(.largeTitle)
                                             .foregroundStyle(.yellow)
                                         Text(err).foregroundStyle(.white).multilineTextAlignment(.center)
                                             .padding(.horizontal)
+                                        if vm.currentFeedItem != nil {
+                                            Button("重试") {
+                                                Task { await vm.retryPlayback() }
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
                                     }
                                 }
                             }
@@ -3230,7 +3295,10 @@ struct PlayerView: View {
             }
             guard generation == danmakuLoadGeneration, !Task.isCancelled,
                   resolvedItem.cid > 0, resolvedItem.cid == vm.currentCid else { return }
-            if let offlineItems = OfflineDownloadService.shared.danmakuItems(for: resolvedItem) {
+            let offlineItems = await OfflineDownloadService.shared.danmakuItems(for: resolvedItem)
+            guard shouldRunDanmaku, generation == danmakuLoadGeneration, !Task.isCancelled,
+                  resolvedItem.cid == vm.currentCid else { return }
+            if let offlineItems {
                 vm.pageCache.storeDanmaku(offlineItems, for: resolvedItem.cid)
                 danmaku.setItems(offlineItems)
                 if let p = vm.player { danmaku.attach(p) }

@@ -5,6 +5,8 @@ import Foundation
 final class BlockingWorkQueue: @unchecked Sendable {
     static let core = BlockingWorkQueue(name: "ibili.core.requests", concurrency: 4)
     static let images = BlockingWorkQueue(name: "ibili.image.decode", concurrency: 2)
+    static let files = BlockingWorkQueue(name: "ibili.file.index", concurrency: 1)
+    static let live = BlockingWorkQueue(name: "ibili.live.decode", concurrency: 1)
     private let queue: OperationQueue
 
     init(name: String, concurrency: Int) {

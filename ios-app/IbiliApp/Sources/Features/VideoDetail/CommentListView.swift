@@ -372,7 +372,7 @@ private struct CommentListContent: View {
 
     private var virtualizedContent: some View {
         VirtualizedCollectionSurface(
-            items: virtualItems,
+            items: [CommentVirtualItem](),
             layout: .list(
                 horizontalInset: 16,
                 topInset: 0,
@@ -380,6 +380,8 @@ private struct CommentListContent: View {
                 spacing: 0,
                 estimatedHeight: 180
             ),
+            dataVersion: CommentCollectionVersion(comments: viewModel.dataVersion, leading: virtualizedLeadingRows, section: commentSectionVersion),
+            itemsProvider: { virtualItems },
             header: virtualizedHeader,
             headerVersion: virtualizedHeaderVersion,
             footer: commentFooter,
@@ -433,6 +435,12 @@ private struct CommentListContent: View {
                     .padding(.horizontal, 24)
             }
         }
+    }
+
+    private struct CommentCollectionVersion: Hashable {
+        let comments: UUID
+        let leading: [CommentVirtualizedLeadingRow]
+        let section: CommentVirtualizedSectionVersion
     }
 
     private var virtualItems: [CommentVirtualItem] {

@@ -11,10 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::CoreResult;
-use crate::signer::WbiKey;
 use crate::Core;
 
-const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 const URL_MSG_UNREAD: &str = "https://api.bilibili.com/x/msgfeed/unread";
 const URL_MSG_REPLY: &str = "https://api.bilibili.com/x/msgfeed/reply";
 const URL_MSG_AT: &str = "https://api.bilibili.com/x/msgfeed/at";
@@ -201,7 +199,7 @@ impl Core {
                 has_more: false,
             });
         }
-        let key = self.fetch_wbi_key_for_message()?;
+        let key = self.http.wbi_key()?;
         let params = vec![
             ("session_type".into(), "1".into()),
             ("group_fold".into(), "1".into()),
@@ -253,7 +251,7 @@ impl Core {
             });
         }
 
-        let key = self.fetch_wbi_key_for_message()?;
+        let key = self.http.wbi_key()?;
         let mut params = vec![
             ("talker_id".into(), talker_id.to_string()),
             ("session_type".into(), "1".into()),
@@ -301,7 +299,7 @@ impl Core {
         if talker_id <= 0 || ack_sequence <= 0 {
             return Ok(());
         }
-        let key = self.fetch_wbi_key_for_message()?;
+        let key = self.http.wbi_key()?;
         let csrf = self.http.csrf_token().unwrap_or_default();
         let params = vec![
             ("talker_id".into(), talker_id.to_string()),
@@ -517,14 +515,6 @@ impl Core {
             _ => {}
         }
         Ok(users)
-    }
-
-    fn fetch_wbi_key_for_message(&self) -> CoreResult<WbiKey> {
-        let nav: NavWire = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(
-            &nav.wbi_img.img_url,
-            &nav.wbi_img.sub_url,
-        ))
     }
 }
 
@@ -1009,20 +999,6 @@ struct MessageUserCardWire {
     mid: Option<i64>,
     name: Option<String>,
     face: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct NavWire {
-    #[serde(default)]
-    wbi_img: NavWbiImageWire,
-}
-
-#[derive(Default, Deserialize)]
-struct NavWbiImageWire {
-    #[serde(default)]
-    img_url: String,
-    #[serde(default)]
-    sub_url: String,
 }
 
 #[cfg(test)]

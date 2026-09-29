@@ -322,6 +322,34 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         let title: String
     }
 
+    func testRetainedCellReceivesLatestProviderWhenDisplayedAgain() {
+        let controller = VirtualizedCollectionViewController<Item>()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 320))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.rootViewController = nil; window.isHidden = true }
+        var configuredTitles: [String] = []
+        let content: (Item, CGFloat) -> AnyView = { item, _ in
+            configuredTitles.append(item.title)
+            return AnyView(Text(item.title))
+        }
+        let items = makeItems(0..<50)
+        let layout = VirtualizedCollectionLayout(height: .absolute(44))
+        update(controller, items: items, layout: layout, content: content)
+        controller.view.layoutIfNeeded()
+        let collection = collectionView(in: controller)
+        let path = IndexPath(item: 0, section: 0)
+        guard let retained = collection.cellForItem(at: path) else { return XCTFail("missing visible cell") }
+        collection.setContentOffset(CGPoint(x: 0, y: 1000), animated: false)
+        collection.layoutIfNeeded()
+        var changed = items
+        changed[0] = Item(id: 0, title: "updated while prefetched")
+        update(controller, items: changed, layout: layout, content: content)
+        configuredTitles.removeAll()
+        controller.collectionView(collection, willDisplay: retained, forItemAt: path)
+        XCTAssertTrue(configuredTitles.contains("updated while prefetched"))
+    }
+
     func testSingleColumnMaximumWidthKeepsFullWidthScrollSurface() {
         let layout = VirtualizedCollectionLayout.list(
             horizontalInset: 16,

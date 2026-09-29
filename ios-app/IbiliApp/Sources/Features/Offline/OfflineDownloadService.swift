@@ -4,108 +4,6 @@ import Photos
 import QuickLook
 import UIKit
 
-enum OfflineDownloadStatus: String, Codable {
-    case queued
-    case resolving
-    case downloading
-    case remuxing
-    case completed
-    case paused
-    case failed
-
-    var label: String {
-        switch self {
-        case .queued: return "等待中"
-        case .resolving: return "获取地址"
-        case .downloading: return "下载中"
-        case .remuxing: return "整理文件"
-        case .completed: return "已完成"
-        case .paused: return "已暂停"
-        case .failed: return "失败"
-        }
-    }
-}
-
-struct OfflineDownloadMetadata: Codable, Identifiable, Hashable {
-    let id: String
-    var sourceType: String
-    var aid: Int64
-    var bvid: String
-    var cid: Int64
-    var epID: Int64
-    var seasonID: Int64
-    var title: String
-    var author: String
-    var cover: String
-    var durationSec: Int64
-    var qn: Int64
-    var qnLabel: String
-    var audioQn: Int64
-    var audioQnLabel: String
-    var videoFileName: String
-    var danmakuFileName: String
-    var createdAt: Date
-    var updatedAt: Date
-    var status: OfflineDownloadStatus
-    var progress: Double
-    var errorMessage: String?
-    var danmakuStatus: OfflineDownloadStatus
-    var audioFileName: String?
-    var indexFileName: String?
-    var storageMode: String?
-    var streamType: String?
-    var videoCodec: String?
-    var audioCodec: String?
-    var videoWidth: Int?
-    var videoHeight: Int?
-    var videoFrameRate: String?
-    var videoRange: String?
-    var downloadedBytes: Int64?
-    var totalBytes: Int64?
-    var downloadSpeedBytesPerSecond: Double?
-    var downloadProgressNote: String?
-}
-
-struct OfflineDanmakuArchive: Codable {
-    let schemaVersion: Int
-    let cid: Int64
-    let durationSec: Int64
-    let generatedAt: Date
-    let items: [DanmakuItemDTO]
-}
-
-struct OfflineMediaIndex: Codable {
-    let schemaVersion: Int
-    let storageMode: String
-    let sourceType: String
-    let aid: Int64
-    let bvid: String
-    let cid: Int64
-    let epID: Int64
-    let seasonID: Int64
-    let title: String
-    let author: String
-    let generatedAt: Date
-    let play: PlayUrlDTO
-    let videoFileName: String
-    let audioFileName: String?
-    let danmakuFileName: String
-}
-
-struct OfflinePlaybackSource {
-    let metadata: OfflineDownloadMetadata
-    let directory: URL
-    let play: PlayUrlDTO
-}
-
-struct OfflineDownloadRequest: Hashable {
-    let item: FeedItemDTO
-    let qn: Int64
-    let qnLabel: String
-    let audioQn: Int64
-    let audioQnLabel: String
-    let cdn: String
-}
 
 private struct OfflineDownloadProgress: Sendable {
     let downloadedBytes: Int64
@@ -124,6 +22,11 @@ final class OfflineDownloadService: ObservableObject {
     static let shared = OfflineDownloadService()
 
     @Published private(set) var entries: [OfflineDownloadMetadata] = []
+    @Published private(set) var isIndexLoading = false
+    private var library: [String: OfflineLibraryRecord] = [:]
+    private var libraryRevision: UInt64 = 0
+    private var entryRevisions: [String: UUID] = [:]
+    private var reloadTask: Task<Void, Never>?
 
     private let maxConcurrentDownloads = 1
     private var activeTasks: [String: Task<Void, Never>] = [:]
@@ -136,7 +39,7 @@ final class OfflineDownloadService: ObservableObject {
     private let nativeDashAudioFileName = "audio.m4s"
 
     private init() {
-        reloadFromDisk()
+        beginReload()
     }
 
     var rootDirectory: URL {
@@ -150,32 +53,51 @@ final class OfflineDownloadService: ObservableObject {
         return caches.appendingPathComponent("IbiliOfflineWork", isDirectory: true)
     }
 
-    func reloadFromDisk() {
-        ensureDirectory(rootDirectory)
-        guard let dirs = try? fileManager.contentsOfDirectory(
-            at: rootDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            entries = []
-            return
-        }
-        let decoded: [OfflineDownloadMetadata] = dirs.compactMap { dir in
-            let metadataURL = dir.appendingPathComponent(metadataFileName)
-            guard let data = try? Data(contentsOf: metadataURL),
-                  var metadata = try? JSONDecoder.offline.decode(OfflineDownloadMetadata.self, from: data) else {
-                return nil
+    func reloadFromDisk() async {
+        beginReload()
+        await reloadTask?.value
+    }
+
+    private func beginReload() {
+        guard reloadTask == nil else { return }
+        let revision = libraryRevision
+        let root = rootDirectory
+        isIndexLoading = true
+        reloadTask = Task {
+            defer { reloadTask = nil; isIndexLoading = false }
+            do {
+                let scanned = try await BlockingWorkQueue.files.run(priority: .utility) { try OfflineLibraryIndex.scan(root) }
+                // Download commits/deletions made during the scan remain authoritative.
+                guard revision == libraryRevision else { return }
+                library = scanned
+                let previous = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { latest, _ in latest })
+                let running = Set(activeTasks.keys).union(pendingDownloads.map { $0.metadata.id })
+                entries = scanned.values.map { record in
+                    var metadata = previous[record.metadata.id] ?? record.metadata
+                    if !running.contains(metadata.id) {
+                        metadata = record.metadata
+                        if metadata.status != .completed && metadata.status != .paused {
+                            metadata.status = .failed
+                            metadata.errorMessage = metadata.errorMessage ?? "下载未完成"
+                        }
+                    }
+                    return metadata
+                }.sorted { $0.updatedAt > $1.updatedAt }
+            } catch {
+                AppLog.error("offline", "读取离线索引失败", error: error)
             }
-            if metadata.status != .completed && activeTasks[metadata.id] == nil {
-                metadata.status = .failed
-                metadata.errorMessage = metadata.errorMessage ?? "下载未完成"
-            }
-            return metadata
         }
-        entries = decoded.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     func start(_ request: OfflineDownloadRequest) {
+        Task {
+            await reloadTask?.value
+            startIndexed(request)
+        }
+    }
+
+    private func startIndexed(_ request: OfflineDownloadRequest) {
+        libraryRevision &+= 1
         ensureDirectory(rootDirectory)
         ensureDirectory(workRootDirectory)
         let id = stableID(for: request.item, qn: request.qn, audioQn: request.audioQn)
@@ -257,6 +179,8 @@ final class OfflineDownloadService: ObservableObject {
     }
 
     func delete(_ metadata: OfflineDownloadMetadata) {
+        libraryRevision &+= 1
+        entryRevisions[metadata.id] = UUID()
         pendingDownloads.removeAll { $0.metadata.id == metadata.id }
         activeTasks[metadata.id]?.cancel()
         activeTasks[metadata.id] = nil
@@ -264,6 +188,7 @@ final class OfflineDownloadService: ObservableObject {
         dirs.forEach { try? fileManager.removeItem(at: $0) }
         try? fileManager.removeItem(at: workDirectory(for: metadata.id))
         entries.removeAll { $0.id == metadata.id }
+        library[metadata.id] = nil
     }
 
     func videoURL(for metadata: OfflineDownloadMetadata) -> URL? {
@@ -271,17 +196,15 @@ final class OfflineDownloadService: ObservableObject {
               metadata.audioFileName?.isEmpty != false else {
             return nil
         }
-        guard let dir = matchingEntryDirectories(for: metadata.id).first else { return nil }
-        let url = dir.appendingPathComponent(metadata.videoFileName)
-        return fileManager.fileExists(atPath: url.path) ? url : nil
+        return library[metadata.id]?.videoURL
     }
 
     func directoryURL(for metadata: OfflineDownloadMetadata) -> URL? {
-        guard let dir = matchingEntryDirectories(for: metadata.id).first else { return nil }
-        return fileManager.fileExists(atPath: dir.path) ? dir : nil
+        library[metadata.id]?.directory
     }
 
-    func playbackSource(for item: FeedItemDTO, preferredQn: Int64 = 0, audioQn: Int64 = 0) -> OfflinePlaybackSource? {
+    func playbackSource(for item: FeedItemDTO, preferredQn: Int64 = 0, audioQn: Int64 = 0) async -> OfflinePlaybackSource? {
+        await reloadTask?.value
         let matches = entries.filter { metadata in
             guard metadata.status == .completed else { return false }
             guard metadata.cid == item.cid else { return false }
@@ -298,17 +221,19 @@ final class OfflineDownloadService: ObservableObject {
             preferredQn: preferredQn,
             audioQn: audioQn
         ),
-              let directory = matchingEntryDirectories(for: metadata.id).first,
-              let index = readIndex(in: directory) else {
+              let record = library[metadata.id],
+              let index = record.index else {
             return nil
         }
-
+        let revision = entryRevisions[metadata.id]
+        let directory = record.directory
         let videoURL = directory.appendingPathComponent(index.videoFileName)
-        guard fileManager.fileExists(atPath: videoURL.path) else { return nil }
         let audioURL = index.audioFileName.map { directory.appendingPathComponent($0) }
-        if let audioURL, !fileManager.fileExists(atPath: audioURL.path) {
-            return nil
+        let exists = try? await BlockingWorkQueue.files.run {
+            FileManager.default.fileExists(atPath: videoURL.path)
+                && (audioURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? true)
         }
+        guard exists == true, revision == entryRevisions[metadata.id], !Task.isCancelled else { return nil }
         var play = index.play
         play = play.replacingLocalMediaURLs(
             videoURL: videoURL,
@@ -317,17 +242,17 @@ final class OfflineDownloadService: ObservableObject {
         return OfflinePlaybackSource(metadata: metadata, directory: directory, play: play)
     }
 
-    func danmakuItems(for item: FeedItemDTO) -> [DanmakuItemDTO]? {
-        guard let source = playbackSource(for: item),
+    func danmakuItems(for item: FeedItemDTO) async -> [DanmakuItemDTO]? {
+        guard let source = await playbackSource(for: item),
               !source.metadata.danmakuFileName.isEmpty else {
             return nil
         }
         let url = source.directory.appendingPathComponent(source.metadata.danmakuFileName)
-        guard let data = try? Data(contentsOf: url),
-              let archive = try? JSONDecoder.offline.decode(OfflineDanmakuArchive.self, from: data) else {
-            return nil
+        return try? await BlockingWorkQueue.files.run {
+            let data = try Data(contentsOf: url)
+            let archive = try JSONDecoder.offline.decode(OfflineDanmakuArchive.self, from: data)
+            return archive.items.sorted { $0.timeSec < $1.timeSec }
         }
-        return archive.items.sorted { $0.timeSec < $1.timeSec }
     }
 
     func saveCoverToPhotos(urlString: String) async throws {
@@ -634,7 +559,7 @@ final class OfflineDownloadService: ObservableObject {
         var item = entries[idx]
         mutate(&item)
         entries[idx] = item
-        if let dir = matchingEntryDirectories(for: id).first {
+        if let dir = library[id]?.directory {
             writeMetadata(item, to: dir)
         }
     }
@@ -657,10 +582,18 @@ final class OfflineDownloadService: ObservableObject {
     }
 
     private func writeMetadata(_ metadata: OfflineDownloadMetadata, to directory: URL) {
+        libraryRevision &+= 1
+        entryRevisions[metadata.id] = UUID()
         do {
             ensureDirectory(directory)
             let data = try JSONEncoder.offline.encode(metadata)
             try data.write(to: directory.appendingPathComponent(metadataFileName), options: [.atomic])
+            let standalone = metadata.storageMode != "bilibili_dash" && metadata.audioFileName?.isEmpty != false
+            let video = directory.appendingPathComponent(metadata.videoFileName)
+            library[metadata.id] = OfflineLibraryRecord(metadata: metadata, directory: directory,
+                index: library[metadata.id]?.index,
+                videoURL: standalone && metadata.status == .completed ? video : nil,
+                allDirectories: library[metadata.id]?.allDirectories ?? [directory])
         } catch {
             AppLog.error("offline", "写入离线 metadata 失败", error: error, metadata: ["id": metadata.id])
         }
@@ -724,12 +657,11 @@ final class OfflineDownloadService: ObservableObject {
         ensureDirectory(directory)
         let data = try JSONEncoder.offline.encode(index)
         try data.write(to: directory.appendingPathComponent(indexFileName), options: [.atomic])
-    }
-
-    private func readIndex(in directory: URL) -> OfflineMediaIndex? {
-        let url = directory.appendingPathComponent(indexFileName)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder.offline.decode(OfflineMediaIndex.self, from: data)
+        libraryRevision &+= 1
+        if let id = library.first(where: { $0.value.directory == directory })?.key {
+            entryRevisions[id] = UUID()
+            library[id]?.index = index
+        }
     }
 
     private func bestPlaybackMetadata(
@@ -752,16 +684,11 @@ final class OfflineDownloadService: ObservableObject {
     }
 
     private func entryDirectory(id: String, title: String) -> URL {
-        rootDirectory.appendingPathComponent("\(safeFileName(title))-\(id)", isDirectory: true)
+        library[id]?.directory ?? rootDirectory.appendingPathComponent("\(safeFileName(title))-\(id)", isDirectory: true)
     }
 
     private func matchingEntryDirectories(for id: String) -> [URL] {
-        guard let dirs = try? fileManager.contentsOfDirectory(
-            at: rootDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-        return dirs.filter { $0.lastPathComponent.hasSuffix("-\(id)") }
+        library[id]?.allDirectories ?? []
     }
 
     private func workDirectory(for id: String) -> URL {
@@ -995,7 +922,9 @@ struct OfflineCacheListView: View {
                 OfflineCacheSearchBar(text: $searchText)
             }
             Group {
-                if service.entries.isEmpty {
+                if service.entries.isEmpty, service.isIndexLoading {
+                    InitialLoadingView()
+                } else if service.entries.isEmpty {
                     emptyState(title: "暂无离线缓存", symbol: "square.and.arrow.down")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if filteredEntries.isEmpty {
@@ -1030,7 +959,7 @@ struct OfflineCacheListView: View {
         .background(IbiliTheme.background)
         .navigationTitle("离线缓存")
         .navigationBarTitleDisplayMode(.inline)
-        .task { service.reloadFromDisk() }
+        .task { await service.reloadFromDisk() }
         .sheet(item: Binding(
             get: { previewURL.map(PreviewURL.init(url:)) },
             set: { previewURL = $0?.url }

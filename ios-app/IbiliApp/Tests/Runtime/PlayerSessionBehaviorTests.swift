@@ -1,5 +1,9 @@
 import XCTest
+#if canImport(IbiliPlayerRuntime)
 @testable import IbiliPlayerRuntime
+#else
+@testable import Ibili
+#endif
 
 final class PlayerSessionBehaviorTests: XCTestCase {
 
@@ -25,7 +29,7 @@ final class PlayerSessionBehaviorTests: XCTestCase {
 
         XCTAssertTrue(state.applyObservedTimeControlStatus(.paused))
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
-        XCTAssertNil(state.backgroundContinuationRate(currentRate: 1.0, desiredRate: 1.0))
+        XCTAssertFalse(state.shouldHoldAudioSession)
     }
 
     func testSuppressedObservedPausePreservesAutoplayIntent() {
@@ -174,6 +178,75 @@ final class PlayerSessionBehaviorTests: XCTestCase {
         state.apply(.systemTransitionChanged(false))
 
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .pause)
+    }
+
+    func testReturningToForegroundRestoresTheIntentCapturedBeforeNavigation() {
+        var playing = PlayerSessionBehaviorState()
+        playing.apply(.interfaceActivated)
+        playing.apply(.interfaceDeactivated)
+        XCTAssertEqual(playing.desiredPlaybackCommand(rate: 1.0), .pause)
+        playing.apply(.interfaceActivated)
+        XCTAssertEqual(playing.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
+
+        var paused = PlayerSessionBehaviorState()
+        paused.apply(.interfaceActivated)
+        paused.apply(.playbackIntentChanged(.pause))
+        paused.apply(.interfaceDeactivated)
+        paused.apply(.interfaceActivated)
+        XCTAssertEqual(paused.desiredPlaybackCommand(rate: 1.0), .pause)
+    }
+
+    func testNativePictureInPicturePauseAndPlayRemainAuthoritativeInBackground() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.pictureInPictureTransition(.started))
+        state.apply(.systemTransitionChanged(true))
+        XCTAssertTrue(state.apply(.observedTimeControlStatus(.paused)))
+        // An inline AVKit view without a frame is normal while PiP owns the
+        // video surface. Do not replace the PiP player on foreground entry.
+        XCTAssertEqual(state.systemTransitionRecoveryAction(
+            inactiveDuration: 60, engineIsAlive: true, sourceIsOffline: false,
+            presentationNeedsRecovery: true
+        ), .none)
+        state.apply(.systemTransitionChanged(false))
+        state.apply(.pictureInPictureTransition(.stopped(.restored)))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), .pause)
+
+        state.apply(.pictureInPictureTransition(.started))
+        state.apply(.systemTransitionChanged(true))
+        XCTAssertTrue(state.apply(.observedTimeControlStatus(.playing)))
+        state.apply(.systemTransitionChanged(false))
+        state.apply(.pictureInPictureTransition(.stopped(.restored)))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), .play(rate: 1))
+    }
+
+    func testPausedBlackPresentationRebuildsWithoutForcingPlaybackEvenWithHealthyProxy() {
+        for offline in [false, true] {
+            var state = PlayerSessionBehaviorState()
+            state.apply(.interfaceActivated)
+            state.apply(.playbackIntentChanged(.pause))
+            XCTAssertEqual(state.systemTransitionRecoveryAction(
+                inactiveDuration: 5, engineIsAlive: true, sourceIsOffline: offline,
+                presentationNeedsRecovery: true
+            ), .rebuildSource)
+            XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), .pause)
+            XCTAssertEqual(state.systemTransitionRecoveryAction(
+                inactiveDuration: 31, engineIsAlive: true, sourceIsOffline: offline
+            ), .rebuildSource)
+        }
+    }
+
+    func testFailedItemRebuildsAfterBriefBackgroundAndHiddenSessionDoesNot() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        XCTAssertEqual(state.systemTransitionRecoveryAction(
+            inactiveDuration: 0.5, engineIsAlive: true, sourceIsOffline: false, itemHasFailed: true
+        ), .rebuildSource)
+        state.apply(.interfaceDeactivated)
+        XCTAssertEqual(state.systemTransitionRecoveryAction(
+            inactiveDuration: 60, engineIsAlive: false, sourceIsOffline: false,
+            itemHasFailed: true, presentationNeedsRecovery: true
+        ), .none)
     }
 
     func testTwoXRateMatrixPreservesRateAcrossPlaybackLifecycles() {

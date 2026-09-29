@@ -155,20 +155,24 @@ struct PlayerSessionBehaviorState: Equatable {
     func systemTransitionRecoveryAction(
         inactiveDuration: TimeInterval,
         engineIsAlive: Bool,
-        sourceIsOffline: Bool
+        sourceIsOffline: Bool,
+        itemHasFailed: Bool = false,
+        presentationNeedsRecovery: Bool = false
     ) -> PlayerSystemTransitionRecoveryAction {
         guard isInterfacePresentingPlayer else { return .none }
-        if !engineIsAlive { return .rebuildSource }
+        if !engineIsAlive || itemHasFailed { return .rebuildSource }
+
+        // A reachable proxy does not prove that a suspended AVPlayerItem can
+        // still decode/display frames. This also applies to offline files:
+        // they use the same local HLS proxy and AVKit pipeline.
+        if intent == .pause, !pictureInPictureIsActive,
+           presentationNeedsRecovery || inactiveDuration >= Self.pausedSourceRebuildDelay {
+            return .rebuildSource
+        }
         guard !sourceIsOffline else { return .none }
 
         if intent == .play, inactiveDuration >= Self.playingRecoveryProbeDelay {
             return .verifyPlaybackProgress
-        }
-        // A paused AVPlayer performs no segment requests while iOS suspends
-        // the app, so neither AVPlayer nor the proxy can report a stale source.
-        // Recreate the item before the next user play after a real suspension.
-        if intent == .pause, inactiveDuration >= Self.pausedSourceRebuildDelay {
-            return .rebuildSource
         }
         return .none
     }
@@ -197,7 +201,10 @@ struct PlayerSessionBehaviorState: Equatable {
                 return false
             }
         }
-        guard !systemTransitionIsActive,
+        // PiP remains interactive while the scene is inactive/backgrounded.
+        // Its native pause/play controls are authoritative, just like inline
+        // controls; only non-PiP system transition observations are ignored.
+        guard (!systemTransitionIsActive || pictureInPictureIsActive),
               hasPlaybackFocus,
               interfaceIsActive || pictureInPictureIsActive else { return false }
         intent = observedIntent
@@ -209,12 +216,6 @@ struct PlayerSessionBehaviorState: Equatable {
             return .play(rate: rate > 0 ? rate : 1.0)
         }
         return .pause
-    }
-
-    func backgroundContinuationRate(currentRate: Float, desiredRate: Float) -> Float? {
-        guard shouldHoldAudioSession else { return nil }
-        let activeRate = currentRate > 0 ? currentRate : desiredRate
-        return activeRate > 0 ? activeRate : 1.0
     }
 
     private var isSuppressedObservedIntentExpired: Bool {

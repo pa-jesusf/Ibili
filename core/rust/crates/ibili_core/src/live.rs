@@ -9,7 +9,6 @@ use crate::dto::{
     LiveFeedPage, LivePlayUrl, LiveQuality, LiveRoomInfo, ReplyEmote,
 };
 use crate::error::{CoreError, CoreResult};
-use crate::signer::WbiKey;
 use crate::Core;
 
 const URL_LIVE_FEED: &str = "https://api.live.bilibili.com/xlive/app-interface/v2/index/feed";
@@ -20,19 +19,7 @@ const URL_LIVE_INFO_H5: &str =
 const URL_LIVE_DM_INFO: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
 const URL_LIVE_DM_HISTORY: &str = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory";
 const URL_SEND_LIVE_MSG: &str = "https://api.live.bilibili.com/msg/send";
-const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 const STATISTICS_APP: &str = r#"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#;
-
-#[derive(Deserialize)]
-struct NavData {
-    wbi_img: NavWbiImage,
-}
-
-#[derive(Deserialize)]
-struct NavWbiImage {
-    img_url: String,
-    sub_url: String,
-}
 
 #[derive(Default, Deserialize)]
 struct LiveFeedWire {
@@ -308,7 +295,7 @@ impl Core {
         if room_id <= 0 {
             return Err(CoreError::InvalidArgument("room_id required".into()));
         }
-        let key = self.fetch_wbi_key_for_live()?;
+        let key = self.http.wbi_key()?;
         let requested_qn = if qn > 0 { qn } else { 10_000 };
         let params = vec![
             ("room_id".into(), room_id.to_string()),
@@ -341,7 +328,7 @@ impl Core {
         if room_id <= 0 {
             return Err(CoreError::InvalidArgument("room_id required".into()));
         }
-        let key = self.fetch_wbi_key_for_live()?;
+        let key = self.http.wbi_key()?;
         let raw: LiveDanmakuInfoWire = self.http.get_signed_web_with_headers(
             URL_LIVE_DM_INFO,
             vec![
@@ -425,7 +412,7 @@ impl Core {
             return Err(CoreError::InvalidArgument("msg required".into()));
         }
         let csrf = self.http.csrf_token().ok_or(CoreError::AuthRequired)?;
-        let key = self.fetch_wbi_key_for_live()?;
+        let key = self.http.wbi_key()?;
         let mut query = vec![("web_location".into(), "444.8".into())];
         crate::signer::WbiSigner::sign(&mut query, &key);
         let rnd = std::time::SystemTime::now()
@@ -451,21 +438,17 @@ impl Core {
             ("csrf".into(), csrf.clone()),
             ("csrf_token".into(), csrf),
         ];
-        let _: serde_json::Value = self.http.post_form_web_with_headers(
+        let result: CoreResult<serde_json::Value> = self.http.post_form_web_with_headers(
             URL_SEND_LIVE_MSG,
             &query,
             &params,
             &[("Referer", format!("https://live.bilibili.com/{room_id}"))],
-        )?;
+        );
+        if let Err(CoreError::Api { code, .. }) = &result {
+            self.http.reject_wbi_key(*code, &key);
+        }
+        result?;
         Ok(())
-    }
-
-    fn fetch_wbi_key_for_live(&self) -> CoreResult<WbiKey> {
-        let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(
-            &nav.wbi_img.img_url,
-            &nav.wbi_img.sub_url,
-        ))
     }
 
     fn enrich_live_follow_state(&self, items: &mut [LiveFeedItem]) -> CoreResult<()> {

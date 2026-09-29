@@ -1,6 +1,5 @@
 use crate::dto::{FeedDislikeReason, FeedItem, FeedPage};
 use crate::error::{CoreError, CoreResult};
-use crate::signer::WbiKey;
 use crate::Core;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -9,7 +8,6 @@ const URL_FEED_INDEX: &str = "https://app.bilibili.com/x/v2/feed/index";
 const URL_FEED_RCMD_WEB: &str = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd";
 const URL_FEED_POPULAR: &str = "https://api.bilibili.com/x/web-interface/popular";
 const URL_RELATIONS: &str = "https://api.bilibili.com/x/relation/relations";
-const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 /// `Constants.statistics` from upstream PiliPlus.
 const STATISTICS: &str = r#"{"appId":5,"platform":3,"version":"2.0.1","abtest":""}"#;
 
@@ -248,17 +246,6 @@ fn parse_stat_text(raw: &str) -> i64 {
     (base * multiplier) as i64
 }
 
-#[derive(Deserialize)]
-struct NavData {
-    wbi_img: NavWbiImage,
-}
-
-#[derive(Deserialize)]
-struct NavWbiImage {
-    img_url: String,
-    sub_url: String,
-}
-
 /// Bilibili sometimes returns covers as `//i0.hdslb.com/...` (scheme-relative)
 /// or with `http://`; force HTTPS so the iOS image loader stays on ATS-safe URLs.
 fn ensure_https(raw: String) -> String {
@@ -293,7 +280,7 @@ impl Core {
     /// Mirrors `VideoHttp.rcmdVideoList` from upstream PiliPlus
     /// (`/x/web-interface/wbi/index/top/feed/rcmd`).
     fn feed_home_web(&self, fresh_idx: i64, ps: i64) -> CoreResult<FeedPage> {
-        let key = self.fetch_wbi_key_for_feed()?;
+        let key = self.http.wbi_key()?;
         let fresh_idx = fresh_idx.max(0);
         let ps = ps.max(1);
         let params = vec![
@@ -437,14 +424,6 @@ impl Core {
             .collect();
         self.enrich_feed_follow_state(&mut items)?;
         Ok(FeedPage { items })
-    }
-
-    fn fetch_wbi_key_for_feed(&self) -> CoreResult<WbiKey> {
-        let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(
-            &nav.wbi_img.img_url,
-            &nav.wbi_img.sub_url,
-        ))
     }
 
     /// Mirrors PiliPlus `VideoHttp.hotVideoList`

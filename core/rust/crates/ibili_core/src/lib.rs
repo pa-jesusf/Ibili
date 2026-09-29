@@ -24,6 +24,7 @@ pub mod session;
 pub mod signer;
 pub mod user_space;
 pub mod video;
+mod wbi_cache;
 
 use std::sync::Arc;
 

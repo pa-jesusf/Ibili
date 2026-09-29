@@ -19,9 +19,13 @@ xcrun swiftc -swift-version 5 -enable-testing -emit-library -emit-module -module
     "$SOURCES/Bridge/CoreDTOs.swift" "$SOURCES/App/VideoLinkRequest.swift" \
     "$SOURCES/Features/Auth/LoginDTOs.swift" "$SOURCES/Features/Player/BiliHTTP.swift" \
     "$SOURCES/Features/Home/PlayUrlPrefetcher.swift" \
+    "$SOURCES/DesignSystem/ImageDiskCache.swift" "$SOURCES/DesignSystem/Lists/CollectionItemState.swift" \
+    "$SOURCES/Features/VideoDetail/VideoDetailRepository.swift" "$SOURCES/Features/Offline/OfflineLibraryIndex.swift" \
+    "$SOURCES/Features/Live/LiveDanmakuParser.swift" "$SOURCES/Features/Live/LiveMessageBuffer.swift" \
     "$SOURCES/Features/Search/SearchViewModel.swift" "$SOURCES/Features/Search/SearchTypes.swift" \
     "$SOURCES/Features/Search/SearchCategories.swift" "$SOURCES/Features/VideoDetail/VideoInteractionService.swift" \
     "$SOURCES/Features/Player/Proxy/HLSProxyListener.swift" tools/performance-host/AppLog.swift \
+    "$SOURCES/Features/Player/Runtime/PlayerSessionBehavior.swift" \
     -emit-module-path "$OUTPUT/Ibili.swiftmodule" -o "$OUTPUT/libIbili.dylib"
 xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$OUTPUT" -I core/rust/crates/ibili_ffi/include \
     -F "$XCTEST_FRAMEWORKS" -framework XCTest -Xlinker -rpath -Xlinker "$XCTEST_FRAMEWORKS" \
@@ -30,5 +34,7 @@ xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$O
     ios-app/IbiliApp/Tests/PerformanceRequestTests.swift \
     ios-app/IbiliApp/Tests/HLSProxyListenerTests.swift \
     ios-app/IbiliApp/Tests/ConcurrentPageRequestTests.swift \
+    ios-app/IbiliApp/Tests/SharedInfrastructureTests.swift \
+    ios-app/IbiliApp/Tests/Runtime/PlayerSessionBehaviorTests.swift \
     -o "$OUTPUT/PerformanceTests.xctest/Contents/MacOS/PerformanceTests"
 xcrun xctest "$OUTPUT/PerformanceTests.xctest"

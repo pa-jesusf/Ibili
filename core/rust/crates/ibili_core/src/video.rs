@@ -16,7 +16,6 @@ const URL_PLAYURL_WEB: &str = "https://api.bilibili.com/x/player/wbi/playurl";
 const URL_PLAYER_INFO: &str = "https://api.bilibili.com/x/player/wbi/v2";
 const URL_PLAYURL_PGC: &str = "https://api.bilibili.com/pgc/player/web/v2/playurl";
 const URL_PLAYURL_TV: &str = "https://api.bilibili.com/x/tv/playurl";
-const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 const URL_PGC_INFO: &str = "https://api.bilibili.com/pgc/view/web/season";
 static DM_PARAM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -353,17 +352,6 @@ struct DashAudioWire {
     bandwidth: i64,
     #[serde(default, rename = "bandWidth")]
     bandwidth_camel: i64,
-}
-
-#[derive(Deserialize)]
-struct NavData {
-    wbi_img: NavWbiImage,
-}
-
-#[derive(Deserialize)]
-struct NavWbiImage {
-    img_url: String,
-    sub_url: String,
 }
 
 fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
@@ -968,7 +956,7 @@ impl Core {
         let activation = self.http.ensure_web_identity_activated();
         let identity = self.http.web_session_identity_snapshot(has_access_token);
         let qn = if qn <= 0 { 80 } else { qn };
-        let wbi_key = self.fetch_wbi_key()?;
+        let wbi_key = self.http.wbi_key()?;
         let mut params = vec![
             ("cid".into(), cid.to_string()),
             ("qn".into(), qn.to_string()),
@@ -1022,7 +1010,7 @@ impl Core {
         let activation = self.http.ensure_web_identity_activated();
         let identity = self.http.web_session_identity_snapshot(has_access_token);
         let qn = if qn <= 0 { 80 } else { qn };
-        let wbi_key = self.fetch_wbi_key()?;
+        let wbi_key = self.http.wbi_key()?;
         let mut params = vec![
             ("cid".into(), cid.to_string()),
             ("qn".into(), qn.to_string()),
@@ -1063,6 +1051,7 @@ impl Core {
             ))
         })?;
         if env.code != 0 {
+            self.http.reject_wbi_key(env.code, &wbi_key);
             return Err(CoreError::Api {
                 code: env.code,
                 msg: env.message,
@@ -1237,14 +1226,6 @@ impl Core {
             subtitles: map_subtitles(r.subtitle),
             view_points: map_view_points(r.view_points),
         })
-    }
-
-    fn fetch_wbi_key(&self) -> CoreResult<WbiKey> {
-        let nav: NavData = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(
-            &nav.wbi_img.img_url,
-            &nav.wbi_img.sub_url,
-        ))
     }
 
     fn fetch_player_info(
@@ -2053,7 +2034,7 @@ impl Core {
     /// Fetch the full video detail used by the player detail page.
     /// Mirrors `VideoHttp.videoIntro` (`/x/web-interface/wbi/view`).
     pub fn video_view_full(&self, aid: i64, bvid: &str) -> CoreResult<VideoView> {
-        let key = self.fetch_wbi_key()?;
+        let key = self.http.wbi_key()?;
         let params = video_lookup_params(aid, bvid)?;
         let raw: ViewFullRoot = self.http.get_signed_web(URL_VIEW_FULL, params, &key)?;
         let tags = self.video_tags(raw.aid).unwrap_or_default();

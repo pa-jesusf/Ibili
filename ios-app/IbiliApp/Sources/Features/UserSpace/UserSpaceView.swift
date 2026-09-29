@@ -74,8 +74,10 @@ struct UserSpaceView: View {
     var body: some View {
         GeometryReader { proxy in
             VirtualizedCollectionSurface(
-                items: collectionItems,
+                items: [UserSpaceCollectionItem](),
                 layout: collectionLayout(containerSize: proxy.size),
+                dataVersion: tab == .archives ? vm.archivesVersion : vm.dynamicsVersion,
+                itemsProvider: { collectionItems },
                 header: { AnyView(collectionHeader) },
                 headerVersion: collectionHeaderVersion,
                 footer: collectionFooter,
@@ -549,14 +551,16 @@ final class UserSpaceViewModel: ObservableObject {
     @Published var relationEditable = true
     @Published var followBusy = false
 
-    @Published var archives: [SpaceArcItemDTO] = []
+    private(set) var archivesVersion = UUID()
+    @Published var archives: [SpaceArcItemDTO] = [] { didSet { archivesVersion = UUID() } }
     @Published var archivesLoading = false
     @Published var archivesEnd = false
     @Published var archiveOrder: String = "pubdate"
     private var archivePage: Int64 = 1
     private var archiveKeyword: String = ""
 
-    @Published var dynamics: [DynamicItemDTO] = []
+    private(set) var dynamicsVersion = UUID()
+    @Published var dynamics: [DynamicItemDTO] = [] { didSet { dynamicsVersion = UUID() } }
     @Published var dynamicsLoading = false
     @Published var dynamicsEnd = false
     private var dynamicOffset: String = ""

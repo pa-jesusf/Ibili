@@ -5,8 +5,9 @@ import Foundation
 /// into the next call). Sort is 1 (热门) or 2 (时间).
 @MainActor
 final class CommentListViewModel: ObservableObject {
-    @Published private(set) var items: [ReplyItemDTO] = []
-    @Published private(set) var top: ReplyItemDTO?
+    private(set) var dataVersion = UUID()
+    @Published private(set) var items: [ReplyItemDTO] = [] { didSet { dataVersion = UUID() } }
+    @Published private(set) var top: ReplyItemDTO? { didSet { dataVersion = UUID() } }
     @Published private(set) var total: Int64 = 0
     @Published private(set) var upperMid: Int64 = 0
     @Published private(set) var isLoading = false

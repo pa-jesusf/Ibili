@@ -90,6 +90,7 @@ pub struct HttpClient {
     pub client: Client,
     pub jar: Arc<Jar>,
     web_identity_activation: Mutex<WebIdentityActivationState>,
+    wbi_keys: crate::wbi_cache::WbiKeyCache,
 }
 
 #[derive(Default)]
@@ -137,6 +138,7 @@ impl HttpClient {
             client,
             jar,
             web_identity_activation: Mutex::new(WebIdentityActivationState::default()),
+            wbi_keys: Default::default(),
         })
     }
 
@@ -432,19 +434,38 @@ impl HttpClient {
         Ok(self.client.post(url).headers(headers).form(&form))
     }
 
+    pub fn wbi_key(&self) -> CoreResult<crate::signer::WbiKey> {
+        #[derive(serde::Deserialize)]
+        struct Nav {
+            wbi_img: Images,
+        }
+        #[derive(serde::Deserialize)]
+        struct Images {
+            img_url: String,
+            sub_url: String,
+        }
+        self.wbi_keys.get(|| {
+            let nav: Nav = self.get_web("https://api.bilibili.com/x/web-interface/nav", &[])?;
+            Ok(crate::signer::WbiKey::from_urls(
+                &nav.wbi_img.img_url,
+                &nav.wbi_img.sub_url,
+            ))
+        })
+    }
+
+    pub(crate) fn reject_wbi_key(&self, code: i64, key: &crate::signer::WbiKey) {
+        if code == -403 {
+            self.wbi_keys.reject(key);
+        }
+    }
+
     pub fn get_signed_web<T: DeserializeOwned>(
         &self,
         url: &str,
-        mut params: Vec<(String, String)>,
+        params: Vec<(String, String)>,
         key: &crate::signer::WbiKey,
     ) -> CoreResult<T> {
-        crate::signer::WbiSigner::sign(&mut params, key);
-        let resp = apply_default_web_headers(self.client.get(url), self)
-            .query(&params)
-            .send()
-            .map_err(|e| CoreError::Network(net_msg(&e)))?;
-        let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
-        unwrap_envelope(body)
+        self.get_signed_web_with_headers(url, params, key, &[])
     }
 
     pub fn get_signed_web_with_headers<T: DeserializeOwned>(
@@ -467,7 +488,12 @@ impl HttpClient {
         }
         let resp = req.send().map_err(|e| CoreError::Network(net_msg(&e)))?;
         let body = resp.text().map_err(|e| CoreError::Network(net_msg(&e)))?;
-        unwrap_envelope(body)
+        let result = unwrap_envelope(body);
+        if matches!(&result, Err(CoreError::Api { code: -403, .. })) {
+            // Do not retry remote mutations; the next request obtains fresh keys.
+            self.wbi_keys.reject(key);
+        }
+        result
     }
 
     pub fn get_web<T: DeserializeOwned>(

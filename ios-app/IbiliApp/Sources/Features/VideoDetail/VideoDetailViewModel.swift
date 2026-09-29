@@ -40,9 +40,9 @@ final class VideoDetailViewModel: ObservableObject {
 
     func refreshStat() async {
         guard aid > 0 || !bvid.isEmpty else { return }
-        if let updated = try? await CoreClient.shared.perform(priority: .utility, { [aid = self.aid, bvid = self.bvid] core in
-            try core.videoViewFull(aid: aid, bvid: bvid)
-        }) {
+        let generation = detailGeneration
+        if let updated = try? await VideoDetailRepository.shared.detail(aid: aid, bvid: bvid, force: true) {
+            guard !Task.isCancelled, generation == detailGeneration else { return }
             self.aid = updated.aid
             self.bvid = updated.bvid.isEmpty ? bvid : updated.bvid
             self.view = updated
@@ -110,9 +110,7 @@ final class VideoDetailViewModel: ObservableObject {
         isLoading = true
         errorText = nil
         do {
-            let v = try await CoreClient.shared.perform(priority: .userInitiated) { core in
-                try core.videoViewFull(aid: aid, bvid: bvid)
-            }
+            let v = try await VideoDetailRepository.shared.detail(aid: aid, bvid: bvid, force: force)
             guard generation == detailGeneration else { return }
             let resolvedBvid = v.bvid.isEmpty ? bvid : v.bvid
             self.aid = v.aid

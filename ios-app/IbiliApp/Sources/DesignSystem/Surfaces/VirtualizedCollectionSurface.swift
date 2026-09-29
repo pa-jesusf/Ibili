@@ -86,6 +86,8 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
 
     let items: [Item]
     let layout: VirtualizedCollectionLayout
+    var dataVersion: AnyHashable? = nil
+    var itemsProvider: (() -> [Item])? = nil
     var header: (() -> AnyView)? = nil
     var headerVersion: AnyHashable? = nil
     var footer: (() -> AnyView)? = nil
@@ -119,6 +121,8 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
         controller.update(
             items: items,
             layout: layout,
+            dataVersion: dataVersion,
+            itemsProvider: itemsProvider,
             header: header,
             headerVersion: headerVersion,
             footer: footer,
@@ -169,8 +173,11 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var collectionView: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Section, ElementID>!
     private let snapshotCoordinator = DiffableSnapshotCoordinator<Section, ElementID>()
-    private var orderedIDs: [Item.ID] = []
-    private var itemByID: [Item.ID: Item] = [:]
+    private var itemState = CollectionItemState<Item>()
+    private var configurationRevision: UInt64 = 0
+    private let configuredCells = NSMapTable<UICollectionViewCell, NSNumber>.weakToStrongObjects()
+    private var orderedIDs: [Item.ID] { itemState.orderedIDs }
+    private var itemByID: [Item.ID: Item] { itemState.itemByID }
     private var layoutConfiguration = VirtualizedCollectionLayout.list()
     private var hasHeader = false
     private var hasFooter = false
@@ -274,6 +281,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     func update(
         items: [Item],
         layout: VirtualizedCollectionLayout,
+        dataVersion: AnyHashable? = nil,
+        itemsProvider: (() -> [Item])? = nil,
         header: (() -> AnyView)?,
         headerVersion: AnyHashable? = nil,
         footer: (() -> AnyView)?,
@@ -302,7 +311,8 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         content: @escaping (Item, CGFloat) -> AnyView
     ) {
         loadViewIfNeeded()
-        let oldItems = itemByID
+        configurationRevision &+= 1
+        let delta = itemState.update(itemsProvider?() ?? items, version: dataVersion)
         let nextHeader = header != nil
         let nextFooter = footer != nil
         let shouldReconfigureHeader = nextHeader && (
@@ -310,7 +320,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
                 || self.headerVersion != headerVersion
                 || !hasHeader
         )
-        let structureChanged = orderedIDs != items.map(\.id)
+        let structureChanged = delta.structure
             || hasHeader != nextHeader
             || hasFooter != nextFooter
 
@@ -343,21 +353,12 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         self.splitTransitionTargets = splitTransitionTargets
         self.splitTransitionHeight = splitTransitionHeight
 
-        var nextItems: [Item.ID: Item] = [:]
-        var nextIDs: [Item.ID] = []
-        nextIDs.reserveCapacity(items.count)
-        for item in items where nextItems[item.id] == nil {
-            nextItems[item.id] = item
-            nextIDs.append(item.id)
-        }
         let contentChanged = self.contentVersion != contentVersion
         self.contentVersion = contentVersion
         let changedIDs = layoutChanged || contentChanged
-            ? nextIDs
-            : nextIDs.filter { oldItems[$0] != nextItems[$0] }
-        itemByID = nextItems
-        orderedIDs = nextIDs
-        updateRefreshControlAttachment(showsRefresh: showsRefresh, hasContent: !nextIDs.isEmpty)
+            ? orderedIDs
+            : delta.changed
+        updateRefreshControlAttachment(showsRefresh: showsRefresh, hasContent: !orderedIDs.isEmpty)
 
         if layoutChanged {
             collectionView.setCollectionViewLayout(makeLayout(), animated: false)
@@ -411,6 +412,23 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         reconfigureHeader: Bool,
         reconfigureFooter: Bool
     ) {
+        // Content-only updates need neither a new full snapshot nor diffing.
+        // Retained prefetch cells catch up by revision in willDisplay.
+        if !structureChanged {
+            let changed = Set(changedIDs)
+            for index in collectionView.indexPathsForVisibleItems {
+                guard let element = dataSource.itemIdentifier(for: index),
+                      let cell = collectionView.cellForItem(at: index) else { continue }
+                let update: Bool
+                switch element {
+                case .header: update = reconfigureHeader
+                case .footer: update = reconfigureFooter
+                case .item(let id): update = changed.contains(id)
+                }
+                if update { configure(cell, for: element, at: index) }
+            }
+            return
+        }
         if structureChanged {
             visibleIDs.removeAll(keepingCapacity: true)
             onViewportChanged([])
@@ -465,6 +483,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             hosted
         }
         .margins(.all, 0)
+        configuredCells.setObject(NSNumber(value: configurationRevision), forKey: cell)
     }
 
     private func scheduleWidthReconfiguration(
@@ -480,6 +499,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
                   abs(self.collectionView.bounds.width - expectedWidth) <= 0.5 else { return }
             let includeStructuralCells = self.widthReconfigurationIncludesStructuralCells
             self.widthReconfigurationIncludesStructuralCells = false
+            self.configurationRevision &+= 1
             self.collectionView.collectionViewLayout.invalidateLayout()
             self.collectionView.layoutIfNeeded()
             self.reconfigureVisibleCellsForCurrentWidth(
@@ -730,6 +750,11 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        // UIKit may retain a configured prefetch cell without dequeuing again.
+        if configuredCells.object(forKey: cell)?.uint64Value != configurationRevision,
+           let element = dataSource.itemIdentifier(for: indexPath) {
+            configure(cell, for: element, at: indexPath)
+        }
         guard indexPath.section == contentSectionIndex,
               orderedIDs.indices.contains(indexPath.item) else { return }
         let id = orderedIDs[indexPath.item]

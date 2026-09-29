@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{CoreError, CoreResult};
-use crate::signer::WbiKey;
 use crate::Core;
 
 const URL_USER_CARD: &str = "https://api.bilibili.com/x/web-interface/card";
@@ -32,7 +31,6 @@ const URL_WATCHLATER_LIST: &str = "https://api.bilibili.com/x/v2/history/toview/
 const URL_FOLLOWINGS: &str = "https://api.bilibili.com/x/relation/followings";
 const URL_FOLLOWERS: &str = "https://api.bilibili.com/x/relation/followers";
 const URL_SPACE_ARC_SEARCH: &str = "https://api.bilibili.com/x/space/wbi/arc/search";
-const URL_NAV: &str = "https://api.bilibili.com/x/web-interface/nav";
 
 // MARK: - Public DTOs (serialised to JSON for the FFI hop)
 
@@ -550,7 +548,7 @@ impl Core {
         if !self.session.read().has_web_session() {
             return Ok(Vec::new());
         }
-        let key = self.fetch_wbi_key_for_space()?;
+        let key = self.http.wbi_key()?;
         let params: Vec<(String, String)> = vec![
             ("pn".into(), pn.max(1).to_string()),
             ("ps".into(), "20".into()),
@@ -648,7 +646,7 @@ impl Core {
         if mid <= 0 {
             return Err(CoreError::InvalidArgument("mid required".into()));
         }
-        let key = self.fetch_wbi_key_for_space()?;
+        let key = self.http.wbi_key()?;
         let order_val = match order {
             "click" | "stow" | "pubdate" => order,
             _ => "pubdate",
@@ -690,14 +688,6 @@ impl Core {
             page: page_info.pn.unwrap_or(1),
             page_size: page_info.ps.unwrap_or(30),
         })
-    }
-
-    fn fetch_wbi_key_for_space(&self) -> CoreResult<WbiKey> {
-        let nav: NavWire = self.http.get_web(URL_NAV, &[])?;
-        Ok(WbiKey::from_urls(
-            &nav.wbi_img.img_url,
-            &nav.wbi_img.sub_url,
-        ))
     }
 }
 
@@ -1245,19 +1235,6 @@ fn followed_pgc_from_wire(raw: FollowedPgcWire) -> FollowedPgcItem {
 #[allow(dead_code)]
 fn _value_unused() -> Value {
     Value::Null
-}
-
-#[derive(Default, Deserialize)]
-struct NavWire {
-    #[serde(default)]
-    wbi_img: NavWbiImageWire,
-}
-#[derive(Default, Deserialize)]
-struct NavWbiImageWire {
-    #[serde(default)]
-    img_url: String,
-    #[serde(default)]
-    sub_url: String,
 }
 
 #[derive(Default, Deserialize)]

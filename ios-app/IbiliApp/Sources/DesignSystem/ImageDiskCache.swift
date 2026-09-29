@@ -1,166 +1,133 @@
 import Foundation
 import CryptoKit
 
-/// On-disk LRU cache for decoded image bytes. Sits behind the
-/// in-memory `ImageCache` so cover thumbnails survive app launches
-/// and free up the recommendation feed from re-fetching every time
-/// the user backgrounds the app. Mirrors what `cached_network_image`
-/// gives the upstream Flutter build, so cold-start scrolling feels
-/// identical between the two clients.
-///
-/// Threading: all filesystem mutations run on a serial dispatch
-/// queue. Reads are synchronous and cheap (a single `Data` load
-/// from disk). Eviction runs opportunistically after each write
-/// once the directory exceeds `maxBytes`.
+/// Compressed image bytes on disk. A serial lazy index accounts for mutations.
+/// Synchronous reads belong on the image IO queue, not the main thread.
 final class ImageDiskCache: @unchecked Sendable {
     static let shared = ImageDiskCache()
-
+    private struct Entry {
+        var bytes: Int64
+        var accessed: Date
+        var persistedAccess: Date
+    }
     private let fm = FileManager.default
     private let queue = DispatchQueue(label: "ibili.image.disk.cache", qos: .utility)
     private let directory: URL
-    /// Default cap. Overridden at runtime by `AppSettings.imageCacheMaxMB`.
-    /// 256 MB is enough for ~2k typical cover thumbnails.
-    private let defaultMaxBytes: Int64 = 256 * 1024 * 1024
+    private let defaults: UserDefaults
     private let maxBytesKey = "ibili.cache.imageMaxBytes"
+    private var entries: [URL: Entry] = [:]
+    private var total: Int64 = 0
+    private var indexed = false
+    private var cleanupScheduled = false
+    private(set) var indexScanCount = 0
 
-    private init() {
-        let caches = (try? fm.url(
-            for: .cachesDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        directory = caches.appendingPathComponent("ibili/images", isDirectory: true)
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+    init(directory: URL? = nil, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.directory = directory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ibili/images", isDirectory: true)
     }
 
     var maxBytes: Int64 {
-        get {
-            let v = UserDefaults.standard.object(forKey: maxBytesKey) as? Int64
-            return v ?? defaultMaxBytes
-        }
+        get { (defaults.object(forKey: maxBytesKey) as? NSNumber)?.int64Value ?? 256 * 1024 * 1024 }
         set {
-            UserDefaults.standard.set(NSNumber(value: max(newValue, 16 * 1024 * 1024)),
-                                      forKey: maxBytesKey)
-            queue.async { [weak self] in self?.evictIfNeededLocked() }
+            defaults.set(NSNumber(value: max(newValue, 16 * 1024 * 1024)), forKey: maxBytesKey)
+            queue.async { self.loadIndex(); self.scheduleCleanup() }
         }
     }
-
-    // MARK: - Read / write
 
     func read(_ url: URL) -> Data? {
         let path = filePath(for: url)
-        guard fm.fileExists(atPath: path.path) else { return nil }
-        // Touch the file's modification date so eviction's LRU stays
-        // accurate. The actual file write hop is cheap because APFS
-        // only updates the inode metadata, not the data blocks.
-        try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: path.path)
-        return try? Data(contentsOf: path)
+        guard let data = try? Data(contentsOf: path) else { return nil }
+        queue.async {
+            self.loadIndex()
+            guard var entry = self.entries[path] else { return }
+            let now = Date()
+            entry.accessed = now
+            // Keep precise in-memory LRU without an inode write for every hit.
+            if now.timeIntervalSince(entry.persistedAccess) >= 300 {
+                do {
+                    try self.fm.setAttributes([.modificationDate: now], ofItemAtPath: path.path)
+                    entry.persistedAccess = now
+                } catch { }
+            }
+            self.entries[path] = entry
+        }
+        return data
     }
 
     func write(_ url: URL, data: Data) {
-        // Bound the per-file size at 1/8 of the cap so a single huge
-        // image can never displace the entire cache.
-        let perFileLimit = max(maxBytes / 8, 4 * 1024 * 1024)
-        guard data.count <= perFileLimit else { return }
         let path = filePath(for: url)
-        queue.async { [weak self] in
-            guard let self else { return }
+        queue.async {
+            guard data.count <= max(self.maxBytes / 8, 4 * 1024 * 1024) else { return }
+            self.loadIndex()
             do {
-                try self.fm.createDirectory(
-                    at: path.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
+                try self.fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: path, options: .atomic)
-            } catch {
-                return
-            }
-            self.evictIfNeededLocked()
+                self.total += Int64(data.count) - (self.entries[path]?.bytes ?? 0)
+                let now = Date()
+                self.entries[path] = Entry(bytes: Int64(data.count), accessed: now, persistedAccess: now)
+                self.scheduleCleanup()
+            } catch { return }
         }
     }
 
-    // MARK: - Bookkeeping
-
-    /// Reports the on-disk footprint in bytes. Synchronous; callers
-    /// should hop to a background queue before invoking on hot
-    /// paths.
+    /// Settings calls this off-main; also a barrier after queued IO.
     func currentBytes() -> Int64 {
-        let entries = (try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        var total: Int64 = 0
-        for url in entries {
-            total += sumBytes(in: url)
-        }
-        return total
+        queue.sync { loadIndex(); return total }
     }
 
-    /// Wipe the whole cache. Used by Settings → "清除图片缓存".
     func clearAll(completion: (() -> Void)? = nil) {
-        queue.async { [weak self] in
-            guard let self else { completion?(); return }
-            try? self.fm.removeItem(at: self.directory)
-            try? self.fm.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        queue.async {
+            do {
+                if self.fm.fileExists(atPath: self.directory.path) { try self.fm.removeItem(at: self.directory) }
+                self.entries.removeAll()
+                self.total = 0
+                self.indexed = true
+            } catch {
+                self.indexed = false
+                self.loadIndex()
+            }
             DispatchQueue.main.async { completion?() }
         }
     }
 
-    // MARK: - Internals
-
     private func filePath(for url: URL) -> URL {
-        let key = sha256Hex(url.absoluteString)
-        let prefix = String(key.prefix(2))
-        return directory
-            .appendingPathComponent(prefix, isDirectory: true)
-            .appendingPathComponent(key, isDirectory: false)
+        let key = SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(String(key.prefix(2)), isDirectory: true).appendingPathComponent(key)
     }
 
-    private func sha256Hex(_ s: String) -> String {
-        let digest = SHA256.hash(data: Data(s.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func sumBytes(in url: URL) -> Int64 {
-        if let resourceValues = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-           resourceValues.isRegularFile == true {
-            return Int64(resourceValues.fileSize ?? 0)
-        }
-        // Recurse into subdirectories.
-        let children = (try? fm.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        var total: Int64 = 0
-        for child in children { total += sumBytes(in: child) }
-        return total
-    }
-
-    private func evictIfNeededLocked() {
-        let cap = maxBytes
-        var entries: [(url: URL, size: Int64, mtime: Date)] = []
-        let enumerator = fm.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )
+    private func loadIndex() {
+        guard !indexed else { return }
+        indexed = true
+        indexScanCount += 1
+        entries.removeAll()
+        total = 0
+        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+        let enumerator = fm.enumerator(at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])
         while let url = enumerator?.nextObject() as? URL {
-            guard let r = try? url.resourceValues(forKeys: [
-                .fileSizeKey, .contentModificationDateKey, .isRegularFileKey
-            ]) else { continue }
-            if r.isRegularFile != true { continue }
-            entries.append((url, Int64(r.fileSize ?? 0), r.contentModificationDate ?? .distantPast))
+            guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            let bytes = Int64(values.fileSize ?? 0)
+            let date = values.contentModificationDate ?? .distantPast
+            entries[url] = Entry(bytes: bytes, accessed: date, persistedAccess: date)
+            total += bytes
         }
-        var total = entries.reduce(into: Int64(0)) { $0 += $1.size }
-        if total <= cap { return }
-        // Oldest first.
-        entries.sort { $0.mtime < $1.mtime }
-        for entry in entries {
-            if total <= cap { break }
-            try? fm.removeItem(at: entry.url)
-            total -= entry.size
+    }
+
+    private func scheduleCleanup() {
+        guard total > maxBytes, !cleanupScheduled else { return }
+        cleanupScheduled = true
+        queue.asyncAfter(deadline: .now() + 0.25) {
+            self.cleanupScheduled = false
+            let cap = self.maxBytes
+            guard self.total > cap else { return }
+            for (url, entry) in self.entries.sorted(by: { $0.value.accessed < $1.value.accessed }) {
+                guard self.total > cap else { break }
+                do {
+                    if self.fm.fileExists(atPath: url.path) { try self.fm.removeItem(at: url) }
+                    self.entries[url] = nil
+                    self.total -= entry.bytes
+                } catch { continue }
+            }
         }
     }
 }
