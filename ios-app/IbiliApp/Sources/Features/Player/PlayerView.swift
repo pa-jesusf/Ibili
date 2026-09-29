@@ -5,75 +5,11 @@ import UIKit
 
 private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> FeedItemDTO {
     guard !item.isPGC else { return item }
-    guard item.cid == 0 else { return item }
-    let resolvedCid: Int64 = try await Task.detached(priority: .userInitiated) {
-        try CoreClient.shared.videoViewCid(aid: item.aid, bvid: item.bvid)
+    guard item.cid <= 0 || item.aid <= 0 || item.linkSelection != nil else { return item }
+    let view = try await Task.detached(priority: .userInitiated) {
+        try CoreClient.shared.videoViewFull(aid: item.aid, bvid: item.bvid)
     }.value
-    return FeedItemDTO(
-        aid: item.aid,
-        bvid: item.bvid,
-        cid: resolvedCid,
-        title: item.title,
-        cover: item.cover,
-        author: item.author,
-        durationSec: item.durationSec,
-        play: item.play,
-        danmaku: item.danmaku,
-        pubdate: item.pubdate,
-        isFollowed: item.isFollowed,
-        epID: item.epID,
-        seasonID: item.seasonID,
-        isPGC: item.isPGC,
-        ownerMID: item.ownerMID,
-        feedGoto: item.feedGoto,
-        feedID: item.feedID,
-        dislikeReasons: item.dislikeReasons,
-        feedbackReasons: item.feedbackReasons,
-        resumePositionMs: item.resumePositionMs,
-        dimension: item.dimension
-    )
-}
-
-enum PlayerResumePolicy {
-    static func isMediaReplacement(from previous: FeedItemDTO?, to next: FeedItemDTO) -> Bool {
-        guard let previous else { return false }
-        if previous.cid != next.cid { return true }
-        if previous.aid > 0, next.aid > 0, previous.aid != next.aid { return true }
-        if !previous.bvid.isEmpty, !next.bvid.isEmpty, previous.bvid != next.bvid { return true }
-        if previous.epID != next.epID || previous.seasonID != next.seasonID || previous.isPGC != next.isPGC {
-            return true
-        }
-        return false
-    }
-
-    static func isPartSwitch(from previous: FeedItemDTO?, to next: FeedItemDTO) -> Bool {
-        guard let previous,
-              previous.aid == next.aid,
-              previous.cid != next.cid else { return false }
-        if !previous.bvid.isEmpty, !next.bvid.isEmpty {
-            return previous.bvid == next.bvid
-        }
-        return previous.aid > 0
-    }
-
-    static func initialResumeMilliseconds(
-        previous: FeedItemDTO?,
-        next: FeedItemDTO,
-        explicitMilliseconds: Int64?,
-        serverMilliseconds: Int64,
-        serverCid: Int64
-    ) -> Int64 {
-        if let explicitMilliseconds {
-            return max(0, explicitMilliseconds)
-        }
-        if isMediaReplacement(from: previous, to: next) {
-            return serverCid == next.cid ? max(0, serverMilliseconds) : 0
-        }
-        if serverCid == 0 || serverCid == next.cid {
-            return max(0, serverMilliseconds)
-        }
-        return 0
-    }
+    return try VideoLinkRequest.resolve(item, using: view)
 }
 
 @MainActor
@@ -94,12 +30,12 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var availableSubtitles: [VideoSubtitleDTO] = []
     @Published private(set) var viewPoints: [VideoViewPointDTO] = []
     @Published private(set) var currentVideoSizeHint: CGSize?
-    @Published var rate: Float = 1.0 { didSet { applyRate() } }
     @Published private(set) var isTemporarySpeedBoostActive = false
     @Published private(set) var isPausedForDetailCollapse = false
     @Published private(set) var playbackCompletionSignal = 0
     private let holdSpeedRate: Float = 2.0
     private var temporaryPlaybackRateOverride: Float?
+    private var temporaryPlaybackRateRestore: Float?
     /// Resolved native player volume after combining the user's base
     /// attenuation with Bilibili's per-video loudness analysis.
     private var audioVolumeLinear: Float = 1.0
@@ -173,7 +109,6 @@ final class PlayerViewModel: ObservableObject {
     private var systemTransitionExpectedToResume = false
     private var dismissalFadeTask: Task<Void, Never>?
     private var audioVolumeRampTask: Task<Void, Never>?
-    private var playbackRateReapplyTask: Task<Void, Never>?
 
     init(sessionID: PlayerSessionID = PlayerSessionID()) {
         self.sessionID = sessionID
@@ -188,7 +123,6 @@ final class PlayerViewModel: ObservableObject {
             clearPausedForDetailCollapse()
             dismissalFadeTask?.cancel()
             audioVolumeRampTask?.cancel()
-            playbackRateReapplyTask?.cancel()
             stopHeartbeat()
             clearPlaybackCompletionObserver()
             itemStatusObservation = nil
@@ -277,7 +211,14 @@ final class PlayerViewModel: ObservableObject {
             }
         }
         guard !isClosing, !Task.isCancelled else { return }
-        if player != nil, aid == item.aid, cid == item.cid {
+        if let player, aid == item.aid, cid == item.cid {
+            if let resume = item.resumePositionMs, resume != lastLoadedItem?.resumePositionMs {
+                lastLoadedItem = item
+                pendingResumeMs = max(0, resume)
+                if isVideoReady, let playerItem = player.currentItem {
+                    _ = await applyPendingResume(to: player, item: playerItem, generation: loadGeneration)
+                }
+            }
             AppLog.debug("player", "跳过重复播放器加载", metadata: [
                 "aid": String(item.aid),
                 "cid": String(item.cid),
@@ -554,10 +495,12 @@ final class PlayerViewModel: ObservableObject {
 
         let eventDescription = playerSessionEventDescription(event)
         let applied = behaviorState.apply(event)
-        AppLog.debug("player", applied ? "播放器会话事件已应用" : "播放器会话事件被忽略", metadata: playbackDebugMetadata(extra: [
-            "event": eventDescription,
-            "applied": String(applied),
-        ]))
+        if applied || AppDiagnostics.verbosePlayerStateLoggingEnabled {
+            AppLog.debug("player", applied ? "播放器会话事件已应用" : "播放器会话事件被忽略", metadata: playbackDebugMetadata(extra: [
+                "event": eventDescription,
+                "applied": String(applied),
+            ]))
+        }
         guard applied else { return }
 
         switch event {
@@ -645,16 +588,11 @@ final class PlayerViewModel: ObservableObject {
     var systemMediaPlaybackRate: Float {
         guard !isClosing else { return 0 }
         guard let player else { return 0 }
-        if player.timeControlStatus == .paused, player.rate == 0 {
-            return 0
-        }
-        let resolvedRate = desiredPlaybackRate > 0 ? desiredPlaybackRate : player.rate
-        return resolvedRate > 0 ? resolvedRate : 1.0
+        return player.timeControlStatus == .playing ? max(0, player.rate) : 0
     }
 
     var systemMediaDefaultRate: Float {
-        let resolvedRate = desiredPlaybackRate > 0 ? desiredPlaybackRate : rate
-        return resolvedRate > 0 ? resolvedRate : 1.0
+        player?.preferredPlaybackRate ?? 1
     }
 
     var shouldResumePlaybackAfterNativeFullscreenExit: Bool {
@@ -726,7 +664,6 @@ final class PlayerViewModel: ObservableObject {
             // before the recovery probe evaluates whether playback is alive.
             handle(.playbackIntentChanged(.play))
         }
-        reapplyPlaybackRateAfterLifecycleTransition(trigger: "system-transition-complete")
     }
 
     func recoverAfterSystemTransitionIfNeeded(trigger: String,
@@ -825,34 +762,6 @@ final class PlayerViewModel: ObservableObject {
         applyPlaybackIntent(to: targetPlayer)
     }
 
-    /// AVKit and scene reattachment can rewrite AVPlayer's effective rate
-    /// after the logical playback state has already been restored. Reapply the
-    /// user's rate immediately and on two later run-loop passes so the native
-    /// controller cannot leave the UI at 2x while the player runs at 1x.
-    func reapplyPlaybackRateAfterLifecycleTransition(trigger: String) {
-        guard !isClosing, let player else { return }
-        playbackRateReapplyTask?.cancel()
-        let expectedPlayer = player
-        applyRate(to: expectedPlayer)
-        AppLog.debug("player", "生命周期恢复后重新应用播放速度", metadata: [
-            "trigger": trigger,
-            "rate": String(desiredPlaybackRate),
-            "aid": String(aid),
-            "cid": String(cid),
-        ])
-        playbackRateReapplyTask = Task { @MainActor [weak self, weak expectedPlayer] in
-            guard let self, let expectedPlayer else { return }
-            for delay in [0.05, 0.20, 0.50, 1.00] {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                guard !Task.isCancelled,
-                      !self.isClosing,
-                      self.player === expectedPlayer else { return }
-                self.applyRate(to: expectedPlayer)
-            }
-            self.playbackRateReapplyTask = nil
-        }
-    }
-
     var canBeginTemporarySpeedBoost: Bool {
         guard !isClosing else { return false }
         guard let player else { return false }
@@ -863,17 +772,22 @@ final class PlayerViewModel: ObservableObject {
     func beginTemporarySpeedBoost() -> Bool {
         guard canBeginTemporarySpeedBoost else { return false }
         guard temporaryPlaybackRateOverride != holdSpeedRate else { return true }
+        temporaryPlaybackRateRestore = player?.preferredPlaybackRate
         temporaryPlaybackRateOverride = holdSpeedRate
         isTemporarySpeedBoostActive = true
-        applyRate()
+        player?.setUserPlaybackRate(holdSpeedRate)
+        refreshSystemMediaSession()
         return true
     }
 
     func endTemporarySpeedBoost(on targetPlayer: AVPlayer? = nil) {
         guard temporaryPlaybackRateOverride != nil || isTemporarySpeedBoostActive else { return }
+        let restoreRate = temporaryPlaybackRateRestore
         temporaryPlaybackRateOverride = nil
+        temporaryPlaybackRateRestore = nil
         isTemporarySpeedBoostActive = false
-        applyRate(to: targetPlayer)
+        if let restoreRate { (targetPlayer ?? player)?.setUserPlaybackRate(restoreRate) }
+        refreshSystemMediaSession()
     }
 
     /// Applies user playback preferences to the current AVPlayer. A
@@ -991,7 +905,6 @@ final class PlayerViewModel: ObservableObject {
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             guard isCurrentLoad(generation, aid: aid, cid: cid),
                   self.player === player, player.currentItem === prep.item else { return }
-            applyRate(to: player)
             applyPlaybackIntent(to: player)
             self.availableQualities = normalizedQualities(from: info)
             self.currentQn = info.quality
@@ -1031,8 +944,6 @@ final class PlayerViewModel: ObservableObject {
         dismissalFadeTask = nil
         audioVolumeRampTask?.cancel()
         audioVolumeRampTask = nil
-        playbackRateReapplyTask?.cancel()
-        playbackRateReapplyTask = nil
         PlayerPlaybackCoordinator.shared.unregister(self)
         PlayerNowPlayingCoordinator.shared.unregister(self)
         loadGeneration &+= 1
@@ -1125,6 +1036,7 @@ final class PlayerViewModel: ObservableObject {
         clearPausedForDetailCollapse()
         if newPlayer == nil {
             temporaryPlaybackRateOverride = nil
+            temporaryPlaybackRateRestore = nil
             isTemporarySpeedBoostActive = false
         } else {
             isPlaybackCompleted = false
@@ -1135,7 +1047,6 @@ final class PlayerViewModel: ObservableObject {
             newPlayer.volume = audioVolumeLinear
             observePlayerTimeControl(newPlayer)
             observePlaybackCompletion(for: newPlayer)
-            applyRate(to: newPlayer)
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
         } else {
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(false, by: self)
@@ -1215,9 +1126,11 @@ final class PlayerViewModel: ObservableObject {
                                             observedPlayer: AVPlayer? = nil) {
         guard !isClosing else { return }
         let suppressionActive = Date() < transientPauseSuppressionDeadline
-        AppLog.debug("player", "观察到 AVPlayer.timeControlStatus 变化", metadata: playbackDebugMetadata(for: observedPlayer, extra: [
-            "observedStatus": timeControlStatusDescription(status),
-        ]))
+        if AppDiagnostics.verbosePlayerStateLoggingEnabled {
+            AppLog.debug("player", "观察到 AVPlayer.timeControlStatus 变化", metadata: playbackDebugMetadata(for: observedPlayer, extra: [
+                "observedStatus": timeControlStatusDescription(status),
+            ]))
+        }
         if status == .paused,
            suppressionActive {
             AppLog.debug("player", "忽略短暂播放切换中的瞬时暂停回调", metadata: [
@@ -1239,10 +1152,10 @@ final class PlayerViewModel: ObservableObject {
                 return
             }
             if status == .playing, let observedPlayer {
-                // AVKit may restore the item at its default 1x rate after
-                // fullscreen dismissal. This callback is the first reliable
-                // point where assigning `rate` is guaranteed to take effect.
-                applyRate(to: observedPlayer)
+                // Accept AVKit's actual speed, including changes on fullscreen
+                // exit. Only synchronize its displayed/default speed; never
+                // write rate from this observer.
+                observedPlayer.synchronizeDefaultRateWithPlayback()
             }
         }
         handle(.observedTimeControlStatus(status))
@@ -1324,7 +1237,6 @@ final class PlayerViewModel: ObservableObject {
         suppressNextObservedPlaybackIntent(.pause)
         guard let player else { return }
         applyPlaybackIntent(to: player)
-        reapplyPlaybackRateAfterLifecycleTransition(trigger: "native-fullscreen-exit")
     }
 
     private func clearTransientPauseSuppression() {
@@ -1359,7 +1271,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private var basePlaybackRate: Float {
-        rate > 0 ? rate : 1.0
+        player?.preferredPlaybackRate ?? 1
     }
 
     private var desiredPlaybackRate: Float {
@@ -1510,37 +1422,7 @@ final class PlayerViewModel: ObservableObject {
                     self.isPlaybackCompleted = false
                     self.isVideoReady = true
                     self.updatePausedForDetailCollapse()
-                    // Seek to the server-recorded resume position
-                    // exactly once per load. Cleared so a later
-                    // quality-switch readyToPlay event keeps the
-                    // user's current position intact.
-                    if let ms = self.pendingResumeMs {
-                        self.pendingResumeMs = nil
-                        // Discard if effectively at end (within 3s of
-                        // duration) — bilibili reports the *terminal*
-                        // position when the user finished the video.
-                        let durationSec = item.duration.isNumeric ? CMTimeGetSeconds(item.duration) : 0
-                        let resumeSec = Double(ms) / 1000.0
-                        let targetSeconds: Double = ms > 0 && (durationSec <= 0 || resumeSec < durationSec - 3)
-                            ? resumeSec
-                            : 0
-                        let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
-                        let finished = await player.seek(
-                            to: target,
-                            toleranceBefore: .zero,
-                            toleranceAfter: targetSeconds > 0 ? .init(seconds: 1, preferredTimescale: 600) : .zero
-                        )
-                        guard !self.isClosing, self.loadGeneration == generation,
-                              self.player === player, player.currentItem === item else { return }
-                        AppLog.info("player", "新媒体初始进度定位完成", metadata: [
-                            "aid": String(self.aid),
-                            "cid": String(self.cid),
-                            "requestedResumeMs": String(ms),
-                            "targetSeconds": String(targetSeconds),
-                            "actualSeconds": String(CMTimeGetSeconds(player.currentTime())),
-                            "finished": String(finished),
-                        ])
-                    }
+                    guard await self.applyPendingResume(to: player, item: item, generation: generation) else { return }
                     self.startHeartbeatIfNeeded()
                     self.refreshSystemMediaSession()
                 case .failed:
@@ -1738,6 +1620,30 @@ final class PlayerViewModel: ObservableObject {
         "\(playbackCacheVariant)|codec=\(codecPreference ?? playbackCodecPreference)"
     }
 
+    /// Both first load and a new timestamp for the same video consume this
+    /// one-shot instruction. Quality changes retain their existing playhead.
+    private func applyPendingResume(to player: AVPlayer, item: AVPlayerItem, generation: UInt64) async -> Bool {
+        guard !isClosing, loadGeneration == generation,
+              self.player === player, player.currentItem === item else { return false }
+        guard let ms = pendingResumeMs else { return true }
+        pendingResumeMs = nil
+        let isExplicit = lastLoadedItem?.resumePositionMs != nil
+        let seconds = PlayerResumePolicy.targetSeconds(milliseconds: ms, duration: item.duration.seconds, isExplicit: isExplicit)
+        let finished = await player.seek(
+            to: CMTime(seconds: seconds, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: isExplicit || seconds == 0 ? .zero : .init(seconds: 1, preferredTimescale: 600)
+        )
+        guard !isClosing, loadGeneration == generation,
+              self.player === player, player.currentItem === item else { return false }
+        AppLog.info("player", "播放进度定位完成", metadata: [
+            "aid": String(aid), "cid": String(cid),
+            "requestedResumeMs": String(ms), "targetSeconds": String(seconds),
+            "actualSeconds": String(player.currentTime().seconds), "finished": String(finished),
+        ])
+        return true
+    }
+
     private func currentPlaybackTimeForRecovery() -> CMTime {
         guard let player else {
             if let pendingResumeMs, pendingResumeMs > 0 {
@@ -1833,7 +1739,6 @@ final class PlayerViewModel: ObservableObject {
             previousPreparation?.release()
             guard isCurrentLoad(generation, aid: aid, cid: cid),
                   self.player === targetPlayer, targetPlayer.currentItem === prep.item else { return true }
-            applyRate(to: targetPlayer)
             applyPlaybackIntent(to: targetPlayer)
             refreshSystemMediaSession()
 
@@ -2046,7 +1951,6 @@ final class PlayerViewModel: ObservableObject {
             await player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: .zero)
             guard isCurrentLoad(generation, aid: aid, cid: cid),
                   self.player === player, player.currentItem === prep.item else { return }
-            applyRate(to: player)
             applyPlaybackIntent(to: player)
             self.currentAudioQn = info.audioQuality
             self.availableAudioQualities = normalizedAudioQualities(from: info)
@@ -2063,13 +1967,6 @@ final class PlayerViewModel: ObservableObject {
                 "toAudioQn": String(audioQn),
             ])
         }
-    }
-
-    private func applyRate(to targetPlayer: AVPlayer? = nil) {
-        guard let player = targetPlayer ?? player else { return }
-        player.defaultRate = desiredPlaybackRate
-        guard player.timeControlStatus == .playing || player.rate > 0 else { return }
-        player.rate = desiredPlaybackRate
     }
 
     private func applyPresentationMetadata(to playerItem: AVPlayerItem, for item: FeedItemDTO) {
@@ -2311,6 +2208,7 @@ struct PlayerView: View {
     @State private var shouldMountDetailContent = false
     @State private var pendingDanmakuLoadKey: String?
     @State private var loadedDanmakuKey: String?
+    @State private var danmakuLoadGeneration = UUID()
     @State private var danmakuLoadedSegments: Set<Int64> = []
     @State private var danmakuSegmentLoadTasks: [Int64: Task<Void, Never>] = [:]
     @State private var danmakuTimeObserver: Any?
@@ -2351,7 +2249,7 @@ struct PlayerView: View {
     }
 
     private var mediaLoadKey: String {
-        "\(item.isPGC ? "pgc" : "ugc"):\(item.aid):\(item.bvid):\(item.cid):\(item.epID)"
+        "\(item.isPGC ? "pgc" : "ugc"):\(item.aid):\(item.bvid):\(item.cid):\(item.epID):\(item.linkSelection?.page ?? 0):\(item.linkSelection?.cid ?? 0):\(item.resumePositionMs ?? -1)"
     }
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
@@ -2657,15 +2555,31 @@ struct PlayerView: View {
     }
 
     private func seekTo(seconds: Int64) {
-        guard let player = vm.player else { return }
-        let target = CMTime(seconds: Double(max(0, seconds)), preferredTimescale: 600)
+        guard let player = vm.player, let playerItem = player.currentItem,
+              vm.isVideoReady,
+              PlayerRuntimeCoordinator.shared.isForeground(routeID: vm.currentSessionID),
+              PlaybackTimecode.isValid(seconds, duration: playerItem.duration.seconds) else { return }
+        let target = CMTime(seconds: Double(seconds), preferredTimescale: 600)
         Task { @MainActor in
-            detailTimelineClock.seconds = Double(max(0, seconds))
+            guard vm.player === player, player.currentItem === playerItem else { return }
+            let completed = await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard completed, vm.player === player, player.currentItem === playerItem,
+                  PlayerRuntimeCoordinator.shared.isForeground(routeID: vm.currentSessionID) else { return }
+            detailTimelineClock.seconds = Double(seconds)
             detailTimelineClock.lastWholeSecond = seconds
-            await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
             if player.rate == 0 {
                 vm.handle(.playbackIntentChanged(.play))
             }
+        }
+    }
+
+    private var playbackTextContext: PlaybackTextContext? {
+        guard vm.isVideoReady, let player = vm.player, let playerItem = player.currentItem else { return nil }
+        let cid = vm.currentCid
+        return PlaybackTextContext(identity: "\(vm.currentSessionID.uuidString)-\(cid)",
+                                   duration: playerItem.duration.seconds) { seconds in
+            guard vm.player === player, player.currentItem === playerItem, vm.currentCid == cid else { return }
+            seekTo(seconds: seconds)
         }
     }
 
@@ -2745,7 +2659,8 @@ struct PlayerView: View {
                                         endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
                                         shouldResumePlaybackAfterNativeFullscreenExit: { vm.shouldResumePlaybackAfterNativeFullscreenExit },
                                         onCreated: { vc in playerVCRef.vc = vc },
-                                        onPresentationEvent: handlePresentationEvent
+                                        onPresentationEvent: handlePresentationEvent,
+                                        onSeekToTime: { seekTo(seconds: $0) }
                                     )
                                     // Cover the native chrome until the first frame is
                                     // ready, otherwise users see a misleading pause icon
@@ -2793,6 +2708,7 @@ struct PlayerView: View {
                                                    nextPartCandidate = candidate
                                                },
                                                onScrollOffsetChange: handleDetailScrollOffsetForPlayerCollapse)
+                                    .environment(\.playbackTextContext, playbackTextContext)
                                     .transition(.opacity)
                             } else {
                                 VStack(spacing: 12) {
@@ -2892,6 +2808,8 @@ struct PlayerView: View {
             pendingDanmakuLoadKey = mediaLoadKey
             resetSubtitleState()
             resetDanmakuSegmentLoading()
+            clearDanmakuTimeObserver()
+            danmaku.clear()
             await vm.load(item: item,
                           preferredQn: Int64(settings.resolvedPreferredVideoQn()),
                           preferredAudioQn: Int64(settings.resolvedPreferredAudioQn()),
@@ -3312,7 +3230,8 @@ struct PlayerView: View {
         vm.availableAudioQualities.first { $0.qn == vm.currentAudioQn }?.label ?? "音质"
     }
 
-    private func loadDanmaku() async {
+    private func loadDanmaku(generation: UUID) async {
+        guard generation == danmakuLoadGeneration, !Task.isCancelled else { return }
         do {
             let resolvedItem: FeedItemDTO
             if let currentFeedItem = vm.currentFeedItem {
@@ -3320,7 +3239,8 @@ struct PlayerView: View {
             } else {
                 resolvedItem = try await resolvePlayableItemIfNeeded(item)
             }
-            guard resolvedItem.cid > 0 else { return }
+            guard generation == danmakuLoadGeneration, !Task.isCancelled,
+                  resolvedItem.cid > 0, resolvedItem.cid == vm.currentCid else { return }
             if let offlineItems = OfflineDownloadService.shared.danmakuItems(for: resolvedItem) {
                 vm.pageCache.storeDanmaku(offlineItems, for: resolvedItem.cid)
                 danmaku.setItems(offlineItems)
@@ -3339,6 +3259,8 @@ struct PlayerView: View {
             }
             guard !usesSegmentedDanmaku(resolvedItem) else {
                 await MainActor.run {
+                    guard generation == danmakuLoadGeneration, !Task.isCancelled,
+                          resolvedItem.cid == vm.currentCid else { return }
                     if let p = vm.player {
                         danmaku.attach(p)
                         configureDanmakuSegmentObserver(for: p)
@@ -3365,6 +3287,8 @@ struct PlayerView: View {
                     .items
                     .sorted { $0.timeSec < $1.timeSec }
             }.value
+            guard generation == danmakuLoadGeneration, !Task.isCancelled,
+                  resolvedItem.cid == vm.currentCid else { return }
             vm.pageCache.storeDanmaku(sortedItems, for: resolvedItem.cid)
             danmaku.setItems(sortedItems)
             if let p = vm.player { danmaku.attach(p) }
@@ -3373,6 +3297,7 @@ struct PlayerView: View {
                 "count": String(sortedItems.count),
             ])
         } catch {
+            guard generation == danmakuLoadGeneration, !Task.isCancelled else { return }
             AppLog.error("danmaku", "弹幕加载失败", error: error, metadata: [
                 "cid": String(item.cid),
             ])
@@ -3386,7 +3311,8 @@ struct PlayerView: View {
             return
         }
         loadedDanmakuKey = key
-        Task { await loadDanmaku() }
+        let generation = danmakuLoadGeneration
+        Task { await loadDanmaku(generation: generation) }
     }
 
     private func usesSegmentedDanmaku(_ item: FeedItemDTO) -> Bool {
@@ -3395,12 +3321,14 @@ struct PlayerView: View {
 
     private func configureDanmakuSegmentObserver(for player: AVPlayer) {
         clearDanmakuTimeObserver()
+        let generation = danmakuLoadGeneration
         let interval = CMTime(seconds: 8, preferredTimescale: 600)
         danmakuTimeObserverPlayer = player
         danmakuTimeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak vm] time in
             guard let current = vm?.currentFeedItem else { return }
             Task { @MainActor in
-                guard current.cid == self.vm.currentCid,
+                guard generation == self.danmakuLoadGeneration,
+                      self.vm.player === player, current.cid == self.vm.currentCid,
                       self.usesSegmentedDanmaku(current),
                       self.loadedDanmakuKey == self.mediaLoadKey else { return }
                 let seconds = time.seconds.isFinite ? max(0, time.seconds) : 0
@@ -3414,7 +3342,8 @@ struct PlayerView: View {
         ) { [weak vm] _ in
             guard let current = vm?.currentFeedItem else { return }
             Task { @MainActor in
-                guard current.cid == self.vm.currentCid,
+                guard generation == self.danmakuLoadGeneration,
+                      self.vm.player === player, current.cid == self.vm.currentCid,
                       self.usesSegmentedDanmaku(current),
                       self.loadedDanmakuKey == self.mediaLoadKey else { return }
                 self.scheduleDanmakuSegmentsAroundCurrentTime(for: current)
@@ -3466,6 +3395,7 @@ struct PlayerView: View {
     }
 
     private func resetDanmakuSegmentLoading() {
+        danmakuLoadGeneration = UUID()
         cancelDanmakuSegmentTasks()
         danmakuLoadedSegments.removeAll()
     }
@@ -3507,7 +3437,7 @@ struct PlayerView: View {
             return
         }
 
-        let key = mediaLoadKey
+        let generation = danmakuLoadGeneration
         let cid = item.cid
         danmakuSegmentLoadTasks[segmentIndex] = Task {
             do {
@@ -3521,7 +3451,8 @@ struct PlayerView: View {
                         .sorted { $0.timeSec < $1.timeSec }
                 }.value
                 await MainActor.run {
-                    guard key == mediaLoadKey, cid == vm.currentCid else { return }
+                    guard generation == danmakuLoadGeneration, !Task.isCancelled,
+                          cid == vm.currentCid else { return }
                     danmakuSegmentLoadTasks[segmentIndex] = nil
                     danmakuLoadedSegments.insert(segmentIndex)
                     vm.pageCache.storeDanmakuSegment(sortedItems, cid: cid, segmentIndex: segmentIndex)
@@ -3535,7 +3466,7 @@ struct PlayerView: View {
                 }
             } catch {
                 await MainActor.run {
-                    guard key == mediaLoadKey else { return }
+                    guard generation == danmakuLoadGeneration, !Task.isCancelled else { return }
                     danmakuSegmentLoadTasks[segmentIndex] = nil
                     AppLog.error("danmaku", "分段弹幕加载失败", error: error, metadata: [
                         "cid": String(cid),

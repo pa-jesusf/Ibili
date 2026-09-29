@@ -129,6 +129,8 @@ struct GrpcContent {
     emotes: HashMap<String, GrpcEmote>,
     #[prost(map = "string, message", tag = "5")]
     urls: HashMap<String, GrpcUrl>,
+    #[prost(map = "string, int64", tag = "7")]
+    at_name_to_mid: HashMap<String, i64>,
     #[prost(message, repeated, tag = "9")]
     pictures: Vec<GrpcPicture>,
 }
@@ -157,6 +159,14 @@ struct GrpcUrl {
     app_url_schema: String,
     #[prost(string, tag = "13")]
     pc_url: String,
+    #[prost(message, optional, tag = "10")]
+    extra: Option<GrpcUrlExtra>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct GrpcUrlExtra {
+    #[prost(bool, tag = "4")]
+    is_word_search: bool,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -335,6 +345,16 @@ struct ContentWire {
     /// Server-tagged jump targets: `"BV1xx": { title, pc_url, prefix_icon, … }`.
     #[serde(default, deserialize_with = "jump_map_or_empty")]
     jump_url: HashMap<String, JumpUrlWire>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    members: Vec<MentionWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct MentionWire {
+    #[serde(default, deserialize_with = "mention_mid")]
+    mid: i64,
+    #[serde(default)]
+    uname: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -365,6 +385,16 @@ struct JumpUrlWire {
     pc_url: String,
     #[serde(default)]
     prefix_icon: String,
+    #[serde(default)]
+    app_url_schema: String,
+    #[serde(default)]
+    extra: JumpUrlExtraWire,
+}
+
+#[derive(Default, Deserialize)]
+struct JumpUrlExtraWire {
+    #[serde(default)]
+    is_word_search: bool,
 }
 
 fn emote_map_or_empty<'de, D: serde::Deserializer<'de>>(
@@ -538,17 +568,29 @@ fn map_reply(r: ReplyWire) -> ReplyItem {
         .map(|p| p.img_src)
         .filter(|s| !s.is_empty())
         .collect();
-    let jump_urls: Vec<ReplyJumpUrl> = r
+    let mut jump_urls: Vec<ReplyJumpUrl> = r
         .content
         .jump_url
         .into_iter()
         .map(|(keyword, j)| ReplyJumpUrl {
+            url: reply_link_url(
+                &keyword,
+                &j.title,
+                &j.pc_url,
+                &j.app_url_schema,
+                j.extra.is_word_search,
+            ),
             keyword,
             title: j.title,
-            url: j.pc_url,
             prefix_icon: j.prefix_icon,
         })
         .collect();
+    jump_urls.extend(
+        r.content
+            .members
+            .into_iter()
+            .filter_map(|member| mention_link(member.uname, member.mid)),
+    );
     ReplyItem {
         rpid: r.rpid,
         oid: r.oid,
@@ -616,22 +658,126 @@ fn map_grpc_reply(reply: GrpcReplyInfo) -> ReplyItem {
             .urls
             .into_iter()
             .map(|(keyword, url)| ReplyJumpUrl {
+                url: reply_link_url(
+                    &keyword,
+                    &url.title,
+                    &url.pc_url,
+                    &url.app_url_schema,
+                    url.extra.is_some_and(|extra| extra.is_word_search),
+                ),
                 keyword,
                 title: url.title,
-                url: if url.pc_url.is_empty() {
-                    url.app_url_schema
-                } else {
-                    url.pc_url
-                },
                 prefix_icon: url.prefix_icon,
             })
+            .chain(
+                content
+                    .at_name_to_mid
+                    .into_iter()
+                    .filter_map(|(name, mid)| mention_link(name, mid)),
+            )
             .collect(),
+    }
+}
+
+fn mention_mid<'de, D: serde::Deserializer<'de>>(de: D) -> Result<i64, D::Error> {
+    let value = serde_json::Value::deserialize(de)?;
+    Ok(value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(0))
+}
+
+fn mention_link(name: String, mid: i64) -> Option<ReplyJumpUrl> {
+    if mid <= 0 || name.is_empty() {
+        return None;
+    }
+    let keyword = if name.starts_with('@') {
+        name
+    } else {
+        format!("@{name}")
+    };
+    Some(ReplyJumpUrl {
+        title: keyword.clone(),
+        keyword,
+        url: format!("ibili://space/{mid}"),
+        prefix_icon: String::new(),
+    })
+}
+
+fn reply_link_url(keyword: &str, title: &str, pc: &str, app: &str, word_search: bool) -> String {
+    if word_search {
+        let mut url = url::Url::parse("ibili://search").unwrap();
+        url.query_pairs_mut()
+            .append_pair("keyword", if title.is_empty() { keyword } else { title });
+        return url.into();
+    }
+    if pc.is_empty() {
+        app.into()
+    } else {
+        pc.into()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::grpc_detail_list_request;
+
+    #[test]
+    fn web_reply_preserves_mentions_schema_and_word_search() {
+        use super::*;
+        let wire: ReplyWire = serde_json::from_value(serde_json::json!({
+            "content": {
+                "message": "@测试 av42 搜索词", "members": [{"mid": "123", "uname": "测试"}],
+                "jump_url": {
+                    "av42": {"title":"视频", "app_url_schema":"bilibili://video/42"},
+                    "搜索词": {"title":"搜索词", "pc_url":"https://example.com", "extra":{"is_word_search":true}}
+                }
+            }
+        })).unwrap();
+        let reply = map_reply(wire);
+        let links: HashMap<_, _> = reply
+            .jump_urls
+            .into_iter()
+            .map(|link| (link.keyword, link.url))
+            .collect();
+        assert_eq!(links["@测试"], "ibili://space/123");
+        assert_eq!(links["av42"], "bilibili://video/42");
+        let search = url::Url::parse(&links["搜索词"]).unwrap();
+        assert_eq!(search.host_str(), Some("search"));
+        assert_eq!(search.query_pairs().next().unwrap().1, "搜索词");
+    }
+
+    #[test]
+    fn grpc_reply_preserves_upstream_mention_and_word_search_fields() {
+        use super::*;
+        use prost::Message;
+        let wire = GrpcReplyInfo {
+            content: Some(GrpcContent {
+                message: "@测试 搜索词".into(),
+                at_name_to_mid: HashMap::from([("测试".into(), 123)]),
+                urls: HashMap::from([(
+                    "搜索词".into(),
+                    GrpcUrl {
+                        title: "搜索词".into(),
+                        extra: Some(GrpcUrlExtra {
+                            is_word_search: true,
+                        }),
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let reply = map_grpc_reply(GrpcReplyInfo::decode(wire.encode_to_vec().as_slice()).unwrap());
+        assert!(reply
+            .jump_urls
+            .iter()
+            .any(|link| link.keyword == "@测试" && link.url == "ibili://space/123"));
+        assert!(reply.jump_urls.iter().any(
+            |link| link.keyword == "搜索词" && link.url.starts_with("ibili://search?keyword=")
+        ));
+    }
 
     #[test]
     fn detail_target_uses_rpid_only_for_the_server_positioned_first_window() {

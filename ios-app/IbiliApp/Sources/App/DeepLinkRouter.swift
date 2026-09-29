@@ -59,6 +59,8 @@ final class DeepLinkRouter: ObservableObject {
             hasher.combine(item.epID)
             hasher.combine(item.seasonID)
             hasher.combine(item.isPGC)
+            hasher.combine(item.linkSelection)
+            hasher.combine(item.resumePositionMs)
             hasher.combine(offlineOnly)
             hasher.combine(commentTarget)
         }
@@ -71,6 +73,8 @@ final class DeepLinkRouter: ObservableObject {
                 && lhs.item.epID == rhs.item.epID
                 && lhs.item.seasonID == rhs.item.seasonID
                 && lhs.item.isPGC == rhs.item.isPGC
+                && lhs.item.linkSelection == rhs.item.linkSelection
+                && lhs.item.resumePositionMs == rhs.item.resumePositionMs
                 && lhs.offlineOnly == rhs.offlineOnly
                 && lhs.commentTarget == rhs.commentTarget
         }
@@ -505,7 +509,7 @@ final class DeepLinkRouter: ObservableObject {
         replaceSession(with: .search(SearchRoute(keyword: trimmed)))
     }
 
-    func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, mode: OpenMode = .push) {
+    func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, resumePositionMs: Int64? = nil, mode: OpenMode = .push) {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
             do {
@@ -514,7 +518,7 @@ final class DeepLinkRouter: ObservableObject {
                 }.value
                 let episode = Self.selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
-                open(Self.makePgcFeedItem(season: season, episode: episode), mode: mode)
+                open(Self.makePgcFeedItem(season: season, episode: episode, resumePositionMs: resumePositionMs), mode: mode)
             } catch {
                 AppLog.error("router", "PGC 路由解析失败", error: error, metadata: [
                     "seasonID": String(seasonID),
@@ -639,14 +643,9 @@ final class DeepLinkRouter: ObservableObject {
         let host = (url.host ?? "").lowercased()
         let path = url.lastPathComponent
         switch host {
-        case "bv":
-            guard !path.isEmpty else { return .handled }
-            open(Self.makeShell(bvid: path))
-            return .handled
-        case "av":
-            if let aid = Int64(path) {
-                open(Self.makeShell(aid: aid))
-            }
+        case "bv", "av":
+            guard let item = VideoLinkRequest.feedItem(from: url) else { return .discarded }
+            open(item)
             return .handled
         case "live":
             if let roomID = Int64(path) {
@@ -654,18 +653,19 @@ final class DeepLinkRouter: ObservableObject {
             }
             return .handled
         case "pgc", "bangumi":
+            let resume = URLComponents(url: url, resolvingAgainstBaseURL: false).flatMap(VideoLinkRequest.progressMilliseconds)
             let components = url.pathComponents.filter { $0 != "/" }
             if components.count >= 2 {
                 switch components[0] {
                 case "ep":
-                    if let epID = Int64(components[1]) { openPgc(epID: epID) }
+                    if let epID = VideoLinkRequest.positiveID(components[1]) { openPgc(epID: epID, resumePositionMs: resume) }
                 case "ss", "season":
-                    if let seasonID = Int64(components[1]) { openPgc(seasonID: seasonID) }
+                    if let seasonID = VideoLinkRequest.positiveID(components[1]) { openPgc(seasonID: seasonID, resumePositionMs: resume) }
                 default:
                     break
                 }
             } else if let epID = Self.extractFirstNumber(from: path), host == "pgc" {
-                openPgc(epID: Int64(epID) ?? 0)
+                openPgc(epID: Int64(epID) ?? 0, resumePositionMs: resume)
             }
             return .handled
         case "article":
@@ -729,13 +729,13 @@ final class DeepLinkRouter: ObservableObject {
     }
 
     nonisolated static func selectEpisode(from season: PgcSeasonDTO, epID: Int64) -> PgcEpisodeDTO? {
-        if epID > 0, let matched = season.episodes.first(where: { $0.epID == epID }) {
-            return matched
+        if epID > 0 {
+            return season.episodes.first(where: { $0.epID == epID })
         }
         return season.episodes.first
     }
 
-    nonisolated static func makePgcFeedItem(season: PgcSeasonDTO, episode: PgcEpisodeDTO) -> FeedItemDTO {
+    nonisolated static func makePgcFeedItem(season: PgcSeasonDTO, episode: PgcEpisodeDTO, resumePositionMs: Int64? = nil) -> FeedItemDTO {
         let seasonTitle = season.seasonTitle.isEmpty ? season.title : season.seasonTitle
         let epTitle = episode.longTitle.isEmpty ? episode.title : episode.longTitle
         let title = [seasonTitle, epTitle].filter { !$0.isEmpty }.joined(separator: " · ")
@@ -752,7 +752,8 @@ final class DeepLinkRouter: ObservableObject {
             epID: episode.epID,
             seasonID: season.seasonID,
             isPGC: true,
-            ownerMID: season.upMID
+            ownerMID: season.upMID,
+            resumePositionMs: resumePositionMs
         )
     }
 
@@ -763,6 +764,8 @@ final class DeepLinkRouter: ObservableObject {
             && currentItem.cid == item.cid
             && currentItem.epID == item.epID
             && currentItem.isPGC == item.isPGC
+            && currentItem.linkSelection == item.linkSelection
+            && currentItem.resumePositionMs == item.resumePositionMs
     }
 
     private func isCurrent(_ item: FeedItemDTO, offlineOnly: Bool) -> Bool {

@@ -246,7 +246,7 @@ struct RootContentNavigationActions {
     }
 
     @MainActor
-    func openPgc(seasonID: Int64 = 0, epID: Int64 = 0) {
+    func openPgc(seasonID: Int64 = 0, epID: Int64 = 0, resumePositionMs: Int64? = nil) {
         guard seasonID > 0 || epID > 0 else { return }
         Task { @MainActor in
             do {
@@ -255,7 +255,7 @@ struct RootContentNavigationActions {
                 }.value
                 let episode = DeepLinkRouter.selectEpisode(from: season, epID: epID)
                 guard let episode else { return }
-                openPlayer(DeepLinkRouter.makePgcFeedItem(season: season, episode: episode))
+                openPlayer(DeepLinkRouter.makePgcFeedItem(season: season, episode: episode, resumePositionMs: resumePositionMs))
             } catch {
                 AppLog.error("navigation", "根内容 PGC 路由解析失败", error: error, metadata: [
                     "seasonID": String(seasonID),
@@ -308,14 +308,9 @@ struct RootContentNavigationActions {
         let host = (url.host ?? "").lowercased()
         let path = url.lastPathComponent
         switch host {
-        case "bv":
-            guard !path.isEmpty else { return .handled }
-            openPlayer(DeepLinkRouter.makeShell(bvid: path))
-            return .handled
-        case "av":
-            if let aid = Int64(path) {
-                openPlayer(DeepLinkRouter.makeShell(aid: aid))
-            }
+        case "bv", "av":
+            guard let item = VideoLinkRequest.feedItem(from: url) else { return .discarded }
+            openPlayer(item)
             return .handled
         case "live":
             if let roomID = Int64(path) {
@@ -323,18 +318,19 @@ struct RootContentNavigationActions {
             }
             return .handled
         case "pgc", "bangumi":
+            let resume = URLComponents(url: url, resolvingAgainstBaseURL: false).flatMap(VideoLinkRequest.progressMilliseconds)
             let components = url.pathComponents.filter { $0 != "/" }
             if components.count >= 2 {
                 switch components[0] {
                 case "ep":
-                    if let epID = Int64(components[1]) { openPgc(epID: epID) }
+                    if let epID = VideoLinkRequest.positiveID(components[1]) { openPgc(epID: epID, resumePositionMs: resume) }
                 case "ss", "season":
-                    if let seasonID = Int64(components[1]) { openPgc(seasonID: seasonID) }
+                    if let seasonID = VideoLinkRequest.positiveID(components[1]) { openPgc(seasonID: seasonID, resumePositionMs: resume) }
                 default:
                     break
                 }
             } else if let epID = DeepLinkRouter.extractFirstNumber(from: path), host == "pgc" {
-                openPgc(epID: Int64(epID) ?? 0)
+                openPgc(epID: Int64(epID) ?? 0, resumePositionMs: resume)
             }
             return .handled
         case "space", "user":

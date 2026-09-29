@@ -2,6 +2,14 @@ import XCTest
 @testable import Ibili
 
 final class PlayerResumePolicyTests: XCTestCase {
+    func testExplicitTimestampNearEndDoesNotBecomeCompletedHistory() {
+        XCTAssertEqual(PlayerResumePolicy.targetSeconds(milliseconds: 118_500, duration: 120, isExplicit: true), 118.5)
+        XCTAssertEqual(PlayerResumePolicy.targetSeconds(milliseconds: 118_500, duration: 120, isExplicit: false), 0)
+        XCTAssertEqual(PlayerResumePolicy.targetSeconds(milliseconds: 0, duration: 120, isExplicit: true), 0)
+        XCTAssertEqual(PlayerResumePolicy.targetSeconds(milliseconds: 121_000, duration: 120, isExplicit: true), 0)
+        XCTAssertEqual(PlayerResumePolicy.targetSeconds(milliseconds: 12_500, duration: .nan, isExplicit: true), 12.5)
+    }
+
     private func item(
         aid: Int64 = 42,
         bvid: String = "BV42",

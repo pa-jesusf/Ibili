@@ -116,6 +116,7 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
     /// account-level playurl progress and starts from the beginning.
     public let resumePositionMs: Int64?
     public let dimension: VideoDimensionDTO?
+    public let linkSelection: VideoLinkSelection?
 
     enum CodingKeys: String, CodingKey {
         case aid, bvid, cid, title, cover, author, play, danmaku, pubdate
@@ -130,6 +131,7 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         case dislikeReasons = "dislike_reasons"
         case feedbackReasons = "feedback_reasons"
         case resumePositionMs = "resume_position_ms"
+        case linkSelection = "link_selection"
         case dimension
     }
 
@@ -156,6 +158,7 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         feedbackReasons = try c.decodeIfPresent([FeedDislikeReasonDTO].self, forKey: .feedbackReasons) ?? []
         resumePositionMs = try c.decodeIfPresent(Int64.self, forKey: .resumePositionMs)
         dimension = try c.decodeIfPresent(VideoDimensionDTO.self, forKey: .dimension)
+        linkSelection = try c.decodeIfPresent(VideoLinkSelection.self, forKey: .linkSelection)
     }
 
     /// Memberwise convenience init for synthetic feed items (related,
@@ -174,7 +177,8 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         dislikeReasons: [FeedDislikeReasonDTO] = [],
         feedbackReasons: [FeedDislikeReasonDTO] = [],
         resumePositionMs: Int64? = nil,
-        dimension: VideoDimensionDTO? = nil
+        dimension: VideoDimensionDTO? = nil,
+        linkSelection: VideoLinkSelection? = nil
     ) {
         self.aid = aid; self.bvid = bvid; self.cid = cid
         self.epID = epID; self.seasonID = seasonID; self.isPGC = isPGC
@@ -189,6 +193,7 @@ public struct FeedItemDTO: Codable, Identifiable, Hashable {
         self.feedbackReasons = feedbackReasons
         self.resumePositionMs = resumePositionMs
         self.dimension = dimension
+        self.linkSelection = linkSelection
     }
 }
 

@@ -3,6 +3,20 @@ import XCTest
 
 final class PlayerSessionBehaviorTests: XCTestCase {
 
+    func testBufferingRecoveryStillRequestsSystemMediaSynchronization() {
+        var state = PlayerSessionBehaviorState()
+        state.activateInterface()
+        state.suppressNextObservedIntent(.play)
+        XCTAssertFalse(state.apply(.observedTimeControlStatus(.playing)))
+        // These observations also synchronize actual elapsed time. Equal
+        // play intent must not suppress the waiting → playing transition.
+        XCTAssertTrue(state.apply(.observedTimeControlStatus(.waitingToPlayAtSpecifiedRate)))
+        XCTAssertTrue(state.apply(.observedTimeControlStatus(.playing)))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 2), .play(rate: 2))
+        XCTAssertTrue(state.apply(.observedTimeControlStatus(.paused)))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 2), .pause)
+    }
+
     func testManualPauseDoesNotResumeDuringBackgroundContinuation() {
         var state = PlayerSessionBehaviorState()
         state.activateInterface()

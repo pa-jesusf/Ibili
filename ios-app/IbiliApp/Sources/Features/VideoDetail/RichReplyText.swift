@@ -2,9 +2,8 @@ import SwiftUI
 import UIKit
 
 /// Renders a Bilibili reply message with inline emotes and tappable
-/// jump-link chips. The view is `Text`-based (no `UITextView`) so it
-/// composes with `LazyVStack` perf and respects the surrounding font /
-/// foreground style.
+/// links and playback times. The view is `Text`-based (no `UITextView`)
+/// and respects the surrounding font / foreground style.
 ///
 /// Tapping a jump link forwards a custom `ibili://bv/<id>` URL through
 /// the `OpenURLAction` environment — the comment list installs a
@@ -21,25 +20,22 @@ struct RichReplyText: View {
     @State private var emoteImages: [String: UIImage] = [:]
     @State private var lastReportedTruncates: Bool?
 
-    private static let segmentCache: NSCache<NSString, SegmentBox> = {
-        let cache = NSCache<NSString, SegmentBox>()
-        cache.countLimit = 512
-        return cache
-    }()
-
-    private static let inlineLinkRegexes: [NSRegularExpression] = [
-        #"^BV[0-9A-Za-z]{10}"#,
-        #"(?i)^av\d+"#,
-        #"(?i)^cv\d+"#,
-        #"(?i)^opus\d+"#,
-        #"^#[^#\s\u{3000}][^#\n\r]*#"#,
-        #"^https?://[^\s\u{3000}]+"#,
-        #"^www\.[^\s\u{3000}]+"#,
-    ].compactMap { try? NSRegularExpression(pattern: $0) }
+    @Environment(\.playbackTextContext) private var playbackContext
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let estimatedTruncates = estimatedTruncation
         measuredText
+            .environment(\.openURL, OpenURLAction { url in
+                if playbackContext?.handle(url) == true { return .handled }
+                guard url.host != "playback-time" else { return .handled }
+                if LinkRouter.isShortLink(url) {
+                    Task { @MainActor in openURL(await LinkRouter.resolveShortLink(url)) }
+                    return .handled
+                }
+                openURL(url)
+                return .handled
+            })
             .lineLimit(lineLimit)
             .lineSpacing(2)
             .task(id: emoteLoadKey) {
@@ -90,9 +86,7 @@ struct RichReplyText: View {
     // MARK: - Rendering
 
     private var rendered: Text {
-        let segs = tokenize(message: message,
-                             emotes: emotes,
-                             jumps: jumpUrls)
+        let segs = MediaTextParser.parse(message: message, emotes: emotes, jumps: jumpUrls)
         var out = Text("")
         var first = true
         for seg in segs {
@@ -103,7 +97,7 @@ struct RichReplyText: View {
         return out
     }
 
-    private func render(segment: Segment) -> Text {
+    private func render(segment: MediaTextSegment) -> Text {
         switch segment {
         case .text(let s):
             return Text(s).foregroundColor(textColor)
@@ -113,162 +107,20 @@ struct RichReplyText: View {
             }
             return Text(Image(uiImage: ReplyEmoteImageCache.placeholder(pointSize: emotePointSize(for: token))))
         case .link(let label, let url):
-            var attr = AttributedString(label)
-            if let parsed = URL(string: url) ?? encodedURL(from: url) {
-                attr.link = parsed
+            return linkText(label: label, url: URL(string: url))
+        case .time(let label, let seconds):
+            guard let url = playbackContext?.url(seconds: seconds) else {
+                return Text(label).foregroundColor(textColor)
             }
-            attr.foregroundColor = IbiliTheme.accent
-            return Text(attr).fontWeight(.medium)
+            return linkText(label: label, url: url)
         }
     }
 
-    private func encodedURL(from raw: String) -> URL? {
-        guard let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            return nil
-        }
-        return URL(string: encoded)
-    }
-
-    // MARK: - Tokeniser
-
-    private enum Segment {
-        case text(String)
-        case emote(String)            // includes brackets
-        case link(String, String)     // (display, url)
-    }
-
-    private final class SegmentBox {
-        let segments: [Segment]
-
-        init(_ segments: [Segment]) {
-            self.segments = segments
-        }
-    }
-
-    private func tokenize(message: String,
-                          emotes: [ReplyEmoteDTO],
-                          jumps: [ReplyJumpUrlDTO]) -> [Segment] {
-        let cacheKey = tokenizationCacheKey(message: message, emotes: emotes, jumps: jumps)
-        if let cached = Self.segmentCache.object(forKey: cacheKey) {
-            return cached.segments
-        }
-
-        // Build a quick lookup of all anchors we might splice in.
-        let emoteSet = Set(emotes.map { $0.name })
-        let jumpDict = jumps.reduce(into: [String: ReplyJumpUrlDTO]()) { result, jump in
-            guard !jump.keyword.isEmpty, result[jump.keyword] == nil else { return }
-            result[jump.keyword] = jump
-        }
-        let jumpKeywords = jumpDict.keys
-            .sorted { $0.count > $1.count }
-            .map { ($0, Array($0)) }
-
-        var out: [Segment] = []
-        var buf = ""
-
-        // Walk char-by-char so multi-byte CJK + ASCII mix correctly.
-        let chars = Array(message)
-        var i = 0
-        while i < chars.count {
-            // Try emote `[xxx]` at this position.
-            if chars[i] == "[" {
-                if let close = chars[i...].firstIndex(of: "]") {
-                    let token = String(chars[i...close])
-                    if emoteSet.contains(token) {
-                        if !buf.isEmpty { out.append(.text(buf)); buf.removeAll() }
-                        out.append(.emote(token))
-                        i = close + 1
-                        continue
-                    }
-                }
-            }
-            // Try jump-keyword starting here. Match longest keyword first.
-            var matched = false
-            for (keyword, kchars) in jumpKeywords {
-                if i + kchars.count <= chars.count,
-                   chars[i..<i+kchars.count].elementsEqual(kchars) {
-                    if !buf.isEmpty { out.append(.text(buf)); buf.removeAll() }
-                    let j = jumpDict[keyword]!
-                    let url = mapJumpURL(keyword: keyword, raw: j.url)
-                    let label = j.title.isEmpty ? keyword : j.title
-                    out.append(.link(label, url))
-                    i += kchars.count
-                    matched = true
-                    break
-                }
-            }
-            if matched { continue }
-
-            if let detected = detectInlineLink(chars: chars, start: i) {
-                if !buf.isEmpty { out.append(.text(buf)); buf.removeAll() }
-                out.append(.link(detected.label, detected.url))
-                i = detected.end
-                continue
-            }
-
-            buf.append(chars[i])
-            i += 1
-        }
-        if !buf.isEmpty { out.append(.text(buf)) }
-        Self.segmentCache.setObject(SegmentBox(out), forKey: cacheKey)
-        return out
-    }
-
-    private func tokenizationCacheKey(
-        message: String,
-        emotes: [ReplyEmoteDTO],
-        jumps: [ReplyJumpUrlDTO]
-    ) -> NSString {
-        let emoteKey = emotes.map { "\($0.name)=\($0.url)#\($0.size)" }.joined(separator: "|")
-        let jumpKey = jumps.map { "\($0.keyword)=\($0.title)#\($0.url)" }.joined(separator: "|")
-        return "\(message)\u{1f}\(emoteKey)\u{1f}\(jumpKey)" as NSString
-    }
-
-    /// Translate the upstream `pc_url` into our internal `ibili://` scheme
-    /// when possible, so the OpenURLAction handler can route in-app.
-    private func mapJumpURL(keyword: String, raw: String) -> String {
-        let mapped = LinkRouter.mapToInternalURL(raw, keyword: keyword)
-        if mapped == raw, looksLikeSearchTag(keyword: keyword, raw: raw) {
-            return LinkRouter.searchURL(keyword: cleanedSearchKeyword(keyword))
-        }
-        return mapped
-    }
-
-    private func detectInlineLink(chars: [Character], start: Int) -> (label: String, url: String, end: Int)? {
-        let remaining = String(chars[start...])
-        for regex in Self.inlineLinkRegexes {
-            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
-            guard let match = regex.firstMatch(in: remaining, range: range),
-                  match.range.location == 0,
-                  let swiftRange = Range(match.range, in: remaining) else { continue }
-            let label = String(remaining[swiftRange])
-            if label.hasPrefix("#"), label.hasSuffix("#"), label.count > 2 {
-                let keyword = String(label.dropFirst().dropLast())
-                return (label, LinkRouter.searchURL(keyword: keyword), start + label.count)
-            }
-            let rawURL = label.hasPrefix("www.") ? "https://\(label)" : label
-            return (label, LinkRouter.mapToInternalURL(rawURL, keyword: label), start + label.count)
-        }
-        return nil
-    }
-
-    private func looksLikeSearchTag(keyword: String, raw: String) -> Bool {
-        let source = raw.isEmpty ? keyword : raw
-        let lower = source.lowercased()
-        return lower.contains("search.bilibili.com")
-            || lower.contains("word_search")
-            || lower.contains("wordsearch")
-            || lower.contains("search_type")
-            || (!keyword.isEmpty && raw.isEmpty)
-    }
-
-    private func cleanedSearchKeyword(_ keyword: String) -> String {
-        var text = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("#"), text.hasSuffix("#"), text.count > 2 {
-            text.removeFirst()
-            text.removeLast()
-        }
-        return text
+    private func linkText(label: String, url: URL?) -> Text {
+        var attr = AttributedString(label)
+        attr.link = url
+        attr.foregroundColor = IbiliTheme.accent
+        return Text(attr).fontWeight(.medium)
     }
 
     // MARK: - Async emote fetch

@@ -25,6 +25,10 @@ struct CommentThreadSheet: View {
     @State private var hasStartedLoading = false
     @State private var composer: CommentThreadComposerContext?
     @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var settings: AppSettings
+    @Environment(\.playbackTextContext) private var playbackTextContext
+    @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
 
     private var currentRootItem: ReplyItemDTO {
         rootState ?? root
@@ -58,7 +62,8 @@ struct CommentThreadSheet: View {
                     onLoadMore: {
                         guard hasStartedLoading else { return }
                         Task { await loadMore() }
-                    }
+                    },
+                    contentVersion: playbackTextContext?.contentVersion ?? "no-player"
                 ) { reply, _ in
                     AnyView(
                         VStack(spacing: 0) {
@@ -157,6 +162,13 @@ struct CommentThreadSheet: View {
                        onOpenUser: onOpenUser,
                        onOpenThread: {})
                 .padding(.horizontal, 16)
+                .environmentObject(settings)
+                .environment(\.playbackTextContext, playbackTextContext)
+                .environment(\.openURL, OpenURLAction { url in
+                    dismiss()
+                    DispatchQueue.main.async { openURL(url) }
+                    return .handled
+                })
         )
     }
 

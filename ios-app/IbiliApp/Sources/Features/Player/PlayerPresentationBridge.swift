@@ -32,9 +32,10 @@ enum PlayerPresentationEvent {
 
 private final class PlayerHoldSpeedGestureMaskView: UIView {
     var hitTestingEnabledProvider: () -> Bool = { true }
+    var hasTimecodeAtPoint: (CGPoint) -> Bool = { _ in false }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard hitTestingEnabledProvider() else { return false }
+        guard hitTestingEnabledProvider() || hasTimecodeAtPoint(point) else { return false }
         return super.point(inside: point, with: event)
     }
 }
@@ -134,6 +135,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     var shouldResumePlaybackAfterNativeFullscreenExit: () -> Bool = { false }
     let onCreated: (AVPlayerViewController) -> Void
     let onPresentationEvent: (PlayerPresentationEvent) -> Void
+    var onSeekToTime: ((Int64) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -181,6 +183,10 @@ struct PlayerContainer: UIViewControllerRepresentable {
             gestureMask.hitTestingEnabledProvider = { [weak coordinator = context.coordinator] in
                 coordinator?.shouldAllowHoldSpeedGestureHitTesting ?? false
             }
+            gestureMask.hasTimecodeAtPoint = { [weak canvas, weak gestureMask] point in
+                guard let canvas, let gestureMask else { return false }
+                return canvas.seekTarget(at: canvas.convert(point, from: gestureMask)) != nil
+            }
             overlay.addSubview(gestureMask)
             NSLayoutConstraint.activate([
                 gestureMask.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
@@ -199,6 +205,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
             holdGesture.delaysTouchesEnded = true
             holdGesture.delegate = context.coordinator
             gestureMask.addGestureRecognizer(holdGesture)
+            let timecodeTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDanmakuTimecode(_:)))
+            timecodeTap.delegate = context.coordinator
+            timecodeTap.require(toFail: holdGesture)
+            gestureMask.addGestureRecognizer(timecodeTap)
+            context.coordinator.timecodeTap = timecodeTap
 
             let badge = PlayerHoldSpeedBadgeView()
             overlay.addSubview(badge)
@@ -261,6 +272,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
         var assignedPlayerID: ObjectIdentifier?
         private var holdSpeedBadgeIsVisible = false
         private var isDismantled = false
+        fileprivate weak var timecodeTap: UITapGestureRecognizer?
+        private var pendingDanmakuSeek: (seconds: Int64, player: AVPlayer, item: AVPlayerItem)?
         private var pictureInPictureRestoreSucceeded = false
         private var currentItemObservation: NSKeyValueObservation?
         private var presentationSizeObservation: NSKeyValueObservation?
@@ -278,6 +291,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func prepareForDismantle(controller vc: AVPlayerViewController) {
             isDismantled = true
+            pendingDanmakuSeek = nil
             fullscreenTransitionState.reset()
             entryInterfaceOrientation = nil
             releaseFullscreenOrientationLease()
@@ -377,7 +391,25 @@ struct PlayerContainer: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            !isDismantled && parent.canBeginTemporarySpeedBoost()
+            if gestureRecognizer === timecodeTap { return !isDismantled && pendingDanmakuSeek != nil }
+            return !isDismantled && parent.canBeginTemporarySpeedBoost()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard gestureRecognizer === timecodeTap else { return true }
+            pendingDanmakuSeek = nil
+            guard !isDismantled, parent.danmakuEnabled,
+                  let canvas = danmakuCanvas, let seconds = canvas.seekTarget(at: touch.location(in: canvas)),
+                  let item = parent.player.currentItem, parent.onSeekToTime != nil else { return false }
+            pendingDanmakuSeek = (seconds, parent.player, item)
+            return true
+        }
+
+        @objc func handleDanmakuTimecode(_ gesture: UITapGestureRecognizer) {
+            defer { pendingDanmakuSeek = nil }
+            guard gesture.state == .ended, !isDismantled, let target = pendingDanmakuSeek,
+                  parent.player === target.player, parent.player.currentItem === target.item else { return }
+            parent.onSeekToTime?(target.seconds)
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

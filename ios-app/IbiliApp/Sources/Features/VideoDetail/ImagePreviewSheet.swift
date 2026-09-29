@@ -89,18 +89,19 @@ struct ImagePreviewSheet: View {
                         image: image,
                         screenSize: proxy.size,
                         showsOriginal: originalIndexes.contains(i),
-                        isZoomed: $pageZoomed
+                        isZoomed: Binding(
+                            get: { index == i && pageZoomed },
+                            set: {
+                                guard index == i else { return }
+                                pageZoomed = $0
+                                if $0 { dismissDrag = 0 }
+                            }
+                        )
                     )
-                    .onDisappear {
-                        if index != i {
-                            pageZoomed = false
-                        }
-                    }
                 }
             }
             .offset(y: dismissDrag)
             .scaleEffect(max(0.85, 1.0 - dragMag / 1600))
-            .animation(.interactiveSpring(response: 0.28, dampingFraction: 0.86, blendDuration: 0), value: dismissDrag)
 
             VStack {
                 HStack {
@@ -284,9 +285,12 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
         }
 
         func configureScrollViews(in root: UIView) {
-            let discovered = root.subviewsRecursive().compactMap { $0 as? UIScrollView }
+            // Only configure the pager's own scroll view. Descendant scroll
+            // views belong to zoomable images and must keep native physics.
+            let discovered = root.subviews.compactMap { $0 as? UIScrollView }
             for scrollView in discovered {
                 scrollView.isPagingEnabled = true
+                scrollView.isScrollEnabled = !parent.pageZoomed
                 scrollView.alwaysBounceHorizontal = parent.images.count > 1
                 scrollView.alwaysBounceVertical = false
                 scrollView.delaysContentTouches = false
@@ -300,6 +304,7 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
                 verticalPanTarget.removeGestureRecognizer(verticalDismissPan)
             }
             let pan = UIPanGestureRecognizer(target: self, action: #selector(handleVerticalDismissPan(_:)))
+            pan.maximumNumberOfTouches = 1
             pan.cancelsTouchesInView = false
             pan.delaysTouchesBegan = false
             pan.delaysTouchesEnded = false
@@ -358,6 +363,7 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
                   let current = pageViewController.viewControllers?.first,
                   let currentIndex = index(of: current) else { return }
             visibleIndex = currentIndex
+            parent.pageZoomed = false
             parent.index = currentIndex
         }
 
@@ -379,7 +385,10 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
         }
 
         @objc private func handleVerticalDismissPan(_ recognizer: UIPanGestureRecognizer) {
-            guard !parent.pageZoomed else { return }
+            guard !parent.pageZoomed else {
+                parent.dismissDrag = 0
+                return
+            }
             let translation = recognizer.translation(in: recognizer.view)
             let velocity = recognizer.velocity(in: recognizer.view)
             switch recognizer.state {
@@ -412,12 +421,6 @@ private struct ImagePreviewPager<Page: View>: UIViewControllerRepresentable {
     }
 }
 
-private extension UIView {
-    func subviewsRecursive() -> [UIView] {
-        subviews + subviews.flatMap { $0.subviewsRecursive() }
-    }
-}
-
 /// Single page that supports pinch-to-zoom on top of `RemoteImage`.
 private struct ZoomablePreviewPage: View {
     let image: CommentImagePreviewItem
@@ -427,96 +430,30 @@ private struct ZoomablePreviewPage: View {
     /// gesture while the user is panning a zoomed-in image.
     @Binding var isZoomed: Bool
 
-    @State private var scale: CGFloat = 1.0
-    @GestureState private var pinch: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
-    @GestureState private var drag: CGSize = .zero
-
-    var body: some View {
-        let total = scale * pinch
-        let imageView = ProgressivePreviewImage(
-            image: image,
-            screenSize: screenSize,
-            showsOriginal: showsOriginal
-        )
-            .scaleEffect(total)
-            .offset(x: offset.width + drag.width, y: offset.height + drag.height)
-            .gesture(
-                MagnificationGesture()
-                    .updating($pinch) { value, state, _ in state = value }
-                    .onEnded { value in
-                        let next = max(1.0, min(scale * value, 4.0))
-                        scale = next
-                        if next == 1.0 { offset = .zero }
-                        isZoomed = next > 1.01
-                    }
-            )
-            .onTapGesture(count: 2) {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
-                    if scale > 1.01 {
-                        scale = 1
-                        offset = .zero
-                        isZoomed = false
-                    } else {
-                        scale = 2.4
-                        isZoomed = true
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        Group {
-            if scale > 1.01 {
-                imageView.simultaneousGesture(
-                    DragGesture()
-                        .updating($drag) { value, state, _ in
-                            state = value.translation
-                        }
-                        .onEnded { value in
-                            offset.width += value.translation.width
-                            offset.height += value.translation.height
-                        }
-                )
-            } else {
-                imageView
-            }
-        }
-        .onChange(of: showsOriginal) { _ in
-            resetZoom()
-        }
-        .onDisappear {
-            resetZoom()
-        }
-    }
-
-    private func resetZoom() {
-        scale = 1
-        offset = .zero
-        isZoomed = false
-    }
-}
-
-private struct ProgressivePreviewImage: View {
-    let image: CommentImagePreviewItem
-    let screenSize: CGSize
-    let showsOriginal: Bool
-
-    private var fallbackURL: URL? {
-        URL(string: image.thumbnailURL())
-    }
+    @StateObject private var loader = CachedRemoteImageLoader()
 
     private var requestedURL: URL? {
-        let raw = showsOriginal
-            ? image.normalizedOriginalURL
-            : image.displayURL(screenSize: screenSize)
-        return URL(string: raw)
+        URL(string: showsOriginal ? image.normalizedOriginalURL : image.displayURL(screenSize: screenSize))
     }
 
     var body: some View {
-        CachedRemoteImage(
-            url: requestedURL,
-            fallbackURL: fallbackURL,
-            contentMode: .fit
-        )
+        ZStack {
+            NativeImageZoomView(image: loader.image, isZoomed: $isZoomed)
+            if loader.image == nil {
+                if loader.failed {
+                    Image(systemName: "photo").font(.largeTitle).foregroundStyle(.white.opacity(0.5))
+                } else {
+                    ProgressView().tint(.white)
+                }
+            }
+        }
+        .task(id: requestedURL) {
+            loader.load(url: requestedURL, fallbackURL: URL(string: image.thumbnailURL()))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ImageCache.didStoreImageNotification)) { notification in
+            guard ImageCache.storedURL(from: notification) == requestedURL else { return }
+            loader.useCachedImageIfAvailable(for: requestedURL)
+        }
     }
 }
 
@@ -602,41 +539,6 @@ private final class CachedRemoteImageLoader: ObservableObject {
         let renderer = UIGraphicsImageRenderer(size: targetSize)
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-    }
-}
-
-private struct CachedRemoteImage: View {
-    let url: URL?
-    let fallbackURL: URL?
-    var contentMode: ContentMode = .fit
-
-    @StateObject private var loader = CachedRemoteImageLoader()
-
-    var body: some View {
-        ZStack {
-            if let image = loader.image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
-                    .transition(.opacity.animation(.easeOut(duration: 0.16)))
-            } else if loader.failed {
-                Image(systemName: "photo")
-                    .font(.largeTitle)
-                    .foregroundStyle(.white.opacity(0.5))
-            } else {
-                ProgressView()
-                    .tint(.white)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { loader.load(url: url, fallbackURL: fallbackURL) }
-        .onChange(of: url) { loader.load(url: $0, fallbackURL: fallbackURL) }
-        .onChange(of: fallbackURL) { loader.load(url: url, fallbackURL: $0) }
-        .onReceive(NotificationCenter.default.publisher(for: ImageCache.didStoreImageNotification)) { notification in
-            let storedURL = ImageCache.storedURL(from: notification)
-            guard storedURL == url else { return }
-            loader.useCachedImageIfAvailable(for: storedURL)
         }
     }
 }

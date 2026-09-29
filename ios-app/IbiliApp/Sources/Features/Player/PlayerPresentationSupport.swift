@@ -83,7 +83,6 @@ enum PlayerViewLifecycleController {
         }
         playerBox.detachedPlayer = nil
         viewModel.completeSystemTransition()
-        viewModel.reapplyPlaybackRateAfterLifecycleTransition(trigger: "foreground-player-reattach")
 
         guard viewModel.player != nil else { return }
         playerBox.foregroundRecoveryTask?.cancel()

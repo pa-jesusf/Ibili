@@ -318,7 +318,25 @@ final class DanmakuCanvasView: UIView {
 
     private struct ActiveLayer {
         let layer: DanmakuBulletLayer
+        let startTime: Double
         let endTime: Double
+        let seekSeconds: Int64?
+    }
+
+    /// Hit-test the presentation layer, not the model layer's final position.
+    /// Future pre-scheduled bullets and ordinary text never consume a tap.
+    func seekTarget(at point: CGPoint) -> Int64? {
+        guard !isHidden, alpha > 0.01, bounds.contains(point),
+              let player, let root = layer.presentation() else { return nil }
+        let now = player.currentTime().seconds
+        for active in activeLayers.reversed() {
+            guard active.startTime <= now, now < active.endTime,
+                  let seconds = active.seekSeconds,
+                  let presentation = active.layer.presentation(), presentation.opacity > 0.01,
+                  presentation.bounds.contains(presentation.convert(point, from: root)) else { continue }
+            return seconds
+        }
+        return nil
     }
 
     private enum DanmakuMode {
@@ -631,7 +649,9 @@ final class DanmakuCanvasView: UIView {
 
         activeLayers.append(ActiveLayer(
             layer: bulletLayer,
-            endTime: endTime
+            startTime: startTime,
+            endTime: endTime,
+            seekSeconds: PlaybackTimecode.firstValid(in: displayText, duration: player?.currentItem?.duration.seconds ?? 0)
         ))
     }
 

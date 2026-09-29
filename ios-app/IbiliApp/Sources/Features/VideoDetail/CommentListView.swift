@@ -303,6 +303,8 @@ private struct CommentListContent: View {
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.commentViewportHeight) private var commentViewportHeight
     @Environment(\.commentContentWidth) private var commentContentWidth
+    @Environment(\.playbackTextContext) private var playbackTextContext
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         Group {
@@ -409,7 +411,8 @@ private struct CommentListContent: View {
             },
             onScrollOffsetChanged: { offset in
                 onScrollOffsetChange?(offset)
-            }
+            },
+            contentVersion: playbackTextContext?.contentVersion ?? "no-player"
         ) { element, width in
             virtualizedRow(element, width: width)
         }
@@ -485,6 +488,8 @@ private struct CommentListContent: View {
                 .environmentObject(settings)
                 .environment(\.commentViewportHeight, commentViewportHeight)
                 .environment(\.commentContentWidth, max(1, width))
+                .environment(\.playbackTextContext, playbackTextContext)
+                .environment(\.openURL, openURL)
             )
         }
     }

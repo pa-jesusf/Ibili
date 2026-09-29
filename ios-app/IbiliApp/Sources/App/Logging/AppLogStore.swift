@@ -1,7 +1,20 @@
 import Foundation
 import SwiftUI
+import Combine
 
-actor AppLogPersistence {
+protocol AppLogPersistenceStore: Sendable {
+    func loadEntries() async -> [AppLogEntry]
+    func saveEntries(_ entries: [AppLogEntry]) async
+    func clear() async
+}
+
+protocol AppLogFileSink: Sendable {
+    func markSessionStarted() async
+    func append(_ entry: AppLogEntry) async
+    func clear() async
+}
+
+actor AppLogPersistence: AppLogPersistenceStore {
     private let fileURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -39,7 +52,7 @@ actor AppLogPersistence {
     }
 }
 
-actor AppLogSharedFileSink {
+actor AppLogSharedFileSink: AppLogFileSink {
     private let directoryURL: URL
     private let currentURL: URL
     private let maxFileBytes = 8 * 1024 * 1024
@@ -129,25 +142,31 @@ actor AppLogSharedFileSink {
 final class AppLogStore: ObservableObject {
     static let shared = AppLogStore()
 
-    private struct SharedFileCoalescingState {
-        let signature: String
-        let sample: AppLogEntry
-        var lastTimestamp: Date
-        var suppressedCount: Int = 0
-    }
 
     @Published private(set) var entries: [AppLogEntry] = []
 
-    private let persistence = AppLogPersistence()
-    private let sharedFileSink = AppLogSharedFileSink()
+    private let persistence: any AppLogPersistenceStore
+    private let sharedFileSink: any AppLogFileSink
     private let maxEntries = 1_000
-    private let sharedFileCoalescingWindow: TimeInterval = 2
-    private var sharedFileCoalescingState: SharedFileCoalescingState?
+    private var coalescer = AppLogCoalescer()
+    private var pendingFileEntries: [AppLogEntry] = []
+    private var flushTask: Task<Void, Never>?
+    private var writeTask: Task<Void, Never>?
+    private var lifecycleSubscription: AnyCancellable?
+    private var clearGeneration = 0
+    private var needsPersistence = false
 
-    private init() {
-        Task {
+    init(persistence: any AppLogPersistenceStore = AppLogPersistence(),
+         sharedFileSink: any AppLogFileSink = AppLogSharedFileSink()) {
+        self.persistence = persistence
+        self.sharedFileSink = sharedFileSink
+        lifecycleSubscription = NotificationCenter.default.publisher(for: Notification.Name("UIApplicationWillResignActiveNotification"))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.flush(force: true) }
+        let generation = clearGeneration
+        writeTask = Task {
             await sharedFileSink.markSessionStarted()
-            await restorePersistedEntries()
+            await restorePersistedEntries(generation: generation)
         }
     }
 
@@ -160,34 +179,37 @@ final class AppLogStore: ObservableObject {
                     category: normalizedCategory,
                     message: message,
                     metadata: metadata)
-        entries.append(entry)
-        entries = trimToMaxEntries(entries)
-        let snapshot = entries
-        let fileEntries = entriesForSharedFile(entry)
-        Task {
-            for fileEntry in fileEntries {
-                await sharedFileSink.append(fileEntry)
-            }
-            await persistence.saveEntries(snapshot)
-        }
+        accept(coalescer.append(entry))
+        if level == .error || level == .warning { flush(force: true) }
+        else { scheduleFlush() }
     }
 
     func clear() {
+        clearGeneration += 1
+        flushTask?.cancel()
+        flushTask = nil
         entries.removeAll()
-        sharedFileCoalescingState = nil
-        Task {
+        coalescer = AppLogCoalescer()
+        pendingFileEntries.removeAll()
+        needsPersistence = false
+        let previous = writeTask
+        writeTask = Task {
+            await previous?.value
             await sharedFileSink.clear()
             await persistence.clear()
         }
     }
 
-    private func restorePersistedEntries() async {
+    private func restorePersistedEntries(generation: Int) async {
+        guard generation == clearGeneration else { return }
         let persisted = await persistence.loadEntries()
+        guard generation == clearGeneration else { return }
         let merged = mergeEntries(persisted, with: entries)
         let trimmed = trimToMaxEntries(merged)
         self.entries = trimmed
         if trimmed.count != persisted.count || trimmed != persisted {
-            await persistence.saveEntries(trimmed)
+            needsPersistence = true
+            scheduleFlush()
         }
     }
 
@@ -195,64 +217,45 @@ final class AppLogStore: ObservableObject {
         Array(items.suffix(maxEntries))
     }
 
-    private func entriesForSharedFile(_ entry: AppLogEntry) -> [AppLogEntry] {
-        var output: [AppLogEntry] = []
-        let signature = sharedFileCoalescingSignature(for: entry)
-
-        if let state = sharedFileCoalescingState {
-            let elapsed = entry.timestamp.timeIntervalSince(state.lastTimestamp)
-            if signature == state.signature, elapsed <= sharedFileCoalescingWindow {
-                sharedFileCoalescingState?.lastTimestamp = entry.timestamp
-                sharedFileCoalescingState?.suppressedCount += 1
-                return output
-            }
-
-            if let summary = sharedFileCoalescingSummary(from: state) {
-                output.append(summary)
-            }
-            sharedFileCoalescingState = nil
-        }
-
-        if let signature {
-            sharedFileCoalescingState = SharedFileCoalescingState(
-                signature: signature,
-                sample: entry,
-                lastTimestamp: entry.timestamp
-            )
-        }
-        output.append(entry)
-        return output
+    private func accept(_ batch: [AppLogEntry]) {
+        guard !batch.isEmpty else { return }
+        entries = trimToMaxEntries(entries + batch)
+        pendingFileEntries.append(contentsOf: batch)
+        needsPersistence = true
     }
 
-    private func sharedFileCoalescingSignature(for entry: AppLogEntry) -> String? {
-        guard entry.level == .debug, entry.category == "navigation" || entry.category == "player" else { return nil }
-        let ignoredKeys: Set<String> = [
-            "callStack",
-            "point",
-            "traceAgeMs",
-            "traceID",
-            "transientPauseSuppressionRemainingMs",
-        ]
-        let stableMetadata = entry.metadata
-            .filter { !ignoredKeys.contains($0.key) }
-            .map { "\($0.key)=\($0.value)" }
-            .sorted()
-            .joined(separator: "|")
-        return "\(entry.category)|\(entry.message)|\(stableMetadata)"
+    private func scheduleFlush() {
+        guard flushTask == nil else { return }
+        flushTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.flushTask = nil
+            self.flush(force: false)
+        }
     }
 
-    private func sharedFileCoalescingSummary(from state: SharedFileCoalescingState) -> AppLogEntry? {
-        guard state.suppressedCount > 0 else { return nil }
-        return AppLogEntry(
-            timestamp: state.lastTimestamp,
-            level: state.sample.level,
-            category: state.sample.category,
-            message: "重复调试日志已折叠",
-            metadata: [
-                "originalMessage": state.sample.message,
-                "suppressedCount": String(state.suppressedCount),
-            ]
-        )
+    private func flush(force: Bool) {
+        flushTask?.cancel()
+        flushTask = nil
+        accept(coalescer.flush(at: Date(), force: force))
+        let batch = pendingFileEntries
+        pendingFileEntries.removeAll(keepingCapacity: true)
+        if needsPersistence || !batch.isEmpty {
+            needsPersistence = false
+            let generation = clearGeneration
+            // Serialise clear/save/append batches; an older snapshot must not win.
+            let previous = writeTask
+            writeTask = Task {
+                await previous?.value
+                guard generation == clearGeneration else { return }
+                // Startup restoration belongs to the preceding write task.
+                // Snapshot only after it finishes, so new logs cannot erase history.
+                let snapshot = entries
+                for entry in batch { await sharedFileSink.append(entry) }
+                await persistence.saveEntries(snapshot)
+            }
+        }
+        if coalescer.hasPendingSummary { scheduleFlush() }
     }
 
     private func mergeEntries(_ lhs: [AppLogEntry], with rhs: [AppLogEntry]) -> [AppLogEntry] {

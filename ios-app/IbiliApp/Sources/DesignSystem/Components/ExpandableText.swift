@@ -13,20 +13,31 @@ struct ExpandableText: View {
     var collapseLabel: String = "收起"
     var font: Font = .body
     var textColor: Color = IbiliTheme.textPrimary
+    var jumpUrls: [ReplyJumpUrlDTO] = []
+    var detectsLinks = false
 
     @State private var expanded: Bool = false
     @State private var truncates: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(text)
+            Group {
+                if detectsLinks {
+                    RichReplyText(message: text, emotes: [], jumpUrls: jumpUrls,
+                                  lineLimit: expanded ? nil : lineLimit, font: font, textColor: textColor)
+                } else {
+                    Text(text)
+                }
+            }
                 .font(font)
                 .foregroundStyle(textColor)
                 .lineSpacing(2)
                 .lineLimit(expanded ? nil : lineLimit)
                 .background(measureGeometry)
                 .animation(.easeInOut(duration: 0.2), value: expanded)
-                .onTapGesture { if truncates { withAnimation { expanded.toggle() } } }
+                .gesture(TapGesture().onEnded {
+                    if truncates { withAnimation { expanded.toggle() } }
+                }, including: detectsLinks ? .subviews : .all)
 
             if truncates {
                 Button {
