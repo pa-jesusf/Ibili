@@ -20,6 +20,7 @@ enum PlayerTransientPauseSuppressionContext: String {
 }
 
 enum PlayerPresentationEvent {
+    case pictureInPictureWillStop(PlayerPresentationIdentity)
     case pictureInPictureTransition(PlayerPictureInPictureTransition, PlayerPresentationIdentity)
     case pictureInPictureRestoreRequested(PlayerPresentationIdentity, PlayerPresentationRestoreCompletion)
     case nativeFullscreenWillBegin(PlayerPresentationIdentity)
@@ -133,6 +134,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let beginTemporarySpeedBoost: () -> Bool
     let endTemporarySpeedBoost: () -> Void
     var shouldResumePlaybackAfterNativeFullscreenExit: () -> Bool = { false }
+    var isPlayerRouteForeground: () -> Bool = { false }
     let onCreated: (AVPlayerViewController) -> Void
     let onPresentationEvent: (PlayerPresentationEvent) -> Void
     var onSeekToTime: ((Int64) -> Void)? = nil
@@ -277,6 +279,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         fileprivate weak var timecodeTap: UITapGestureRecognizer?
         private var pendingDanmakuSeek: (seconds: Int64, player: AVPlayer, item: AVPlayerItem)?
         private var pictureInPictureRestoreSucceeded = false
+        private var pictureInPictureSceneReturnedFromBackground = false
         private var currentItemObservation: NSKeyValueObservation?
         private var presentationSizeObservation: NSKeyValueObservation?
         private var fullscreenOrientationOwner: PlayerFullscreenOrientationOwner?
@@ -293,6 +296,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
 
         func prepareForDismantle(controller vc: AVPlayerViewController) {
             isDismantled = true
+            resetPictureInPictureRestoration()
             pendingDanmakuSeek = nil
             fullscreenTransitionState.reset()
             entryInterfaceOrientation = nil
@@ -422,7 +426,13 @@ struct PlayerContainer: UIViewControllerRepresentable {
         func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
             danmakuCanvas?.presentationAllowsRendering = false
             guard !isDismantled else { return }
-            pictureInPictureRestoreSucceeded = false
+            resetPictureInPictureRestoration()
+            if let scene = playerViewController.viewIfLoaded?.window?.windowScene {
+                NotificationCenter.default.addObserver(
+                    self, selector: #selector(pictureInPictureSceneWillEnterForeground),
+                    name: UIScene.willEnterForegroundNotification, object: scene
+                )
+            }
             AppLog.info("player", "PiP 即将开始")
             parent.onPresentationEvent(.pictureInPictureTransition(.started, presentationIdentity(for: playerViewController)))
         }
@@ -431,6 +441,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
                                   failedToStartPictureInPictureWithError error: Error) {
             danmakuCanvas?.presentationAllowsRendering = true
             guard !isDismantled else { return }
+            resetPictureInPictureRestoration()
             AppLog.warning("player", "PiP 启动失败", metadata: [
                 "error": error.localizedDescription,
             ])
@@ -440,16 +451,39 @@ struct PlayerContainer: UIViewControllerRepresentable {
             ))
         }
 
+        func playerViewControllerWillStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
+            guard !isDismantled else { return }
+            parent.onPresentationEvent(.pictureInPictureWillStop(presentationIdentity(for: playerViewController)))
+        }
+
         func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
             danmakuCanvas?.presentationAllowsRendering = true
             guard !isDismantled else { return }
-            let reason: PlayerPictureInPictureStopReason = pictureInPictureRestoreSucceeded ? .restored : .closed
-            pictureInPictureRestoreSucceeded = false
+            let sceneState = playerViewController.viewIfLoaded?.window?.windowScene?.activationState
+            let inlinePlayerIsForeground = parent.isPlayerRouteForeground()
+                && (sceneState == .foregroundActive || sceneState == .foregroundInactive)
+            let reason = PlayerPictureInPictureStopReason.resolve(
+                restorationSucceeded: pictureInPictureRestoreSucceeded,
+                sceneReturnedFromBackground: pictureInPictureSceneReturnedFromBackground,
+                inlinePlayerIsForeground: inlinePlayerIsForeground
+            )
+            resetPictureInPictureRestoration()
             AppLog.info("player", "PiP 已停止", metadata: ["reason": reason.rawValue])
             parent.onPresentationEvent(.pictureInPictureTransition(
                 .stopped(reason),
                 presentationIdentity(for: playerViewController)
             ))
+        }
+
+        @objc private func pictureInPictureSceneWillEnterForeground(_ notification: Notification) {
+            guard !isDismantled else { return }
+            pictureInPictureSceneReturnedFromBackground = true
+        }
+
+        private func resetPictureInPictureRestoration() {
+            NotificationCenter.default.removeObserver(self, name: UIScene.willEnterForegroundNotification, object: nil)
+            pictureInPictureRestoreSucceeded = false
+            pictureInPictureSceneReturnedFromBackground = false
         }
 
         func playerViewController(_ playerViewController: AVPlayerViewController,

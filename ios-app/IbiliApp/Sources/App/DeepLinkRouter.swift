@@ -875,6 +875,7 @@ final class DeepLinkRouter: ObservableObject {
             "transitionBoundary": "same-world",
             "expectedToolbarMorph": "true",
         ]) { current, _ in current }, includeStack: true)
+        PlayerRuntimeCoordinator.shared.prepareForNavigationPush()
         if path.isEmpty {
             pending = route.rootRoute
         }

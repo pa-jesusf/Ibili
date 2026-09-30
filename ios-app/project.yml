@@ -53,6 +53,7 @@ targets:
     deploymentTarget: "16.0"
     sources:
       - path: IbiliApp/Sources/Features/Player/Runtime/PlayerSessionBehavior.swift
+      - path: IbiliApp/Sources/Features/Player/Runtime/PlayerTimeControlObservation.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ibili.client.player-runtime

@@ -441,6 +441,7 @@ struct RootContentNavigationStack<Root: View>: View {
                     "transitionBoundary": "same-world",
                     "expectedToolbarMorph": "true",
                 ].merging(route.navigationTraceMetadata) { current, _ in current }, includeStack: true)
+                PlayerRuntimeCoordinator.shared.prepareForNavigationPush()
                 path.append(route)
                 syncMediaSessions()
             },

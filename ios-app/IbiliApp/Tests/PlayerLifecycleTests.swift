@@ -5,6 +5,51 @@ import XCTest
 
 @MainActor
 final class PlayerLifecycleTests: XCTestCase {
+    func testNativePageAppearanceResumesPlayingButNotManuallyPausedPlayer() {
+        for wasPlaying in [true, false] {
+            let player = LifecyclePlayer()
+            let viewModel = PlayerViewModel(initialPlayer: player)
+            defer { viewModel.teardown() }
+            viewModel.handle(.interfaceActivated)
+            let appearance = PlayerPageAppearanceObserver.Controller()
+            appearance.didAppear = { viewModel.handle(.interfaceDidAppear) }
+            appearance.viewDidAppear(false)
+            if !wasPlaying { player.pause() }
+            viewModel.prepareForStackBackground()
+            XCTAssertEqual(player.rate, 0)
+            viewModel.handle(.interfaceActivated)
+            // Simulate AVKit pausing during the pop transition, after path
+            // reconciliation but before the native page finishes appearing.
+            player.pause()
+            appearance.viewDidAppear(false)
+            XCTAssertEqual(player.rate > 0, wasPlaying)
+            // A subsequent manual pause is not swallowed by restoration.
+            player.pause()
+            viewModel.prepareForStackBackground()
+            viewModel.handle(.interfaceActivated)
+            appearance.viewDidAppear(false)
+            XCTAssertEqual(player.rate, 0)
+        }
+    }
+
+    func testPiPAutomaticInlineReturnReappliesIntentAfterNativeTransitionPause() {
+        let player = LifecyclePlayer()
+        let viewModel = PlayerViewModel(initialPlayer: player)
+        defer { viewModel.teardown() }
+        viewModel.handle(.interfaceActivated)
+        viewModel.handle(.interfaceDidAppear)
+        viewModel.handle(.pictureInPictureTransition(.started))
+        viewModel.beginSystemTransition()
+        viewModel.handle(.pictureInPictureWillStop)
+        player.pause()
+        viewModel.completeSystemTransition()
+        let reason = PlayerPictureInPictureStopReason.resolve(
+            restorationSucceeded: false, sceneReturnedFromBackground: true, inlinePlayerIsForeground: true
+        )
+        viewModel.handle(.pictureInPictureTransition(.stopped(reason)))
+        XCTAssertGreaterThan(player.rate, 0)
+    }
+
     func testSystemPanelDoesNotDetachAVKitOrScheduleSourceRecovery() {
         let viewModel = PlayerViewModel()
         let box = PlayerVCBox()
@@ -55,5 +100,24 @@ final class PlayerLifecycleTests: XCTestCase {
             XCTAssertEqual(modelA.isOverlayPresentationActive, foreground == a.id)
             XCTAssertEqual(modelB.isOverlayPresentationActive, foreground == b.id)
         }
+    }
+}
+
+private final class LifecyclePlayer: AVPlayer {
+    private var storedRate: Float = 0
+    private var storedStatus: AVPlayer.TimeControlStatus = .paused
+    override var rate: Float {
+        get { storedRate }
+        set { setPlaybackRate(newValue) }
+    }
+    override var timeControlStatus: AVPlayer.TimeControlStatus { storedStatus }
+    override func playImmediately(atRate rate: Float) { setPlaybackRate(rate) }
+    override func pause() { setPlaybackRate(0) }
+
+    private func setPlaybackRate(_ rate: Float) {
+        willChangeValue(forKey: "timeControlStatus")
+        storedRate = rate
+        storedStatus = rate > 0 ? .playing : .paused
+        didChangeValue(forKey: "timeControlStatus")
     }
 }

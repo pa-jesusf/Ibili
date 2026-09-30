@@ -99,7 +99,7 @@ final class PlayerViewModel: ObservableObject {
     private var activePreparation: EnginePreparation?
     private let sessionID: PlayerSessionID
     private var behaviorState = PlayerSessionBehaviorState()
-    private var playerTimeControlObservation: NSKeyValueObservation?
+    private var playerTimeControlObservation: PlayerTimeControlObservation?
     private var isPlaybackCompleted = false
     private var isRecoveringPlaybackFromPageCache = false
     private var transientPauseSuppressionDeadline = Date.distantPast
@@ -110,8 +110,9 @@ final class PlayerViewModel: ObservableObject {
     private var audioVolumeRampTask: Task<Void, Never>?
     private var foregroundRecoveryTask: Task<Void, Never>?
 
-    init(sessionID: PlayerSessionID = PlayerSessionID()) {
+    init(sessionID: PlayerSessionID = PlayerSessionID(), initialPlayer: AVPlayer? = nil) {
         self.sessionID = sessionID
+        if let initialPlayer { setPlayer(initialPlayer) }
     }
 
     deinit {
@@ -166,6 +167,10 @@ final class PlayerViewModel: ObservableObject {
             return "interfaceActivated"
         case .interfaceDeactivated:
             return "interfaceDeactivated"
+        case .interfaceDidAppear:
+            return "interfaceDidAppear"
+        case .pictureInPictureWillStop:
+            return "pictureInPictureWillStop"
         case .pictureInPictureTransition(let transition):
             switch transition {
             case .started:
@@ -462,7 +467,7 @@ final class PlayerViewModel: ObservableObject {
                 PlayerPlaybackCoordinator.shared.activate(self)
                 PlayerNowPlayingCoordinator.shared.activate(self)
             }
-        case .systemTransitionChanged:
+        case .systemTransitionChanged, .interfaceDidAppear, .pictureInPictureWillStop:
             break
         case .playbackIntentChanged(.pause):
             endTemporarySpeedBoost()
@@ -489,7 +494,8 @@ final class PlayerViewModel: ObservableObject {
         if isOverlayPresentationActive != overlaysActive { isOverlayPresentationActive = overlaysActive }
 
         switch event {
-        case .interfaceActivated, .interfaceDeactivated, .pictureInPictureTransition, .playbackIntentChanged:
+        case .interfaceActivated, .interfaceDeactivated, .interfaceDidAppear,
+             .pictureInPictureTransition, .playbackIntentChanged:
             applyPlaybackIntent()
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
         case .systemTransitionChanged(let isActive):
@@ -500,7 +506,7 @@ final class PlayerViewModel: ObservableObject {
         case .observedTimeControlStatus:
             PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
             PlayerNowPlayingCoordinator.shared.refresh(for: self)
-        case .prepareAutoplayForMediaReplacement, .suppressNextObservedIntent:
+        case .prepareAutoplayForMediaReplacement, .suppressNextObservedIntent, .pictureInPictureWillStop:
             break
         }
     }
@@ -1131,14 +1137,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func observePlayerTimeControl(_ player: AVPlayer) {
-        playerTimeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self, weak player] observedPlayer, _ in
-            Task { @MainActor in
-                guard let self,
-                      let player,
-                      !self.isClosing,
-                      self.player === player else { return }
-                self.handleObservedPlaybackState(observedPlayer.timeControlStatus, observedPlayer: observedPlayer)
-            }
+        playerTimeControlObservation = PlayerTimeControlObservation(player: player) { [weak self] observedPlayer, status in
+            guard let self, !self.isClosing, self.player === observedPlayer else { return }
+            self.handleObservedPlaybackState(status, observedPlayer: observedPlayer)
         }
     }
 
@@ -2297,6 +2298,9 @@ struct PlayerView: View {
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
+        case .pictureInPictureWillStop(let identity):
+            guard presentationIdentityMatchesCurrentRoute(identity) else { return }
+            vm.handle(.pictureInPictureWillStop)
         case .pictureInPictureTransition(let transition, let identity):
             guard presentationIdentityMatchesCurrentRoute(identity) else {
                 AppLog.debug("player", "忽略旧播放器 PiP 回调", metadata: [
@@ -2701,6 +2705,7 @@ struct PlayerView: View {
                                         beginTemporarySpeedBoost: { vm.beginTemporarySpeedBoost() },
                                         endTemporarySpeedBoost: { vm.endTemporarySpeedBoost() },
                                         shouldResumePlaybackAfterNativeFullscreenExit: { vm.shouldResumePlaybackAfterNativeFullscreenExit },
+                                        isPlayerRouteForeground: { PlayerRuntimeCoordinator.shared.isForeground(routeID: vm.currentSessionID) },
                                         onCreated: { vc in playerVCRef.vc = vc },
                                         onPresentationEvent: handlePresentationEvent,
                                         onSeekToTime: { seekTo(seconds: $0) }
@@ -2936,6 +2941,12 @@ struct PlayerView: View {
                 viewModel: vm,
                 playerBox: playerVCRef
             )
+        }
+        .background {
+            PlayerPageAppearanceObserver {
+                vm.handle(.interfaceDidAppear)
+            }
+            .allowsHitTesting(false)
         }
         .onAppear {
             AppLog.debug("player", "播放器页面 onAppear", metadata: [

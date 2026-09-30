@@ -10,6 +10,7 @@ final class PlayerSessionBehaviorTests: XCTestCase {
     func testBufferingRecoveryStillRequestsSystemMediaSynchronization() {
         var state = PlayerSessionBehaviorState()
         state.activateInterface()
+        state.apply(.interfaceDidAppear)
         state.suppressNextObservedIntent(.play)
         XCTAssertFalse(state.apply(.observedTimeControlStatus(.playing)))
         // These observations also synchronize actual elapsed time. Equal
@@ -24,6 +25,7 @@ final class PlayerSessionBehaviorTests: XCTestCase {
     func testManualPauseDoesNotResumeDuringBackgroundContinuation() {
         var state = PlayerSessionBehaviorState()
         state.activateInterface()
+        state.apply(.interfaceDidAppear)
 
         XCTAssertEqual(state.desiredPlaybackCommand(rate: 1.0), .play(rate: 1.0))
 
@@ -194,6 +196,94 @@ final class PlayerSessionBehaviorTests: XCTestCase {
         paused.apply(.interfaceDeactivated)
         paused.apply(.interfaceActivated)
         XCTAssertEqual(paused.desiredPlaybackCommand(rate: 1.0), .pause)
+    }
+
+    func testNavigationTransitionPausesCannotOverwriteRetainedIntent() {
+        for intent in [PlayerIntent.play, .pause] {
+            var state = PlayerSessionBehaviorState()
+            state.apply(.interfaceActivated)
+            state.apply(.interfaceDidAppear)
+            state.apply(.playbackIntentChanged(intent))
+            state.apply(.interfaceDeactivated)
+            XCTAssertFalse(state.apply(.observedTimeControlStatus(.paused)))
+            state.apply(.interfaceActivated)
+            // AVKit can pause again after the route is already foreground,
+            // but before its native page has finished appearing.
+            XCTAssertFalse(state.apply(.observedTimeControlStatus(.paused)))
+            state.apply(.interfaceDidAppear)
+            XCTAssertEqual(state.intent, intent)
+            XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), intent == .play ? .play(rate: 1) : .pause)
+            // Native controls become authoritative again after appearance.
+            XCTAssertTrue(state.apply(.observedTimeControlStatus(.paused)))
+            XCTAssertEqual(state.intent, .pause)
+        }
+    }
+
+    func testAppearanceBeforeRouteActivationDoesNotLoseReadiness() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.interfaceDeactivated)
+        state.apply(.interfaceDidAppear)
+        state.apply(.interfaceDeactivated) // a late onAppear before route sync
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), .pause)
+        state.apply(.interfaceActivated)
+        XCTAssertTrue(state.interfaceHasAppeared)
+        XCTAssertTrue(state.apply(.observedTimeControlStatus(.paused)))
+    }
+
+    func testPictureInPictureAppIconReturnAndRestoreButtonPreserveLatestIntent() {
+        for usesRestoreButton in [false, true] {
+            for intent in [PlayerIntent.play, .pause] {
+                var state = PlayerSessionBehaviorState()
+                state.apply(.interfaceActivated)
+                state.apply(.interfaceDidAppear)
+                state.apply(.pictureInPictureTransition(.started))
+                state.apply(.systemTransitionChanged(true))
+                // A manual pause made in PiP must also survive restoration.
+                state.apply(.observedTimeControlStatus(intent == .play ? .playing : .paused))
+                state.apply(.pictureInPictureWillStop)
+                state.apply(.systemTransitionChanged(false))
+                XCTAssertFalse(state.apply(.observedTimeControlStatus(.paused)))
+                let reason = PlayerPictureInPictureStopReason.resolve(
+                    restorationSucceeded: usesRestoreButton,
+                    sceneReturnedFromBackground: true,
+                    inlinePlayerIsForeground: !usesRestoreButton
+                )
+                XCTAssertEqual(reason, .restored)
+                state.apply(.pictureInPictureTransition(.stopped(reason)))
+                XCTAssertEqual(state.intent, intent)
+                XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), intent == .play ? .play(rate: 1) : .pause)
+                XCTAssertFalse(state.pictureInPictureIsStopping)
+            }
+        }
+    }
+
+    func testClosingPictureInPictureWithoutInlineDestinationStillPauses() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.pictureInPictureTransition(.started))
+        state.apply(.pictureInPictureWillStop)
+        let reason = PlayerPictureInPictureStopReason.resolve(
+            restorationSucceeded: false, sceneReturnedFromBackground: true, inlinePlayerIsForeground: false
+        )
+        XCTAssertEqual(reason, .closed)
+        state.apply(.pictureInPictureTransition(.stopped(reason)))
+        state.apply(.interfaceActivated)
+        state.apply(.interfaceDidAppear)
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), .pause)
+    }
+
+    func testClosingPiPFromAlreadyForegroundInlinePageIsNotAnAppIconReturn() {
+        var state = PlayerSessionBehaviorState()
+        state.apply(.interfaceActivated)
+        state.apply(.interfaceDidAppear)
+        state.apply(.pictureInPictureTransition(.started))
+        state.apply(.pictureInPictureWillStop)
+        let reason = PlayerPictureInPictureStopReason.resolve(
+            restorationSucceeded: false, sceneReturnedFromBackground: false, inlinePlayerIsForeground: true
+        )
+        XCTAssertEqual(reason, .closed)
+        state.apply(.pictureInPictureTransition(.stopped(reason)))
+        XCTAssertEqual(state.desiredPlaybackCommand(rate: 1), .pause)
     }
 
     func testNativePictureInPicturePauseAndPlayRemainAuthoritativeInBackground() {

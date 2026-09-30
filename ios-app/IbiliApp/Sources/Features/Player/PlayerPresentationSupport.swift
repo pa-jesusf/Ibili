@@ -2,6 +2,42 @@ import AVFoundation
 import AVKit
 import SwiftUI
 
+/// SwiftUI's onAppear can precede both the route update and AVKit's
+/// navigation transition. Only UIKit's completed appearance confirms that
+/// the returning page can resume its retained playback intent.
+struct PlayerPageAppearanceObserver: UIViewControllerRepresentable {
+    var didAppear: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller {
+        let controller = Controller()
+        controller.didAppear = didAppear
+        return controller
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.didAppear = didAppear
+    }
+
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
+        controller.didAppear = nil
+    }
+
+    final class Controller: UIViewController {
+        var didAppear: (() -> Void)?
+
+        override func loadView() {
+            view = UIView()
+            view.isUserInteractionEnabled = false
+            view.backgroundColor = .clear
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            didAppear?()
+        }
+    }
+}
+
 func timeControlStatusDescription(_ status: AVPlayer.TimeControlStatus) -> String {
     switch status {
     case .paused:

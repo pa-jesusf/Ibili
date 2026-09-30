@@ -17,6 +17,13 @@ enum PlayerPictureInPictureStopReason: String, Equatable {
     case closed
     case restored
     case failedToStart
+
+    static func resolve(restorationSucceeded: Bool, sceneReturnedFromBackground: Bool,
+                        inlinePlayerIsForeground: Bool) -> Self {
+        // Returning through the app icon can restore the existing inline
+        // player without requesting that its navigation stack be rebuilt.
+        restorationSucceeded || (sceneReturnedFromBackground && inlinePlayerIsForeground) ? .restored : .closed
+    }
 }
 
 enum PlayerPictureInPictureTransition: Equatable {
@@ -38,6 +45,8 @@ enum PlayerSystemTransitionRecoveryAction: Equatable {
 enum PlayerSessionEvent: Equatable {
     case interfaceActivated
     case interfaceDeactivated
+    case interfaceDidAppear
+    case pictureInPictureWillStop
     case pictureInPictureTransition(PlayerPictureInPictureTransition)
     case systemTransitionChanged(Bool)
     case playbackIntentChanged(PlayerIntent)
@@ -58,7 +67,9 @@ struct PlayerSessionBehaviorState: Equatable {
     private(set) var intent: PlayerIntent = .play
     private(set) var hasPlaybackFocus = false
     private(set) var interfaceIsActive = false
+    private(set) var interfaceHasAppeared = false
     private(set) var pictureInPictureIsActive = false
+    private(set) var pictureInPictureIsStopping = false
     private(set) var systemTransitionIsActive = false
     private var suppressedObservedIntent: PlayerIntent?
     private var suppressedObservedIntentExpiresAt: Date?
@@ -80,7 +91,9 @@ struct PlayerSessionBehaviorState: Equatable {
             "intent": intent.rawValue,
             "hasPlaybackFocus": String(hasPlaybackFocus),
             "interfaceIsActive": String(interfaceIsActive),
+            "interfaceHasAppeared": String(interfaceHasAppeared),
             "pictureInPictureIsActive": String(pictureInPictureIsActive),
+            "pictureInPictureIsStopping": String(pictureInPictureIsStopping),
             "systemTransitionIsActive": String(systemTransitionIsActive),
             "suppressedObservedIntent": suppressedObservedIntent?.rawValue ?? "nil",
             "suppressedObservedIntentExpired": String(isSuppressedObservedIntentExpired),
@@ -96,6 +109,12 @@ struct PlayerSessionBehaviorState: Equatable {
             return true
         case .interfaceDeactivated:
             deactivateInterface()
+            return true
+        case .interfaceDidAppear:
+            interfaceHasAppeared = true
+            return true
+        case .pictureInPictureWillStop:
+            pictureInPictureIsStopping = pictureInPictureIsActive
             return true
         case .pictureInPictureTransition(let transition):
             applyPictureInPictureTransition(transition)
@@ -129,6 +148,7 @@ struct PlayerSessionBehaviorState: Equatable {
     }
 
     mutating func deactivateInterface() {
+        if interfaceIsActive { interfaceHasAppeared = false }
         interfaceIsActive = false
         if !pictureInPictureIsActive {
             hasPlaybackFocus = false
@@ -136,6 +156,7 @@ struct PlayerSessionBehaviorState: Equatable {
     }
 
     mutating func applyPictureInPictureTransition(_ transition: PlayerPictureInPictureTransition) {
+        pictureInPictureIsStopping = false
         pictureInPictureIsActive = transition.isActive
         if transition.isActive {
             hasPlaybackFocus = true
@@ -205,8 +226,9 @@ struct PlayerSessionBehaviorState: Equatable {
         // Its native pause/play controls are authoritative, just like inline
         // controls; only non-PiP system transition observations are ignored.
         guard (!systemTransitionIsActive || pictureInPictureIsActive),
+              !pictureInPictureIsStopping,
               hasPlaybackFocus,
-              interfaceIsActive || pictureInPictureIsActive else { return false }
+              (interfaceIsActive && interfaceHasAppeared) || pictureInPictureIsActive else { return false }
         intent = observedIntent
         return true
     }

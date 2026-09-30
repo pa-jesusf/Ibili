@@ -676,6 +676,8 @@ struct LiveRoomView: View {
 
     private func handlePresentationEvent(_ event: PlayerPresentationEvent) {
         switch event {
+        case .pictureInPictureWillStop:
+            break
         case .pictureInPictureRestoreRequested(_, let completion):
             completion(false)
         case .pictureInPictureTransition(let transition, let identity):

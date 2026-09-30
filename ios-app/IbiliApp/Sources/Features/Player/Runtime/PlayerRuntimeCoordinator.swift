@@ -51,6 +51,14 @@ final class PlayerRuntimeCoordinator {
         viewModel.prepareForDismissal()
     }
 
+    func prepareForNavigationPush() {
+        guard let foregroundRouteID else { return }
+        // Revoke focus before mutating the path: AVKit may pause while
+        // SwiftUI is processing that mutation, before onChange synchronizes it.
+        self.foregroundRouteID = nil
+        viewModels[foregroundRouteID]?.prepareForStackBackground()
+    }
+
     /// Returns whether a player route is currently allowed to claim playback
     /// focus. Before the first route synchronization we allow activation so
     /// initial presentation can bootstrap normally; after that, a retained
