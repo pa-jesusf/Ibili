@@ -1,42 +1,54 @@
 import SwiftUI
 
+extension View {
+    func mediaCardChrome(width: CGFloat) -> some View {
+        modifier(MediaCardChrome(width: width))
+    }
+}
+
+private struct MediaCardChrome: ViewModifier {
+    let width: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: MediaCardLayout(width: width, showsAuthor: false, showsMetadata: false).cornerRadius,
+                                     style: .continuous)
+        content
+            .background(IbiliTheme.surface)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(colorScheme == .dark ? .white.opacity(0.12) : .black.opacity(0.08),
+                                        lineWidth: 1 / UIScreen.main.scale))
+    }
+}
+
 struct MediaCardView: View {
     let model: MediaCardRenderModel
     let width: CGFloat
 
-    private let cornerRadius: CGFloat = 10
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VideoCoverView(
-                cover: model.cover,
-                width: width,
-                imageQuality: model.imageQuality,
-                playCount: model.play,
-                durationSec: model.durationSec,
-                durationPlacement: model.durationPlacement,
-                showPlayCount: model.meta.showPlay,
-                showDuration: model.meta.showDuration
-            )
+        MediaCardSurface(model: model, width: width)
+            .frame(width: width, height: MediaCardContentView.preferredHeight(width: width, model: model))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel([model.title, model.author].filter { !$0.isEmpty }.joined(separator: "，"))
+    }
+}
 
-            CardInfoSection(
-                title: model.title,
-                author: model.author,
-                pubdate: model.pubdate,
-                stats: FeedCardStats(danmaku: model.danmaku, like: model.like),
-                config: model.meta,
-                titleFont: .system(size: 15, weight: .medium),
-                showAuthorIcon: true,
-                isAuthorFollowed: model.isAuthorFollowed,
-                bottomTrailingInset: 26
-            )
-            .padding(.horizontal, 8)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
-        }
-        .frame(width: width, alignment: .topLeading)
-        .background(IbiliTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+/// The same native presentation used by home collection cells. SwiftUI owns
+/// the surrounding navigation button and overflow menu, so this is visual only.
+private struct MediaCardSurface: UIViewRepresentable {
+    let model: MediaCardRenderModel
+    let width: CGFloat
+
+    func makeUIView(context: Context) -> MediaCardContentView {
+        MediaCardContentView()
+    }
+
+    func updateUIView(_ view: MediaCardContentView, context: Context) {
+        view.configure(model: model, targetWidth: width)
+    }
+
+    static func dismantleUIView(_ view: MediaCardContentView, coordinator: ()) {
+        view.reset()
     }
 }
 

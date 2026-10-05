@@ -26,7 +26,6 @@ struct HomeFeedCollectionView: UIViewControllerRepresentable {
     let columns: Int
     let imageQuality: Int?
     let meta: FeedCardMetaConfig
-    let usesTopTrailingDuration: Bool
     let isLoading: Bool
     let isEnd: Bool
     let scrollToTopSignal: Int
@@ -48,7 +47,6 @@ struct HomeFeedCollectionView: UIViewControllerRepresentable {
             columns: columns,
             imageQuality: imageQuality,
             meta: meta,
-            usesTopTrailingDuration: usesTopTrailingDuration,
             isLoading: isLoading,
             isEnd: isEnd,
             scrollToTopSignal: scrollToTopSignal,
@@ -86,7 +84,6 @@ final class HomeFeedCollectionViewController: UIViewController {
     private var hasSourceItems = false
     private var imageQuality: Int?
     private var meta: FeedCardMetaConfig = .standard
-    private var usesTopTrailingDuration = false
     private var footerState: HomeFeedFooterState?
     private var configuredColumns = 1
     private var layoutConfiguration: HomeFeedGridLayoutMetrics?
@@ -165,7 +162,6 @@ final class HomeFeedCollectionViewController: UIViewController {
         columns: Int,
         imageQuality: Int?,
         meta: FeedCardMetaConfig,
-        usesTopTrailingDuration: Bool,
         isLoading: Bool,
         isEnd: Bool,
         scrollToTopSignal: Int,
@@ -181,13 +177,11 @@ final class HomeFeedCollectionViewController: UIViewController {
     ) {
         loadViewIfNeeded()
         let appearanceChanged = self.imageQuality != imageQuality || self.meta != meta
-            || self.usesTopTrailingDuration != usesTopTrailingDuration
         let sameItems = sourceItems.withUnsafeBufferPointer { old in
             items.withUnsafeBufferPointer { new in old.count == new.count && old.baseAddress == new.baseAddress }
         }
         self.imageQuality = imageQuality
         self.meta = meta
-        self.usesTopTrailingDuration = usesTopTrailingDuration
         configuredColumns = max(1, columns)
         self.scrollState = scrollState
         self.onRefresh = onRefresh
@@ -222,8 +216,7 @@ final class HomeFeedCollectionViewController: UIViewController {
                 newModels[id] = !appearanceChanged && itemByID[id] == item ? modelByID[id] : MediaCardRenderModel(
                     feed: item,
                     imageQuality: imageQuality,
-                    meta: meta,
-                    durationPlacement: usesTopTrailingDuration ? .topTrailing : .bottomTrailing
+                    meta: meta
                 )
                 newIDs.append(id)
             }
@@ -512,7 +505,7 @@ extension HomeFeedCollectionViewController: UICollectionViewDataSourcePrefetchin
             ?? 180
         CoverImagePrefetcher.shared.prefetch(
             covers,
-            targetPointSize: CGSize(width: width, height: (width / VideoCoverView.aspectRatio).rounded()),
+            targetPointSize: CGSize(width: width, height: width / MediaCardLayout.coverAspectRatio),
             quality: imageQuality
         )
     }
@@ -675,56 +668,12 @@ private final class HomeFeedFooterCell: UICollectionViewCell {
     }
 }
 
-private final class HomeFeedCardCell: UICollectionViewCell {
-    private let coverImageView = UIImageView()
-    private let playBadge = HomeFeedBadgeLabel()
-    private let durationBadge = HomeFeedBadgeLabel()
-    private let titleLabel = UILabel()
-    private let authorIcon = UIImageView()
-    private let authorLabel = UILabel()
-    private let metaLabel = UILabel()
-    private let menuButton = UIButton(type: .system)
-    private var imageTask: Task<Void, Never>?
-    private var representedURL: URL?
-    private var model: MediaCardRenderModel?
+final class HomeFeedCardCell: UICollectionViewCell {
+    let card = MediaCardContentView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        let surfaceColor = UIColor.secondarySystemBackground
-        isOpaque = true
-        contentView.isOpaque = true
-        backgroundColor = surfaceColor
-        contentView.backgroundColor = surfaceColor
-        layer.cornerRadius = 10
-        layer.cornerCurve = .continuous
-        layer.masksToBounds = true
-
-        coverImageView.contentMode = .scaleAspectFill
-        coverImageView.clipsToBounds = true
-        coverImageView.backgroundColor = .tertiarySystemFill
-        coverImageView.isOpaque = true
-
-        titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
-        titleLabel.textColor = .label
-        titleLabel.numberOfLines = 2
-        titleLabel.lineBreakMode = .byTruncatingTail
-
-        authorIcon.image = UIImage(systemName: "person.fill")
-        authorIcon.contentMode = .scaleAspectFit
-        authorLabel.font = .preferredFont(forTextStyle: .caption1)
-        authorLabel.numberOfLines = 1
-        authorLabel.lineBreakMode = .byTruncatingTail
-
-        metaLabel.font = .preferredFont(forTextStyle: .caption2)
-        metaLabel.textColor = .secondaryLabel
-        metaLabel.numberOfLines = 1
-        metaLabel.lineBreakMode = .byTruncatingTail
-
-        VideoCardOverflowMenuBuilder.configureButton(menuButton)
-
-        [coverImageView, playBadge, durationBadge, titleLabel, authorIcon, authorLabel, metaLabel, menuButton].forEach {
-            contentView.addSubview($0)
-        }
+        contentView.addSubview(card)
     }
 
     required init?(coder: NSCoder) {
@@ -733,65 +682,12 @@ private final class HomeFeedCardCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        imageTask?.cancel()
-        imageTask = nil
-        representedURL = nil
-        coverImageView.image = nil
-        menuButton.menu = nil
-        model = nil
+        card.reset()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard let model else { return }
-        let width = contentView.bounds.width
-        let coverHeight = (width / VideoCoverView.aspectRatio).rounded()
-        coverImageView.frame = CGRect(x: 0, y: 0, width: width, height: coverHeight)
-
-        let badgeInset: CGFloat = 8
-        playBadge.sizeToFit()
-        durationBadge.sizeToFit()
-        let playSize = playBadge.bounds.size
-        let durationSize = durationBadge.bounds.size
-        playBadge.frame.origin = CGPoint(x: badgeInset, y: coverHeight - badgeInset - playSize.height)
-        let durationY = model.durationPlacement == .topTrailing
-            ? badgeInset
-            : coverHeight - badgeInset - durationSize.height
-        durationBadge.frame.origin = CGPoint(x: width - badgeInset - durationSize.width, y: durationY)
-
-        let horizontalInset: CGFloat = 8
-        var y = coverHeight + 8
-        let textWidth = max(1, width - horizontalInset * 2)
-        titleLabel.frame = CGRect(x: horizontalInset, y: y, width: textWidth, height: 38)
-        y += 44
-
-        if model.meta.showAuthor {
-            let iconSize: CGFloat = 13
-            authorIcon.frame = CGRect(x: horizontalInset, y: y + 1, width: iconSize, height: iconSize)
-            authorLabel.frame = CGRect(
-                x: authorIcon.frame.maxX + 4,
-                y: y,
-                width: max(1, width - authorIcon.frame.maxX - 4 - 34),
-                height: 16
-            )
-            y += 22
-        } else {
-            authorIcon.frame = .zero
-            authorLabel.frame = .zero
-        }
-
-        if !metaLabel.isHidden {
-            metaLabel.frame = CGRect(x: horizontalInset, y: y, width: max(1, width - horizontalInset * 2 - 28), height: 15)
-        } else {
-            metaLabel.frame = .zero
-        }
-        let menuHitSize = VideoCardOverflowButtonMetrics.hitSize
-        let menuCenterInset = VideoCardOverflowButtonMetrics.cardEdgeInset + menuHitSize / 2
-        menuButton.bounds = CGRect(x: 0, y: 0, width: menuHitSize, height: menuHitSize)
-        menuButton.center = CGPoint(
-            x: width - menuCenterInset,
-            y: contentView.bounds.height - menuCenterInset
-        )
+        card.frame = contentView.bounds
     }
 
     func configure(
@@ -800,121 +696,19 @@ private final class HomeFeedCardCell: UICollectionViewCell {
         targetWidth: CGFloat,
         menuAction: @escaping (VideoCardOverflowAction) -> Void
     ) {
-        self.model = model
-        titleLabel.text = model.title
-        authorLabel.text = model.author
-        let authorColor = model.isAuthorFollowed ? IbiliTheme.accentUIColor : UIColor.secondaryLabel
-        authorLabel.textColor = authorColor
-        authorIcon.tintColor = authorColor
-        authorIcon.isHidden = !model.meta.showAuthor
-        authorLabel.isHidden = !model.meta.showAuthor
-
-        playBadge.isHidden = !model.meta.showPlay
-        playBadge.set(symbol: "play.fill", text: BiliFormat.compactCount(model.play), monospaced: false)
-        durationBadge.isHidden = !model.meta.showDuration || model.durationSec <= 0
-        durationBadge.set(symbol: nil, text: BiliFormat.duration(model.durationSec), monospaced: true)
-        metaLabel.text = Self.metaText(model)
-        metaLabel.isHidden = metaLabel.text?.isEmpty != false
-
-        menuButton.menu = VideoCardOverflowMenuBuilder.makeMenu(
+        card.configure(model: model, targetWidth: targetWidth, menu: VideoCardOverflowMenuBuilder.makeMenu(
             bvid: item.bvid,
             author: item.author,
             ownerMID: item.ownerMID,
             dislikeReasons: item.dislikeReasons,
             feedbackReasons: item.feedbackReasons,
             actionHandler: menuAction
-        )
-
-        accessibilityLabel = [model.title, model.author].filter { !$0.isEmpty }.joined(separator: "，")
+        ))
+        accessibilityLabel = card.accessibilityLabel
         accessibilityTraits = .button
-        loadImage(model.cover, targetWidth: targetWidth, quality: model.imageQuality)
-        setNeedsLayout()
     }
 
     static func preferredHeight(width: CGFloat, meta: FeedCardMetaConfig) -> CGFloat {
-        let coverHeight = (width / VideoCoverView.aspectRatio).rounded()
-        var infoHeight: CGFloat = 8 + 38 + 10
-        if meta.showAuthor { infoHeight += 22 }
-        if meta.showPubdate || meta.stat != .none { infoHeight += 21 }
-        return coverHeight + infoHeight
-    }
-
-    private static func metaText(_ model: MediaCardRenderModel) -> String {
-        var parts: [String] = []
-        if model.meta.showPubdate, model.pubdate > 0 {
-            parts.append(BiliFormat.relativeDate(model.pubdate))
-        }
-        switch model.meta.stat {
-        case .none:
-            break
-        case .danmaku:
-            parts.append("弹幕 \(BiliFormat.compactCount(model.danmaku))")
-        case .like:
-            parts.append("点赞 \(BiliFormat.compactCount(model.like))")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func loadImage(_ rawURL: String, targetWidth: CGFloat, quality: Int?) {
-        imageTask?.cancel()
-        let targetSize = CGSize(width: targetWidth, height: (targetWidth / VideoCoverView.aspectRatio).rounded())
-        let resolved = BiliImageURL.resized(rawURL, pointSize: targetSize, quality: quality)
-        guard let url = URL(string: resolved) else {
-            representedURL = nil
-            coverImageView.image = nil
-            return
-        }
-        if representedURL == url, coverImageView.image != nil { return }
-        representedURL = url
-        let maxPixelDimension = ImagePipeline.displayPixelDimension(for: targetSize)
-        coverImageView.image = ImageCache.shared.image(for: url, maxPixelDimension: maxPixelDimension)
-        guard coverImageView.image == nil else { return }
-        imageTask = Task { [weak self] in
-            let image = await ImagePipeline.shared.image(for: url, maxPixelDimension: maxPixelDimension)
-            guard !Task.isCancelled,
-                  let self,
-                  self.representedURL == url else { return }
-            self.coverImageView.image = image
-        }
-    }
-}
-
-private final class HomeFeedBadgeLabel: UILabel {
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        font = .systemFont(ofSize: 12, weight: .semibold)
-        textColor = .white
-        backgroundColor = UIColor.black.withAlphaComponent(0.62)
-        layer.cornerRadius = 11
-        layer.masksToBounds = true
-        textAlignment = .center
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func sizeThatFits(_ size: CGSize) -> CGSize {
-        let base = super.sizeThatFits(size)
-        return CGSize(width: base.width + 12, height: 22)
-    }
-
-    func set(symbol: String?, text: String, monospaced: Bool) {
-        if monospaced {
-            font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-        } else {
-            font = .systemFont(ofSize: 12, weight: .semibold)
-        }
-        if let symbol, let image = UIImage(systemName: symbol)?.withTintColor(.white, renderingMode: .alwaysOriginal) {
-            let attachment = NSTextAttachment()
-            attachment.image = image
-            attachment.bounds = CGRect(x: 0, y: -1, width: 11, height: 11)
-            let value = NSMutableAttributedString(attachment: attachment)
-            value.append(NSAttributedString(string: " \(text)", attributes: [.foregroundColor: UIColor.white, .font: font as Any]))
-            attributedText = value
-        } else {
-            attributedText = nil
-            self.text = text
-        }
+        MediaCardContentView.preferredHeight(width: width, meta: meta)
     }
 }

@@ -5,28 +5,43 @@ import SwiftUI
 /// `SearchViewModel.selectedType`.
 struct SearchTypeBar: View {
     @ObservedObject var vm: SearchViewModel
+    let onShowFilters: () -> Void
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(SearchResultType.allCases) { type in
-                    Button {
-                        vm.selectedType = type
-                    } label: {
-                        IbiliPill(
-                            title: type.label,
-                            style: vm.selectedType == type ? .selected : .neutral,
-                            horizontalPadding: 12,
-                            verticalPadding: 6
-                        )
-                        .opacity(type.isImplemented ? 1.0 : 0.55)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(SearchResultType.allCases) { type in
+                        Button {
+                            vm.selectedType = type
+                        } label: {
+                            IbiliPill(
+                                title: type.label,
+                                style: vm.selectedType == type ? .selected : .neutral,
+                                horizontalPadding: 12,
+                                verticalPadding: 6
+                            )
+                            .opacity(type.isImplemented ? 1.0 : 0.55)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!type.isImplemented)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!type.isImplemented)
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            if vm.selectedType.hasFilters {
+                Button(action: onShowFilters) {
+                    Label("筛选", systemImage: "line.3.horizontal.decrease")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .tint(IbiliTheme.accent)
+                .accessibilityLabel("筛选与排序")
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.trailing, 12)
+            }
         }
     }
 }

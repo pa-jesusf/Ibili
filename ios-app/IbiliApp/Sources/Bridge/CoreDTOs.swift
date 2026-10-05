@@ -2025,6 +2025,8 @@ public struct DynamicVideoDTO: Decodable, Hashable {
     public let cover: String
     public let durationLabel: String
     public let statLabel: String
+    public let playLabel: String
+    public let danmakuLabel: String
     enum CodingKeys: String, CodingKey {
         case aid, bvid, cid, title, cover
         case epID = "ep_id"
@@ -2032,6 +2034,8 @@ public struct DynamicVideoDTO: Decodable, Hashable {
         case isPGC = "is_pgc"
         case durationLabel = "duration_label"
         case statLabel = "stat_label"
+        case playLabel = "play_label"
+        case danmakuLabel = "danmaku_label"
     }
 
     public init(from decoder: Decoder) throws {
@@ -2046,6 +2050,8 @@ public struct DynamicVideoDTO: Decodable, Hashable {
         cover = try c.decodeIfPresent(String.self, forKey: .cover) ?? ""
         durationLabel = try c.decodeIfPresent(String.self, forKey: .durationLabel) ?? ""
         statLabel = try c.decodeIfPresent(String.self, forKey: .statLabel) ?? ""
+        playLabel = try c.decodeIfPresent(String.self, forKey: .playLabel) ?? ""
+        danmakuLabel = try c.decodeIfPresent(String.self, forKey: .danmakuLabel) ?? ""
     }
 }
 

@@ -59,6 +59,19 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertEqual(vm.submittedQuery, "")
         XCTAssertFalse(vm.hasActiveSubmittedQuery)
     }
+
+    func testResultColumnsFollowTypeAndDestinationWidth() {
+        XCTAssertEqual(SearchResultType.user.columnCount(width: 1024, preferredColumns: 4, columnLimit: nil), 2)
+        XCTAssertEqual(SearchResultType.user.columnCount(width: 518, preferredColumns: 4, columnLimit: 2), 1)
+        for type in [SearchResultType.bangumi, .movie] {
+            XCTAssertEqual(type.columnCount(width: 1024, preferredColumns: 4, columnLimit: nil), 1)
+            XCTAssertEqual(type.columnCount(width: 518, preferredColumns: 4, columnLimit: 2), 1)
+        }
+        for type in [SearchResultType.video, .live, .article] {
+            XCTAssertEqual(type.columnCount(width: 1024, preferredColumns: 4, columnLimit: nil), 4)
+            XCTAssertEqual(type.columnCount(width: 518, preferredColumns: 3, columnLimit: 2), 2)
+        }
+    }
 }
 
 final class RootSearchStateTests: XCTestCase {

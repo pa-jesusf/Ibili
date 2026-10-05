@@ -109,6 +109,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
     var onBottomStateChanged: (VirtualizedCollectionBottomState) -> Void = { _ in }
     var splitTransitionIdentity: ((Item) -> FeedStableIdentity?)? = nil
     var splitTransitionTargets: ((Item) -> Set<SplitFeedTransitionTarget>)? = nil
+    var splitTransitionColumns: ((CGFloat, Int?) -> Int)? = nil
     var splitTransitionHeight: ((Item, CGFloat) -> CGFloat?)? = nil
     var contentVersion: AnyHashable = 0
     let content: (Item, CGFloat) -> AnyView
@@ -146,6 +147,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
             splitTransitionConfiguration: splitTransitionConfiguration,
             splitTransitionIdentity: splitTransitionIdentity,
             splitTransitionTargets: splitTransitionTargets,
+            splitTransitionColumns: splitTransitionColumns,
             splitTransitionHeight: splitTransitionHeight,
             contentVersion: contentVersion,
             content: content
@@ -199,9 +201,11 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var splitTransitionConfiguration: SplitFeedTransitionConfiguration?
     private var splitTransitionIdentity: ((Item) -> FeedStableIdentity?)?
     private var splitTransitionTargets: ((Item) -> Set<SplitFeedTransitionTarget>)?
+    private var splitTransitionColumns: ((CGFloat, Int?) -> Int)?
     private var splitTransitionHeight: ((Item, CGFloat) -> CGFloat?)?
     private var pendingAnchor: (id: Item.ID, screenY: CGFloat, targetWidth: CGFloat)?
     private var reflowsAcrossSplit = false
+    private var columnsBeforeSplit = 1
     private var contentVersion: AnyHashable = 0
     private var lastLaidOutWidth: CGFloat = 0
     private var widthReconfigurationWork: DispatchWorkItem?
@@ -306,6 +310,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         splitTransitionConfiguration: SplitFeedTransitionConfiguration?,
         splitTransitionIdentity: ((Item) -> FeedStableIdentity?)?,
         splitTransitionTargets: ((Item) -> Set<SplitFeedTransitionTarget>)?,
+        splitTransitionColumns: ((CGFloat, Int?) -> Int)? = nil,
         splitTransitionHeight: ((Item, CGFloat) -> CGFloat?)?,
         contentVersion: AnyHashable,
         content: @escaping (Item, CGFloat) -> AnyView
@@ -351,6 +356,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
         self.splitTransitionConfiguration = splitTransitionConfiguration
         self.splitTransitionIdentity = splitTransitionIdentity
         self.splitTransitionTargets = splitTransitionTargets
+        self.splitTransitionColumns = splitTransitionColumns
         self.splitTransitionHeight = splitTransitionHeight
 
         let contentChanged = self.contentVersion != contentVersion
@@ -813,6 +819,7 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
                   }) else { return [] }
             anchor = selected
             reflowsAcrossSplit = collectionView.bounds.width > configuration.targetLeftWidth + 2
+            columnsBeforeSplit = max(1, layoutConfiguration.columns)
         case .exiting:
             anchor = topRightVisibleEntry(visible)
         }
@@ -826,7 +833,8 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
             targetCollectionWidth = reflowsAcrossSplit ? configuration.targetLeftWidth : currentWidth
             targetCollectionX = 0
             targetColumns = reflowsAcrossSplit
-                ? min(max(1, layoutConfiguration.columns), max(1, configuration.splitColumns))
+                ? max(1, splitTransitionColumns?(targetCollectionWidth, configuration.splitColumns)
+                    ?? min(columnsBeforeSplit, max(1, configuration.splitColumns)))
                 : max(1, layoutConfiguration.columns)
         case .exiting:
             targetCollectionWidth = reflowsAcrossSplit ? configuration.containerSize.width : currentWidth
@@ -834,11 +842,13 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
                 ? 0
                 : max(0, (configuration.containerSize.width - currentWidth) / 2)
             targetColumns = reflowsAcrossSplit
-                ? max(1, configuration.fullColumns)
+                ? max(1, splitTransitionColumns?(targetCollectionWidth, nil) ?? columnsBeforeSplit)
                 : max(1, layoutConfiguration.columns)
         }
 
-        let targetItemWidth = layoutConfiguration.itemWidth(
+        var targetLayout = layoutConfiguration
+        targetLayout.columns = targetColumns
+        let targetItemWidth = targetLayout.itemWidth(
             containerWidth: max(1, targetCollectionWidth)
         )
         let currentItemWidth = max(1, layoutConfiguration.itemWidth(containerWidth: currentWidth))
@@ -853,7 +863,7 @@ extension VirtualizedCollectionViewController: SplitFeedTransitionSource {
             columns: targetColumns,
             itemWidth: targetItemWidth,
             itemHeight: targetAnchorHeight,
-            horizontalInset: layoutConfiguration.resolvedHorizontalInset(
+            horizontalInset: targetLayout.resolvedHorizontalInset(
                 containerWidth: targetCollectionWidth
             ),
             interitemSpacing: layoutConfiguration.interitemSpacing,

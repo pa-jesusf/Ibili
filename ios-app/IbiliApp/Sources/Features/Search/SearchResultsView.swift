@@ -1,10 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// Grid of search-result cards. Reuses the same column-sizing logic as
-/// the home feed so user preferences flow through, but disables the
-/// home's top-trailing duration variant since search cards already
-/// include a denser bottom info area.
+/// Virtualized results using the shared media card presentation and grid widths.
 struct SearchResultsView: View {
     @ObservedObject var vm: SearchViewModel
     @EnvironmentObject private var settings: AppSettings
@@ -54,11 +51,7 @@ struct SearchResultsView: View {
 
     private var resultsGrid: some View {
         GeometryReader { geo in
-            let preferredCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
-            let feedCols = splitFeedColumnLimit.map { min(preferredCols, $0) } ?? preferredCols
-            let cols = vm.selectedType == .user
-                ? (geo.size.width >= 760 ? 2 : 1)
-                : (vm.selectedType == .bangumi || vm.selectedType == .movie ? 1 : feedCols)
+            let cols = columnCount(width: geo.size.width, columnLimit: splitFeedColumnLimit)
             let hPad: CGFloat = 12
             let spacing: CGFloat = 12
             VirtualizedCollectionSurface(
@@ -80,7 +73,24 @@ struct SearchResultsView: View {
                     prefetchCovers(items, cardWidth: width)
                 },
                 splitTransitionIdentity: searchSplitTransitionIdentity,
-                splitTransitionTargets: searchSplitTransitionTargets
+                splitTransitionTargets: searchSplitTransitionTargets,
+                splitTransitionColumns: columnCount,
+                splitTransitionHeight: { item, width in
+                    switch item {
+                    case .video(let video):
+                        return MediaCardContentView.preferredHeight(width: width, model: MediaCardRenderModel(
+                            search: video, imageQuality: nil, meta: settings.searchCardMeta))
+                    case .live:
+                        return LiveCardView.preferredHeight(width: width)
+                    case .article(let article):
+                        return MediaCardContentView.preferredHeight(width: width, model: MediaCardRenderModel(
+                            searchArticle: article, imageQuality: nil))
+                    case .user, .pgc:
+                        return nil
+                    }
+                },
+                contentVersion: AnyHashable(MediaCardAppearance(imageQuality: settings.resolvedImageQuality(),
+                                                                meta: settings.searchCardMeta))
             ) { item, width in
                 AnyView(resultButton(for: item, cardWidth: width))
             }
@@ -98,6 +108,14 @@ struct SearchResultsView: View {
             }
             Button("取消", role: .cancel) {}
         }
+    }
+
+    private func columnCount(width: CGFloat, columnLimit: Int?) -> Int {
+        vm.selectedType.columnCount(
+            width: width,
+            preferredColumns: settings.effectiveColumns(horizontal: hSizeClass, width: width),
+            columnLimit: columnLimit
+        )
     }
 
     @ViewBuilder
@@ -279,10 +297,23 @@ struct SearchResultsView: View {
             }
         }
         guard !covers.isEmpty else { return }
-        let size = CGSize(width: cardWidth, height: (cardWidth / VideoCoverView.aspectRatio).rounded())
+        let size: CGSize
+        let quality: Int?
+        switch vm.selectedType {
+        case .video, .live, .article:
+            size = CGSize(width: cardWidth, height: cardWidth / MediaCardLayout.coverAspectRatio)
+            quality = settings.resolvedImageQuality()
+        case .user:
+            size = CGSize(width: 46, height: 46)
+            quality = 80
+        case .bangumi, .movie:
+            let posterWidth = max(74, min(104, cardWidth * 0.32))
+            size = CGSize(width: posterWidth, height: posterWidth * 4 / 3)
+            quality = settings.resolvedImageQuality() ?? 82
+        }
         CoverImagePrefetcher.shared.prefetch(covers,
                                              targetPointSize: size,
-                                             quality: settings.resolvedImageQuality())
+                                             quality: quality)
     }
 
     private func searchSplitTransitionIdentity(_ item: SearchResultItem) -> FeedStableIdentity? {

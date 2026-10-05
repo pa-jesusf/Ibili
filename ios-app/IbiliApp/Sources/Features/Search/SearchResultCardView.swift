@@ -1,10 +1,6 @@
 import SwiftUI
 
-/// Search-result video card. Visually identical to `VideoCardView`
-/// (same cover, same info section, same paddings) so the home and
-/// search surfaces present a consistent card layout. The only
-/// difference is the data source — search items carry an extra
-/// `like` count.
+/// Search uses the same native card presentation and bitmap backdrop as home.
 struct SearchResultCardView: View {
     let item: SearchVideoItemDTO
     let cardWidth: CGFloat
@@ -22,8 +18,6 @@ struct SearchResultCardView: View {
 struct SearchUserResultCardView: View {
     let item: SearchUserItemDTO
     let cardWidth: CGFloat
-
-    private let cardCornerRadius: CGFloat = 10
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -90,8 +84,7 @@ struct SearchUserResultCardView: View {
         .padding(10)
         .frame(width: cardWidth, alignment: .topLeading)
         .frame(minHeight: 112, alignment: .topLeading)
-        .background(IbiliTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+        .mediaCardChrome(width: cardWidth)
     }
 }
 
@@ -100,53 +93,8 @@ struct SearchArticleResultCardView: View {
     let cardWidth: CGFloat
     let imageQuality: Int?
 
-    private let cardCornerRadius: CGFloat = 10
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !item.cover.isEmpty {
-                RemoteImage(url: item.cover,
-                            contentMode: .fill,
-                            targetPointSize: CGSize(width: cardWidth, height: cardWidth * 0.58),
-                            quality: imageQuality ?? 78)
-                    .frame(width: cardWidth, height: cardWidth * 0.58)
-                    .clipped()
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                Text(item.title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(IbiliTheme.textPrimary)
-                    .lineLimit(2)
-                if !item.desc.isEmpty {
-                    Text(item.desc)
-                        .font(.caption)
-                        .foregroundStyle(IbiliTheme.textSecondary)
-                        .lineLimit(2)
-                }
-                HStack(spacing: 8) {
-                    if !item.categoryName.isEmpty {
-                        Text(item.categoryName)
-                    }
-                    Text(BiliFormat.relativeDate(item.pubTime))
-                    Spacer(minLength: 0)
-                }
-                .font(.caption2)
-                .foregroundStyle(IbiliTheme.textSecondary)
-                HStack(spacing: 10) {
-                    Label(BiliFormat.compactCount(item.view), systemImage: "eye")
-                    Label(BiliFormat.compactCount(item.reply), systemImage: "bubble.left")
-                    Label(BiliFormat.compactCount(item.like), systemImage: "hand.thumbsup")
-                    Spacer(minLength: 0)
-                }
-                .font(.caption2)
-                .foregroundStyle(IbiliTheme.textSecondary)
-            }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 10)
-        }
-        .frame(width: cardWidth, alignment: .topLeading)
-        .background(IbiliTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+        MediaCardView(model: MediaCardRenderModel(searchArticle: item, imageQuality: imageQuality), width: cardWidth)
     }
 }
 
@@ -170,7 +118,9 @@ struct SearchPgcResultCardView: View {
             ),
             cardWidth: cardWidth,
             imageQuality: imageQuality,
-            style: .detailed
+            style: .detailed,
+            cornerRadius: MediaCardLayout(width: cardWidth, showsAuthor: false, showsMetadata: false).cornerRadius
         )
+        .mediaCardChrome(width: cardWidth)
     }
 }

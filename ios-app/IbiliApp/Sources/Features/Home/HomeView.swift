@@ -132,14 +132,12 @@ private struct HomeFeedPage: View {
         GeometryReader { geo in
             let resolvedColumns = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
             let columns = splitFeedColumnLimit.map { min(resolvedColumns, $0) } ?? resolvedColumns
-            let usesTopTrailingDuration = UIDevice.current.userInterfaceIdiom == .phone && columns >= 3
 
             HomeFeedCollectionView(
                 items: vm.items,
                 columns: columns,
                 imageQuality: settings.resolvedImageQuality(),
                 meta: settings.homeCardMeta,
-                usesTopTrailingDuration: usesTopTrailingDuration,
                 isLoading: vm.isLoading,
                 isEnd: vm.isEnd,
                 scrollToTopSignal: scrollToTopSignal,
@@ -387,10 +385,9 @@ private struct HomeLiveFeedPage: View {
 
     var body: some View {
         GeometryReader { geo in
-            let resolvedCols = settings.effectiveColumns(horizontal: hSizeClass, width: geo.size.width)
-            let cols = splitFeedColumnLimit.map { min(resolvedCols, $0) } ?? resolvedCols
+            let cols = columnCount(width: geo.size.width, columnLimit: splitFeedColumnLimit)
             let metrics = HomeSwiftUIGridMetrics(containerWidth: geo.size.width, columns: cols)
-            let cardHeight = (metrics.cardWidth / VideoCoverView.aspectRatio).rounded() + 78
+            let cardHeight = LiveCardView.preferredHeight(width: metrics.cardWidth)
             VirtualizedCollectionSurface(
                 items: vm.items,
                 layout: .grid(
@@ -419,9 +416,11 @@ private struct HomeLiveFeedPage: View {
                     prefetchLiveCovers(items, cardWidth: cardWidth)
                 },
                 splitTransitionIdentity: { FeedStableIdentity($0) },
+                splitTransitionColumns: columnCount,
                 splitTransitionHeight: { _, width in
-                    (width / VideoCoverView.aspectRatio).rounded() + 78
-                }
+                    LiveCardView.preferredHeight(width: width)
+                },
+                contentVersion: AnyHashable(settings.resolvedImageQuality())
             ) { item, cardWidth in
                 AnyView(
                     LiveCardView(
@@ -429,7 +428,7 @@ private struct HomeLiveFeedPage: View {
                         cardWidth: cardWidth,
                         imageQuality: settings.resolvedImageQuality()
                     )
-                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .contentShape(Rectangle())
                 )
             }
             .ignoresSafeArea(.container, edges: [.top, .bottom])
@@ -455,6 +454,11 @@ private struct HomeLiveFeedPage: View {
             }
         }
         .task { await vm.loadInitial() }
+    }
+
+    private func columnCount(width: CGFloat, columnLimit: Int?) -> Int {
+        let preferred = settings.effectiveColumns(horizontal: hSizeClass, width: width)
+        return max(1, columnLimit.map { min(preferred, $0) } ?? preferred)
     }
 
     private var liveFooter: (() -> AnyView)? {
@@ -507,7 +511,7 @@ private struct HomeLiveFeedPage: View {
             covers,
             targetPointSize: CGSize(
                 width: cardWidth,
-                height: (cardWidth / VideoCoverView.aspectRatio).rounded()
+                height: cardWidth / MediaCardLayout.coverAspectRatio
             ),
             quality: settings.resolvedImageQuality()
         )

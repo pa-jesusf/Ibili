@@ -50,7 +50,7 @@ final class HomeFeedGridLayoutTests: XCTestCase {
             columns: 2,
             meta: FeedCardMetaConfig(
                 showPlay: true,
-                showDuration: true,
+                showDuration: false,
                 showPubdate: false,
                 showAuthor: false,
                 stat: .none
@@ -64,6 +64,125 @@ final class HomeFeedGridLayoutTests: XCTestCase {
 
         XCTAssertEqual(compact.cardWidth, detailed.cardWidth)
         XCTAssertLessThan(compact.cardHeight, detailed.cardHeight)
+    }
+
+    @MainActor
+    func testNativeCardKeepsAllTextBelowFullCoverAndClearsBothImagesOnReuse() async throws {
+        let payload: [String: Any] = [
+            "aid": 1, "bvid": "BV1fk4y1E7r3", "duration_sec": 114,
+            "cover": "https://example.invalid/home-card-\(UUID().uuidString).jpg",
+            "title": "封面完整保留，标题与信息位于下方",
+        ]
+        let item = try JSONDecoder().decode(FeedItemDTO.self, from: JSONSerialization.data(withJSONObject: payload))
+        let width: CGFloat = 177
+        let target = CGSize(width: width, height: width * 9 / 16)
+        let url = try XCTUnwrap(URL(string: BiliImageURL.resized(item.cover, pointSize: target, quality: 75)))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 180), format: format).image { context in
+            UIColor.blue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 320, height: 180))
+        }
+        ImageCache.shared.store(image, for: url, maxPixelDimension: ImagePipeline.displayPixelDimension(for: target))
+        let model = MediaCardRenderModel(feed: item, imageQuality: 75, meta: .standard)
+        let cell = HomeFeedCardCell(frame: CGRect(x: 0, y: 0, width: width,
+                                                  height: HomeFeedCardCell.preferredHeight(width: width, meta: .standard)))
+        cell.configure(item: item, model: model, targetWidth: width, menuAction: { _ in })
+        cell.layoutIfNeeded()
+        cell.card.layoutIfNeeded()
+        let images = cell.card.subviews.compactMap { $0 as? UIImageView }
+        let cover = try XCTUnwrap(images.first)
+        XCTAssertEqual(cover.frame.height, target.height)
+        XCTAssertEqual(cover.contentMode, .scaleAspectFit)
+        for label in cell.card.subviews.compactMap({ $0 as? UILabel }) where !label.isHidden {
+            XCTAssertGreaterThanOrEqual(label.frame.minY, cover.frame.maxY)
+        }
+        cell.prepareForReuse()
+        await Task.yield()
+        XCTAssertNil(images[0].image)
+        XCTAssertNil(images[1].image)
+        XCTAssertTrue(cell.card.subviews.compactMap { $0 as? UIButton }.allSatisfy { $0.menu == nil })
+    }
+
+    @MainActor
+    func testCardRowsKeepPlayAboveAuthorAndDoNotOverlapDurationOrMenu() throws {
+        let item = try JSONDecoder().decode(FeedItemDTO.self, from: Data(#"{"aid":1,"title":"标题","author":"测试作者","duration_sec":3723,"play":1074000}"#.utf8))
+        for width: CGFloat in [82, 90, 110, 150, 159, 177, 366] {
+            for author in [false, true] {
+                for play in [false, true] {
+                    for duration in [false, true] {
+                        let meta = FeedCardMetaConfig(showPlay: play, showDuration: duration,
+                                                      showPubdate: false, showAuthor: author, stat: .none)
+                        let cell = HomeFeedCardCell(frame: CGRect(x: 0, y: 0, width: width,
+                                                                  height: HomeFeedCardCell.preferredHeight(width: width, meta: meta)))
+                        cell.configure(item: item, model: MediaCardRenderModel(feed: item, imageQuality: 75, meta: meta),
+                                       targetWidth: width, menuAction: { _ in })
+                        cell.layoutIfNeeded()
+                        cell.card.layoutIfNeeded()
+                        let menu = try XCTUnwrap(cell.card.subviews.compactMap { $0 as? UIButton }.first)
+                        let labels = cell.card.subviews.compactMap({ $0 as? UILabel }).filter { !$0.isHidden }
+                        for label in labels {
+                            XCTAssertGreaterThan(label.frame.width, 0)
+                            XCTAssertFalse(label.frame.intersects(menu.frame))
+                            for other in labels where label !== other { XCTAssertFalse(label.frame.intersects(other.frame)) }
+                        }
+                        if author && play {
+                            let authorLabel = try XCTUnwrap(labels.first { $0.text == "测试作者" })
+                            let playLabel = try XCTUnwrap(labels.first { $0.attributedText?.string.contains("107.4万") == true })
+                            XCTAssertLessThan(playLabel.frame.maxY, authorLabel.frame.minY)
+                        }
+                        cell.prepareForReuse()
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testSharedLivePresentationRetainsStatsAndUsesSameHeightForEmptyMetadata() throws {
+        let populated = try JSONDecoder().decode(LiveFeedItemDTO.self, from: Data(#"{"room_id":123,"title":"直播标题","uname":"主播","watched_label":"3.2万观看","area_name":"聊天","system_cover":"https://example.invalid/cover.jpg","is_followed":true}"#.utf8))
+        let empty = try JSONDecoder().decode(LiveFeedItemDTO.self, from: Data(#"{"room_id":456,"title":"直播标题","uname":"主播"}"#.utf8))
+        for width: CGFloat in [82, 110, 177, 366] {
+            for item in [populated, empty] {
+                let model = MediaCardRenderModel(live: item, imageQuality: 75)
+                let height = MediaCardContentView.preferredHeight(width: width, model: model)
+                XCTAssertEqual(height, LiveCardView.preferredHeight(width: width))
+                let card = MediaCardContentView(frame: CGRect(x: 0, y: 0, width: width, height: height))
+                card.configure(model: model, targetWidth: width)
+                card.layoutIfNeeded()
+                XCTAssertFalse(card.isUserInteractionEnabled, "the outer SwiftUI/collection navigation owns taps")
+                let labels = card.subviews.compactMap { $0 as? UILabel }.filter { !$0.isHidden }
+                let author = try XCTUnwrap(labels.first { $0.text == "主播" })
+                XCTAssertEqual(author.frame.maxX, width - (width < 220 ? 10 : 14))
+                if item.roomID == populated.roomID {
+                    let stats = try XCTUnwrap(labels.first { $0.attributedText?.string.contains("3.2万观看") == true })
+                    XCTAssertTrue(stats.attributedText!.string.contains("聊天"))
+                    XCTAssertLessThan(stats.frame.maxY, author.frame.minY)
+                }
+                card.reset()
+            }
+        }
+    }
+
+    @MainActor
+    func testCompactVideoCardAllocatesAllThreeConfiguredStatisticsLines() throws {
+        let item = try JSONDecoder().decode(FeedItemDTO.self, from: Data(#"{"aid":1,"title":"标题","author":"作者","duration_sec":3723,"play":1074000,"pubdate":1700000000,"danmaku":4321}"#.utf8))
+        let meta = FeedCardMetaConfig(showPlay: true, showDuration: true, showPubdate: true, showAuthor: true, stat: .danmaku)
+        for width: CGFloat in [82, 110] {
+            let model = MediaCardRenderModel(feed: item, imageQuality: nil, meta: meta)
+            let card = MediaCardContentView(frame: CGRect(x: 0, y: 0, width: width,
+                                                          height: MediaCardContentView.preferredHeight(width: width, meta: meta)))
+            XCTAssertEqual(card.bounds.height, MediaCardContentView.preferredHeight(width: width, model: model))
+            card.configure(model: model, targetWidth: width)
+            card.layoutIfNeeded()
+            let stats = try XCTUnwrap(card.subviews.compactMap { $0 as? UILabel }.first {
+                $0.attributedText?.string.contains("107.4万") == true
+            })
+            XCTAssertEqual(stats.attributedText!.string.split(separator: "\n").count, 3)
+            XCTAssertEqual(stats.numberOfLines, 3)
+            XCTAssertGreaterThanOrEqual(stats.bounds.height, ceil(stats.font.lineHeight * 3))
+            card.reset()
+        }
     }
 
     func testSplitGeometryKeepsSelectedCardAtSameVerticalAnchor() {
@@ -275,7 +394,6 @@ final class HomeFeedCollectionLifecycleTests: XCTestCase {
             columns: 2,
             imageQuality: 75,
             meta: .standard,
-            usesTopTrailingDuration: false,
             isLoading: isLoading,
             isEnd: isEnd,
             scrollToTopSignal: 0,
@@ -662,6 +780,9 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
         isRefreshing: Bool = false,
         scrollToBottomSignal: Int = 0,
         contentVersion: AnyHashable = 0,
+        splitIdentity: ((Item) -> FeedStableIdentity?)? = nil,
+        splitColumns: ((CGFloat, Int?) -> Int)? = nil,
+        splitHeight: ((Item, CGFloat) -> CGFloat?)? = nil,
         content: ((Item, CGFloat) -> AnyView)? = nil
     ) {
         controller.update(
@@ -687,9 +808,10 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
             onBottomStateChanged: { _ in },
             splitTransitionCoordinator: nil,
             splitTransitionConfiguration: nil,
-            splitTransitionIdentity: nil,
+            splitTransitionIdentity: splitIdentity,
             splitTransitionTargets: nil,
-            splitTransitionHeight: nil,
+            splitTransitionColumns: splitColumns,
+            splitTransitionHeight: splitHeight,
             contentVersion: contentVersion,
             content: content ?? { item, _ in AnyView(Text(item.title)) }
         )
@@ -705,6 +827,78 @@ final class VirtualizedCollectionLifecycleTests: XCTestCase {
             return UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewFlowLayout())
         }
         return collectionView
+    }
+
+    func testSplitSnapshotsUseDestinationColumnsForWidthAndHeight() {
+        verifySplitSnapshots(fullColumns: 4, splitColumns: 2,
+                             enteringWidth: 241, exitingWidth: 241)
+    }
+
+    func testSingleColumnSplitSnapshotsIgnoreGlobalFeedColumns() {
+        verifySplitSnapshots(fullColumns: 1, splitColumns: 1,
+                             enteringWidth: 494, exitingWidth: 1000)
+    }
+
+    func testUserSearchSplitSnapshotsUseItsOwnResponsiveColumns() {
+        verifySplitSnapshots(fullColumns: 2, splitColumns: 1,
+                             enteringWidth: 494, exitingWidth: 494,
+                             columnResolver: { width, limit in
+                                 SearchResultType.user.columnCount(width: width, preferredColumns: 4, columnLimit: limit)
+                             })
+    }
+
+    private func verifySplitSnapshots(
+        fullColumns: Int,
+        splitColumns: Int,
+        enteringWidth: CGFloat,
+        exitingWidth: CGFloat,
+        columnResolver: ((CGFloat, Int?) -> Int)? = nil
+    ) {
+        let controller = VirtualizedCollectionViewController<Item>()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.beginAppearanceTransition(true, animated: false)
+        controller.endAppearanceTransition()
+        defer {
+            controller.beginAppearanceTransition(false, animated: false)
+            controller.endAppearanceTransition()
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+        let items = makeItems(0..<12)
+        let identity: (Item) -> FeedStableIdentity? = { FeedStableIdentity(aid: Int64($0.id + 1)) }
+        let height: (Item, CGFloat) -> CGFloat? = { _, width in
+            MediaCardLayout(width: width, showsAuthor: true, showsMetadata: true, showsDuration: true).height
+        }
+        update(controller, items: items, layout: .grid(columns: fullColumns, height: .absolute(256)),
+               splitIdentity: identity, splitColumns: columnResolver, splitHeight: height)
+        controller.view.layoutIfNeeded()
+        let ready = expectation(description: "split source cells displayed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            controller.view.layoutIfNeeded()
+            let configuration = SplitFeedTransitionConfiguration(containerSize: window.bounds.size, targetLeftWidth: 518,
+                                                                  fullColumns: 4, splitColumns: 2)
+            let entering = controller.makeSnapshots(direction: .entering, selectedTarget: .media(FeedStableIdentity(aid: 1)),
+                                                     configuration: configuration)
+            XCTAssertFalse(entering.isEmpty)
+            for snapshot in entering {
+                XCTAssertEqual(snapshot.endFrame.width, enteringWidth)
+                XCTAssertEqual(snapshot.endFrame.height, height(items[0], enteringWidth))
+            }
+            controller.view.frame.size.width = 518
+            self.update(controller, items: items, layout: .grid(columns: splitColumns, height: .absolute(256)),
+                        splitIdentity: identity, splitColumns: columnResolver, splitHeight: height)
+            controller.view.layoutIfNeeded()
+            let exiting = controller.makeSnapshots(direction: .exiting, selectedTarget: nil, configuration: configuration)
+            XCTAssertFalse(exiting.isEmpty)
+            for snapshot in exiting {
+                XCTAssertEqual(snapshot.endFrame.width, exitingWidth)
+                XCTAssertEqual(snapshot.endFrame.height, height(items[0], exitingWidth))
+            }
+            ready.fulfill()
+        }
+        wait(for: [ready], timeout: 1)
     }
 
     func testDiffableCoordinatorKeepsLatestRapidSnapshot() {

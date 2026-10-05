@@ -70,6 +70,9 @@ pub struct DynamicVideo {
     pub cover: String,
     pub duration_label: String,
     pub stat_label: String,
+    /// Already formatted by the dynamic API (for example "3.2万").
+    pub play_label: String,
+    pub danmaku_label: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -331,7 +334,7 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         });
     }
     if let Some(arc) = major.archive {
-        let stat_label = arc.stat.unwrap_or_default();
+        let stat = arc.stat.unwrap_or_default();
         video = Some(DynamicVideo {
             aid: arc.aid.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
             bvid: arc.bvid.unwrap_or_default(),
@@ -342,7 +345,9 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
             title: arc.title.unwrap_or_default(),
             cover: arc.cover.unwrap_or_default(),
             duration_label: arc.duration_text.unwrap_or_default(),
-            stat_label,
+            stat_label: stat.label,
+            play_label: stat.play.unwrap_or_default(),
+            danmaku_label: stat.danmaku.unwrap_or_default(),
         });
     }
     if let Some(draw) = major.draw {
@@ -388,6 +393,7 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
         });
     }
     if let Some(pgc) = major.pgc {
+        let stat = pgc.stat.unwrap_or_default();
         video = Some(DynamicVideo {
             aid: pgc.aid.unwrap_or(0),
             bvid: pgc.bvid.unwrap_or_default(),
@@ -398,7 +404,9 @@ fn flatten_dynamic_item(w: DynItemWire) -> Option<DynamicItem> {
             title: pgc.title.unwrap_or_default(),
             cover: pgc.cover.unwrap_or_default(),
             duration_label: pgc.sub_type.unwrap_or_default(),
-            stat_label: pgc.stat.unwrap_or_default(),
+            stat_label: stat.label,
+            play_label: stat.play.unwrap_or_default(),
+            danmaku_label: stat.danmaku.unwrap_or_default(),
         });
     }
     if let Some(live) = major.live_rcmd.or(major.live) {
@@ -560,9 +568,8 @@ struct DynArchiveWire {
     cover: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")]
     duration_text: Option<String>,
-    /// e.g. "3.2 万 观看 · 12 弹幕"
-    #[serde(default, deserialize_with = "lenient_string")]
-    stat: Option<String>,
+    #[serde(default, deserialize_with = "video_stat")]
+    stat: Option<DynVideoStatWire>,
 }
 
 #[derive(Default, Deserialize)]
@@ -627,8 +634,34 @@ struct DynPgcWire {
     cover: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")]
     sub_type: Option<String>,
+    #[serde(default, deserialize_with = "video_stat")]
+    stat: Option<DynVideoStatWire>,
+}
+
+#[derive(Default, Deserialize)]
+struct DynVideoStatWire {
     #[serde(default, deserialize_with = "lenient_string")]
-    stat: Option<String>,
+    play: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    danmaku: Option<String>,
+    #[serde(skip)]
+    label: String,
+}
+
+fn video_stat<'de, D>(de: D) -> Result<Option<DynVideoStatWire>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let value = Option::<Value>::deserialize(de)?;
+    Ok(match value {
+        Some(value @ Value::Object(_)) => serde_json::from_value(value).ok(),
+        Some(Value::String(label)) => Some(DynVideoStatWire {
+            label,
+            ..Default::default()
+        }),
+        _ => None,
+    })
 }
 
 #[derive(Default, Deserialize)]
@@ -813,7 +846,75 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::DynCountWire;
+    use super::{flatten_dynamic_item, DynCountWire};
+    use serde_json::json;
+
+    #[test]
+    fn dynamic_video_stats_preserve_formatted_play_and_danmaku_for_archive_and_pgc() {
+        for major_kind in ["archive", "pgc"] {
+            for stat in [
+                json!({"play": "3.2万", "danmaku": "128"}),
+                json!({"play": 32000, "danmaku": 128}),
+                json!({"play": "0", "danmaku": "0"}),
+            ] {
+                let item = flatten_dynamic_item(
+                    serde_json::from_value(json!({
+                        "id_str": "123", "type": "DYNAMIC_TYPE_AV",
+                        "modules": {"module_dynamic": {"major": {major_kind: {
+                            "aid": "456", "bvid": "BV1fk4y1E7r3", "stat": stat,
+                        }}}}
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                let video = item.video.unwrap();
+                assert_eq!(video.aid, 456);
+                assert_eq!(video.bvid, "BV1fk4y1E7r3");
+                assert!(!video.play_label.is_empty());
+                assert!(!video.danmaku_label.is_empty());
+                let encoded = serde_json::to_value(video).unwrap();
+                assert_eq!(
+                    encoded["play_label"],
+                    stat["play"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| stat["play"].to_string())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn forwarded_video_keeps_stats_and_optional_stat_shapes_do_not_drop_items() {
+        for stat in [
+            json!(null),
+            json!({}),
+            json!([]),
+            json!("3.2万观看"),
+            json!({"play": "3.2万"}),
+        ] {
+            let item = flatten_dynamic_item(
+                serde_json::from_value(json!({
+                    "id_str": "123", "type": "DYNAMIC_TYPE_FORWARD", "modules": {},
+                    "orig": {"id_str": "456", "type": "DYNAMIC_TYPE_AV",
+                        "modules": {"module_dynamic": {"major": {"archive": {
+                            "aid": "789", "stat": stat,
+                        }}}}}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let video = item.orig.unwrap().video.unwrap();
+            assert_eq!(video.aid, 789);
+            assert_eq!(video.stat_label, stat.as_str().unwrap_or_default());
+            assert_eq!(
+                video.play_label,
+                stat.get("play")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+            );
+        }
+    }
 
     fn parse_status(value: &str) -> Option<bool> {
         serde_json::from_str::<DynCountWire>(value)

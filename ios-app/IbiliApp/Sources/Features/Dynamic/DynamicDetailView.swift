@@ -402,19 +402,8 @@ private struct DetailBody: View {
     }
 
     private func detailVideoTile(_ v: DynamicVideoDTO) -> some View {
-        let h = max(1, contentWidth * 9 / 16)
         return Button(action: onPlayVideo) {
-            ZStack {
-                RemoteImage(url: v.cover, contentMode: .fill,
-                            targetPointSize: CGSize(width: contentWidth, height: h), quality: 85)
-                    .frame(width: contentWidth, height: h)
-                    .clipped()
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 56))
-                    .foregroundStyle(.white.opacity(0.9))
-            }
-            .frame(width: contentWidth, height: h)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            DynamicVideoTile(video: v, contentWidth: contentWidth, showsPlayButton: true)
         }
         .buttonStyle(.plain)
     }

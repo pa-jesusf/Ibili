@@ -53,6 +53,21 @@ struct FeedStableIdentity: Hashable, Sendable {
     }
 }
 
+struct LiveCardInfo: Hashable {
+    let watchedLabel: String
+    let areaName: String
+}
+
+struct MediaCardAppearance: Hashable {
+    let imageQuality: Int?
+    let meta: FeedCardMetaConfig
+}
+
+struct ArticleCardInfo: Hashable {
+    let description: String
+    let categoryName: String
+}
+
 struct MediaCardRenderModel: Hashable, Identifiable {
     var id: FeedStableIdentity { identity }
     let identity: FeedStableIdentity
@@ -69,6 +84,8 @@ struct MediaCardRenderModel: Hashable, Identifiable {
     let imageQuality: Int?
     let meta: FeedCardMetaConfig
     let durationPlacement: VideoCoverView.DurationPlacement
+    let liveInfo: LiveCardInfo?
+    let articleInfo: ArticleCardInfo?
 
     init(
         identity: FeedStableIdentity,
@@ -84,7 +101,9 @@ struct MediaCardRenderModel: Hashable, Identifiable {
         isAuthorFollowed: Bool = false,
         imageQuality: Int?,
         meta: FeedCardMetaConfig,
-        durationPlacement: VideoCoverView.DurationPlacement = .bottomTrailing
+        durationPlacement: VideoCoverView.DurationPlacement = .bottomTrailing,
+        liveInfo: LiveCardInfo? = nil,
+        articleInfo: ArticleCardInfo? = nil
     ) {
         self.identity = identity
         self.title = title
@@ -100,6 +119,34 @@ struct MediaCardRenderModel: Hashable, Identifiable {
         self.imageQuality = imageQuality
         self.meta = meta
         self.durationPlacement = durationPlacement
+        self.liveInfo = liveInfo
+        self.articleInfo = articleInfo
+    }
+
+    init(live item: LiveFeedItemDTO, imageQuality: Int?) {
+        self.init(identity: FeedStableIdentity(item), title: item.title,
+                  cover: item.systemCover.isEmpty ? item.cover : item.systemCover,
+                  author: item.uname, durationSec: 0, play: 0, danmaku: 0,
+                  isAuthorFollowed: item.isFollowed, imageQuality: imageQuality,
+                  meta: .init(showPlay: false, showDuration: false, showPubdate: false, showAuthor: true, stat: .none),
+                  liveInfo: .init(watchedLabel: item.watchedLabel, areaName: item.areaName))
+    }
+
+    init(searchLive item: SearchLiveItemDTO, imageQuality: Int?) {
+        self.init(identity: FeedStableIdentity(roomID: item.roomID), title: item.title,
+                  cover: item.cover, author: item.uname, durationSec: 0, play: 0, danmaku: 0,
+                  imageQuality: imageQuality,
+                  meta: .init(showPlay: false, showDuration: false, showPubdate: false, showAuthor: true, stat: .none),
+                  liveInfo: .init(watchedLabel: item.online > 0 ? BiliFormat.compactCount(item.online) : "",
+                                  areaName: item.areaName))
+    }
+
+    init(searchArticle item: SearchArticleItemDTO, imageQuality: Int?) {
+        self.init(identity: .init(), title: item.title, cover: item.cover, author: "",
+                  durationSec: 0, play: item.view, danmaku: item.reply, like: item.like, pubdate: item.pubTime,
+                  imageQuality: imageQuality,
+                  meta: .init(showPlay: false, showDuration: false, showPubdate: false, showAuthor: false, stat: .none),
+                  articleInfo: .init(description: item.desc, categoryName: item.categoryName))
     }
 
     init(

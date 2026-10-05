@@ -1,5 +1,16 @@
 import Foundation
 
+/// A filter sheet edits this value locally and publishes it only on Apply.
+struct SearchFilterSelection: Equatable {
+    var category: SearchCategory? = nil
+    var order: SearchOrder = .totalrank
+    var duration: SearchDuration = .any
+    var userOrder: SearchUserOrder = .defaultOrder
+    var userKind: SearchUserKind = .all
+    var articleOrder: SearchArticleOrder = .totalrank
+    var articleZone: SearchArticleZone = .all
+}
+
 /// Search result type tabs above the result grid. Mirrors PiliPlus
 /// `SearchType` enum.
 enum SearchResultType: String, CaseIterable, Identifiable {
@@ -24,6 +35,17 @@ enum SearchResultType: String, CaseIterable, Identifiable {
     }
 
     var isImplemented: Bool { true }
+
+    func columnCount(width: CGFloat, preferredColumns: Int, columnLimit: Int?) -> Int {
+        switch self {
+        case .user:
+            return width >= 760 ? 2 : 1
+        case .bangumi, .movie:
+            return 1
+        case .video, .live, .article:
+            return max(1, columnLimit.map { min(preferredColumns, $0) } ?? preferredColumns)
+        }
+    }
 
     var hasFilters: Bool {
         switch self {

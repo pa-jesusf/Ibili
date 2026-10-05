@@ -11,14 +11,13 @@ struct SearchRouteView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SearchTypeBar(vm: vm)
+            SearchTypeBar(vm: vm, onShowFilters: { isFiltersSheetPresented = true })
             Divider().opacity(0.4)
             SearchResultsView(vm: vm)
         }
         .background(IbiliTheme.background)
         .navigationTitle(keyword)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
         .task(id: keyword) {
             vm.submit(query: keyword)
         }
@@ -28,17 +27,4 @@ struct SearchRouteView: View {
         .tint(IbiliTheme.accent)
     }
 
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        if vm.hasActiveSubmittedQuery, vm.selectedType.hasFilters {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    isFiltersSheetPresented = true
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                }
-                .foregroundStyle(IbiliTheme.accent)
-            }
-        }
-    }
 }

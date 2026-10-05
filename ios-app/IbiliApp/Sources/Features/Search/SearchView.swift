@@ -74,7 +74,7 @@ struct SearchView: View {
     private var content: some View {
         if showsResultsContent {
             VStack(spacing: 0) {
-                SearchTypeBar(vm: vm)
+                SearchTypeBar(vm: vm, onShowFilters: { isFiltersSheetPresented = true })
                 Divider().opacity(0.4)
                 SearchResultsView(vm: vm)
             }
@@ -102,15 +102,6 @@ struct SearchView: View {
                 .foregroundStyle(IbiliTheme.textSecondary)
                 .accessibilityLabel("清空搜索")
 
-                if vm.selectedType.hasFilters {
-                    Button {
-                        isFiltersSheetPresented = true
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                    }
-                    .foregroundStyle(IbiliTheme.accent)
-                    .accessibilityLabel("筛选")
-                }
             }
         }
     }

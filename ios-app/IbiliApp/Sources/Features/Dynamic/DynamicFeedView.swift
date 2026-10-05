@@ -868,66 +868,6 @@ private struct DynamicLiveTile: View {
     }
 }
 
-private struct DynamicVideoTile: View {
-    let video: DynamicVideoDTO
-    let contentWidth: CGFloat
-    var isLive: Bool = false
-
-    var body: some View {
-        let h = max(1, contentWidth * 9 / 16)
-        ZStack(alignment: .bottomLeading) {
-            RemoteImage(url: video.cover,
-                        contentMode: .fill,
-                        targetPointSize: CGSize(width: contentWidth, height: h),
-                        quality: 80)
-                .frame(width: contentWidth, height: h)
-                .clipped()
-            LinearGradient(
-                colors: [.black.opacity(0.0), .black.opacity(0.55)],
-                startPoint: .center, endPoint: .bottom
-            )
-            .frame(width: contentWidth, height: h)
-            .allowsHitTesting(false)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(video.title)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                HStack(spacing: 8) {
-                    if !video.statLabel.isEmpty {
-                        Text(video.statLabel)
-                    }
-                    Spacer(minLength: 0)
-                    if !video.durationLabel.isEmpty {
-                        Text(video.durationLabel)
-                            .padding(.horizontal, 5).padding(.vertical, 1.5)
-                            .background(Capsule().fill(.black.opacity(0.5)))
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.85))
-            }
-            .padding(10)
-            .frame(width: contentWidth, alignment: .leading)
-            // Top-left LIVE badge for live-room rcmd cards.
-            if isLive {
-                HStack {
-                    Text("LIVE")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(IbiliTheme.accent))
-                    Spacer(minLength: 0)
-                }
-                .padding(8)
-                .frame(width: contentWidth, height: h, alignment: .topLeading)
-            }
-        }
-        .frame(width: contentWidth, height: h)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-}
-
 private struct ArticleBanner: View {
     let article: DynamicArticleDTO
     let contentWidth: CGFloat

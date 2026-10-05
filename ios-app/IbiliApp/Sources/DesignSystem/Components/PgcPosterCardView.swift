@@ -41,8 +41,7 @@ struct PgcPosterCardView: View {
     let cardWidth: CGFloat
     let imageQuality: Int?
     var style: Style = .detailed
-
-    private let cardCornerRadius: CGFloat = 10
+    var cornerRadius: CGFloat = 10
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -92,7 +91,7 @@ struct PgcPosterCardView: View {
         .padding(8)
         .frame(width: cardWidth, alignment: .topLeading)
         .background(IbiliTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
     private var poster: some View {

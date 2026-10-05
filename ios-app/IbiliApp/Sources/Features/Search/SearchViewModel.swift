@@ -60,6 +60,24 @@ final class SearchViewModel: ObservableObject {
         hasSubmittedQuery && !submittedQuery.isEmpty
     }
 
+    var filterSelection: SearchFilterSelection {
+        .init(category: selectedCategory, order: order, duration: durationFilter,
+              userOrder: userOrder, userKind: userKind, articleOrder: articleOrder, articleZone: articleZone)
+    }
+
+    @discardableResult
+    func applyFilters(_ selection: SearchFilterSelection) -> Bool {
+        guard hasActiveSubmittedQuery else { return false }
+        selectedCategory = selection.category
+        order = selection.order
+        durationFilter = selection.duration
+        userOrder = selection.userOrder
+        userKind = selection.userKind
+        articleOrder = selection.articleOrder
+        articleZone = selection.articleZone
+        return resubmitSubmittedQuery()
+    }
+
     private let client: CoreClient
     private let automaticallyLoads: Bool
     private var suppressTypeAutoRefresh = false

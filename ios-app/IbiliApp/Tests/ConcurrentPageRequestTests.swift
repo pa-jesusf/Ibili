@@ -3,6 +3,78 @@ import XCTest
 
 @MainActor
 final class ConcurrentPageRequestTests: XCTestCase {
+    func testFilterDraftIsLocalAndApplyRestartsSubmittedQueryWithVideoParameters() async throws {
+        let category = SearchCategories.all.first { $0.id == "tech" }!
+        let core = CoreClient { method, args in
+            XCTAssertEqual(method, "search.video")
+            let json = try JSONSerialization.jsonObject(with: Data(args.utf8)) as! [String: Any]
+            let applying = json["order"] as? String == "click"
+            XCTAssertEqual(json["keyword"] as? String, "original query")
+            if applying {
+                XCTAssertEqual(json["page"] as? Int, 1)
+                XCTAssertEqual(json["duration"] as? Int, 4)
+                XCTAssertEqual(json["tids"] as? Int, 188)
+            }
+            return "{\"ok\":true,\"data\":{\"items\":[{\"aid\":\(applying ? 99 : (json["page"] as? Int ?? 0))}],\"num_results\":60,\"num_pages\":3}}"
+        }
+        let model = SearchViewModel(client: core)
+        model.submit(query: "original query")
+        await settle { model.page == 1 && !model.isLoading }
+        model.loadPage(2)
+        await settle { model.page == 2 && !model.isLoading }
+        var draft = model.filterSelection
+        draft.order = .click
+        draft.duration = .over60
+        draft.category = category
+        XCTAssertEqual(model.filterSelection, SearchFilterSelection(), "canceling a draft must leave live filters alone")
+        XCTAssertEqual(model.page, 2)
+        model.query = "unsubmitted editing text"
+        XCTAssertTrue(model.applyFilters(draft))
+        await settle { model.results.first?.id == "video-99" && !model.isLoading }
+        XCTAssertEqual(model.page, 1)
+        XCTAssertEqual(model.submittedQuery, "original query")
+        XCTAssertEqual(model.filterSelection, draft)
+    }
+
+    func testApplyingUserAndArticleFiltersKeepsTheirSearchTypeAndParameters() async throws {
+        for type in [SearchResultType.user, .article] {
+            let core = CoreClient { method, args in
+                let json = try JSONSerialization.jsonObject(with: Data(args.utf8)) as! [String: Any]
+                switch method {
+                case "search.video":
+                    return #"{"ok":true,"data":{"items":[],"num_results":0,"num_pages":1}}"#
+                case "search.user":
+                    if json["order"] as? String == "fans" {
+                        XCTAssertEqual(json["order_sort"] as? Int, 1)
+                        XCTAssertEqual(json["user_type"] as? Int, 1)
+                    }
+                case "search.article":
+                    if json["order"] as? String == "pubdate" {
+                        XCTAssertEqual(json["category_id"] as? Int, 17)
+                    }
+                default:
+                    XCTFail("unexpected search method: \(method)")
+                }
+                let filtered = json["order"] as? String == (type == .user ? "fans" : "pubdate")
+                return "{\"ok\":true,\"data\":{\"items\":[],\"num_results\":\(filtered ? 99 : 0),\"num_pages\":1}}"
+            }
+            let model = SearchViewModel(client: core)
+            model.submit(query: "query")
+            await settle { model.page == 1 && !model.isLoading }
+            model.selectedType = type
+            await settle { model.page == 1 && !model.isLoading }
+            var draft = model.filterSelection
+            draft.userOrder = .fansAsc
+            draft.userKind = .up
+            draft.articleOrder = .pubdate
+            draft.articleZone = .tech
+            XCTAssertTrue(model.applyFilters(draft))
+            await settle { model.totalResults == 99 && !model.isLoading }
+            XCTAssertEqual(model.selectedType, type)
+            XCTAssertEqual(model.submittedQuery, "query")
+        }
+    }
+
     func testOldSearchCannotOverwriteNewFiltersOrLoadingState() async throws {
         let entered = expectation(description: "old search entered")
         let finished = expectation(description: "old search returned")
