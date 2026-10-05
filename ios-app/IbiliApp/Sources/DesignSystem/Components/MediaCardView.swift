@@ -27,14 +27,16 @@ struct MediaCardView: View {
 
     var body: some View {
         MediaCardSurface(model: model, width: width)
+            .allowsHitTesting(false)
             .frame(width: width, height: MediaCardContentView.preferredHeight(width: width, model: model))
+            .contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
             .accessibilityLabel([model.title, model.author].filter { !$0.isEmpty }.joined(separator: "，"))
     }
 }
 
 /// The same native presentation used by home collection cells. SwiftUI owns
-/// the surrounding navigation button and overflow menu, so this is visual only.
+/// navigation and the overflow menu, so the native surface is visual only.
 private struct MediaCardSurface: UIViewRepresentable {
     let model: MediaCardRenderModel
     let width: CGFloat

@@ -69,6 +69,7 @@ struct SearchResultsView: View {
                 footer: { AnyView(searchPaginationBar.padding(.horizontal, hPad).padding(.bottom, 20)) },
                 scrollToTopSignal: scrollToTopSignal,
                 prefetchThreshold: 8,
+                onOpen: openResult,
                 onPrefetch: { items, width in
                     prefetchCovers(items, cardWidth: width)
                 },
@@ -92,7 +93,7 @@ struct SearchResultsView: View {
                 contentVersion: AnyHashable(MediaCardAppearance(imageQuality: settings.resolvedImageQuality(),
                                                                 meta: settings.searchCardMeta))
             ) { item, width in
-                AnyView(resultButton(for: item, cardWidth: width))
+                AnyView(resultCard(for: item, cardWidth: width))
             }
             .ignoresSafeArea(.container, edges: .bottom)
             .modifier(ProMotionScrollHint())
@@ -165,28 +166,18 @@ struct SearchResultsView: View {
     }
 
     @ViewBuilder
-    private func resultButton(for item: SearchResultItem, cardWidth: CGFloat) -> some View {
+    private func resultCard(for item: SearchResultItem, cardWidth: CGFloat) -> some View {
         switch item {
         case .video(let video):
             ZStack(alignment: .bottomTrailing) {
-                Button {
-                    let item = feedItem(from: video)
-                    if isInPlayerHostNavigation {
-                        router.open(item)
-                    } else if prefersSplitRootSelection {
-                        router.select(item)
-                    } else {
-                        rootNavigation.openPlayer(item)
-                    }
-                } label: {
-                    SearchResultCardView(
-                        item: video,
-                        cardWidth: cardWidth,
-                        imageQuality: settings.resolvedImageQuality(),
-                        meta: settings.searchCardMeta
-                    )
-                }
-                .buttonStyle(.plain)
+                SearchResultCardView(
+                    item: video,
+                    cardWidth: cardWidth,
+                    imageQuality: settings.resolvedImageQuality(),
+                    meta: settings.searchCardMeta
+                )
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { openResult(item) }
 
                 VideoCardOverflowMenu(
                     bvid: video.bvid,
@@ -208,65 +199,76 @@ struct SearchResultsView: View {
             }
             .frame(width: cardWidth, alignment: .topLeading)
         case .live(let live):
-            Button {
-                if isInPlayerHostNavigation {
-                    router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
-                } else if prefersSplitRootSelection {
-                    router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
-                } else {
-                    rootNavigation.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
-                }
-            } label: {
-                SearchLiveResultCardView(
-                    item: live,
-                    cardWidth: cardWidth,
-                    imageQuality: settings.resolvedImageQuality()
-                )
-            }
-            .buttonStyle(.plain)
+            SearchLiveResultCardView(
+                item: live,
+                cardWidth: cardWidth,
+                imageQuality: settings.resolvedImageQuality()
+            )
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { openResult(item) }
         case .user(let user):
-            Button {
-                openUserSpace(mid: user.mid)
-            } label: {
-                SearchUserResultCardView(item: user, cardWidth: cardWidth)
-            }
-            .buttonStyle(.plain)
+            SearchUserResultCardView(item: user, cardWidth: cardWidth)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { openResult(item) }
         case .article(let article):
-            Button {
-                if isInPlayerHostNavigation {
-                    router.openArticle(id: String(article.id), kind: "read")
-                } else if prefersSplitRootSelection {
-                    router.selectArticle(id: String(article.id), kind: "read")
-                } else {
-                    rootNavigation.openArticle(id: String(article.id), kind: "read")
-                }
-            } label: {
-                SearchArticleResultCardView(
-                    item: article,
+            SearchArticleResultCardView(
+                item: article,
+                cardWidth: cardWidth,
+                imageQuality: settings.resolvedImageQuality()
+            )
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { openResult(item) }
+        case .pgc(let pgc):
+            ZStack {
+                SearchPgcResultCardView(
+                    item: pgc,
                     cardWidth: cardWidth,
                     imageQuality: settings.resolvedImageQuality()
                 )
-            }
-            .buttonStyle(.plain)
-        case .pgc(let pgc):
-            Button {
-                openPgc(pgc)
-            } label: {
-                ZStack {
-                    SearchPgcResultCardView(
-                        item: pgc,
-                        cardWidth: cardWidth,
-                        imageQuality: settings.resolvedImageQuality()
-                    )
-                    if resolvingPgcSeasonID == pgc.seasonID {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(.black.opacity(0.18))
-                        ProgressView().tint(.white)
-                    }
+                if resolvingPgcSeasonID == pgc.seasonID {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(.black.opacity(0.18))
+                    ProgressView().tint(.white)
                 }
             }
-            .buttonStyle(.plain)
-            .disabled(resolvingPgcSeasonID == pgc.seasonID)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { openResult(item) }
+        }
+    }
+
+    private func openResult(_ result: SearchResultItem) {
+        switch result {
+        case .video(let video):
+            let item = feedItem(from: video)
+            if isInPlayerHostNavigation {
+                router.open(item)
+            } else if prefersSplitRootSelection {
+                router.select(item)
+            } else {
+                rootNavigation.openPlayer(item)
+            }
+        case .live(let live):
+            if isInPlayerHostNavigation {
+                router.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
+            } else if prefersSplitRootSelection {
+                router.selectLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
+            } else {
+                rootNavigation.openLive(roomID: live.roomID, title: live.title, cover: live.cover, anchorName: live.uname)
+            }
+        case .user(let user):
+            openUserSpace(mid: user.mid)
+        case .article(let article):
+            if isInPlayerHostNavigation {
+                router.openArticle(id: String(article.id), kind: "read")
+            } else if prefersSplitRootSelection {
+                router.selectArticle(id: String(article.id), kind: "read")
+            } else {
+                rootNavigation.openArticle(id: String(article.id), kind: "read")
+            }
+        case .pgc(let pgc):
+            openPgc(pgc)
         }
     }
 
