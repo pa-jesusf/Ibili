@@ -80,10 +80,11 @@ enum ExtendedCoverBackdrop {
         let bounds = configuration.bounds
         let base = CIImage(color: CIColor(red: configuration.red, green: configuration.green,
                                           blue: configuration.blue)).cropped(to: bounds)
-        var samples: [(color: CIColor, frame: CGRect, area: CGFloat)] = []
+        var samples: [(color: CIColor, image: CIImage, frame: CGRect, area: CGFloat)] = []
         for source in artwork {
             let visible = source.frame
-            guard visible.width > 0, visible.height > 0, !visible.isNull, !visible.isInfinite else { continue }
+            guard visible.width > 0, visible.height > 0, !visible.isNull, !visible.isInfinite,
+                  visible.minX.isFinite, visible.minY.isFinite else { continue }
             let frame = CGRect(x: visible.minX * configuration.scale,
                                y: bounds.height - visible.maxY * configuration.scale,
                                width: visible.width * configuration.scale, height: visible.height * configuration.scale)
@@ -95,7 +96,13 @@ enum ExtendedCoverBackdrop {
             let crop = CGRect(x: original.extent.midX - width / 2, y: original.extent.midY - height / 2,
                               width: width, height: height)
             guard let color = averageColor(original, extent: crop) else { continue }
-            samples.append((color, frame, frame.width * frame.height * color.alpha))
+            let scale = frame.width / crop.width
+            let fitted = original.cropped(to: crop)
+                .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                .transformed(by: CGAffineTransform(translationX: frame.minX - crop.minX * scale,
+                                                   y: frame.minY - crop.minY * scale))
+                .cropped(to: frame)
+            samples.append((color, fitted, frame, frame.width * frame.height * color.alpha))
         }
         guard !samples.isEmpty else { return nil }
         let light = configuration.red * 0.2126 + configuration.green * 0.7152 + configuration.blue * 0.0722 > 0.5
@@ -127,25 +134,38 @@ enum ExtendedCoverBackdrop {
                   let output = tinted(base, color: palette(sample.color), mask: mask) else { return nil }
             composed = output
         } else {
-            // The whole exposed surface gets the artwork palette. Local-only
-            // blur is hidden by the foreground image and leaves headings gray.
             let area = samples.reduce(CGFloat.zero) { $0 + $1.area }
             let average = CIColor(red: samples.reduce(0) { $0 + $1.color.red * $1.area } / area,
                                   green: samples.reduce(0) { $0 + $1.color.green * $1.area } / area,
                                   blue: samples.reduce(0) { $0 + $1.color.blue * $1.area } / area)
-            guard var output = tinted(base, color: palette(average),
-                                      mask: CIImage(color: CIColor(red: 0.38, green: 0.38, blue: 0.38))) else { return nil }
+            var canvas = CIImage(color: average).cropped(to: bounds)
+            var footprint = CGRect.null
+            var fade = CIImage(color: .black).cropped(to: bounds)
             for sample in samples {
-                let glow = CIFilter.radialGradient()
-                glow.center = CGPoint(x: sample.frame.midX, y: sample.frame.midY)
-                glow.radius0 = 0
-                glow.radius1 = Float(max(max(sample.frame.width, sample.frame.height) * 1.2, bounds.width * 0.7))
-                glow.color0 = CIColor(red: 0.28, green: 0.28, blue: 0.28)
-                glow.color1 = .black
-                guard let mask = glow.outputImage,
-                      let next = tinted(output, color: palette(sample.color), mask: mask) else { return nil }
-                output = next
+                canvas = sample.image.composited(over: canvas)
+                footprint = footprint.union(sample.frame)
+                fade = surfaceFade(around: sample.frame, in: bounds)
+                    .applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: fade])
             }
+            // Extend the actual image layout, then blur the whole canvas once.
+            // Its spatial colors survive without separate blur bands or sharp
+            // copies outside the foreground pictures.
+            let blur = CIFilter.gaussianBlur()
+            // Fractional crop edges let clamp sample transparency and create a
+            // dark rim. Extend from complete pixels in the opaque canvas.
+            blur.inputImage = canvas.cropped(to: footprint.intersection(bounds).integral).clampedToExtent()
+            blur.radius = 42
+            guard let blurred = blur.outputImage else { return nil }
+            let tone = CIFilter.colorMatrix()
+            tone.inputImage = blurred
+            let gain: CGFloat = light ? 0.25 : 0.36
+            let floor: CGFloat = light ? 0.70 : 0.04
+            tone.rVector = CIVector(x: gain, y: 0, z: 0, w: 0)
+            tone.gVector = CIVector(x: 0, y: gain, z: 0, w: 0)
+            tone.bVector = CIVector(x: 0, y: 0, z: gain, w: 0)
+            tone.biasVector = CIVector(x: floor, y: floor, z: floor, w: 0)
+            guard let color = tone.outputImage,
+                  let output = tinted(base, color: color, mask: fade) else { return nil }
             composed = output
         }
         let dither = CIFilter.dither()
@@ -156,6 +176,19 @@ enum ExtendedCoverBackdrop {
         // translucent. The original image keeps its own alpha in the foreground.
         return context.createCGImage(output.composited(over: base), from: bounds, format: .RGBA8,
                                      colorSpace: CGColorSpace(name: CGColorSpace.sRGB), deferred: false)
+    }
+
+    private static func surfaceFade(around frame: CGRect, in bounds: CGRect) -> CIImage {
+        // Like the home card's extension, retain some artwork color throughout
+        // the panel. Side edges don't need a vignette around the image.
+        let below = gradient(from: CGPoint(x: 0, y: bounds.minY),
+                             to: CGPoint(x: 0, y: max(bounds.minY + 1, frame.minY)),
+                             amount: 1, startAmount: 0.22)
+        let above = gradient(from: CGPoint(x: 0, y: bounds.maxY),
+                             to: CGPoint(x: 0, y: min(bounds.maxY - 1, frame.maxY)),
+                             amount: 1, startAmount: 0.22)
+        return below.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: above])
+            .cropped(to: bounds)
     }
 
     private static func averageColor(_ image: CIImage, extent: CGRect) -> CIColor? {
@@ -227,11 +260,11 @@ enum ExtendedCoverBackdrop {
         gradient(from: CGPoint(x: 0, y: top), to: CGPoint(x: 0, y: bottom), amount: amount)
     }
 
-    private static func gradient(from start: CGPoint, to end: CGPoint, amount: CGFloat) -> CIImage {
+    private static func gradient(from start: CGPoint, to end: CGPoint, amount: CGFloat, startAmount: CGFloat = 0) -> CIImage {
         let filter = CIFilter.smoothLinearGradient()
         filter.point0 = start
         filter.point1 = end
-        filter.color0 = CIColor(red: 0, green: 0, blue: 0)
+        filter.color0 = CIColor(red: startAmount, green: startAmount, blue: startAmount)
         filter.color1 = CIColor(red: amount, green: amount, blue: amount)
         return filter.outputImage!
     }

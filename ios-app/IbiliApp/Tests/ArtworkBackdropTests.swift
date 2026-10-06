@@ -114,19 +114,57 @@ final class ArtworkBackdropTests: XCTestCase {
         }
     }
 
-    func testDynamicPaletteReachesExposedHeadingAndActions() throws {
+    func testDynamicArtworkKeepsSoftTintWhileFadingAwayFromImages() throws {
         let cover = try image { _, _ in (160, 125, 70) }
         let config = configuration(width: 371, height: 403, style: .ambient, background: 0.11)
         let output = try XCTUnwrap(ExtendedCoverBackdrop.renderSurface([
             .init(image: cover, frame: CGRect(x: 21, y: 161, width: 328, height: 184)),
         ], configuration: config))
-        // These points are outside the image, in the exposed header/text/buttons.
-        // A local blur hidden under the cover would leave them plain gray.
-        for y in [35, 70, 95, 125, 370] {
-            let color = try pixel(output, x: Int(40 * config.scale), y: Int(CGFloat(y) * config.scale))
-            XCTAssertGreaterThan(Int(color[0]), 40)
-            XCTAssertGreaterThan(Int(color[0]) - Int(color[2]), 8)
-            XCTAssertGreaterThan(1.05 / (relativeLuminance(color) + 0.05), 4.5)
+        let center = output.width / 2
+        // The exposed heading gradually gains the image's color as it approaches
+        // the photo; a uniformly sampled card would fail this comparison.
+        let heading = try [0, 20, 50, 80, 110, 140, 155].map { y in
+            try pixel(output, x: center, y: Int(CGFloat(y) * config.scale))
+        }
+        for (farther, nearer) in zip(heading, heading.dropFirst()) {
+            XCTAssertLessThanOrEqual(Int(farther[0]), Int(nearer[0]) + 2)
+        }
+        XCTAssertGreaterThan(Int(heading.last![0]) - Int(heading.first![0]), 18)
+        XCTAssertGreaterThan(Int(heading.last![0]) - Int(heading.last![2]), 10)
+        for (x, y) in [(0, output.height / 2), (output.width - 1, output.height / 2),
+                       (center, 0), (center, output.height - 1)] {
+            let edge = try pixel(output, x: x, y: y)
+            XCTAssertGreaterThan(edge[0], 30, "outside edges retain the artwork tint instead of turning black")
+            XCTAssertGreaterThan(Int(edge[0]) - Int(edge[2]), 2)
+            XCTAssertEqual(edge[3], 255)
+        }
+        let middle = try pixel(output, x: center, y: output.height / 2)
+        for x in [0, output.width - 1] {
+            let side = try pixel(output, x: x, y: output.height / 2)
+            XCTAssertEqual(Int(side[0]), Int(middle[0]), accuracy: 2, "no extra dark rim along the side edges")
+        }
+        for color in heading { XCTAssertGreaterThan(1.05 / (relativeLuminance(color) + 0.05), 4.5) }
+        let actions = try pixel(output, x: center, y: Int(365 * config.scale))
+        XCTAssertGreaterThan(Int(actions[0]) - Int(actions[2]), 5, "the transition also reaches below the photo")
+    }
+
+    func testDynamicArtworkKeepsSpatialColorsInsteadOfOneAverage() throws {
+        let cover = try image(width: 320, height: 180) { x, _ in x < 160 ? (255, 0, 0) : (0, 0, 255) }
+        for background: CGFloat in [0, 1] {
+            let config = configuration(width: 360, height: 350, style: .ambient, background: background)
+            let output = try XCTUnwrap(ExtendedCoverBackdrop.renderSurface([
+                .init(image: cover, frame: CGRect(x: 20, y: 100, width: 320, height: 180)),
+            ], configuration: config))
+            let left = try pixel(output, x: Int(70 * config.scale), y: Int(85 * config.scale))
+            let right = try pixel(output, x: Int(290 * config.scale), y: Int(85 * config.scale))
+            XCTAssertGreaterThan(Int(left[0]) - Int(left[2]), 12)
+            XCTAssertGreaterThan(Int(right[2]) - Int(right[0]), 12)
+            for color in [left, right] {
+                let luminance = relativeLuminance(color)
+                let contrast = background == 0 ? 1.05 / (luminance + 0.05) : (luminance + 0.05) / 0.05
+                XCTAssertGreaterThan(contrast, 4.5)
+                XCTAssertEqual(color[3], 255)
+            }
         }
     }
 

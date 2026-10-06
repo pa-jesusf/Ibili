@@ -286,7 +286,7 @@ struct UserSpaceView: View {
             return .list(
                 horizontalInset: 12,
                 bottomInset: 32,
-                spacing: 4,
+                spacing: 0,
                 estimatedHeight: 112
             )
         case .dynamics:
