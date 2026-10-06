@@ -28,6 +28,7 @@ struct RelatedVideoList: View {
                 spacing: 0,
                 estimatedHeight: 112
             ),
+            roundsContentEdges: true,
             footer: footer,
             scrollToTopSignal: scrollToTopSignal,
             prefetchThreshold: 4,

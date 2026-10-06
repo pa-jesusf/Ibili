@@ -76,6 +76,7 @@ struct UserSpaceView: View {
             VirtualizedCollectionSurface(
                 items: [UserSpaceCollectionItem](),
                 layout: collectionLayout(containerSize: proxy.size),
+                roundsContentEdges: tab == .archives,
                 dataVersion: tab == .archives ? vm.archivesVersion : vm.dynamicsVersion,
                 itemsProvider: { collectionItems },
                 header: { AnyView(collectionHeader) },

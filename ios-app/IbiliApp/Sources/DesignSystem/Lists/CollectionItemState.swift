@@ -10,7 +10,8 @@ struct CollectionItemState<Item: Identifiable & Hashable> {
     private(set) var orderedIDs: [Item.ID] = []
     private(set) var itemByID: [Item.ID: Item] = [:]
 
-    mutating func update(_ incoming: @autoclosure () -> [Item], version: AnyHashable? = nil) -> (structure: Bool, changed: [Item.ID]) {
+    mutating func update(_ incoming: @autoclosure () -> [Item], version: AnyHashable? = nil,
+                         reconfigureEdges: Bool = false) -> (structure: Bool, changed: [Item.ID]) {
         if initialized, version != nil, version == self.version { return (false, []) }
         let items = incoming()
         let sameStorage = source.withUnsafeBufferPointer { old in
@@ -29,6 +30,11 @@ struct CollectionItemState<Item: Identifiable & Hashable> {
             if itemByID[item.id] != item { changed.append(item.id) }
         }
         let structure = !initialized || orderedIDs != ids
+        if reconfigureEdges, structure {
+            // Queued snapshots can replace intermediate updates. Reconfigure
+            // all surviving rows so no previous first/last keeps stale corners.
+            changed = ids
+        }
         initialized = true
         orderedIDs = ids
         itemByID = next

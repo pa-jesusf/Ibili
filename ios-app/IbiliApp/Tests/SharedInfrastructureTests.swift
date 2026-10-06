@@ -21,6 +21,51 @@ final class SharedInfrastructureTests: XCTestCase {
         XCTAssertEqual(state.orderedIDs, [2, 1])
     }
 
+    func testCollectionOuterEdgesFollowDeduplicatedOrderAcrossPagingAndRemoval() {
+        var state = CollectionItemState<Row>()
+        let rows = (1...4).map { Row(id: $0, text: "row-\($0)") }
+        _ = state.update(Array(rows.prefix(2)), reconfigureEdges: true)
+        let duplicate = state.update([rows[0], rows[1], rows[0]], reconfigureEdges: true)
+        XCTAssertFalse(duplicate.structure)
+        XCTAssertTrue(duplicate.changed.isEmpty)
+        XCTAssertEqual(state.orderedIDs, [1, 2])
+
+        let appended = state.update([rows[0], rows[1], rows[2], rows[1]], reconfigureEdges: true)
+        XCTAssertEqual(state.orderedIDs, [1, 2, 3])
+        XCTAssertTrue(Set([2, 3]).isSubset(of: Set(appended.changed)), "old last row must lose bottom corners")
+        let prepended = state.update([rows[3], rows[0], rows[1], rows[2]], reconfigureEdges: true)
+        XCTAssertTrue(Set([1, 4]).isSubset(of: Set(prepended.changed)), "old first row must lose top corners")
+        let trimmed = state.update(Array(rows.prefix(2)), reconfigureEdges: true)
+        XCTAssertEqual(Set(trimmed.changed), [1, 2])
+        let single = state.update([rows[1]], reconfigureEdges: true)
+        XCTAssertEqual(state.orderedIDs, [2])
+        XCTAssertEqual(single.changed, [2], "the surviving row must gain all four corners")
+        let empty = state.update([], reconfigureEdges: true)
+        XCTAssertTrue(state.orderedIDs.isEmpty)
+        XCTAssertTrue(empty.changed.isEmpty)
+    }
+
+    func testCollectionEdgeStyleKeepsUnchangedVersionFastPath() {
+        var state = CollectionItemState<Row>()
+        _ = state.update([Row(id: 1, text: "a")], version: 1, reconfigureEdges: true)
+        func forbidden() -> [Row] { XCTFail("unchanged revision evaluated rows"); return [] }
+        let delta = state.update(forbidden(), version: 1, reconfigureEdges: true)
+        XCTAssertFalse(delta.structure)
+        XCTAssertTrue(delta.changed.isEmpty)
+    }
+
+    func testCoalescedCollectionUpdatesKeepPreviousEdgeInvalidations() {
+        var state = CollectionItemState<Row>()
+        let rows = (1...5).map { Row(id: $0, text: "row-\($0)") }
+        _ = state.update(Array(rows.prefix(2)), reconfigureEdges: true)
+        _ = state.update(Array(rows.prefix(3)), reconfigureEdges: true)
+        _ = state.update(Array(rows.prefix(4)), reconfigureEdges: true)
+        let latest = state.update(rows, reconfigureEdges: true)
+        // If intermediate pending snapshots are replaced, former edge rows
+        // still need to lose their corners in the final committed snapshot.
+        XCTAssertTrue(Set([2, 3, 4]).isSubset(of: Set(latest.changed)))
+    }
+
     func testImageDiskIndexAccountsOverwriteClearAndRestartWithoutRescanning() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

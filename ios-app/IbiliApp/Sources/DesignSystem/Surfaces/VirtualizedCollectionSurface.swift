@@ -86,6 +86,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
 
     let items: [Item]
     let layout: VirtualizedCollectionLayout
+    var roundsContentEdges = false
     var dataVersion: AnyHashable? = nil
     var itemsProvider: (() -> [Item])? = nil
     var header: (() -> AnyView)? = nil
@@ -122,6 +123,7 @@ struct VirtualizedCollectionSurface<Item: Identifiable & Hashable>: UIViewContro
         controller.update(
             items: items,
             layout: layout,
+            roundsContentEdges: roundsContentEdges,
             dataVersion: dataVersion,
             itemsProvider: itemsProvider,
             header: header,
@@ -181,6 +183,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     private var orderedIDs: [Item.ID] { itemState.orderedIDs }
     private var itemByID: [Item.ID: Item] { itemState.itemByID }
     private var layoutConfiguration = VirtualizedCollectionLayout.list()
+    private var roundsContentEdges = false
     private var hasHeader = false
     private var hasFooter = false
     private var headerProvider: (() -> AnyView)?
@@ -285,6 +288,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     func update(
         items: [Item],
         layout: VirtualizedCollectionLayout,
+        roundsContentEdges: Bool = false,
         dataVersion: AnyHashable? = nil,
         itemsProvider: (() -> [Item])? = nil,
         header: (() -> AnyView)?,
@@ -317,7 +321,10 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
     ) {
         loadViewIfNeeded()
         configurationRevision &+= 1
-        let delta = itemState.update(itemsProvider?() ?? items, version: dataVersion)
+        let delta = itemState.update(itemsProvider?() ?? items, version: dataVersion,
+                                     reconfigureEdges: roundsContentEdges)
+        let edgeStyleChanged = self.roundsContentEdges != roundsContentEdges
+        self.roundsContentEdges = roundsContentEdges
         let nextHeader = header != nil
         let nextFooter = footer != nil
         let shouldReconfigureHeader = nextHeader && (
@@ -361,7 +368,7 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
 
         let contentChanged = self.contentVersion != contentVersion
         self.contentVersion = contentVersion
-        let changedIDs = layoutChanged || contentChanged
+        let changedIDs = layoutChanged || contentChanged || edgeStyleChanged
             ? orderedIDs
             : delta.changed
         updateRefreshControlAttachment(showsRefresh: showsRefresh, hasContent: !orderedIDs.isEmpty)
@@ -483,7 +490,10 @@ final class VirtualizedCollectionViewController<Item: Identifiable & Hashable>: 
             hosted = footerProvider?() ?? AnyView(EmptyView())
         case .item(let id):
             guard let item = itemByID[id] else { return }
-            hosted = contentProvider(item, itemWidth(at: indexPath))
+            let row = contentProvider(item, itemWidth(at: indexPath))
+            hosted = roundsContentEdges
+                ? AnyView(row.groupedListRow(isFirst: id == orderedIDs.first, isLast: id == orderedIDs.last))
+                : row
         }
         cell.contentConfiguration = UIHostingConfiguration {
             hosted
