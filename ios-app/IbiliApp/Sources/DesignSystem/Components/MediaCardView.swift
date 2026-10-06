@@ -99,6 +99,7 @@ struct MediaRowView: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 4)
+        .artworkCardSurface(style: .trailing)
         .contentShape(Rectangle())
     }
 
@@ -112,6 +113,8 @@ struct MediaRowView: View {
             )
             .frame(width: coverSize.width, height: coverSize.height)
             .clipped()
+            .cardArtwork(url: model.cover, size: CGSize(width: coverSize.width * 2, height: coverSize.height * 2),
+                         quality: model.imageQuality ?? 75)
             .overlay(alignment: .bottom) {
                 if progress > 0.001 {
                     GeometryReader { geo in

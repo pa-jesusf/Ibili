@@ -20,6 +20,31 @@ enum ExtendedCoverBackdrop {
         var cacheKey: String { "\(panelAspectRatio)-\(titleInsetRatio)-\(red)-\(green)-\(blue)" }
     }
 
+    enum SurfaceStyle: Hashable {
+        case ambient, trailing
+    }
+
+    struct SurfaceConfiguration: Hashable {
+        let width: CGFloat
+        let height: CGFloat
+        let style: SurfaceStyle
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+
+        var scale: CGFloat { min(CGFloat(pixelWidth) / width, 768 / height) }
+        var bounds: CGRect {
+            CGRect(x: 0, y: 0, width: ceil(width * scale), height: ceil(height * scale))
+        }
+        var cacheKey: String { "\(width)-\(height)-\(style)-\(red)-\(green)-\(blue)" }
+    }
+
+    struct Artwork {
+        let image: CGImage
+        /// Actual visible image frame, with the card's top-left as origin.
+        let frame: CGRect
+    }
+
     private static let context = CIContext(options: [.cacheIntermediates: false, .workingFormat: CIFormat.RGBAh,
         .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
     private static let cache: NSCache<NSString, Bitmap> = {
@@ -39,6 +64,114 @@ enum ExtendedCoverBackdrop {
         guard let image = render(source, configuration: configuration) else { return nil }
         cache.setObject(Bitmap(image), forKey: key, cost: image.bytesPerRow * image.height)
         return image
+    }
+
+    static func surface(for artwork: [Artwork], cacheKey: String, configuration: SurfaceConfiguration) -> CGImage? {
+        let key = "surface#\(cacheKey)#\(configuration.cacheKey)" as NSString
+        if let bitmap = cache.object(forKey: key) { return bitmap.image }
+        guard let image = renderSurface(artwork, configuration: configuration) else { return nil }
+        cache.setObject(Bitmap(image), forKey: key, cost: image.bytesPerRow * image.height)
+        return image
+    }
+
+    static func renderSurface(_ artwork: [Artwork], configuration: SurfaceConfiguration) -> CGImage? {
+        guard configuration.width.isFinite, configuration.height.isFinite,
+              configuration.width > 0, configuration.height > 0, !artwork.isEmpty else { return nil }
+        let bounds = configuration.bounds
+        let base = CIImage(color: CIColor(red: configuration.red, green: configuration.green,
+                                          blue: configuration.blue)).cropped(to: bounds)
+        var samples: [(color: CIColor, frame: CGRect, area: CGFloat)] = []
+        for source in artwork {
+            let visible = source.frame
+            guard visible.width > 0, visible.height > 0, !visible.isNull, !visible.isInfinite else { continue }
+            let frame = CGRect(x: visible.minX * configuration.scale,
+                               y: bounds.height - visible.maxY * configuration.scale,
+                               width: visible.width * configuration.scale, height: visible.height * configuration.scale)
+            let original = CIImage(cgImage: source.image)
+            // Sample the same centered aspect-fill crop that is visible in the
+            // foreground. Hidden edges must not decide a square tile's colors.
+            let width = min(original.extent.width, original.extent.height * visible.width / visible.height)
+            let height = min(original.extent.height, original.extent.width * visible.height / visible.width)
+            let crop = CGRect(x: original.extent.midX - width / 2, y: original.extent.midY - height / 2,
+                              width: width, height: height)
+            guard let color = averageColor(original, extent: crop) else { continue }
+            samples.append((color, frame, frame.width * frame.height * color.alpha))
+        }
+        guard !samples.isEmpty else { return nil }
+        let light = configuration.red * 0.2126 + configuration.green * 0.7152 + configuration.blue * 0.0722 > 0.5
+        func palette(_ color: CIColor) -> CIImage {
+            // Bound luminance so primary text keeps its contrast in either theme.
+            let maximum = max(color.red, color.green, color.blue, 0.001)
+            let floor: CGFloat = light ? 0.64 : 0.08
+            let range: CGFloat = light ? 0.26 : 0.32
+            return CIImage(color: CIColor(red: floor + range * color.red / maximum,
+                                         green: floor + range * color.green / maximum,
+                                         blue: floor + range * color.blue / maximum))
+        }
+        func tinted(_ background: CIImage, color: CIImage, mask: CIImage) -> CIImage? {
+            let blend = CIFilter.blendWithMask()
+            blend.inputImage = color
+            blend.backgroundImage = background
+            blend.maskImage = mask
+            return blend.outputImage?.cropped(to: bounds)
+        }
+        let composed: CIImage
+        if configuration.style == .trailing {
+            let sample = samples[0]
+            let fade = CIFilter.smoothLinearGradient()
+            fade.point0 = CGPoint(x: sample.frame.midX, y: 0)
+            fade.point1 = CGPoint(x: bounds.maxX, y: 0)
+            fade.color0 = CIColor(red: 0.48, green: 0.48, blue: 0.48)
+            fade.color1 = CIColor(red: 0.08, green: 0.08, blue: 0.08)
+            guard let mask = fade.outputImage,
+                  let output = tinted(base, color: palette(sample.color), mask: mask) else { return nil }
+            composed = output
+        } else {
+            // The whole exposed surface gets the artwork palette. Local-only
+            // blur is hidden by the foreground image and leaves headings gray.
+            let area = samples.reduce(CGFloat.zero) { $0 + $1.area }
+            let average = CIColor(red: samples.reduce(0) { $0 + $1.color.red * $1.area } / area,
+                                  green: samples.reduce(0) { $0 + $1.color.green * $1.area } / area,
+                                  blue: samples.reduce(0) { $0 + $1.color.blue * $1.area } / area)
+            guard var output = tinted(base, color: palette(average),
+                                      mask: CIImage(color: CIColor(red: 0.38, green: 0.38, blue: 0.38))) else { return nil }
+            for sample in samples {
+                let glow = CIFilter.radialGradient()
+                glow.center = CGPoint(x: sample.frame.midX, y: sample.frame.midY)
+                glow.radius0 = 0
+                glow.radius1 = Float(max(max(sample.frame.width, sample.frame.height) * 1.2, bounds.width * 0.7))
+                glow.color0 = CIColor(red: 0.28, green: 0.28, blue: 0.28)
+                glow.color1 = .black
+                guard let mask = glow.outputImage,
+                      let next = tinted(output, color: palette(sample.color), mask: mask) else { return nil }
+                output = next
+            }
+            composed = output
+        }
+        let dither = CIFilter.dither()
+        dither.inputImage = composed
+        dither.intensity = 0.004
+        guard let output = dither.outputImage else { return nil }
+        // Transparent PNGs and filter precision must not make the card surface
+        // translucent. The original image keeps its own alpha in the foreground.
+        return context.createCGImage(output.composited(over: base), from: bounds, format: .RGBA8,
+                                     colorSpace: CGColorSpace(name: CGColorSpace.sRGB), deferred: false)
+    }
+
+    private static func averageColor(_ image: CIImage, extent: CGRect) -> CIColor? {
+        let filter = CIFilter.areaAverage()
+        filter.inputImage = image
+        filter.extent = extent
+        guard let output = filter.outputImage else { return nil }
+        var pixel = [Float](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes {
+            context.render(output, toBitmap: $0.baseAddress!, rowBytes: 4 * MemoryLayout<Float>.size,
+                           bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf,
+                           colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        }
+        guard pixel.allSatisfy({ $0.isFinite }), pixel[3] > 0.001 else { return nil }
+        func channel(_ index: Int) -> CGFloat { CGFloat(min(1, max(0, pixel[index] / pixel[3]))) }
+        return CIColor(red: channel(0), green: channel(1), blue: channel(2), alpha: CGFloat(pixel[3]))
     }
 
     static func render(_ source: CGImage, configuration: Configuration = .init()) -> CGImage? {
@@ -91,9 +224,13 @@ enum ExtendedCoverBackdrop {
     }
 
     private static func gradient(from top: CGFloat, to bottom: CGFloat, amount: CGFloat) -> CIImage {
+        gradient(from: CGPoint(x: 0, y: top), to: CGPoint(x: 0, y: bottom), amount: amount)
+    }
+
+    private static func gradient(from start: CGPoint, to end: CGPoint, amount: CGFloat) -> CIImage {
         let filter = CIFilter.smoothLinearGradient()
-        filter.point0 = CGPoint(x: 0, y: top)
-        filter.point1 = CGPoint(x: 0, y: bottom)
+        filter.point0 = start
+        filter.point1 = end
         filter.color0 = CIColor(red: 0, green: 0, blue: 0)
         filter.color1 = CIColor(red: amount, green: amount, blue: amount)
         return filter.outputImage!

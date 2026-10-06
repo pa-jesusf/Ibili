@@ -6,9 +6,8 @@ import SwiftUI
 ///   • Anywhere else a video needs a vertical-list presentation
 ///     rather than the home/search 2-up grid.
 ///
-/// Visual: 16:10 cover on the left with optional duration pill,
-/// title + author + stats stacked on the right. Apple-feeling rhythm:
-/// 8pt vertical padding, 12pt cover-to-text gap.
+/// Cover colors softly tint the list row without duplicating the artwork.
+/// The original thumbnail, progress and duration stay on the left.
 ///
 /// Tap handling lives at the call-site so callers can choose between
 /// `Button { … } label: { CompactVideoRow(...) }` or wrapping in

@@ -504,10 +504,7 @@ struct DynamicItemCard: View {
             width: resolvedContentWidth + 2 * DynamicLayout.cardPad,
             alignment: .leading
         )
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(IbiliTheme.surface)
-        )
+        .artworkCardSurface()
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onTapGesture { handleCardTap() }
     }
@@ -825,6 +822,7 @@ private struct DynamicLiveTile: View {
                         quality: 80)
                 .frame(width: contentWidth, height: h)
                 .clipped()
+                .cardArtwork(url: live.cover, size: CGSize(width: contentWidth, height: h), quality: 80)
             VStack(alignment: .leading, spacing: 4) {
                 Text(live.title)
                     .font(.footnote.weight(.medium))
@@ -874,6 +872,7 @@ private struct ArticleBanner: View {
                     .frame(width: coverWidth, height: coverWidth * 0.72)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .cardArtwork(url: article.cover, size: CGSize(width: coverWidth, height: coverWidth * 0.72), quality: 78)
             }
             VStack(alignment: .leading, spacing: 5) {
                 Label("专栏", systemImage: "doc.text")
@@ -930,6 +929,7 @@ private struct DynamicImagesGrid: View {
                         .frame(width: cell, height: cell)
                         .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .cardArtwork(url: indexed.element.url, size: CGSize(width: cell, height: cell), quality: 75)
                         .contentShape(Rectangle())
                         .onTapGesture { onTap(indexed.index) }
                 }
@@ -954,6 +954,7 @@ private struct DynamicImagesGrid: View {
             .frame(width: contentWidth, height: h)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .cardArtwork(url: img.url, size: CGSize(width: contentWidth, height: h), quality: 80)
             .contentShape(Rectangle())
             .onTapGesture { onTap(0) }
     }

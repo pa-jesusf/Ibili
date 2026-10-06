@@ -13,6 +13,7 @@ struct DynamicVideoTile: View {
                         targetPointSize: CGSize(width: contentWidth, height: height), quality: 80)
                 .frame(width: contentWidth, height: height)
                 .clipped()
+                .cardArtwork(url: video.cover, size: CGSize(width: contentWidth, height: height), quality: 80)
 
             if showsPlayButton {
                 Image(systemName: "play.circle.fill")

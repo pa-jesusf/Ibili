@@ -40,6 +40,7 @@ xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$O
     ios-app/IbiliApp/Tests/SearchViewModelTests.swift \
     ios-app/IbiliApp/Tests/SharedInfrastructureTests.swift \
     ios-app/IbiliApp/Tests/HomeCardPresentationTests.swift \
+    ios-app/IbiliApp/Tests/ArtworkBackdropTests.swift \
     ios-app/IbiliApp/Tests/Runtime/PlayerSessionBehaviorTests.swift \
     ios-app/IbiliApp/Tests/Runtime/PlayerTimeControlObservationTests.swift \
     -o "$OUTPUT/PerformanceTests.xctest/Contents/MacOS/PerformanceTests"

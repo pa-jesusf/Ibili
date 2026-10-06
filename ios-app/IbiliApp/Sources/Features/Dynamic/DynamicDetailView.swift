@@ -129,6 +129,7 @@ struct DynamicDetailView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
+        .artworkCardSurface()
     }
 
     private var header: some View {
@@ -368,6 +369,7 @@ private struct DetailBody: View {
                             targetPointSize: CGSize(width: contentWidth, height: h), quality: 85)
                     .frame(width: contentWidth, height: h)
                     .clipped()
+                    .cardArtwork(url: live.cover, size: CGSize(width: contentWidth, height: h), quality: 85)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(live.title)
                         .font(.headline)
@@ -414,6 +416,7 @@ private struct DetailBody: View {
                     .frame(width: 110, height: 78)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .cardArtwork(url: article.cover, size: CGSize(width: 110, height: 78), quality: 82)
                 }
                 VStack(alignment: .leading, spacing: 5) {
                     Label("专栏", systemImage: "doc.text")
@@ -455,6 +458,7 @@ private struct DetailBody: View {
                 .frame(width: contentWidth, height: h)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .cardArtwork(url: img.url, size: CGSize(width: contentWidth, height: h), quality: 85)
                 .contentShape(Rectangle())
                 .onTapGesture { onTapImage(0) }
         } else {
@@ -469,6 +473,7 @@ private struct DetailBody: View {
                         .frame(width: cell, height: cell)
                         .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .cardArtwork(url: img.url, size: CGSize(width: cell, height: cell), quality: 80)
                         .contentShape(Rectangle())
                         .onTapGesture { onTapImage(idx) }
                 }
