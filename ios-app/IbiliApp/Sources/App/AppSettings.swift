@@ -162,6 +162,7 @@ struct FeedCardMetaConfig: Equatable, Hashable {
     var showPubdate: Bool
     var showAuthor: Bool
     var stat: FeedCardStat
+    var statOnPublicationRow = false
 
     static let standard = FeedCardMetaConfig(
         showPlay: true,
@@ -327,7 +328,8 @@ final class AppSettings: ObservableObject {
             showDuration: searchShowDuration,
             showPubdate: searchShowPubdate,
             showAuthor: searchShowAuthor,
-            stat: searchCardStat
+            stat: searchCardStat,
+            statOnPublicationRow: true
         )
     }
 

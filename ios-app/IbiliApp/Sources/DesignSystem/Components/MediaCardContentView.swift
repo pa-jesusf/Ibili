@@ -3,18 +3,19 @@ import UIKit
 final class MediaCardContentView: UIView {
     private let coverImageView = UIImageView()
     private let backdropImageView = UIImageView()
-    private let backdropTint = CAGradientLayer()
     private let durationBadge = MediaCardDurationLabel()
     private let titleLabel = UILabel()
     private let authorIcon = UIImageView()
     private let authorLabel = UILabel()
     private let metaLabel = UILabel()
+    private let publicationMetaLabel = UILabel()
     private let menuButton = UIButton(type: .system)
     private let liveBadge = UILabel()
     private let summaryLabel = UILabel()
     private let secondaryMetaLabel = UILabel()
     private var imageTask: Task<Void, Never>?
     private var representedRequest: ImageRequestKey?
+    private var representedBackdrop: ExtendedCoverBackdrop.Configuration?
     private var model: MediaCardRenderModel?
     private var configuredWidth: CGFloat = 0
 
@@ -33,8 +34,6 @@ final class MediaCardContentView: UIView {
         coverImageView.isOpaque = true
         backdropImageView.contentMode = .scaleToFill
         backdropImageView.clipsToBounds = true
-        backdropTint.locations = [0, 0.18, 0.6, 1]
-        backdropImageView.layer.addSublayer(backdropTint)
 
         titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         titleLabel.textColor = .label
@@ -53,6 +52,10 @@ final class MediaCardContentView: UIView {
         metaLabel.lineBreakMode = .byTruncatingTail
         metaLabel.adjustsFontSizeToFitWidth = true
         metaLabel.minimumScaleFactor = 0.9
+        publicationMetaLabel.font = .preferredFont(forTextStyle: .caption2)
+        publicationMetaLabel.textColor = .secondaryLabel
+        publicationMetaLabel.numberOfLines = 1
+        publicationMetaLabel.lineBreakMode = .byTruncatingTail
         durationBadge.backgroundColor = .clear
         durationBadge.textColor = .secondaryLabel
         durationBadge.adjustsFontSizeToFitWidth = true
@@ -72,7 +75,7 @@ final class MediaCardContentView: UIView {
         secondaryMetaLabel.font = .preferredFont(forTextStyle: .caption2)
         secondaryMetaLabel.textColor = .secondaryLabel
 
-        [coverImageView, backdropImageView, durationBadge, titleLabel, authorIcon, authorLabel, metaLabel, menuButton, liveBadge, summaryLabel, secondaryMetaLabel].forEach {
+        [coverImageView, backdropImageView, durationBadge, titleLabel, authorIcon, authorLabel, metaLabel, publicationMetaLabel, menuButton, liveBadge, summaryLabel, secondaryMetaLabel].forEach {
             addSubview($0)
         }
         updateSurfaceAppearance()
@@ -88,6 +91,7 @@ final class MediaCardContentView: UIView {
         imageTask?.cancel()
         imageTask = nil
         representedRequest = nil
+        representedBackdrop = nil
         coverImageView.image = nil
         backdropImageView.image = nil
         menuButton.menu = nil
@@ -103,11 +107,7 @@ final class MediaCardContentView: UIView {
         layer.cornerRadius = layout.cornerRadius
         coverImageView.frame = layout.coverFrame
         liveBadge.frame = CGRect(x: 8, y: 8, width: 40, height: 20)
-        backdropImageView.frame = layout.backdropFrame
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        backdropTint.frame = backdropImageView.bounds
-        CATransaction.commit()
+        backdropImageView.frame = layout.extendedBackdropFrame
 
         durationBadge.sizeToFit()
         let durationWidth = min(durationBadge.bounds.width, layout.durationAvailableWidth)
@@ -118,6 +118,8 @@ final class MediaCardContentView: UIView {
         titleLabel.frame = layout.titleFrame
         summaryLabel.frame = layout.summaryFrame
         secondaryMetaLabel.frame = layout.secondaryMetadataFrame
+        publicationMetaLabel.numberOfLines = layout.publicationMetadataLines
+        publicationMetaLabel.frame = layout.pubdateFrame
 
         if model.meta.showAuthor {
             let iconSize: CGFloat = 13
@@ -170,6 +172,9 @@ final class MediaCardContentView: UIView {
         metaLabel.isHidden = !Self.showsMetadata(model)
         liveBadge.isHidden = model.liveInfo == nil
         coverImageView.isHidden = model.articleInfo != nil && model.cover.isEmpty
+        publicationMetaLabel.attributedText = Self.metaText(model, font: publicationMetaLabel.font, traits: traitCollection,
+                                                           compact: targetWidth < 150, publicationRow: true)
+        publicationMetaLabel.isHidden = publicationMetaLabel.attributedText?.length == 0
         summaryLabel.text = model.articleInfo?.description
         summaryLabel.isHidden = model.articleInfo?.description.isEmpty != false
         secondaryMetaLabel.text = model.articleInfo.map { article in
@@ -185,8 +190,10 @@ final class MediaCardContentView: UIView {
 
     static func preferredHeight(width: CGFloat, meta: FeedCardMetaConfig) -> CGFloat {
         MediaCardLayout(width: width, showsAuthor: meta.showAuthor,
-                        showsMetadata: meta.showPlay || meta.showPubdate || meta.stat != .none,
-                        showsDuration: meta.showDuration, compactMetadataLines: metadataLines(meta)).height
+                        showsMetadata: meta.showPlay || (!meta.statOnPublicationRow && meta.stat != .none),
+                        showsDuration: meta.showDuration, showsPubdate: meta.showPubdate,
+                        showsStatWithPubdate: meta.statOnPublicationRow && meta.stat != .none,
+                        compactMetadataLines: metadataLines(meta)).height
     }
 
     static func preferredHeight(width: CGFloat, model: MediaCardRenderModel) -> CGFloat {
@@ -200,21 +207,23 @@ final class MediaCardContentView: UIView {
                         showsCover: model.articleInfo == nil || !model.cover.isEmpty,
                         showsSummary: model.articleInfo?.description.isEmpty == false,
                         showsSecondaryMetadata: model.articleInfo != nil,
+                        showsPubdate: model.articleInfo == nil && model.meta.showPubdate,
+                        showsStatWithPubdate: model.meta.statOnPublicationRow && model.meta.stat != .none,
                         compactMetadataLines: model.articleInfo != nil ? 3 : metadataLines(model.meta))
     }
 
     private static func metadataLines(_ meta: FeedCardMetaConfig) -> Int {
-        max(2, (meta.showPlay ? 1 : 0) + (meta.showPubdate ? 1 : 0) + (meta.stat != .none ? 1 : 0))
+        meta.statOnPublicationRow ? 1 : max(2, (meta.showPlay ? 1 : 0) + (meta.stat != .none ? 1 : 0))
     }
 
     private static func showsMetadata(_ model: MediaCardRenderModel) -> Bool {
         if let live = model.liveInfo { return !live.watchedLabel.isEmpty || !live.areaName.isEmpty }
         if model.articleInfo != nil { return true }
-        return model.meta.showPlay || model.meta.showPubdate || model.meta.stat != .none
+        return model.meta.showPlay || (!model.meta.statOnPublicationRow && model.meta.stat != .none)
     }
 
     private static func metaText(_ model: MediaCardRenderModel, font: UIFont,
-                                 traits: UITraitCollection, compact: Bool) -> NSAttributedString {
+                                 traits: UITraitCollection, compact: Bool, publicationRow: Bool = false) -> NSAttributedString {
         let text = NSMutableAttributedString()
         let color = UIColor.secondaryLabel.resolvedColor(with: traits)
         func append(_ value: String, symbol: String? = nil) {
@@ -228,7 +237,11 @@ final class MediaCardContentView: UIView {
             }
             text.append(NSAttributedString(string: value))
         }
-        if let live = model.liveInfo {
+        if publicationRow {
+            if model.liveInfo == nil, model.articleInfo == nil, model.meta.showPubdate, model.pubdate > 0 {
+                append(BiliFormat.relativeDate(model.pubdate))
+            }
+        } else if let live = model.liveInfo {
             if !live.watchedLabel.isEmpty { append(live.watchedLabel, symbol: "eye") }
             if !live.areaName.isEmpty { append(live.areaName) }
         } else if model.articleInfo != nil {
@@ -239,9 +252,8 @@ final class MediaCardContentView: UIView {
             if model.meta.showPlay {
                 append(BiliFormat.compactCount(model.play), symbol: "play.fill")
             }
-            if model.meta.showPubdate, model.pubdate > 0 {
-                append(BiliFormat.relativeDate(model.pubdate))
-            }
+        }
+        if model.liveInfo == nil, model.articleInfo == nil, model.meta.statOnPublicationRow == publicationRow {
             switch model.meta.stat {
             case .none:
                 break
@@ -259,14 +271,15 @@ final class MediaCardContentView: UIView {
         super.traitCollectionDidChange(previousTraitCollection)
         if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
             updateSurfaceAppearance()
+            if let model, configuredWidth > 0 {
+                loadImage(model.cover, targetWidth: configuredWidth, quality: model.imageQuality)
+            }
         }
     }
 
     private func updateSurfaceAppearance() {
-        let color = UIColor.systemBackground.resolvedColor(with: traitCollection)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        backdropTint.colors = [0.06, 0.62, 0.8, 0.9].map { color.withAlphaComponent($0).cgColor }
         let dark = traitCollection.userInterfaceStyle == .dark
         layer.borderColor = (dark ? UIColor.white.withAlphaComponent(0.12) : UIColor.black.withAlphaComponent(0.08)).cgColor
         CATransaction.commit()
@@ -276,37 +289,50 @@ final class MediaCardContentView: UIView {
         if let model {
             metaLabel.attributedText = Self.metaText(model, font: metaLabel.font, traits: traitCollection,
                                                     compact: bounds.width < 150)
+            publicationMetaLabel.attributedText = Self.metaText(model, font: publicationMetaLabel.font, traits: traitCollection,
+                                                               compact: bounds.width < 150, publicationRow: true)
         }
     }
 
     private func loadImage(_ rawURL: String, targetWidth: CGFloat, quality: Int?) {
+        guard let model else { return }
+        let layout = Self.layout(width: targetWidth, model: model)
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        UIColor.systemBackground.resolvedColor(with: traitCollection).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        let configuration = ExtendedCoverBackdrop.Configuration(panelAspectRatio: layout.infoHeight / targetWidth,
+                                                                titleInsetRatio: (layout.titleFrame.minY + 4 - layout.coverHeight) / targetWidth,
+                                                                red: red, green: green, blue: blue)
         let targetSize = CGSize(width: targetWidth, height: targetWidth / MediaCardLayout.coverAspectRatio)
         let resolved = BiliImageURL.resized(rawURL, pointSize: targetSize, quality: quality)
         guard let url = URL(string: resolved) else {
             imageTask?.cancel()
             representedRequest = nil
+            representedBackdrop = nil
             coverImageView.image = nil
             backdropImageView.image = nil
             return
         }
         let maxPixelDimension = ImagePipeline.displayPixelDimension(for: targetSize)
         let request = ImageRequestKey(url: url, maxPixelDimension: maxPixelDimension)
-        if representedRequest == request, imageTask != nil || backdropImageView.image != nil { return }
+        if representedRequest == request, representedBackdrop == configuration,
+           imageTask != nil || backdropImageView.image != nil { return }
         imageTask?.cancel()
         representedRequest = request
+        representedBackdrop = configuration
         backdropImageView.image = nil
         coverImageView.image = ImageCache.shared.image(for: url, maxPixelDimension: maxPixelDimension)
         imageTask = Task { [weak self] in
             let image = await ImagePipeline.shared.image(for: url, maxPixelDimension: maxPixelDimension)
             guard !Task.isCancelled,
                   let self,
-                  self.representedRequest == request else { return }
+                  self.representedRequest == request, self.representedBackdrop == configuration else { return }
             self.coverImageView.image = image
             if let bitmap = image?.cgImage {
                 let backdrop = try? await BlockingWorkQueue.images.run(priority: .utility) {
-                    ExtendedCoverBackdrop.image(for: bitmap, cacheKey: request.cacheKey as String)
+                    ExtendedCoverBackdrop.image(for: bitmap, cacheKey: request.cacheKey as String, configuration: configuration)
                 }
-                guard !Task.isCancelled, self.representedRequest == request else { return }
+                guard !Task.isCancelled, self.representedRequest == request,
+                      self.representedBackdrop == configuration else { return }
                 self.backdropImageView.image = backdrop.map { UIImage(cgImage: $0) }
             }
             self.imageTask = nil

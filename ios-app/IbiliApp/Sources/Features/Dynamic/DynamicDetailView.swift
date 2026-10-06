@@ -368,11 +368,6 @@ private struct DetailBody: View {
                             targetPointSize: CGSize(width: contentWidth, height: h), quality: 85)
                     .frame(width: contentWidth, height: h)
                     .clipped()
-                LinearGradient(
-                    colors: [.black.opacity(0), .black.opacity(0.62)],
-                    startPoint: .center,
-                    endPoint: .bottom
-                )
                 VStack(alignment: .leading, spacing: 5) {
                     Text(live.title)
                         .font(.headline)
@@ -386,6 +381,8 @@ private struct DetailBody: View {
                     .foregroundStyle(.white.opacity(0.86))
                 }
                 .padding(12)
+                .frame(width: contentWidth, alignment: .leading)
+                .coverTextShadow()
                 Text(live.liveStatus == 1 ? "LIVE" : "直播")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.white)

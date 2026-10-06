@@ -67,7 +67,7 @@ final class HomeFeedGridLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeCardKeepsAllTextBelowFullCoverAndClearsBothImagesOnReuse() async throws {
+    func testNativeCardKeepsTextBelowCoverAndClearsPreparedImagesOnReuse() async throws {
         let payload: [String: Any] = [
             "aid": 1, "bvid": "BV1fk4y1E7r3", "duration_sec": 114,
             "cover": "https://example.invalid/home-card-\(UUID().uuidString).jpg",
@@ -94,9 +94,15 @@ final class HomeFeedGridLayoutTests: XCTestCase {
         let cover = try XCTUnwrap(images.first)
         XCTAssertEqual(cover.frame.height, target.height)
         XCTAssertEqual(cover.contentMode, .scaleAspectFit)
+        XCTAssertEqual(images[1].frame.maxY, cell.card.bounds.maxY)
+        XCTAssertLessThanOrEqual((cover.frame.maxY - images[1].frame.minY) / cover.frame.height, 0.056)
         for label in cell.card.subviews.compactMap({ $0 as? UILabel }) where !label.isHidden {
             XCTAssertGreaterThanOrEqual(label.frame.minY, cover.frame.maxY)
         }
+        for _ in 0..<100 where images[1].image == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(images[1].image)
         cell.prepareForReuse()
         await Task.yield()
         XCTAssertNil(images[0].image)
@@ -106,13 +112,17 @@ final class HomeFeedGridLayoutTests: XCTestCase {
 
     @MainActor
     func testCardRowsKeepPlayAboveAuthorAndDoNotOverlapDurationOrMenu() throws {
-        let item = try JSONDecoder().decode(FeedItemDTO.self, from: Data(#"{"aid":1,"title":"标题","author":"测试作者","duration_sec":3723,"play":1074000}"#.utf8))
-        for width: CGFloat in [82, 90, 110, 150, 159, 177, 366] {
+        let item = try JSONDecoder().decode(FeedItemDTO.self, from: Data(#"{"aid":1,"title":"标题","author":"测试作者","duration_sec":3723,"play":1074000,"pubdate":1700000000}"#.utf8))
+        for width: CGFloat in [82, 90, 110, 149, 150, 159, 177, 366] {
             for author in [false, true] {
                 for play in [false, true] {
-                    for duration in [false, true] {
+                    for (duration, pubdate, movedStat) in [(false, false, false), (false, true, false),
+                                                          (true, false, false), (true, true, false),
+                                                          (false, false, true), (false, true, true),
+                                                          (true, false, true), (true, true, true)] {
                         let meta = FeedCardMetaConfig(showPlay: play, showDuration: duration,
-                                                      showPubdate: false, showAuthor: author, stat: .none)
+                                                      showPubdate: pubdate, showAuthor: author, stat: .none,
+                                                      statOnPublicationRow: movedStat)
                         let cell = HomeFeedCardCell(frame: CGRect(x: 0, y: 0, width: width,
                                                                   height: HomeFeedCardCell.preferredHeight(width: width, meta: meta)))
                         cell.configure(item: item, model: MediaCardRenderModel(feed: item, imageQuality: 75, meta: meta),
@@ -165,23 +175,40 @@ final class HomeFeedGridLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testCompactVideoCardAllocatesAllThreeConfiguredStatisticsLines() throws {
+    func testVideoCardCanGroupOptionalStatWithDateBelowPlaybackMetadata() throws {
         let item = try JSONDecoder().decode(FeedItemDTO.self, from: Data(#"{"aid":1,"title":"标题","author":"作者","duration_sec":3723,"play":1074000,"pubdate":1700000000,"danmaku":4321}"#.utf8))
-        let meta = FeedCardMetaConfig(showPlay: true, showDuration: true, showPubdate: true, showAuthor: true, stat: .danmaku)
-        for width: CGFloat in [82, 110] {
-            let model = MediaCardRenderModel(feed: item, imageQuality: nil, meta: meta)
-            let card = MediaCardContentView(frame: CGRect(x: 0, y: 0, width: width,
-                                                          height: MediaCardContentView.preferredHeight(width: width, meta: meta)))
-            XCTAssertEqual(card.bounds.height, MediaCardContentView.preferredHeight(width: width, model: model))
-            card.configure(model: model, targetWidth: width)
-            card.layoutIfNeeded()
-            let stats = try XCTUnwrap(card.subviews.compactMap { $0 as? UILabel }.first {
-                $0.attributedText?.string.contains("107.4万") == true
-            })
-            XCTAssertEqual(stats.attributedText!.string.split(separator: "\n").count, 3)
-            XCTAssertEqual(stats.numberOfLines, 3)
-            XCTAssertGreaterThanOrEqual(stats.bounds.height, ceil(stats.font.lineHeight * 3))
-            card.reset()
+        for movedStat in [false, true] {
+            let meta = FeedCardMetaConfig(showPlay: true, showDuration: true, showPubdate: true, showAuthor: true,
+                                          stat: .danmaku, statOnPublicationRow: movedStat)
+            for width: CGFloat in [82, 110, 177, 241, 366] {
+                let model = MediaCardRenderModel(feed: item, imageQuality: nil, meta: meta)
+                let card = MediaCardContentView(frame: CGRect(x: 0, y: 0, width: width,
+                                                              height: MediaCardContentView.preferredHeight(width: width, meta: meta)))
+                XCTAssertEqual(card.bounds.height, MediaCardContentView.preferredHeight(width: width, model: model))
+                card.configure(model: model, targetWidth: width)
+                card.layoutIfNeeded()
+                let stats = try XCTUnwrap(card.subviews.compactMap { $0 as? UILabel }.first {
+                    $0.attributedText?.string.contains("107.4万") == true
+                })
+                XCTAssertEqual(stats.attributedText!.string.split(separator: "\n").count, !movedStat && width < 150 ? 2 : 1)
+                XCTAssertEqual(stats.numberOfLines, !movedStat && width < 150 ? 2 : 1)
+                let date = try XCTUnwrap(card.subviews.compactMap { $0 as? UILabel }.first {
+                    $0.attributedText?.string.contains(BiliFormat.relativeDate(item.pubdate)) == true
+                })
+                let duration = try XCTUnwrap(card.subviews.compactMap { $0 as? UILabel }.first { $0.text == "1:02:03" })
+                XCTAssertGreaterThanOrEqual(date.frame.minY, stats.frame.maxY)
+                XCTAssertGreaterThan(date.frame.minY, duration.frame.maxY)
+                XCTAssertEqual(date.frame.width, width - (width < 220 ? 20 : 28))
+                XCTAssertFalse(stats.attributedText!.string.contains(date.text!))
+                XCTAssertEqual(date.attributedText!.string.contains("4321"), movedStat)
+                XCTAssertEqual(stats.attributedText!.string.contains("4321"), !movedStat)
+                if movedStat {
+                    XCTAssertEqual(date.attributedText!.string.split(separator: "\n").count, width < 150 ? 2 : 1)
+                    let author = try XCTUnwrap(card.subviews.compactMap { $0 as? UILabel }.first { $0.text == "作者" })
+                    XCTAssertLessThan(date.frame.maxY, author.frame.minY)
+                }
+                card.reset()
+            }
         }
     }
 

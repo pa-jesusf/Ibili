@@ -13,9 +13,6 @@ struct DynamicVideoTile: View {
                         targetPointSize: CGSize(width: contentWidth, height: height), quality: 80)
                 .frame(width: contentWidth, height: height)
                 .clipped()
-            LinearGradient(colors: [.clear, .black.opacity(0.7)],
-                           startPoint: .center, endPoint: .bottom)
-                .allowsHitTesting(false)
 
             if showsPlayButton {
                 Image(systemName: "play.circle.fill")
@@ -44,8 +41,6 @@ struct DynamicVideoTile: View {
                     Spacer(minLength: 0)
                     if !video.durationLabel.isEmpty {
                         Text(video.durationLabel)
-                            .padding(.horizontal, 5).padding(.vertical, 1.5)
-                            .background(Capsule().fill(.black.opacity(0.5)))
                     }
                 }
                 .font(.caption2)
@@ -54,6 +49,7 @@ struct DynamicVideoTile: View {
             }
             .padding(10)
             .frame(width: contentWidth, alignment: .leading)
+            .coverTextShadow()
         }
         .frame(width: contentWidth, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

@@ -825,12 +825,6 @@ private struct DynamicLiveTile: View {
                         quality: 80)
                 .frame(width: contentWidth, height: h)
                 .clipped()
-            LinearGradient(
-                colors: [.black.opacity(0.0), .black.opacity(0.62)],
-                startPoint: .center, endPoint: .bottom
-            )
-            .frame(width: contentWidth, height: h)
-            .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: 4) {
                 Text(live.title)
                     .font(.footnote.weight(.medium))
@@ -843,8 +837,6 @@ private struct DynamicLiveTile: View {
                     Spacer(minLength: 0)
                     if !live.watchedLabel.isEmpty {
                         Text(live.watchedLabel)
-                            .padding(.horizontal, 5).padding(.vertical, 1.5)
-                            .background(Capsule().fill(.black.opacity(0.5)))
                     }
                 }
                 .font(.caption2)
@@ -852,6 +844,7 @@ private struct DynamicLiveTile: View {
             }
             .padding(10)
             .frame(width: contentWidth, alignment: .leading)
+            .coverTextShadow()
             HStack {
                 Text(live.liveStatus == 1 ? "LIVE" : "直播")
                     .font(.caption2.weight(.bold))
