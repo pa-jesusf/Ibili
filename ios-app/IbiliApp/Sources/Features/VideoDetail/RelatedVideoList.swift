@@ -22,13 +22,13 @@ struct RelatedVideoList: View {
         VirtualizedCollectionSurface(
             items: items,
             layout: .list(
-                horizontalInset: 12,
-                topInset: 12,
+                horizontalInset: 0,
+                topInset: 0,
                 bottomInset: bottomContentInset,
                 spacing: 0,
                 estimatedHeight: 112
             ),
-            roundsContentEdges: true,
+            roundedContentEdges: .bottom,
             footer: footer,
             scrollToTopSignal: scrollToTopSignal,
             prefetchThreshold: 4,
@@ -119,7 +119,8 @@ private struct RelatedRow: View, Equatable {
 
     var body: some View {
         CompactVideoRow(
-            model: MediaCardRenderModel(related: item)
+            model: MediaCardRenderModel(related: item),
+            horizontalContentInset: 16
         )
     }
 }

@@ -21,15 +21,18 @@ struct CompactVideoRow: View {
     /// Optional override for the duration pill (e.g. "已看完", "看到 3 分钟").
     /// Falls back to formatted duration when nil.
     var durationOverride: String? = nil
+    var horizontalContentInset: CGFloat = 4
 
     init(
         model: MediaCardRenderModel,
         progress: Double = 0,
-        durationOverride: String? = nil
+        durationOverride: String? = nil,
+        horizontalContentInset: CGFloat = 4
     ) {
         self.model = model
         self.progress = progress
         self.durationOverride = durationOverride
+        self.horizontalContentInset = horizontalContentInset
     }
 
     init(
@@ -63,7 +66,8 @@ struct CompactVideoRow: View {
         MediaRowView(
             model: model,
             progress: progress,
-            durationOverride: durationOverride
+            durationOverride: durationOverride,
+            horizontalContentInset: horizontalContentInset
         )
     }
 }

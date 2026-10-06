@@ -78,7 +78,7 @@ private struct ProfileVideoListSurface<Item: Identifiable & Hashable, RowContent
                 spacing: 0,
                 estimatedHeight: 112
             ),
-            roundsContentEdges: true,
+            roundedContentEdges: .all,
             footer: footer,
             showsRefresh: onRefresh != nil,
             isRefreshing: isLoading,

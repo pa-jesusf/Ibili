@@ -59,6 +59,7 @@ struct MediaRowView: View {
     var progress: Double = 0
     var durationOverride: String? = nil
     var coverSize = CGSize(width: 120, height: 75)
+    var horizontalContentInset: CGFloat = 4
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -98,7 +99,7 @@ struct MediaRowView: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 8)
-        .padding(.horizontal, 4)
+        .padding(.horizontal, horizontalContentInset)
         .artworkCardSurface(style: .trailing)
         .contentShape(Rectangle())
     }
