@@ -108,91 +108,6 @@ private final class DanmakuCachedSpecialText {
     }
 }
 
-private final class DanmakuBulletLayer: CALayer {
-    private let contentLayer = CALayer()
-
-    override init() {
-        super.init()
-        setup()
-    }
-
-    override init(layer: Any) {
-        super.init(layer: layer)
-        setup()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setup()
-    }
-
-    private func setup() {
-        actions = [
-            "bounds": NSNull(),
-            "position": NSNull(),
-            "opacity": NSNull(),
-            "contents": NSNull(),
-            "sublayers": NSNull(),
-        ]
-        contentLayer.actions = actions
-        contentLayer.contentsGravity = .resize
-        addSublayer(contentLayer)
-    }
-
-    func configureText(
-        _ cached: DanmakuCachedText,
-        isSelf: Bool,
-        contentsScale: CGFloat
-    ) {
-        bounds = CGRect(origin: .zero, size: cached.size)
-        contentLayer.contentsScale = contentsScale
-        contentLayer.frame = bounds
-        contentLayer.contents = cached.image.cgImage
-        configureSelfFrame(isSelf)
-        shouldRasterize = false
-    }
-
-    func configureSpecial(
-        _ cached: DanmakuCachedSpecialText,
-        contentsScale: CGFloat
-    ) {
-        bounds = CGRect(origin: .zero, size: cached.size)
-        contentLayer.contentsScale = contentsScale
-        contentLayer.frame = bounds
-        contentLayer.contents = cached.image.cgImage
-        configureSelfFrame(false)
-        shouldRasterize = false
-    }
-
-    func prepareForReuse() {
-        removeAllAnimations()
-        contentLayer.removeAllAnimations()
-        contentLayer.contents = nil
-        opacity = 1
-        transform = CATransform3DIdentity
-        backgroundColor = nil
-        borderColor = nil
-        borderWidth = 0
-        cornerRadius = 0
-        shouldRasterize = false
-        removeFromSuperlayer()
-    }
-
-    private func configureSelfFrame(_ isSelf: Bool) {
-        guard isSelf else {
-            backgroundColor = nil
-            borderColor = nil
-            borderWidth = 0
-            cornerRadius = 0
-            return
-        }
-        backgroundColor = UIColor(red: 1, green: 0.42, blue: 0.65, alpha: 0.18).cgColor
-        borderColor = UIColor(red: 1, green: 0.42, blue: 0.65, alpha: 0.95).cgColor
-        borderWidth = 1.2
-        cornerRadius = min(bounds.height / 2, 8)
-    }
-}
-
 // MARK: - Synchronized danmaku renderer
 
 /// GPU-composited danmaku renderer synchronized directly to the active
@@ -650,7 +565,8 @@ final class DanmakuCanvasView: UIView {
                 item: item,
                 descriptor: descriptor
             )
-            bulletLayer.configureSpecial(cached, contentsScale: scale)
+            bulletLayer.configure(image: cached.image.cgImage, size: cached.size,
+                                  isSelf: false, contentsScale: scale)
             specialContainerLayer?.addSublayer(bulletLayer)
             configureSpecialAnimations(
                 on: bulletLayer,
@@ -661,7 +577,8 @@ final class DanmakuCanvasView: UIView {
 
         case .scroll, .top, .bottom:
             let cached = cachedNormalText(key: textKey, displayText: displayText, item: item)
-            bulletLayer.configureText(cached, isSelf: item.isSelf, contentsScale: scale)
+            bulletLayer.configure(image: cached.image.cgImage, size: cached.size,
+                                  isSelf: item.isSelf, contentsScale: scale)
             normalContainerLayer?.addSublayer(bulletLayer)
             configureNormalAnimations(
                 on: bulletLayer,

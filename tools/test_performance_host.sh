@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs Foundation/Network request regressions on the Mac host, never a simulator.
+# Runs request and offscreen Core Animation regressions on the Mac host, never a simulator.
 # UIKit image/danmaku tests remain in the generic iOS build-for-testing target.
 set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,6 +29,7 @@ xcrun swiftc -swift-version 5 -enable-testing -emit-library -emit-module -module
     "$SOURCES/Features/Player/Proxy/HLSProxyListener.swift" tools/performance-host/AppLog.swift \
     "$SOURCES/Features/Player/Runtime/PlayerSessionBehavior.swift" \
     "$SOURCES/Features/Player/Runtime/PlayerTimeControlObservation.swift" \
+    "$SOURCES/Features/Player/DanmakuBulletLayer.swift" \
     -emit-module-path "$OUTPUT/Ibili.swiftmodule" -o "$OUTPUT/libIbili.dylib"
 xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$OUTPUT" -I core/rust/crates/ibili_ffi/include \
     -F "$XCTEST_FRAMEWORKS" -framework XCTest -Xlinker -rpath -Xlinker "$XCTEST_FRAMEWORKS" \
@@ -43,5 +44,6 @@ xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$O
     ios-app/IbiliApp/Tests/ArtworkBackdropTests.swift \
     ios-app/IbiliApp/Tests/Runtime/PlayerSessionBehaviorTests.swift \
     ios-app/IbiliApp/Tests/Runtime/PlayerTimeControlObservationTests.swift \
+    ios-app/IbiliApp/Tests/DanmakuBulletLayerTests.swift \
     -o "$OUTPUT/PerformanceTests.xctest/Contents/MacOS/PerformanceTests"
 xcrun xctest "$OUTPUT/PerformanceTests.xctest"
