@@ -138,6 +138,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let onCreated: (AVPlayerViewController) -> Void
     let onPresentationEvent: (PlayerPresentationEvent) -> Void
     var onSeekToTime: ((Int64) -> Void)? = nil
+    var sponsorBlock: SponsorBlockPlaybackCoordinator? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -223,6 +224,17 @@ struct PlayerContainer: UIViewControllerRepresentable {
             context.coordinator.holdSpeedBadgeView = badge
             context.coordinator.setHoldSpeedBadgeVisible(isTemporarySpeedBoostActive(), animated: false)
 
+            if let sponsorBlock {
+                let badge = SponsorBlockBadgeView(coordinator: sponsorBlock)
+                overlay.addSubview(badge)
+                NSLayoutConstraint.activate([
+                    badge.trailingAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+                    badge.bottomAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+                    badge.widthAnchor.constraint(lessThanOrEqualTo: overlay.safeAreaLayoutGuide.widthAnchor, constant: -24),
+                ])
+                context.coordinator.sponsorBadge = badge
+            }
+
             if let subtitle {
                 let subtitleOverlay = subtitle.prepareOverlay()
                 subtitleOverlay.translatesAutoresizingMaskIntoConstraints = false
@@ -272,6 +284,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         var parent: PlayerContainer
         weak var danmakuCanvas: DanmakuCanvasView?
         weak var subtitleOverlay: SubtitleOverlayView?
+        weak var sponsorBadge: SponsorBlockBadgeView?
         fileprivate weak var holdSpeedBadgeView: PlayerHoldSpeedBadgeView?
         var assignedPlayerID: ObjectIdentifier?
         private var holdSpeedBadgeIsVisible = false
@@ -311,6 +324,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
             holdSpeedBadgeView = nil
             subtitleOverlay?.removeFromSuperview()
             subtitleOverlay = nil
+            sponsorBadge?.removeFromSuperview()
+            sponsorBadge = nil
             danmakuCanvas?.removeFromSuperview()
             danmakuCanvas = nil
             vc.delegate = nil

@@ -389,6 +389,7 @@ struct PlayerToolbarOverflowMenu: View {
     let onSelectCompletionBehavior: (PlayerCompletionBehavior) -> Void
     let onOpenOfflineDownload: () -> Void
     let onOpenDanmakuStyle: () -> Void
+    let onOpenSponsorBlock: () -> Void
     let onSaveCover: () -> Void
     var onOpen: (() -> Void)?
 
@@ -454,6 +455,12 @@ struct PlayerToolbarOverflowMenu: View {
                     title: "保存封面",
                     systemImage: "photo",
                     action: onSaveCover
+                ),
+                NativeToolbarMenuItem(
+                    id: "sponsorBlock",
+                    title: "空降助手",
+                    systemImage: "forward.end",
+                    action: onOpenSponsorBlock
                 ),
             ]
         ))

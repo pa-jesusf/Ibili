@@ -235,6 +235,37 @@ final class AppSettings: ObservableObject {
     /// Applies Bilibili's per-video loudness analysis on top of the base
     /// attenuation. The result never exceeds AVPlayer's unity gain.
     @AppStorage("ibili.player.loudnessNormalizationEnabled") var loudnessNormalizationEnabled: Bool = true
+    @AppStorage("ibili.sponsorBlock.enabled") var sponsorBlockEnabled = false
+    @AppStorage("ibili.sponsorBlock.notifications") var sponsorBlockNotifications = true
+    @AppStorage("ibili.sponsorBlock.policies") private var sponsorBlockPoliciesRaw = "{}"
+    @AppStorage("ibili.sponsorBlock.disabledVideos") private var sponsorBlockDisabledVideosRaw = "[]"
+
+    var sponsorConfiguration: SponsorConfiguration {
+        let raw = (try? JSONDecoder().decode([String: SponsorSkipPolicy].self, from: Data(sponsorBlockPoliciesRaw.utf8))) ?? [:]
+        let policies = Dictionary(uniqueKeysWithValues: raw.compactMap { key, value in
+            SponsorCategory(rawValue: key).map { ($0, value) }
+        })
+        let disabled = (try? JSONDecoder().decode(Set<String>.self, from: Data(sponsorBlockDisabledVideosRaw.utf8))) ?? []
+        return SponsorConfiguration(enabled: sponsorBlockEnabled, showsNotification: sponsorBlockNotifications,
+                                    policies: policies, disabledVideos: disabled)
+    }
+
+    func setSponsorPolicy(_ value: SponsorSkipPolicy, for category: SponsorCategory) {
+        var policies = sponsorConfiguration.policies
+        policies[category] = value
+        let raw = Dictionary(uniqueKeysWithValues: policies.map { ($0.key.rawValue, $0.value) })
+        if let data = try? JSONEncoder().encode(raw), let string = String(data: data, encoding: .utf8) {
+            sponsorBlockPoliciesRaw = string
+        }
+    }
+
+    func setSponsorDisabled(_ disabled: Bool, for bvid: String) {
+        var videos = sponsorConfiguration.disabledVideos
+        if disabled { videos.insert(bvid) } else { videos.remove(bvid) }
+        if let data = try? JSONEncoder().encode(videos), let string = String(data: data, encoding: .utf8) {
+            sponsorBlockDisabledVideosRaw = string
+        }
+    }
     @AppStorage("ibili.player.completionBehavior") private var completionBehaviorRaw: String = PlayerCompletionBehavior.pause.rawValue
     @AppStorage("ibili.player.cdnService") private var cdnServiceRaw: String = MediaCDNService.auto.rawValue
     @AppStorage("ibili.home.recommendSource") private var homeRecommendSourceRaw: String = HomeRecommendSource.web.rawValue

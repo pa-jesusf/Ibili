@@ -52,6 +52,9 @@ final class PlayerViewModel: ObservableObject {
     private let discoveryQn: Int64 = 120
     private let engine: PlaybackEngine = HLSProxyEngine.shared
     let pageCache = PlayerPageSessionCache()
+    lazy var sponsorBlock = SponsorBlockPlaybackCoordinator(sessionID: sessionID)
+    private var sponsorBindingTask: Task<Void, Never>?
+    private var sponsorOfflineOnly = false
     /// Server-recorded resume position for the *current* (aid,cid).
     /// Captured from `playurl.last_play_time_ms` and consumed once when
     /// the AVPlayerItem first reaches `.readyToPlay` so we don't fight
@@ -99,6 +102,7 @@ final class PlayerViewModel: ObservableObject {
     private var activePreparation: EnginePreparation?
     private let sessionID: PlayerSessionID
     private var behaviorState = PlayerSessionBehaviorState()
+    private var playbackIntentRevision = UUID()
     private var playerTimeControlObservation: PlayerTimeControlObservation?
     private var isPlaybackCompleted = false
     private var isRecoveringPlaybackFromPageCache = false
@@ -126,6 +130,8 @@ final class PlayerViewModel: ObservableObject {
             audioVolumeRampTask?.cancel()
             foregroundRecoveryTask?.cancel()
             stopHeartbeat()
+            sponsorBindingTask?.cancel()
+            sponsorBlock.detach()
             clearPlaybackCompletionObserver()
             itemStatusObservation = nil
             playerTimeControlObservation?.invalidate()
@@ -246,6 +252,7 @@ final class PlayerViewModel: ObservableObject {
         aid = item.aid; cid = item.cid
         bvid = item.bvid
         lastLoadedItem = item
+        sponsorOfflineOnly = offlineOnly
         lastPreferredQn = preferredQn
         let requestedAudioQn = max(0, preferredAudioQn)
         lastPreferredAudioQn = requestedAudioQn
@@ -457,6 +464,7 @@ final class PlayerViewModel: ObservableObject {
 
     func handle(_ event: PlayerSessionEvent) {
         guard !isClosing || event == .interfaceDeactivated || event.isPictureInPictureStop else { return }
+        defer { sponsorBlock.playbackStateChanged(allowed: canUseSponsorTimeline) }
         switch event {
         case .interfaceActivated:
             PlayerPlaybackCoordinator.shared.activate(self)
@@ -470,11 +478,13 @@ final class PlayerViewModel: ObservableObject {
         case .systemTransitionChanged, .interfaceDidAppear, .pictureInPictureWillStop:
             break
         case .playbackIntentChanged(.pause):
+            playbackIntentRevision = UUID()
             endTemporarySpeedBoost()
         case .observedTimeControlStatus(.paused):
             endTemporarySpeedBoost()
+        case .playbackIntentChanged(.play):
+            playbackIntentRevision = UUID()
         case .interfaceDeactivated,
-             .playbackIntentChanged(.play),
              .prepareAutoplayForMediaReplacement,
              .suppressNextObservedIntent,
              .observedTimeControlStatus:
@@ -482,7 +492,9 @@ final class PlayerViewModel: ObservableObject {
         }
 
         let eventDescription = playerSessionEventDescription(event)
+        let previousIntent = behaviorState.intent
         let applied = behaviorState.apply(event)
+        if behaviorState.intent != previousIntent { playbackIntentRevision = UUID() }
         if applied || AppDiagnostics.verbosePlayerStateLoggingEnabled {
             AppLog.debug("player", applied ? "播放器会话事件已应用" : "播放器会话事件被忽略", metadata: playbackDebugMetadata(extra: [
                 "event": eventDescription,
@@ -537,6 +549,27 @@ final class PlayerViewModel: ObservableObject {
 
     var currentSessionID: PlayerSessionID {
         sessionID
+    }
+
+    func configureSponsorBlock() {
+        sponsorBlock.configure(AppSettings.shared.sponsorConfiguration)
+        guard !isClosing, isVideoReady, let player, let playerItem = player.currentItem else { return }
+        sponsorBindingTask?.cancel()
+        let key = SponsorVideoKey(bvid: bvid, cid: cid)
+        sponsorBindingTask = Task { [weak self, weak player, weak playerItem] in
+            let directories = await OfflineDownloadService.shared.sponsorDirectories(for: key)
+            guard !Task.isCancelled, let self, let player, let playerItem,
+                  !self.isClosing, self.player === player, player.currentItem === playerItem,
+                  self.bvid == key.bvid, self.cid == key.cid else { return }
+            self.sponsorBlock.bind(player: player, item: playerItem, key: key,
+                                   offlineOnly: self.sponsorOfflineOnly, offlineDirectories: directories,
+                                   configuration: AppSettings.shared.sponsorConfiguration,
+                                   playbackAllowed: self.canUseSponsorTimeline)
+        }
+    }
+
+    private var canUseSponsorTimeline: Bool {
+        !isClosing && behaviorState.hasPlaybackFocus && behaviorState.isInterfacePresentingPlayer
     }
 
     func activateInterfaceIfForeground() {
@@ -626,15 +659,26 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func restartCurrentItem() {
-        guard !isClosing, let player else { return }
+        guard !isClosing, let player, let item = player.currentItem else { return }
+        let generation = loadGeneration
         isPlaybackCompleted = false
         Task { @MainActor in
-            guard !self.isClosing, self.player === player else { return }
+            guard !self.isClosing, self.loadGeneration == generation,
+                  self.player === player, player.currentItem === item else { return }
             self.armTransientPauseSuppression(for: .playbackLoopRestart)
             self.suppressNextObservedPlaybackIntent(.pause)
-            await player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-            guard !self.isClosing, self.player === player else { return }
-            self.handle(.playbackIntentChanged(.play))
+            let intentRevision = self.playbackIntentRevision
+            let restartID = self.sponsorBlock.playbackWillRestart(player: player, item: item)
+            let completed = await player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard !self.isClosing, self.loadGeneration == generation,
+                  self.player === player, player.currentItem === item else { return }
+            if let restartID { self.sponsorBlock.playbackDidRestart(restartID, completed: completed) }
+            guard completed else { return }
+            // A pause/play request made during the native seek is newer than
+            // replay. Complete positioning without overwriting that intent.
+            if self.playbackIntentRevision == intentRevision {
+                self.handle(.playbackIntentChanged(.play))
+            }
             self.applyPlaybackIntent(to: player)
             self.refreshSystemMediaSession()
         }
@@ -962,6 +1006,8 @@ final class PlayerViewModel: ObservableObject {
 
     func teardown() {
         isClosing = true
+        sponsorBindingTask?.cancel()
+        sponsorBlock.detach()
         foregroundRecoveryTask?.cancel()
         isOverlayPresentationActive = false
         dismissalFadeTask?.cancel()
@@ -1006,6 +1052,8 @@ final class PlayerViewModel: ObservableObject {
         }
         guard !isClosing else { return }
         isClosing = true
+        sponsorBindingTask?.cancel()
+        sponsorBlock.detach()
         foregroundRecoveryTask?.cancel()
         loadGeneration &+= 1
         clearTransientPauseSuppression()
@@ -1035,6 +1083,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func resetCurrentPlaybackForMediaSwitch() {
+        sponsorBindingTask?.cancel()
+        sponsorBlock.detach()
         itemStatusObservation = nil
         guard let player else { return }
         playerTimeControlObservation?.invalidate()
@@ -1053,6 +1103,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func setPlayer(_ newPlayer: AVPlayer?) {
+        sponsorBindingTask?.cancel()
+        sponsorBlock.detach()
         audioVolumeRampTask?.cancel()
         audioVolumeRampTask = nil
         playerTimeControlObservation?.invalidate()
@@ -1447,6 +1499,7 @@ final class PlayerViewModel: ObservableObject {
                     self.isPlaybackCompleted = false
                     guard await self.applyPendingResume(to: player, item: item, generation: generation) else { return }
                     self.isVideoReady = true
+                    self.configureSponsorBlock()
                     self.updatePausedForDetailCollapse()
                     self.startHeartbeatIfNeeded()
                     self.refreshSystemMediaSession()
@@ -2105,6 +2158,7 @@ private enum PlayerSheet: String, Identifiable {
     case danmakuSend
     case danmakuStyle
     case offlineDownload
+    case sponsorBlock
 
     var id: String { rawValue }
 }
@@ -2608,7 +2662,9 @@ struct PlayerView: View {
               PlaybackTimecode.isValid(seconds, duration: playerItem.duration.seconds) else { return }
         let target = CMTime(seconds: Double(seconds), preferredTimescale: 600)
         Task { @MainActor in
-            guard vm.player === player, player.currentItem === playerItem else { return }
+            guard !Task.isCancelled, vm.player === player, player.currentItem === playerItem,
+                  PlayerRuntimeCoordinator.shared.isForeground(routeID: vm.currentSessionID) else { return }
+            vm.sponsorBlock.userWillSeek(to: Double(seconds))
             let completed = await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
             guard completed, vm.player === player, player.currentItem === playerItem,
                   PlayerRuntimeCoordinator.shared.isForeground(routeID: vm.currentSessionID) else { return }
@@ -2708,7 +2764,8 @@ struct PlayerView: View {
                                         isPlayerRouteForeground: { PlayerRuntimeCoordinator.shared.isForeground(routeID: vm.currentSessionID) },
                                         onCreated: { vc in playerVCRef.vc = vc },
                                         onPresentationEvent: handlePresentationEvent,
-                                        onSeekToTime: { seekTo(seconds: $0) }
+                                        onSeekToTime: { seekTo(seconds: $0) },
+                                        sponsorBlock: vm.sponsorBlock
                                     )
                                     // Cover the native chrome until the first frame is
                                     // ready, otherwise users see a misleading pause icon
@@ -2826,6 +2883,9 @@ struct PlayerView: View {
             logPlayerMenu("播放完行为状态已观察到变化", metadata: [
                 "value": newValue.rawValue,
             ])
+        }
+        .onChange(of: settings.sponsorConfiguration) { _ in
+            vm.configureSponsorBlock()
         }
         .task(id: mediaLoadKey) {
             vm.setAudioConfiguration(
@@ -3025,6 +3085,9 @@ struct PlayerView: View {
             case .danmakuStyle:
                 DanmakuStyleSettingsView()
                     .environmentObject(settings)
+            case .sponsorBlock:
+                SponsorBlockPlayerSheet(coordinator: vm.sponsorBlock)
+                    .environmentObject(settings)
             case .offlineDownload:
                 OfflineDownloadSheet(
                     item: vm.currentFeedItem ?? item,
@@ -3118,6 +3181,9 @@ struct PlayerView: View {
                 },
                 onOpenDanmakuStyle: {
                     presentPlayerSheet(.danmakuStyle, logMessage: "打开弹幕样式")
+                },
+                onOpenSponsorBlock: {
+                    presentPlayerSheet(.sponsorBlock, logMessage: "打开空降助手")
                 },
                 onSaveCover: {
                     logPlayerMenu("保存封面请求")

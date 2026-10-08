@@ -80,6 +80,22 @@ public final class CoreClient: @unchecked Sendable {
 
     // MARK: - Dispatch
 
+    func fetchSponsorSegments(bvid: String, cid: Int64, forceRefresh: Bool, version: String) async throws -> [SponsorSegment] {
+        try await BlockingWorkQueue.community.run(priority: .utility) {
+            try self.sponsorSegments(bvid: bvid, cid: cid, forceRefresh: forceRefresh, version: version)
+        }
+    }
+
+    func sponsorSegments(bvid: String, cid: Int64, forceRefresh: Bool, version: String) throws -> [SponsorSegment] {
+        struct Args: Encodable {
+            let bvid: String
+            let cid: Int64
+            let force_refresh: Bool
+            let version: String
+        }
+        return try call("sponsor_block.segments", args: Args(bvid: bvid, cid: cid, force_refresh: forceRefresh, version: version))
+    }
+
     private func call<T: Decodable>(_ method: String, args: Encodable? = nil, decoding: T.Type = T.self) throws -> T {
         let startedAt = CFAbsoluteTimeGetCurrent()
         let raw: String
@@ -172,12 +188,15 @@ public final class CoreClient: @unchecked Sendable {
             argsJson = String(data: data, encoding: .utf8) ?? "{}"
         }
         let localSnapshot = method == "session.snapshot"
+        // Optional third-party annotations must not occupy Bilibili request
+        // slots or block login/mutation ordering while their service is slow.
+        let communityQuery = method == "sponsor_block.segments"
         let serialized = !localSnapshot && !Self.concurrentSafeMethods.contains(method)
         let mutationLock = (owner ?? self).mutationLock
         if serialized { mutationLock.lock() }
         defer { if serialized { mutationLock.unlock() } }
-        if !localSnapshot { Self.requestSlots.wait() }
-        defer { if !localSnapshot { Self.requestSlots.signal() } }
+        if !localSnapshot && !communityQuery { Self.requestSlots.wait() }
+        defer { if !localSnapshot && !communityQuery { Self.requestSlots.signal() } }
         try checkCurrent(captured)
         let result = try Self.invoke(captured, method: method, argsJson: argsJson)
         try checkCurrent(captured)
@@ -207,6 +226,7 @@ public final class CoreClient: @unchecked Sendable {
     // HttpClient/Jar and the internal session are thread-safe; auth's anonymous
     // cookie sequence and remote mutations retain their own serial boundary.
     private static let concurrentSafeMethods: Set<String> = [
+        "sponsor_block.segments",
         "session.check", "feed.home", "feed.popular", "live.feed", "live.room_info",
         "live.playurl", "live.danmaku_info", "live.danmaku_history", "video.playurl",
         "video.offline_playurl", "pgc.playurl", "pgc.offline_playurl", "pgc.season",

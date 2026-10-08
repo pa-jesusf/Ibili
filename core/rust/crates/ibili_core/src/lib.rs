@@ -22,6 +22,7 @@ pub mod reply;
 pub mod search;
 pub mod session;
 pub mod signer;
+pub mod sponsor_block;
 pub mod user_space;
 pub mod video;
 mod wbi_cache;

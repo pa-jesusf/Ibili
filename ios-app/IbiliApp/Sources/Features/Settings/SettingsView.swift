@@ -115,6 +115,9 @@ struct SettingsView: View {
                         Text(opt.label).tag(opt.value)
                     }
                 }
+                NavigationLink("空降助手") {
+                    SponsorBlockSettingsView()
+                }
                 Picker("默认音质", selection: Binding(
                     get: { settings.resolvedPreferredAudioQn() },
                     set: { settings.preferredAudioQn = $0 }

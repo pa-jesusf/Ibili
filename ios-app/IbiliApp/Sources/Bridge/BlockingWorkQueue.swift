@@ -7,6 +7,7 @@ final class BlockingWorkQueue: @unchecked Sendable {
     static let images = BlockingWorkQueue(name: "ibili.image.decode", concurrency: 2)
     static let files = BlockingWorkQueue(name: "ibili.file.index", concurrency: 1)
     static let live = BlockingWorkQueue(name: "ibili.live.decode", concurrency: 1)
+    static let community = BlockingWorkQueue(name: "ibili.community.annotations", concurrency: 2)
     private let queue: OperationQueue
 
     init(name: String, concurrency: Int) {

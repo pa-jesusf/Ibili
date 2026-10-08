@@ -5,6 +5,25 @@ import XCTest
 
 @MainActor
 final class PlayerLifecycleTests: XCTestCase {
+    func testPauseDuringSlowReplayRemainsAuthoritativeForPlayingAndCompletedPlayers() async {
+        for initialIntent in [PlayerIntent.play, .pause] {
+            let player = LifecyclePlayer(playerItem: AVPlayerItem(asset: AVMutableComposition()))
+            let viewModel = PlayerViewModel(initialPlayer: player)
+            defer { viewModel.teardown() }
+            viewModel.handle(.interfaceActivated)
+            viewModel.handle(.interfaceDidAppear)
+            viewModel.handle(.playbackIntentChanged(initialIntent))
+            let submitted = expectation(description: "Replay seek submitted")
+            player.seekSubmitted = { submitted.fulfill() }
+            viewModel.restartCurrentItem()
+            await fulfillment(of: [submitted], timeout: 2)
+            viewModel.handle(.playbackIntentChanged(.pause))
+            player.finishSeek()
+            for _ in 0..<40 { await Task.yield() }
+            XCTAssertEqual(player.rate, 0)
+        }
+    }
+
     func testNativePageAppearanceResumesPlayingButNotManuallyPausedPlayer() {
         for wasPlaying in [true, false] {
             let player = LifecyclePlayer()
@@ -104,6 +123,8 @@ final class PlayerLifecycleTests: XCTestCase {
 }
 
 private final class LifecyclePlayer: AVPlayer {
+    var seekSubmitted: (() -> Void)?
+    private var seekCompletion: ((Bool) -> Void)?
     private var storedRate: Float = 0
     private var storedStatus: AVPlayer.TimeControlStatus = .paused
     override var rate: Float {
@@ -113,6 +134,17 @@ private final class LifecyclePlayer: AVPlayer {
     override var timeControlStatus: AVPlayer.TimeControlStatus { storedStatus }
     override func playImmediately(atRate rate: Float) { setPlaybackRate(rate) }
     override func pause() { setPlaybackRate(0) }
+    override func seek(to time: CMTime, toleranceBefore: CMTime, toleranceAfter: CMTime,
+                       completionHandler: @escaping (Bool) -> Void) {
+        seekCompletion = completionHandler
+        seekSubmitted?()
+    }
+
+    func finishSeek() {
+        let completion = seekCompletion
+        seekCompletion = nil
+        completion?(true)
+    }
 
     private func setPlaybackRate(_ rate: Float) {
         willChangeValue(forKey: "timeControlStatus")

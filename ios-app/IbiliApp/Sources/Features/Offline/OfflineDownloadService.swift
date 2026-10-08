@@ -203,6 +203,12 @@ final class OfflineDownloadService: ObservableObject {
         library[metadata.id]?.directory
     }
 
+    func sponsorDirectories(for key: SponsorVideoKey) async -> [URL] {
+        await reloadTask?.value
+        return entries.filter { $0.status == .completed && $0.bvid == key.bvid && $0.cid == key.cid }
+            .compactMap { library[$0.id]?.directory }
+    }
+
     func playbackSource(for item: FeedItemDTO, preferredQn: Int64 = 0, audioQn: Int64 = 0) async -> OfflinePlaybackSource? {
         await reloadTask?.value
         let matches = entries.filter { metadata in
@@ -464,6 +470,20 @@ final class OfflineDownloadService: ObservableObject {
             metadata.updatedAt = Date()
             upsert(metadata)
             writeMetadata(metadata, to: directory)
+            if AppSettings.shared.sponsorBlockEnabled {
+                let key = SponsorVideoKey(bvid: metadata.bvid, cid: metadata.cid)
+                let repository = SponsorBlockRepository.shared
+                // Community annotations are optional; their service must not
+                // hold up completion or turn a successful download into failure.
+                Task {
+                    guard key.isValid else { return }
+                    if let cached = await repository.cached(key), cached.isFresh(at: Date()) {
+                        await repository.pin(cached, to: directory)
+                    } else if let snapshot = try? await repository.refresh(key) {
+                        await repository.pin(snapshot, to: directory)
+                    }
+                }
+            }
             try? fileManager.removeItem(at: workDir)
             activeTasks[metadata.id] = nil
             AppLog.info("offline", "离线缓存完成", metadata: [
