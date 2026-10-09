@@ -25,6 +25,19 @@ struct SponsorBlockSettingsView: View {
                     }
                 }
             }
+            if !settings.sponsorConfiguration.disabledVideos.isEmpty {
+                Section("停用的视频") {
+                    ForEach(settings.sponsorConfiguration.disabledVideos.sorted(), id: \.self) { bvid in
+                        HStack {
+                            Text(bvid)
+                            Spacer()
+                            Button("恢复") { settings.setSponsorDisabled(false, for: bvid) }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("恢复 \(bvid) 的空降助手")
+                        }
+                    }
+                }
+            }
             Section {
                 Button(cleared ? "片段缓存已清理" : "清理片段缓存") {
                     clearing = true
@@ -119,7 +132,7 @@ struct SponsorBlockPlayerSheet: View {
             .navigationTitle("空降助手")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .tint(IbiliTheme.accent)
         }
+        .tint(IbiliTheme.accent)
     }
 }

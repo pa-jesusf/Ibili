@@ -29,6 +29,51 @@ final class SponsorBlockPlaybackTests: XCTestCase {
 
     private func drainCallbacks() async { for _ in 0..<80 { await Task.yield() } }
 
+    func testDisabledVideoRebindKeepsKnownMarksAndCanRestoreSkipping() async {
+        let values = [segment("ad", 10, 20)]
+        let (coordinator, player, directory) = await fixture(values, position: 0)
+        defer { coordinator.detach(); try? FileManager.default.removeItem(at: directory) }
+        var configuration = SponsorConfiguration()
+        configuration.disabledVideos.insert(key.bvid)
+        coordinator.configure(configuration)
+        coordinator.detach()
+        player.position = 12
+        coordinator.bind(player: player, item: player.currentItem!, key: key,
+                         offlineOnly: false, offlineDirectories: [], configuration: configuration, playbackAllowed: true)
+        await coordinator.waitForSynchronization()
+        await drainCallbacks()
+        XCTAssertEqual(coordinator.segments, values)
+        XCTAssertEqual(coordinator.syncState, .disabled)
+        XCTAssertNil(coordinator.notice)
+        XCTAssertTrue(player.seeks.isEmpty)
+        configuration.disabledVideos.remove(key.bvid)
+        coordinator.configure(configuration)
+        await coordinator.waitForSynchronization()
+        await drainCallbacks()
+        XCTAssertEqual(player.position, 20)
+        guard case .skipped = coordinator.notice else { return XCTFail("Restored video must skip again") }
+    }
+
+    func testDisabledVideoWithoutCacheDoesNotFetchOrInventAvailableMarks() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let repository = SponsorBlockRepository(directory: directory) { _, _ in
+            XCTFail("Per-video disable must not fetch community data")
+            return []
+        }
+        let item = ControlledSponsorItem(asset: AVMutableComposition())
+        let player = ControlledSponsorPlayer(playerItem: item)
+        let coordinator = SponsorBlockPlaybackCoordinator(sessionID: UUID(), repository: repository)
+        defer { coordinator.detach(); try? FileManager.default.removeItem(at: directory) }
+        var configuration = SponsorConfiguration()
+        configuration.disabledVideos.insert(key.bvid)
+        coordinator.bind(player: player, item: item, key: key, offlineOnly: false, offlineDirectories: [],
+                         configuration: configuration, playbackAllowed: true)
+        await coordinator.waitForSynchronization()
+        XCTAssertTrue(coordinator.segments.isEmpty)
+        XCTAssertEqual(coordinator.syncState, .disabled)
+        XCTAssertTrue(player.seeks.isEmpty)
+    }
+
     func testLateNativeSeekNotificationsKeepUndoAndUndoReturnsOriginalPosition() async {
         let (coordinator, player, directory) = await fixture([segment("ad", 10, 20)], position: 12)
         defer { coordinator.detach(); try? FileManager.default.removeItem(at: directory) }

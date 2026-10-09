@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Individual nav-bar trailing controls for the player. Split into
-/// three sibling `ToolbarItem`s so SwiftUI renders them as discrete
+/// sibling `ToolbarItem`s so SwiftUI renders them as discrete
 /// circular system buttons (matching the leading back chevron) rather
 /// than a single fused capsule.
 ///
@@ -287,16 +287,6 @@ struct PlayerToolbarSubtitle: View {
     }
 
     private var subtitleSections: [NativeToolbarMenuSection] {
-        guard !subtitles.isEmpty else {
-            return [
-                NativeToolbarMenuSection(
-                    id: "empty",
-                    items: [
-                        NativeToolbarMenuItem(id: "empty", title: "暂无字幕", isEnabled: false) {}
-                    ]
-                ),
-            ]
-        }
         var items: [NativeToolbarMenuItem] = [
             NativeToolbarMenuItem(
                 id: "off",
@@ -389,7 +379,6 @@ struct PlayerToolbarOverflowMenu: View {
     let onSelectCompletionBehavior: (PlayerCompletionBehavior) -> Void
     let onOpenOfflineDownload: () -> Void
     let onOpenDanmakuStyle: () -> Void
-    let onOpenSponsorBlock: () -> Void
     let onSaveCover: () -> Void
     var onOpen: (() -> Void)?
 
@@ -455,12 +444,6 @@ struct PlayerToolbarOverflowMenu: View {
                     title: "保存封面",
                     systemImage: "photo",
                     action: onSaveCover
-                ),
-                NativeToolbarMenuItem(
-                    id: "sponsorBlock",
-                    title: "空降助手",
-                    systemImage: "forward.end",
-                    action: onOpenSponsorBlock
                 ),
             ]
         ))

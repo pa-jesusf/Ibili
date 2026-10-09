@@ -100,7 +100,7 @@ final class SponsorBlockPlaybackCoordinator: ObservableObject {
         initialPosition = player.currentTime().seconds
         initialPositionRecordedAt = now()
         guard key.isValid else { syncState = .unavailable; return }
-        if configuration.isEnabled(for: key.bvid) { startSync(force: false) }
+        if configuration.enabled { startSync(force: false) }
     }
 
     func detach() {
@@ -140,6 +140,9 @@ final class SponsorBlockPlaybackCoordinator: ObservableObject {
             removeObservers()
             setNotice(nil)
             syncState = .disabled
+            // A per-video pause stops synchronization/skipping, but known
+            // marks still make the toolbar's restore control discoverable.
+            if value.enabled, !hasSnapshot { startSync(force: false) }
         } else if !wasEnabled {
             startSync(force: false)
         } else {
@@ -169,8 +172,9 @@ final class SponsorBlockPlaybackCoordinator: ObservableObject {
         let syncID = syncGeneration
         let expected = generation
         guard let key, let player, let item else { return }
-        installJumpObserver()
-        syncState = .loading
+        let canSynchronize = configuration.isEnabled(for: key.bvid)
+        if canSynchronize { installJumpObserver() }
+        syncState = canSynchronize ? .loading : .disabled
         syncTask = Task { [weak self, repository, offlineDirectories, offlineOnly] in
             var cached = await repository.cached(key)
             for directory in offlineDirectories {
@@ -180,8 +184,9 @@ final class SponsorBlockPlaybackCoordinator: ObservableObject {
             guard let self, self.matches(expected, player: player, item: item), self.syncGeneration == syncID, !Task.isCancelled else { return }
             if let cached {
                 self.apply(cached)
-                self.syncState = offlineOnly ? .offline : (cached.segments.isEmpty ? .empty : .ready)
+                self.syncState = canSynchronize ? (offlineOnly ? .offline : (cached.segments.isEmpty ? .empty : .ready)) : .disabled
             }
+            guard canSynchronize else { return }
             if offlineOnly {
                 if cached == nil { self.syncState = .offlineEmpty }
                 return

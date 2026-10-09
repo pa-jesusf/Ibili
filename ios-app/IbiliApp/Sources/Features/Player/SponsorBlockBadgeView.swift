@@ -29,6 +29,7 @@ final class SponsorBlockBadgeView: UIVisualEffectView {
         countdownLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         countdownLabel.isAccessibilityElement = false
         button.titleLabel?.font = .preferredFont(forTextStyle: .footnote)
+        button.tintColor = IbiliTheme.accentUIColor
         button.titleLabel?.adjustsFontForContentSizeCategory = true
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
         button.addTarget(self, action: #selector(performAction), for: .touchUpInside)

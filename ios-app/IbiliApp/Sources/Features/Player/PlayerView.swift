@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AVKit
 import AVFoundation
 import UIKit
@@ -27,6 +28,7 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var availableAudioQualities: [(qn: Int64, label: String)] = []
     @Published var currentAudioQn: Int64 = 0
     @Published private(set) var availableSubtitles: [VideoSubtitleDTO] = []
+    @Published private(set) var hasSponsorSegments = false
     @Published private(set) var viewPoints: [VideoViewPointDTO] = []
     @Published private(set) var currentVideoSizeHint: CGSize?
     @Published private(set) var isTemporarySpeedBoostActive = false
@@ -53,6 +55,7 @@ final class PlayerViewModel: ObservableObject {
     private let engine: PlaybackEngine = HLSProxyEngine.shared
     let pageCache = PlayerPageSessionCache()
     lazy var sponsorBlock = SponsorBlockPlaybackCoordinator(sessionID: sessionID)
+    private var sponsorAvailabilitySubscription: AnyCancellable?
     private var sponsorBindingTask: Task<Void, Never>?
     private var sponsorOfflineOnly = false
     /// Server-recorded resume position for the *current* (aid,cid).
@@ -117,6 +120,12 @@ final class PlayerViewModel: ObservableObject {
     init(sessionID: PlayerSessionID = PlayerSessionID(), initialPlayer: AVPlayer? = nil) {
         self.sessionID = sessionID
         if let initialPlayer { setPlayer(initialPlayer) }
+        // Only content availability belongs to the page's toolbar. Skip
+        // notices and their countdown remain observed inside the AVKit badge.
+        sponsorAvailabilitySubscription = sponsorBlock.$segments
+            .map { !$0.isEmpty }
+            .removeDuplicates()
+            .sink { [weak self] in self?.hasSponsorSegments = $0 }
     }
 
     deinit {
@@ -3069,40 +3078,43 @@ struct PlayerView: View {
         .animation(.easeInOut(duration: 0.2), value: danmakuHint)
         .animation(.easeInOut(duration: 0.2), value: playerActionToast)
         .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .danmakuSend:
-                DanmakuSendSheet(
-                    aid: vm.currentAid > 0 ? vm.currentAid : item.aid,
-                    cid: vm.currentCid > 0 ? vm.currentCid : item.cid,
-                    progressProvider: { currentPlayheadMs() },
-                    onSent: { echo in
-                        // Local-echo into the live renderer so the user
-                        // sees their bullet immediately. Frame styling is
-                        // handled inside the canvas based on `isSelf`.
-                        danmaku.appendLive(echo)
-                    }
-                )
-            case .danmakuStyle:
-                DanmakuStyleSettingsView()
-                    .environmentObject(settings)
-            case .sponsorBlock:
-                SponsorBlockPlayerSheet(coordinator: vm.sponsorBlock)
-                    .environmentObject(settings)
-            case .offlineDownload:
-                OfflineDownloadSheet(
-                    item: vm.currentFeedItem ?? item,
-                    qualities: vm.availableQualities,
-                    currentQn: vm.currentQn,
-                    audioQualities: vm.availableAudioQualities,
-                    currentAudioQn: vm.currentAudioQn,
-                    cdn: settings.cdnService.rawValue,
-                    onStart: { request in
-                        offlineService.start(request)
-                        activeSheet = nil
-                        flashPlayerAction("已加入离线缓存")
-                    }
-                )
+            Group {
+                switch sheet {
+                case .danmakuSend:
+                    DanmakuSendSheet(
+                        aid: vm.currentAid > 0 ? vm.currentAid : item.aid,
+                        cid: vm.currentCid > 0 ? vm.currentCid : item.cid,
+                        progressProvider: { currentPlayheadMs() },
+                        onSent: { echo in
+                            // Local-echo into the live renderer so the user
+                            // sees their bullet immediately. Frame styling is
+                            // handled inside the canvas based on `isSelf`.
+                            danmaku.appendLive(echo)
+                        }
+                    )
+                case .danmakuStyle:
+                    DanmakuStyleSettingsView()
+                        .environmentObject(settings)
+                case .sponsorBlock:
+                    SponsorBlockPlayerSheet(coordinator: vm.sponsorBlock)
+                        .environmentObject(settings)
+                case .offlineDownload:
+                    OfflineDownloadSheet(
+                        item: vm.currentFeedItem ?? item,
+                        qualities: vm.availableQualities,
+                        currentQn: vm.currentQn,
+                        audioQualities: vm.availableAudioQualities,
+                        currentAudioQn: vm.currentAudioQn,
+                        cdn: settings.cdnService.rawValue,
+                        onStart: { request in
+                            offlineService.start(request)
+                            activeSheet = nil
+                            flashPlayerAction("已加入离线缓存")
+                        }
+                    )
+                }
             }
+            .tint(IbiliTheme.accent)
         }
     }
 
@@ -3115,29 +3127,31 @@ struct PlayerView: View {
                 onLongPress: { activeSheet = .danmakuSend }
             )
         }
-        ToolbarItem(placement: .topBarTrailing) {
-            PlayerToolbarSubtitle(
-                subtitles: vm.availableSubtitles,
-                selectedID: selectedSubtitleID,
-                isEnabled: vm.player != nil,
-                isLoadingID: subtitleLoadingID,
-                onPick: { track in
-                    logPlayerMenu("选择字幕", metadata: [
-                        "subtitleID": track.id,
-                        "subtitleLanguage": track.lan,
-                    ])
-                    Task { await selectSubtitle(track) }
-                },
-                onDisable: {
-                    logPlayerMenu("关闭字幕")
-                    disableSubtitle()
-                },
-                onOpen: {
-                    logPlayerMenu("打开字幕菜单", metadata: [
-                        "subtitleCount": String(vm.availableSubtitles.count),
-                    ])
-                }
-            )
+        if !vm.availableSubtitles.isEmpty {
+            ToolbarItem(placement: .topBarTrailing) {
+                PlayerToolbarSubtitle(
+                    subtitles: vm.availableSubtitles,
+                    selectedID: selectedSubtitleID,
+                    isEnabled: vm.player != nil,
+                    isLoadingID: subtitleLoadingID,
+                    onPick: { track in
+                        logPlayerMenu("选择字幕", metadata: [
+                            "subtitleID": track.id,
+                            "subtitleLanguage": track.lan,
+                        ])
+                        Task { await selectSubtitle(track) }
+                    },
+                    onDisable: {
+                        logPlayerMenu("关闭字幕")
+                        disableSubtitle()
+                    },
+                    onOpen: {
+                        logPlayerMenu("打开字幕菜单", metadata: [
+                            "subtitleCount": String(vm.availableSubtitles.count),
+                        ])
+                    }
+                )
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             PlayerToolbarVideoQuality(
@@ -3155,6 +3169,18 @@ struct PlayerView: View {
                     ])
                 }
             )
+        }
+        if vm.hasSponsorSegments {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    presentPlayerSheet(.sponsorBlock, logMessage: "打开空降助手")
+                } label: {
+                    Image(systemName: "forward.end")
+                        .foregroundStyle(IbiliTheme.accent)
+                }
+                .tint(IbiliTheme.accent)
+                .accessibilityLabel("空降助手")
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             PlayerToolbarOverflowMenu(
@@ -3181,9 +3207,6 @@ struct PlayerView: View {
                 },
                 onOpenDanmakuStyle: {
                     presentPlayerSheet(.danmakuStyle, logMessage: "打开弹幕样式")
-                },
-                onOpenSponsorBlock: {
-                    presentPlayerSheet(.sponsorBlock, logMessage: "打开空降助手")
                 },
                 onSaveCover: {
                     logPlayerMenu("保存封面请求")

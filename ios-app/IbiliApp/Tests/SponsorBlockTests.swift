@@ -24,8 +24,7 @@ final class SponsorBlockTests: XCTestCase {
 
     func testDefaultPoliciesAndPerVideoDisable() {
         var value = SponsorConfiguration()
-        XCTAssertFalse(value.isEnabled(for: key.bvid))
-        value.enabled = true
+        XCTAssertTrue(value.isEnabled(for: key.bvid))
         XCTAssertEqual(value.policy(for: .sponsor), .automatic)
         XCTAssertEqual(value.policy(for: .intro), .manual)
         XCTAssertEqual(value.policy(for: .selfpromo), .disabled)

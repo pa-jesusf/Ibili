@@ -38,7 +38,7 @@ enum SponsorSkipPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 struct SponsorConfiguration: Equatable, Sendable {
-    var enabled = false
+    var enabled = true
     var showsNotification = true
     var policies: [SponsorCategory: SponsorSkipPolicy] = [:]
     var disabledVideos: Set<String> = []

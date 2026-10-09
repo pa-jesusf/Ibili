@@ -235,7 +235,7 @@ final class AppSettings: ObservableObject {
     /// Applies Bilibili's per-video loudness analysis on top of the base
     /// attenuation. The result never exceeds AVPlayer's unity gain.
     @AppStorage("ibili.player.loudnessNormalizationEnabled") var loudnessNormalizationEnabled: Bool = true
-    @AppStorage("ibili.sponsorBlock.enabled") var sponsorBlockEnabled = false
+    @AppStorage("ibili.sponsorBlock.enabled") var sponsorBlockEnabled = true
     @AppStorage("ibili.sponsorBlock.notifications") var sponsorBlockNotifications = true
     @AppStorage("ibili.sponsorBlock.policies") private var sponsorBlockPoliciesRaw = "{}"
     @AppStorage("ibili.sponsorBlock.disabledVideos") private var sponsorBlockDisabledVideosRaw = "[]"
