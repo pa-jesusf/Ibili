@@ -12,7 +12,7 @@ private func resolvePlayableItemIfNeeded(_ item: FeedItemDTO) async throws -> Fe
 }
 
 @MainActor
-final class PlayerViewModel: ObservableObject {
+final class PlayerViewModel: ObservableObject, PlayerSystemMediaSessionOwner {
     @Published var isLoading = true
     @Published var errorText: String?
     @Published private(set) var player: AVPlayer?

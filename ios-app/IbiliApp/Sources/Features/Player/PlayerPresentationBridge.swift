@@ -171,16 +171,17 @@ struct PlayerContainer: UIViewControllerRepresentable {
         canvas.normalFontWeight = danmakuFontWeight
         canvas.normalFontScale = CGFloat(danmakuFontScale)
         if let overlay = vc.contentOverlayView {
-            canvas.translatesAutoresizingMaskIntoConstraints = false
             canvas.alpha = CGFloat(danmakuEnabled ? danmakuOpacity : 0)
-            overlay.addSubview(canvas)
+            let danmakuOverlay = PlayerDanmakuOverlayView(canvas: canvas)
+            overlay.addSubview(danmakuOverlay)
             NSLayoutConstraint.activate([
-                canvas.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
-                canvas.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
-                canvas.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor),
-                canvas.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
+                danmakuOverlay.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
+                danmakuOverlay.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
+                danmakuOverlay.topAnchor.constraint(equalTo: overlay.topAnchor),
+                danmakuOverlay.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
             ])
             context.coordinator.danmakuCanvas = canvas
+            context.coordinator.danmakuOverlay = danmakuOverlay
 
             let gestureMask = PlayerHoldSpeedGestureMaskView()
             gestureMask.translatesAutoresizingMaskIntoConstraints = false
@@ -289,6 +290,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         var parent: PlayerContainer
         weak var danmakuCanvas: DanmakuCanvasView?
+        weak var danmakuOverlay: PlayerDanmakuOverlayView?
         weak var subtitleOverlay: SubtitleOverlayView?
         weak var sponsorBadge: SponsorBlockBadgeView?
         weak var interactiveWindowAnchor: InteractiveVideoWindowAnchor?
@@ -338,6 +340,8 @@ struct PlayerContainer: UIViewControllerRepresentable {
             interactiveWindowAnchor = nil
             danmakuCanvas?.removeFromSuperview()
             danmakuCanvas = nil
+            danmakuOverlay?.removeFromSuperview()
+            danmakuOverlay = nil
             vc.delegate = nil
             if playerWasAttached {
                 vc.player = nil

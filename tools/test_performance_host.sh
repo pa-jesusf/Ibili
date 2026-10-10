@@ -31,6 +31,7 @@ xcrun swiftc -swift-version 5 -enable-testing -emit-library -emit-module -module
     "$SOURCES/Features/Player/Runtime/PlayerSessionBehavior.swift" \
     "$SOURCES/Features/Player/Runtime/PlayerTimeControlObservation.swift" \
     "$SOURCES/Features/Player/Runtime/PlayerItemReadiness.swift" \
+    "$SOURCES/Features/Player/Runtime/PlayerNowPlayingCoordinator.swift" \
     "$SOURCES/Features/Player/DanmakuBulletLayer.swift" \
     "$SOURCES/App/AppVersion.swift" \
     "$SOURCES/Features/Player/SponsorBlockTypes.swift" \
@@ -56,5 +57,6 @@ xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$O
     ios-app/IbiliApp/Tests/SponsorBlockTests.swift \
     ios-app/IbiliApp/Tests/SponsorBlockPlaybackTests.swift \
     ios-app/IbiliApp/Tests/InteractiveVideoTests.swift \
+    ios-app/IbiliApp/Tests/PlayerNowPlayingTests.swift \
     -o "$OUTPUT/PerformanceTests.xctest/Contents/MacOS/PerformanceTests"
 xcrun xctest "$OUTPUT/PerformanceTests.xctest"
