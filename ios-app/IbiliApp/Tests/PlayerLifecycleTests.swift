@@ -5,6 +5,24 @@ import XCTest
 
 @MainActor
 final class PlayerLifecycleTests: XCTestCase {
+    func testRetiredItemEndNotificationDoesNotCompleteReplacementItem() {
+        let original = AVPlayerItem(asset: AVMutableComposition())
+        let player = LifecyclePlayer(playerItem: original)
+        let model = PlayerViewModel(initialPlayer: player)
+        defer { model.teardown() }
+        player.replaceCurrentItem(with: AVPlayerItem(asset: AVMutableComposition()))
+        NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: original)
+        XCTAssertEqual(model.playbackCompletionSignal, 0)
+    }
+
+    func testInteractiveArchiveIdentitySurvivesDetailArrivingBeforePlayer() {
+        let model = PlayerViewModel()
+        defer { model.teardown() }
+        model.requireInteractiveVideo()
+        XCTAssertTrue(model.isInteractiveVideo)
+        XCTAssertNil(model.player)
+    }
+
     func testPauseDuringSlowReplayRemainsAuthoritativeForPlayingAndCompletedPlayers() async {
         for initialIntent in [PlayerIntent.play, .pause] {
             let player = LifecyclePlayer(playerItem: AVPlayerItem(asset: AVMutableComposition()))

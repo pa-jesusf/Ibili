@@ -17,6 +17,7 @@ xcrun swiftc -swift-version 5 -enable-testing -emit-library -emit-module -module
     -Xlinker -rpath -Xlinker "$PROJECT_ROOT/core/rust/target/debug" \
     "$SOURCES/Bridge/BlockingWorkQueue.swift" "$SOURCES/Bridge/CoreClient.swift" \
     "$SOURCES/Bridge/CoreDTOs.swift" "$SOURCES/App/VideoLinkRequest.swift" \
+    "$SOURCES/Bridge/InteractiveVideoDTOs.swift" \
     "$SOURCES/Features/Auth/LoginDTOs.swift" "$SOURCES/Features/Player/BiliHTTP.swift" \
     "$SOURCES/Features/Home/PlayUrlPrefetcher.swift" \
     "$SOURCES/DesignSystem/ImageDiskCache.swift" "$SOURCES/DesignSystem/Lists/CollectionItemState.swift" \
@@ -29,11 +30,14 @@ xcrun swiftc -swift-version 5 -enable-testing -emit-library -emit-module -module
     "$SOURCES/Features/Player/Proxy/HLSProxyListener.swift" tools/performance-host/AppLog.swift \
     "$SOURCES/Features/Player/Runtime/PlayerSessionBehavior.swift" \
     "$SOURCES/Features/Player/Runtime/PlayerTimeControlObservation.swift" \
+    "$SOURCES/Features/Player/Runtime/PlayerItemReadiness.swift" \
     "$SOURCES/Features/Player/DanmakuBulletLayer.swift" \
     "$SOURCES/App/AppVersion.swift" \
     "$SOURCES/Features/Player/SponsorBlockTypes.swift" \
     "$SOURCES/Features/Player/SponsorBlockRepository.swift" \
     "$SOURCES/Features/Player/SponsorBlockPlaybackCoordinator.swift" \
+    "$SOURCES/Features/Player/InteractiveExpression.swift" \
+    "$SOURCES/Features/Player/InteractiveVideoCoordinator.swift" \
     -emit-module-path "$OUTPUT/Ibili.swiftmodule" -o "$OUTPUT/libIbili.dylib"
 xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$OUTPUT" -I core/rust/crates/ibili_ffi/include \
     -F "$XCTEST_FRAMEWORKS" -framework XCTest -Xlinker -rpath -Xlinker "$XCTEST_FRAMEWORKS" \
@@ -51,5 +55,6 @@ xcrun swiftc -swift-version 5 -emit-library -module-name PerformanceTests -I "$O
     ios-app/IbiliApp/Tests/DanmakuBulletLayerTests.swift \
     ios-app/IbiliApp/Tests/SponsorBlockTests.swift \
     ios-app/IbiliApp/Tests/SponsorBlockPlaybackTests.swift \
+    ios-app/IbiliApp/Tests/InteractiveVideoTests.swift \
     -o "$OUTPUT/PerformanceTests.xctest/Contents/MacOS/PerformanceTests"
 xcrun xctest "$OUTPUT/PerformanceTests.xctest"

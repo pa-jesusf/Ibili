@@ -231,7 +231,7 @@ public final class CoreClient: @unchecked Sendable {
         "live.playurl", "live.danmaku_info", "live.danmaku_history", "video.playurl",
         "video.offline_playurl", "pgc.playurl", "pgc.offline_playurl", "pgc.season",
         "video.playurl.tv", "danmaku.list", "danmaku.segment", "video.view_cid",
-        "video.view_full", "video.related", "reply.main", "reply.detail", "reply.detail_target",
+        "video.view_full", "video.interactive_info", "video.related", "reply.main", "reply.detail", "reply.detail_target",
         "interaction.archive_relation", "interaction.fav_folders", "interaction.watchlater_aids",
         "interaction.emote_panel", "search.video", "search.live", "search.pgc", "search.user",
         "search.article", "article.read", "article.opus", "user.card", "user.live", "user.history",
@@ -652,6 +652,24 @@ public final class CoreClient: @unchecked Sendable {
     public func videoViewFull(aid: Int64 = 0, bvid: String = "") throws -> VideoViewDTO {
         struct A: Encodable { let aid: Int64; let bvid: String }
         return try call("video.view_full", args: A(aid: aid, bvid: bvid), decoding: VideoViewDTO.self)
+    }
+
+    public func interactiveVideoNode(bvid: String, graphVersion: Int64, edgeID: Int64 = 0,
+                                     choices: [Int64] = [], portal: Int = 0) throws -> InteractiveNodeDTO {
+        struct A: Encodable {
+            let bvid: String; let graph_version: Int64; let edge_id: Int64
+            let choices: [Int64]; let portal: Int
+        }
+        return try call("video.interactive_node",
+                        args: A(bvid: bvid, graph_version: graphVersion, edge_id: edgeID, choices: choices, portal: portal),
+                        decoding: InteractiveNodeDTO.self)
+    }
+
+    public func interactiveVideoInfo(aid: Int64, bvid: String, cid: Int64) throws -> InteractiveVideoInfoDTO? {
+        struct A: Encodable { let aid: Int64; let bvid: String; let cid: Int64 }
+        struct Result: Decodable { let interaction: InteractiveVideoInfoDTO? }
+        return try call("video.interactive_info", args: A(aid: aid, bvid: bvid, cid: cid),
+                        decoding: Result.self).interaction
     }
 
     /// List of related videos (`/x/web-interface/archive/related`).

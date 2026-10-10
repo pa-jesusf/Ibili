@@ -15,6 +15,7 @@ pub mod feed;
 mod grpc;
 pub mod http;
 pub mod interaction;
+pub mod interactive_video;
 pub mod live;
 pub mod message;
 pub mod packaging;

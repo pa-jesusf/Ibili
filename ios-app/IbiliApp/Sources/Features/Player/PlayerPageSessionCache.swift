@@ -17,10 +17,16 @@ final class PlayerPageSessionCache {
     private var danmakuSegments: [Int64: [Int64: [DanmakuItemDTO]]] = [:]
 
     func clearMediaData() {
+        clearPlaybackData()
+        interactionService.resetForNextItem()
+    }
+
+    /// A story branch changes its media, while archive likes/comments remain
+    /// attached to the same BV. Do not reset that shared archive state.
+    func clearPlaybackData() {
         playURLs.removeAll()
         danmakuTracks.removeAll()
         danmakuSegments.removeAll()
-        interactionService.resetForNextItem()
     }
 
     func storePlayURL(_ info: PlayUrlDTO, variant: String) {

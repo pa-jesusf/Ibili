@@ -266,6 +266,8 @@ pub struct PlayUrl {
     /// tappable timeline rows below the player.
     #[serde(default)]
     pub view_points: Vec<VideoViewPoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction: Option<crate::interactive_video::InteractiveInfo>,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -493,6 +495,7 @@ pub struct PgcSeason {
 /// page consumes — pages list, ugc season, owner, stat, tags, descV2.
 #[derive(Debug, Serialize, Clone)]
 pub struct VideoView {
+    pub is_interactive: bool,
     pub aid: i64,
     pub bvid: String,
     pub cid: i64,

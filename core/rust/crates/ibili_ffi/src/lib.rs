@@ -777,6 +777,37 @@ fn handle(c: &IbiliCore, method: &str, args: Value) -> Result<Value, CoreError> 
             let a: VideoViewArgs = serde_json::from_value(args)?;
             to_value(c.inner.video_view_full(a.aid, &a.bvid)?)
         }
+        "video.interactive_node" => {
+            #[derive(Deserialize)]
+            struct Args {
+                bvid: String,
+                graph_version: i64,
+                #[serde(default)]
+                edge_id: i64,
+                #[serde(default)]
+                choices: Vec<i64>,
+                #[serde(default)]
+                portal: i64,
+            }
+            let a: Args = serde_json::from_value(args)?;
+            to_value(c.inner.video_interactive_node(
+                &a.bvid,
+                a.graph_version,
+                a.edge_id,
+                &a.choices,
+                a.portal,
+            )?)
+        }
+        "video.interactive_info" => {
+            #[derive(Deserialize)]
+            struct Args {
+                aid: i64,
+                bvid: String,
+                cid: i64,
+            }
+            let a: Args = serde_json::from_value(args)?;
+            Ok(json!({ "interaction": c.inner.video_interactive_info(a.aid, &a.bvid, a.cid)? }))
+        }
         "video.related" => {
             let a: VideoViewArgs = serde_json::from_value(args)?;
             to_value(c.inner.video_related(a.aid, &a.bvid)?)

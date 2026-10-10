@@ -389,6 +389,7 @@ public struct PlayUrlVolumeDTO: Codable, Equatable {
 }
 
 public struct PlayUrlDTO: Codable {
+    public let interaction: InteractiveVideoInfoDTO?
     public let url: String
     public let audioUrl: String?
     public let format: String
@@ -457,7 +458,8 @@ public struct PlayUrlDTO: Codable {
         lastPlayCid: Int64,
         volume: PlayUrlVolumeDTO? = nil,
         subtitles: [VideoSubtitleDTO] = [],
-        viewPoints: [VideoViewPointDTO] = []
+        viewPoints: [VideoViewPointDTO] = [],
+        interaction: InteractiveVideoInfoDTO? = nil
     ) {
         self.url = url
         self.audioUrl = audioUrl
@@ -485,6 +487,7 @@ public struct PlayUrlDTO: Codable {
         self.lastPlayCid = lastPlayCid
         self.subtitles = subtitles
         self.viewPoints = viewPoints
+        self.interaction = interaction
     }
     enum CodingKeys: String, CodingKey {
         case url, format, quality
@@ -511,6 +514,7 @@ public struct PlayUrlDTO: Codable {
         case lastPlayCid = "last_play_cid"
         case subtitles
         case viewPoints = "view_points"
+        case interaction
     }
 
     public init(from decoder: Decoder) throws {
@@ -553,6 +557,7 @@ public struct PlayUrlDTO: Codable {
         lastPlayCid = try c.decodeIfPresent(Int64.self, forKey: .lastPlayCid) ?? 0
         subtitles = try c.decodeIfPresent([VideoSubtitleDTO].self, forKey: .subtitles) ?? []
         viewPoints = try c.decodeIfPresent([VideoViewPointDTO].self, forKey: .viewPoints) ?? []
+        interaction = try c.decodeIfPresent(InteractiveVideoInfoDTO.self, forKey: .interaction)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -583,6 +588,7 @@ public struct PlayUrlDTO: Codable {
         try c.encode(lastPlayCid, forKey: .lastPlayCid)
         try c.encode(subtitles, forKey: .subtitles)
         try c.encode(viewPoints, forKey: .viewPoints)
+        try c.encodeIfPresent(interaction, forKey: .interaction)
     }
 
     public func replacingLocalMediaURLs(videoURL: URL, audioURL: URL?) -> PlayUrlDTO {
@@ -612,7 +618,8 @@ public struct PlayUrlDTO: Codable {
             lastPlayCid: lastPlayCid,
             volume: volume,
             subtitles: subtitles,
-            viewPoints: viewPoints
+            viewPoints: viewPoints,
+            interaction: interaction
         )
     }
 }
@@ -1253,6 +1260,7 @@ public struct UgcSeasonDTO: Decodable, Hashable, Identifiable {
 }
 
 public struct VideoViewDTO: Decodable, Hashable {
+    public var isInteractive: Bool? = nil
     public let aid: Int64
     public let bvid: String
     public let cid: Int64
@@ -1274,6 +1282,7 @@ public struct VideoViewDTO: Decodable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case aid, bvid, cid, title, cover, desc, videos, pubdate, ctime, stat, owner, pages, tags, honor
+        case isInteractive = "is_interactive"
         case descV2 = "desc_v2"
         case durationSec = "duration_sec"
         case ugcSeason = "ugc_season"

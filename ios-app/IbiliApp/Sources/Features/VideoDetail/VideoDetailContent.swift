@@ -29,6 +29,7 @@ struct VideoDetailContent: View {
     private let playbackTimeline: PlaybackTimelineClock
     private let onSeekToTime: ((Int64) -> Void)?
     private let onNextPartCandidateChange: ((PlayerNextPartCandidate?) -> Void)?
+    private let onInteractiveVideoDetected: (() -> Void)?
     @EnvironmentObject private var router: DeepLinkRouter
     @Environment(\.isInPlayerHostNavigation) private var isInPlayerHostNavigation
     @Environment(\.rootContentNavigation) private var rootNavigation
@@ -66,6 +67,7 @@ struct VideoDetailContent: View {
          playbackTimeline: PlaybackTimelineClock,
          onSeekToTime: ((Int64) -> Void)? = nil,
          onNextPartCandidateChange: ((PlayerNextPartCandidate?) -> Void)? = nil,
+         onInteractiveVideoDetected: (() -> Void)? = nil,
          onScrollOffsetChange: ((CGFloat) -> Void)? = nil) {
         self.item = item
         self.currentCid = currentCid
@@ -82,6 +84,7 @@ struct VideoDetailContent: View {
         self.playbackTimeline = playbackTimeline
         self.onSeekToTime = onSeekToTime
         self.onNextPartCandidateChange = onNextPartCandidateChange
+        self.onInteractiveVideoDetected = onInteractiveVideoDetected
         self.onScrollOffsetChange = onScrollOffsetChange
     }
 
@@ -228,12 +231,16 @@ struct VideoDetailContent: View {
         .animation(.easeInOut(duration: 0.2), value: toast)
         .onAppear {
             publishNextPartCandidate()
+            if vm.view?.isInteractive == true { onInteractiveVideoDetected?() }
         }
         .onDisappear {
             onNextPartCandidateChange?(nil)
         }
         .onChange(of: nextPartCandidateKey) { _ in
             publishNextPartCandidate()
+        }
+        .onChange(of: vm.view?.isInteractive) { value in
+            if value == true { onInteractiveVideoDetected?() }
         }
     }
 
@@ -342,7 +349,7 @@ struct VideoDetailContent: View {
     }
 
     private func nextVideoPageCandidate(in view: VideoViewDTO, after currentCid: Int64) -> PlayerNextPartCandidate? {
-        guard view.pages.count > 1,
+        guard view.isInteractive != true, view.pages.count > 1,
               let currentIndex = view.pages.firstIndex(where: { $0.cid == currentCid }) else { return nil }
         let nextIndex = view.pages.index(after: currentIndex)
         guard view.pages.indices.contains(nextIndex) else { return nil }
@@ -620,7 +627,7 @@ struct VideoDetailContent: View {
                     }
                     .padding(.horizontal, 16)
                 }
-                if v.pages.count > 1 {
+                if v.isInteractive != true, v.pages.count > 1 {
                     VideoSeasonCard(source: .pages(aid: v.aid, bvid: v.bvid, pages: v.pages, currentCid: activeCid)) { aid, bvid, cid in
                         guard cid != activeCid else { return }
                         guard let page = v.pages.first(where: { $0.cid == cid }) else { return }

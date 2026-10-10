@@ -52,6 +52,8 @@ struct PlayUrlRoot {
 
 #[derive(Default, Deserialize)]
 struct PlayerInfoWire {
+    #[serde(default)]
+    interaction: Option<crate::interactive_video::InteractiveInfo>,
     #[serde(default, deserialize_with = "lenient_i64_value")]
     last_play_cid: i64,
     #[serde(default)]
@@ -493,6 +495,7 @@ fn map_view_points(points: Vec<ViewPointWire>) -> Vec<VideoViewPoint> {
 }
 
 fn merge_player_info(play: &mut PlayUrl, info: PlayerInfoWire) {
+    play.interaction = info.interaction.filter(|i| i.graph_version > 0);
     let subtitles = map_subtitles(info.subtitle);
     if !subtitles.is_empty() {
         play.subtitles = subtitles;
@@ -652,6 +655,22 @@ fn video_identity_params(aid: i64, bvid: &str) -> CoreResult<Vec<(String, String
 }
 
 impl Core {
+    pub fn video_interactive_info(
+        &self,
+        aid: i64,
+        bvid: &str,
+        cid: i64,
+    ) -> CoreResult<Option<crate::interactive_video::InteractiveInfo>> {
+        if cid <= 0 {
+            return Err(CoreError::InvalidArgument("cid required".into()));
+        }
+        let key = self.http.wbi_key()?;
+        Ok(self
+            .fetch_player_info(aid, bvid, cid, 0, 0, &key)?
+            .interaction
+            .filter(|i| i.graph_version > 0))
+    }
+
     /// Resolve the default page `cid` from either canonical UGC identity.
     /// Message notifications commonly carry only an aid, while search rows
     /// commonly carry only a bvid.
@@ -1154,6 +1173,7 @@ impl Core {
             last_play_cid: r.last_play_cid,
             subtitles: map_subtitles(r.subtitle),
             view_points: map_view_points(r.view_points),
+            interaction: None,
         })
     }
 
@@ -1225,6 +1245,7 @@ impl Core {
             last_play_cid: r.last_play_cid,
             subtitles: map_subtitles(r.subtitle),
             view_points: map_view_points(r.view_points),
+            interaction: None,
         })
     }
 
@@ -1522,6 +1543,7 @@ fn build_playurl_from_web_response(
                     last_play_cid: response.last_play_cid,
                     subtitles,
                     view_points,
+                    interaction: None,
                 });
             }
         }
@@ -1565,6 +1587,7 @@ fn build_playurl_from_web_response(
         last_play_cid: response.last_play_cid,
         subtitles,
         view_points,
+        interaction: None,
     })
 }
 
@@ -1843,6 +1866,8 @@ fn video_lookup_params(aid: i64, bvid: &str) -> CoreResult<Vec<(String, String)>
 #[derive(Deserialize)]
 struct ViewFullRoot {
     #[serde(default)]
+    rights: ViewRightsWire,
+    #[serde(default)]
     aid: i64,
     #[serde(default)]
     bvid: String,
@@ -1876,6 +1901,12 @@ struct ViewFullRoot {
     ugc_season: Option<UgcSeasonWire>,
     #[serde(default)]
     redirect_url: String,
+}
+
+#[derive(Default, Deserialize)]
+struct ViewRightsWire {
+    #[serde(default)]
+    is_stein_gate: i64,
 }
 
 #[derive(Default, Deserialize)]
@@ -2074,6 +2105,7 @@ impl Core {
 
 fn map_view_full(r: ViewFullRoot, tags: Vec<String>) -> VideoView {
     VideoView {
+        is_interactive: r.rights.is_stein_gate == 1,
         aid: r.aid,
         bvid: r.bvid,
         cid: r.cid,

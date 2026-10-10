@@ -34,6 +34,8 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var isTemporarySpeedBoostActive = false
     @Published private(set) var isPausedForDetailCollapse = false
     @Published private(set) var playbackCompletionSignal = 0
+    @Published private(set) var isInteractiveVideo = false
+    @Published private(set) var interactiveMediaRevision = 0
     private let holdSpeedRate: Float = 2.0
     private var temporaryPlaybackRateOverride: Float?
     private var temporaryPlaybackRateRestore: Float?
@@ -55,6 +57,8 @@ final class PlayerViewModel: ObservableObject {
     private let engine: PlaybackEngine = HLSProxyEngine.shared
     let pageCache = PlayerPageSessionCache()
     lazy var sponsorBlock = SponsorBlockPlaybackCoordinator(sessionID: sessionID)
+    let interactiveVideo = InteractiveVideoCoordinator()
+    private var activeInteractiveInfo: InteractiveVideoInfoDTO?
     private var sponsorAvailabilitySubscription: AnyCancellable?
     private var sponsorBindingTask: Task<Void, Never>?
     private var sponsorOfflineOnly = false
@@ -126,6 +130,29 @@ final class PlayerViewModel: ObservableObject {
             .map { !$0.isEmpty }
             .removeDuplicates()
             .sink { [weak self] in self?.hasSponsorSegments = $0 }
+        interactiveVideo.transition = { [weak self] cid, resumeMs in
+            guard let self else { return false }
+            return try await self.switchInteractiveSegment(cid: cid, resumePositionMs: resumeMs)
+        }
+        interactiveVideo.seek = { [weak self] seconds in
+            guard let self, let player = self.player, let item = player.currentItem,
+                  seconds <= item.duration.seconds else { return false }
+            let finished = await player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
+                                             toleranceBefore: .zero, toleranceAfter: .zero)
+            return finished && self.player === player && player.currentItem === item && !self.isClosing
+        }
+        interactiveVideo.gateChanged = { [weak self] in self?.applyPlaybackIntent() }
+        interactiveVideo.refreshInfo = { [weak self] in
+            guard let self, !self.isClosing else { throw CancellationError() }
+            let generation = self.loadGeneration, aid = self.aid, bvid = self.bvid, cid = self.cid
+            let info = try await CoreClient.shared.perform {
+                try $0.interactiveVideoInfo(aid: aid, bvid: bvid, cid: cid)
+            }
+            guard self.isCurrentLoad(generation, aid: aid, cid: cid), !Task.isCancelled else { throw CancellationError() }
+            guard let info else { throw InteractiveVideoCoordinator.StoryError("未能获取互动剧情信息，请重试") }
+            self.activeInteractiveInfo = info
+            return info
+        }
     }
 
     deinit {
@@ -141,6 +168,7 @@ final class PlayerViewModel: ObservableObject {
             stopHeartbeat()
             sponsorBindingTask?.cancel()
             sponsorBlock.detach()
+            interactiveVideo.reset()
             clearPlaybackCompletionObserver()
             itemStatusObservation = nil
             playerTimeControlObservation?.invalidate()
@@ -292,6 +320,9 @@ final class PlayerViewModel: ObservableObject {
             // Keep the logical playback intent as `.play` so the audio
             // session stays claimed throughout the hand-off.
             resetCurrentPlaybackForMediaSwitch()
+            interactiveVideo.reset()
+            activeInteractiveInfo = nil
+            isInteractiveVideo = false
             pendingResumeMs = item.resumePositionMs.map { max(0, $0) }
             pendingResumeIsLocal = false
             if isPartSwitch, pendingResumeMs == nil {
@@ -473,7 +504,10 @@ final class PlayerViewModel: ObservableObject {
 
     func handle(_ event: PlayerSessionEvent) {
         guard !isClosing || event == .interfaceDeactivated || event.isPictureInPictureStop else { return }
-        defer { sponsorBlock.playbackStateChanged(allowed: canUseSponsorTimeline) }
+        defer {
+            sponsorBlock.playbackStateChanged(allowed: canUseSponsorTimeline)
+            interactiveVideo.playbackStateChanged(allowed: canUseInteractiveTimeline, presentationAllowed: canShowInteractivePrompt)
+        }
         switch event {
         case .interfaceActivated:
             PlayerPlaybackCoordinator.shared.activate(self)
@@ -561,6 +595,11 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func configureSponsorBlock() {
+        // A sponsor seek can cross a required story decision. Interactive
+        // playback owns this timeline, so ordinary skip automation stays off.
+        guard !isInteractiveVideo else {
+            sponsorBindingTask?.cancel(); sponsorBlock.detach(); return
+        }
         sponsorBlock.configure(AppSettings.shared.sponsorConfiguration)
         guard !isClosing, isVideoReady, let player, let playerItem = player.currentItem else { return }
         sponsorBindingTask?.cancel()
@@ -579,6 +618,14 @@ final class PlayerViewModel: ObservableObject {
 
     private var canUseSponsorTimeline: Bool {
         !isClosing && behaviorState.hasPlaybackFocus && behaviorState.isInterfacePresentingPlayer
+    }
+
+    private var canUseInteractiveTimeline: Bool {
+        canUseSponsorTimeline && !behaviorState.systemTransitionIsActive
+    }
+
+    private var canShowInteractivePrompt: Bool {
+        !isClosing && behaviorState.canPresentFloatingPlayerUI
     }
 
     func activateInterfaceIfForeground() {
@@ -908,7 +955,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func switchQuality(to qn: Int64) async {
-        guard !isClosing, let player else { return }
+        guard !isClosing, !interactiveVideo.isTransitioning, let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
         AppLog.info("player", "开始切换清晰度", metadata: [
@@ -1015,6 +1062,7 @@ final class PlayerViewModel: ObservableObject {
 
     func teardown() {
         isClosing = true
+        interactiveVideo.reset()
         sponsorBindingTask?.cancel()
         sponsorBlock.detach()
         foregroundRecoveryTask?.cancel()
@@ -1061,6 +1109,7 @@ final class PlayerViewModel: ObservableObject {
         }
         guard !isClosing else { return }
         isClosing = true
+        interactiveVideo.reset()
         sponsorBindingTask?.cancel()
         sponsorBlock.detach()
         foregroundRecoveryTask?.cancel()
@@ -1148,9 +1197,10 @@ final class PlayerViewModel: ObservableObject {
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
-        ) { [weak self, weak player] _ in
+        ) { [weak self, weak player, weak item] _ in
             guard let self,
                   let player,
+                  let item, player.currentItem === item,
                   !self.isClosing,
                   self.player === player else { return }
             self.handlePlaybackCompleted()
@@ -1165,6 +1215,12 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func handlePlaybackCompleted() {
+        if interactiveVideo.handleCompletion() {
+            suppressNextObservedPlaybackIntent(.pause)
+            player?.pause()
+            refreshSystemMediaSession()
+            return
+        }
         isPlaybackCompleted = true
         handle(.playbackIntentChanged(.pause))
         player?.pause()
@@ -1207,6 +1263,17 @@ final class PlayerViewModel: ObservableObject {
     private func handleObservedPlaybackState(_ status: AVPlayer.TimeControlStatus,
                                             observedPlayer: AVPlayer? = nil) {
         guard !isClosing else { return }
+        if status == .paused, interactiveVideo.isEnabled, let player,
+           let item = player.currentItem, item.duration.seconds.isFinite,
+           player.currentTime().seconds >= item.duration.seconds - 0.05 {
+            // AVPlayer's terminal pause can precede its end notification.
+            // It must not turn an automatic story handoff into user pause.
+            return
+        }
+        if interactiveVideo.isBlocking {
+            if status != .paused { applyPlaybackIntent() }
+            return
+        }
         let suppressionActive = Date() < transientPauseSuppressionDeadline
         if AppDiagnostics.verbosePlayerStateLoggingEnabled {
             AppLog.debug("player", "观察到 AVPlayer.timeControlStatus 变化", metadata: playbackDebugMetadata(for: observedPlayer, extra: [
@@ -1330,6 +1397,14 @@ final class PlayerViewModel: ObservableObject {
         guard !isClosing else { return }
         PlayerAudioSessionCoordinator.shared.setSessionNeeded(shouldHoldAudioSession, by: self)
         guard let targetPlayer = targetPlayer ?? player else { return }
+        if interactiveVideo.isBlocking {
+            if targetPlayer.rate != 0 || targetPlayer.timeControlStatus != .paused {
+                suppressNextObservedPlaybackIntent(.pause)
+                targetPlayer.pause()
+                endTemporarySpeedBoost(on: targetPlayer)
+            }
+            return
+        }
         switch behaviorState.desiredPlaybackCommand(rate: desiredPlaybackRate) {
         case .play(let rate):
             guard targetPlayer.timeControlStatus == .paused || targetPlayer.rate == 0 else { return }
@@ -1508,6 +1583,7 @@ final class PlayerViewModel: ObservableObject {
                     self.isPlaybackCompleted = false
                     guard await self.applyPendingResume(to: player, item: item, generation: generation) else { return }
                     self.isVideoReady = true
+                    self.configureInteractiveVideo()
                     self.configureSponsorBlock()
                     self.updatePausedForDetailCollapse()
                     self.startHeartbeatIfNeeded()
@@ -1678,6 +1754,10 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func rememberActivePlayURL(_ info: PlayUrlDTO) {
+        if let interaction = info.interaction, interaction.graphVersion > 0 {
+            activeInteractiveInfo = interaction
+            isInteractiveVideo = true
+        }
         currentVideoCodec = info.videoCodec
         activeLoudnessVolume = info.volume
         applyResolvedAudioVolume(animated: player != nil)
@@ -1687,6 +1767,100 @@ final class PlayerViewModel: ObservableObject {
         isCurrentSourceOffline = info.url.hasPrefix("file://")
         availableSubtitles = info.subtitles
         viewPoints = info.viewPoints
+    }
+
+    private func configureInteractiveVideo() {
+        guard let player, let item = player.currentItem else { return }
+        if interactiveVideo.isTransitioning {
+            interactiveVideo.replaceItemBinding(player: player, item: item)
+            return
+        }
+        guard activeInteractiveInfo != nil else {
+            let detail = pageCache.detailViewModel.view
+            if isInteractiveVideo || (detail?.isInteractive == true && detail?.aid == aid) {
+                isInteractiveVideo = true
+                interactiveVideo.requireMetadata(player: player, item: item, bvid: bvid, cid: cid,
+                                                 allowed: canUseInteractiveTimeline, presentationAllowed: canShowInteractivePrompt)
+            }
+            return
+        }
+        interactiveVideo.bind(player: player, item: item, bvid: bvid, cid: cid,
+                              info: activeInteractiveInfo, allowed: canUseInteractiveTimeline, presentationAllowed: canShowInteractivePrompt)
+    }
+
+    func requireInteractiveVideo() {
+        guard !isClosing else { return }
+        isInteractiveVideo = true
+        sponsorBindingTask?.cancel(); sponsorBlock.detach()
+        configureInteractiveVideo()
+    }
+
+    /// Only the verified current story choice can call this path. Ordinary
+    /// links keep their strict page/CID validation in VideoLinkRequest.
+    private func switchInteractiveSegment(cid nextCID: Int64, resumePositionMs: Int64) async throws -> Bool {
+        guard !isClosing, nextCID > 0, let current = lastLoadedItem,
+              let player, let outgoing = player.currentItem, isInteractiveVideo else { return false }
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let next = FeedItemDTO(aid: current.aid, bvid: current.bvid, cid: nextCID,
+                               title: current.title, cover: current.cover, author: current.author,
+                               durationSec: 0, play: current.play, danmaku: current.danmaku,
+                               pubdate: current.pubdate, ownerMID: current.ownerMID, resumePositionMs: max(0, resumePositionMs))
+        isLoading = true
+        defer { if loadGeneration == generation { isLoading = false } }
+        let qn = currentQn, audioQn = currentAudioQn
+        let cdn = cdnSelection, codec = playbackCodecPreference
+        // Restarting a story may reuse the CID after its graph has changed.
+        // Fetch current metadata instead of the previous node's cached URL.
+        let info = try await CoreClient.shared.perform {
+            try $0.playUrl(aid: next.aid, bvid: next.bvid, cid: next.cid,
+                          qn: qn, audioQn: audioQn, cdn: cdn, codecPreference: codec)
+        }
+        guard !isClosing, !Task.isCancelled, loadGeneration == generation,
+              self.player === player, player.currentItem === outgoing else { return false }
+        if let graph = info.interaction?.graphVersion, graph != activeInteractiveInfo?.graphVersion {
+            throw InteractiveVideoCoordinator.StoryError("剧情图已更新，请重新打开视频")
+        }
+        let prep = try await engine.makeItem(for: info)
+        guard !isClosing, !Task.isCancelled, loadGeneration == generation,
+              self.player === player, player.currentItem === outgoing else { prep.release(); return false }
+        stopHeartbeat()
+        sponsorBindingTask?.cancel(); sponsorBlock.detach()
+        itemStatusObservation = nil
+        clearPlaybackCompletionObserver()
+        suppressNextObservedPlaybackIntent(.pause)
+        player.pause()
+        endTemporarySpeedBoost(on: player)
+        let previousPreparation = activePreparation
+        // The old source must be unbound before its proxy lease is released.
+        player.replaceCurrentItem(with: nil)
+        previousPreparation?.release()
+        pageCache.clearPlaybackData()
+        self.cid = nextCID; lastLoadedItem = next
+        isVideoReady = false; isPlaybackCompleted = false; errorText = nil
+        pendingResumeMs = max(0, resumePositionMs); pendingResumeIsLocal = true
+        activePreparation = prep
+        rememberPlayURL(info); rememberActivePlayURL(info)
+        availableQualities = normalizedQualities(from: info)
+        availableAudioQualities = normalizedAudioQualities(from: info)
+        currentQn = info.quality; currentAudioQn = info.audioQuality
+        applyPresentationMetadata(to: prep.item, for: next)
+        player.replaceCurrentItem(with: prep.item)
+        observePlaybackCompletion(for: player)
+        interactiveVideo.replaceItemBinding(player: player, item: prep.item)
+        interactiveMediaRevision &+= 1
+        // Do not expose choices or commit a checkpoint while the replacement
+        // is still at time zero. Story state follows the completed native seek.
+        try await PlayerItemReadiness.waitUntilReady(prep.item, player: player)
+        guard !isClosing, !Task.isCancelled, loadGeneration == generation,
+              self.player === player, player.currentItem === prep.item else { return false }
+        guard await applyPendingResume(to: player, item: prep.item, generation: generation) else {
+            throw InteractiveVideoCoordinator.StoryError(errorText ?? "剧情进度定位失败，请重试")
+        }
+        observeItemStatus(prep.item, generation: generation)
+        isVideoReady = true
+        errorText = nil
+        return true
     }
 
     private func videoSizeHint(from dimension: VideoDimensionDTO?) -> CGSize? {
@@ -1995,7 +2169,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func switchAudioQuality(to audioQn: Int64) async {
-        guard !isClosing, let player else { return }
+        guard !isClosing, !interactiveVideo.isTransitioning, let player else { return }
         let generation = loadGeneration
         let resumeAt = player.currentTime()
         AppLog.info("player", "开始切换音质", metadata: [
@@ -2774,7 +2948,8 @@ struct PlayerView: View {
                                         onCreated: { vc in playerVCRef.vc = vc },
                                         onPresentationEvent: handlePresentationEvent,
                                         onSeekToTime: { seekTo(seconds: $0) },
-                                        sponsorBlock: vm.sponsorBlock
+                                        sponsorBlock: vm.sponsorBlock,
+                                        interactiveVideo: vm.interactiveVideo
                                     )
                                     // Cover the native chrome until the first frame is
                                     // ready, otherwise users see a misleading pause icon
@@ -2829,6 +3004,7 @@ struct PlayerView: View {
                                                onNextPartCandidateChange: { candidate in
                                                    nextPartCandidate = candidate
                                                },
+                                               onInteractiveVideoDetected: { vm.requireInteractiveVideo() },
                                                onScrollOffsetChange: handleDetailScrollOffsetForPlayerCollapse)
                                     .environment(\.playbackTextContext, playbackTextContext)
                                     .transition(.opacity)
@@ -2949,6 +3125,21 @@ struct PlayerView: View {
                 configureDanmakuSegmentObserver(for: p)
             }
             loadPendingDanmakuIfNeeded()
+        }
+        .onChange(of: vm.interactiveMediaRevision) { _ in
+            loadedDanmakuKey = nil
+            pendingDanmakuLoadKey = mediaLoadKey
+            resetSubtitleState()
+            resetDanmakuSegmentLoading()
+            clearDanmakuTimeObserver()
+            danmaku.clear()
+            detailTimelineClock.seconds = 0
+            detailTimelineClock.lastWholeSecond = -1
+            if let player = vm.player {
+                danmaku.attach(player); subtitle.attach(player)
+                configureDetailTimelineObserver(for: player)
+            }
+            if vm.isVideoReady { loadPendingDanmakuIfNeeded() }
         }
         .onChange(of: vm.player) { newPlayer in
             if let p = newPlayer {

@@ -82,6 +82,10 @@ struct PlayerSessionBehaviorState: Equatable {
         systemTransitionIsActive
     }
 
+    var canPresentFloatingPlayerUI: Bool {
+        hasPlaybackFocus && interfaceIsActive && !pictureInPictureIsActive && !systemTransitionIsActive
+    }
+
     var shouldHoldAudioSession: Bool {
         intent == .play && hasPlaybackFocus && (interfaceIsActive || pictureInPictureIsActive)
     }

@@ -139,6 +139,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
     let onPresentationEvent: (PlayerPresentationEvent) -> Void
     var onSeekToTime: ((Int64) -> Void)? = nil
     var sponsorBlock: SponsorBlockPlaybackCoordinator? = nil
+    var interactiveVideo: InteractiveVideoCoordinator? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -248,6 +249,11 @@ struct PlayerContainer: UIViewControllerRepresentable {
                 ])
                 context.coordinator.subtitleOverlay = subtitleOverlay
             }
+            if let interactiveVideo {
+                let anchor = InteractiveVideoWindowAnchor(coordinator: interactiveVideo)
+                overlay.addSubview(anchor)
+                context.coordinator.interactiveWindowAnchor = anchor
+            }
         }
         return vc
     }
@@ -285,6 +291,7 @@ struct PlayerContainer: UIViewControllerRepresentable {
         weak var danmakuCanvas: DanmakuCanvasView?
         weak var subtitleOverlay: SubtitleOverlayView?
         weak var sponsorBadge: SponsorBlockBadgeView?
+        weak var interactiveWindowAnchor: InteractiveVideoWindowAnchor?
         fileprivate weak var holdSpeedBadgeView: PlayerHoldSpeedBadgeView?
         var assignedPlayerID: ObjectIdentifier?
         private var holdSpeedBadgeIsVisible = false
@@ -326,6 +333,9 @@ struct PlayerContainer: UIViewControllerRepresentable {
             subtitleOverlay = nil
             sponsorBadge?.removeFromSuperview()
             sponsorBadge = nil
+            interactiveWindowAnchor?.invalidate()
+            interactiveWindowAnchor?.removeFromSuperview()
+            interactiveWindowAnchor = nil
             danmakuCanvas?.removeFromSuperview()
             danmakuCanvas = nil
             vc.delegate = nil
